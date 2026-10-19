@@ -1,0 +1,10 @@
+[package]
+name = "alcoler-contracts"
+description = "Alcoler kernel contracts: ports (traits) and domain types, no implementations."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-core = { workspace = true }
