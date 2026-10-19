@@ -127,7 +127,7 @@ All constants below replicate ZCode values and become named constants in `Alcole
 
 ### 5.3 Model layer
 
-- `IModel` per turn, frozen at turn start (config changes affect future turns only). Provider kinds: `anthropic` (Messages API, `/v1` normalization, `x-api-key` and Bearer), `openai-compatible` (chat completions), `scripted` (test).
+- `IModel` per turn, frozen at turn start (config changes affect future turns only). Model metadata carries per-model `Properties` (notably `ContextWindowTokens`, output limits) sourced from the live provider registry — user-configurable per provider × model entry; mid-session registry edits apply to future model bindings. Provider kinds: `anthropic` (Messages API, `/v1` normalization, `x-api-key` and Bearer), `openai-compatible` (chat completions), `scripted` (test).
 - Stream event union: `Start, TextStart/TextDelta/TextEnd, ReasoningStart/ReasoningDelta/ReasoningEnd (carries provider metadata, e.g. thinking signatures), ToolInputStart/ToolInputDelta/ToolInputEnd, ToolCall, Finish (usage), Error`.
 - Partial tool-call assembler: normalize names, gate final `ToolCall` on `ToolInputEnd`, dedupe by id, merge `providerExecuted`.
 - SSE parsing in-house over `HttpClient` streaming; mid-stream business-error frames parsed into typed errors with retry-after preservation.
@@ -159,14 +159,14 @@ UI interaction flows through `IPermissionBroker` (default implementation: deny-a
 - AGENTS.md and skills listing are meta-user attachments in an immutable prefix; prefix is rebuilt only on config change (model/style/language), never per step.
 - Runtime metadata stripped in projection; system reminders become user-role `<system-reminder>` wrappers.
 
-**Compaction policy** (`CompactPolicy` constants):
+**Compaction policy** (`CompactPolicy`): the context window is **per-model metadata, not a global constant**. Each model entry in the provider registry declares `ContextWindowTokens` (user-editable per provider × model); the policy reads `model.Properties.ContextWindowTokens ?? DefaultContextWindowTokens` per invocation, and the output reserve is clamped to the window. The active window also rides model-selection state into the projection so UI context-usage indicators use the right denominator.
 
 | Constant | Value |
 | --- | --- |
-| `DefaultContextWindowTokens` | 200,000 |
-| `AutoCompactOutputReserveTokens` | 21,000 (requested reserve 32k, capped) |
+| `DefaultContextWindowTokens` | 200,000 — fallback only, when model metadata omits the window |
+| `AutoCompactOutputReserveTokens` | 21,000 (requested reserve 32k, clamped to the window) |
 | `AutoCompactBufferTokens` | 13,000 |
-| Effective auto-compact threshold | window − reserve − buffer = 166,000 |
+| Effective auto-compact threshold | per-model window − reserve − buffer (166,000 under defaults) |
 | `MaxConsecutiveAutoCompactFailures` | 3 (circuit breaker) |
 | `RapidRefillToolTurnThreshold` / `MaxConsecutiveRapidRefills` | 3 / 3 (anti compaction-loop breaker) |
 | `MicroCompactIdleMinutes` | 60 |
@@ -301,6 +301,7 @@ Replicates the ZCode workspace shell: left workspace sidebar (session/task list,
 | Turn state machine | `core/src/agent/turn-state.ts:25`, `turn-machine.ts:68` |
 | Compaction policy/constants | `core/src/compact/policy.ts`, `compact/prompt.ts`, `runtime/methods/compact.ts:183`, `compact-active.ts:75` |
 | Micro-compact | `core/src/compact/microcompact.ts`, `runtime/methods/microcompact.ts:24` |
+| Per-model context window | `contracts/src/interfaces/model-catalog.port.ts:22`, `core/src/compact/policy.ts:67`, `core/src/runtime/methods/compact.ts:193` |
 | Token estimation | `core/src/context/utils.ts:12`, `compact/manual.ts:102`, `runtime/methods/compact.ts:312` |
 | Context builder / cache breakpoints | `core/src/context/builder.ts:38`, `runtime/helpers/provider-request-messages.ts:48` |
 | Tool contract / scheduler / budgets | `core/src/tool/types.ts:67`, `tool/scheduler.ts:50`, `contracts/src/tools/contract.ts:117` |
