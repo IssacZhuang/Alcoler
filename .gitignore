@@ -5,3 +5,7 @@
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# Web UI smoke-test artifacts (mock server data dir and alternate target dir)
+.alcoler-dev/
+target-smoke/

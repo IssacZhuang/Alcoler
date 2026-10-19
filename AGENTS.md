@@ -9,7 +9,7 @@ The repository is a Cargo workspace with four members:
 - `crates/contracts` — kernel contracts: ports (traits) + domain types + error types. **Zero implementations**; dependencies are serde / serde_json / futures-core only.
 - `crates/kernel` — the agent loop: command queue, turn loop, tool scheduling, context compaction. Depends on contracts only (plus tokio for spawning and serde_json); every timer and clock read goes through the ports so tests stay deterministic.
 - `crates/adapters` — port implementations: runtime (clock/ids/gate/counter), file-backed session and blob storage, Anthropic Messages and OpenAI-compatible Chat Completions providers, a scripted mock provider, and the builtin tools (read_file / write_file / list_dir / run_command).
-- `crates/server` — composition root (bin `alcoler-server`): env config, port assembly, axum HTTP + SSE, and the static web UI under `crates/server/static/` (served via `include_str!`, no build step).
+- `crates/server` — composition root (bin `alcoler-server`): env config, port assembly, axum HTTP + SSE, and the web UI. UI sources live in `crates/server/ui/` (React + TypeScript + Vite + Tailwind); `pnpm build` there inlines all assets into a single generated `crates/server/static/index.html`, served by `GET /` via `include_str!`. The generated file is committed so `cargo run` never needs Node.
 
 Contracts is the innermost layer of the architecture; these rules are the repo's equivalent of a safety boundary:
 
@@ -40,6 +40,7 @@ Before touching `crates/contracts`, confirm the following semantics hold (`tests
 ## Workflow
 
 - Runtime smoke test: `cargo run -p alcoler-server` with `ALCOLER_PROVIDER=mock` starts a network-free agent loop plus web UI. All providers (mock/anthropic/openai) stay registered behind a routing provider; each session picks its model at creation (`POST /api/sessions` with `{provider, model}`). Env vars: `ALCOLER_PROVIDER` (default provider for new sessions: mock|anthropic|openai), `ALCOLER_MODEL`, `ALCOLER_BASE_URL` / `ALCOLER_ANTHROPIC_BASE_URL` / `ALCOLER_OPENAI_BASE_URL`, `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `ALCOLER_API_KEY`, `ALCOLER_DATA_DIR` (default `~/.alcoler`), `ALCOLER_LISTEN` (default `127.0.0.1:8787`).
+- Web UI: sources in `crates/server/ui/`, commands run with pnpm inside that directory. TypeScript runs fully strict (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, …) and ESLint uses `typescript-eslint` type-checked rules with `any` banned; wire payloads cross the boundary as `unknown` and are narrowed by the type guards in `src/types.ts` — keep that pattern. `pnpm dev` starts a Vite dev server proxying `/api` to `127.0.0.1:8787` (SSE works through the proxy); `pnpm lint` and `pnpm build` (`tsc -b && vite build`) must both be clean — the build regenerates `../static/index.html`, which is committed.
 - Build and lint: `cargo clippy --all-targets` (zero warnings is the baseline)
 - Formatting: `cargo fmt` (must be clean before committing)
 - Tests: `cargo test` (currently concentrated in `crates/contracts/tests/ports.rs`; for targeted debugging use `cargo test -p alcoler-contracts <test_name>` instead of repeatedly running the full suite)

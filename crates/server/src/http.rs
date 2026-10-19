@@ -52,8 +52,6 @@ pub struct ModelCatalog {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
-        .route("/app.js", get(app_js))
-        .route("/style.css", get(style_css))
         .route("/api/models", get(list_models))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/{id}/events", get(session_events))
@@ -67,22 +65,6 @@ async fn index() -> Response {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
         include_str!("../static/index.html"),
-    )
-        .into_response()
-}
-
-async fn app_js() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("../static/app.js"),
-    )
-        .into_response()
-}
-
-async fn style_css() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("../static/style.css"),
     )
         .into_response()
 }

@@ -1,0 +1,267 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #161616;
+  --color-panel: #202020;
+  --color-card: #2b2b2b;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-border-hover: rgba(255, 255, 255, 0.18);
+  --color-hover: rgba(255, 255, 255, 0.05);
+  --color-selected: rgba(255, 255, 255, 0.1);
+  --color-surface: rgba(255, 255, 255, 0.05);
+  --color-brand: #ffffff;
+  --color-foreground: #d4d4d4;
+  --color-foreground-subtle: rgba(212, 212, 212, 0.6);
+  --color-foreground-subtlest: rgba(212, 212, 212, 0.35);
+  --color-user: #60a5fa;
+  --color-assistant: #2dd4bf;
+  --color-reasoning: #a78bfa;
+  --color-tool: #f59e0b;
+  --color-tool-result: #38bdf8;
+  --color-success: #46bf72;
+  --color-destructive: #ff5c5c;
+  --color-warning: #ff8a30;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    "Noto Sans CJK SC", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-size: 14px;
+  font-family: system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+  min-height: 32px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-hover);
+  background-clip: padding-box;
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+select option {
+  background: var(--color-card);
+  color: var(--color-foreground);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 0.12s ease, border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+.btn-primary {
+  background: var(--color-brand);
+  color: #161616;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-foreground-subtle);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-foreground);
+}
+
+.btn-outline {
+  background: transparent;
+  border-color: var(--color-border);
+  color: var(--color-foreground-subtle);
+}
+
+.btn-outline:hover:not(:disabled) {
+  border-color: var(--color-border-hover);
+  color: var(--color-foreground);
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: color-mix(in oklab, var(--color-destructive) 40%, transparent);
+  color: var(--color-destructive);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--color-destructive) 12%, transparent);
+}
+
+.btn-icon {
+  padding: 6px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 9999px;
+  border: 1px solid var(--color-border);
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+@keyframes cursor-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.cursor-blink {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--color-assistant);
+  animation: cursor-blink 1s step-end infinite;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p {
+  margin: 0.4em 0;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+}
+
+.md ul,
+.md ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+
+.md li {
+  margin: 0.15em 0;
+}
+
+.md pre {
+  margin: 0.5em 0;
+  padding: 0.75em;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: rgba(0, 0, 0, 0.35);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.md :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.md a {
+  color: var(--color-tool-result);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.md blockquote {
+  margin: 0.5em 0;
+  padding-left: 0.8em;
+  border-left: 2px solid var(--color-border);
+  color: var(--color-foreground-subtle);
+}
+
+.md table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.95em;
+}
+
+.md th,
+.md td {
+  border: 1px solid var(--color-border);
+  padding: 0.3em 0.6em;
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+}
