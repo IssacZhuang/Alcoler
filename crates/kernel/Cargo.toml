@@ -1,0 +1,15 @@
+[package]
+name = "alcoler-kernel"
+version.workspace = true
+edition.workspace = true
+description = "Alcoler kernel core: the agent turn loop over the contracts ports."
+
+[dependencies]
+alcoler-contracts.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

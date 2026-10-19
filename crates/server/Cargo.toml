@@ -1,0 +1,20 @@
+[package]
+name = "alcoler-server"
+version.workspace = true
+edition.workspace = true
+description = "Alcoler composition root: web server, SSE event exit, command entrance, minimal web UI."
+
+[[bin]]
+name = "alcoler-server"
+path = "src/main.rs"
+
+[dependencies]
+alcoler-contracts.workspace = true
+alcoler-kernel.workspace = true
+alcoler-adapters.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true

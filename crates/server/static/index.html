@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alcoler</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <h1>Alcoler</h1>
+    <button id="new-session">New session</button>
+    <div id="model-row">
+      <select id="model-select" title="Model for new sessions"></select>
+      <button type="button" id="manage-models" title="Configure models">Models</button>
+    </div>
+    <div id="models-panel" hidden>
+      <div id="models-list"></div>
+      <form id="model-form">
+        <select id="model-provider"></select>
+        <input id="model-name" type="text" placeholder="Model name" required>
+        <button type="submit">Add</button>
+      </form>
+    </div>
+    <ul id="session-list"></ul>
+  </aside>
+  <main>
+    <header>
+      <span id="session-title">No session selected</span>
+      <span id="header-right">
+        <span id="session-model"></span>
+        <span id="session-status"></span>
+      </span>
+    </header>
+    <div id="transcript"></div>
+    <form id="composer">
+      <textarea id="input" rows="3" placeholder="Send a message" disabled></textarea>
+      <div class="actions">
+        <button type="submit" id="send" disabled>Send</button>
+        <button type="button" id="stop" disabled>Stop</button>
+      </div>
+    </form>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
