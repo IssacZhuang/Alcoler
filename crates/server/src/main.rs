@@ -4,6 +4,7 @@
 
 mod http;
 mod projection;
+mod providers;
 mod wire;
 
 use std::path::PathBuf;
@@ -90,7 +91,8 @@ async fn main() -> ExitCode {
             "openai" => (openai.clone(), vec![mock.clone(), anthropic.clone()]),
             _ => (mock.clone(), vec![anthropic.clone(), openai.clone()]),
         };
-    let provider: Arc<dyn ModelProvider> = Arc::new(RoutingProvider::new(default_provider, extras));
+    let router = Arc::new(RoutingProvider::new(default_provider, extras));
+    let provider: Arc<dyn ModelProvider> = router.clone();
 
     let available =
         |base: &str, key: &str, default_base: &str| !key.is_empty() || base != default_base;
@@ -140,6 +142,16 @@ async fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    let providers =
+        match providers::ProviderRegistry::open(data_dir.join("providers.json"), router.clone())
+            .await
+        {
+            Ok(registry) => Arc::new(registry),
+            Err(e) => {
+                eprintln!("alcoler-server: cannot load providers.json: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     let profile = SessionProfile {
         name: "standard".into(),
@@ -193,6 +205,7 @@ async fn main() -> ExitCode {
         ids,
         profile,
         models,
+        providers,
     };
 
     let listen = env_or("ALCOLER_LISTEN", "127.0.0.1:8787");

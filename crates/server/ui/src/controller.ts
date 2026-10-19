@@ -4,6 +4,7 @@ import {
   pushSendFailure,
   pushUserLive,
   setModels,
+  setProviders,
   store,
 } from "./store";
 
@@ -13,6 +14,7 @@ export function init(): void {
   if (initialized) return;
   initialized = true;
   void loadModels();
+  void refreshProviders();
   void refreshSessions().then(() => {
     const first = store.getSnapshot().sessions[0];
     if (first !== undefined) void selectSession(first.id);
@@ -24,6 +26,14 @@ async function loadModels(): Promise<void> {
     setModels(await api.getModels());
   } catch (e) {
     console.error("model catalog load failed:", e);
+  }
+}
+
+export async function refreshProviders(): Promise<void> {
+  try {
+    setProviders(await api.listProviders());
+  } catch (e) {
+    console.error("provider list load failed:", e);
   }
 }
 

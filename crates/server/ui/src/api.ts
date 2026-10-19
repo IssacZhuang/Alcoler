@@ -1,10 +1,14 @@
 import {
   parseHistoryResponse,
   parseModelCatalog,
+  parseProviderConfig,
+  parseProviderConfigs,
   parseSessionSummaries,
   toJson,
   type HistoryResponse,
   type ModelCatalog,
+  type ProviderConfig,
+  type ProviderInput,
   type SessionSummary,
 } from "./types";
 
@@ -32,6 +36,43 @@ export async function getModels(): Promise<ModelCatalog> {
   const catalog = parseModelCatalog(v);
   if (catalog === null) throw new Error("invalid /api/models payload");
   return catalog;
+}
+
+export async function listProviders(): Promise<ProviderConfig[]> {
+  const v = await request("/api/providers");
+  const configs = parseProviderConfigs(v);
+  if (configs === null) throw new Error("invalid /api/providers payload");
+  return configs;
+}
+
+async function mutateProvider(
+  path: string,
+  method: "POST" | "PUT",
+  input: ProviderInput,
+): Promise<ProviderConfig> {
+  const v = await request(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const config = parseProviderConfig(v);
+  if (config === null) throw new Error("invalid provider payload");
+  return config;
+}
+
+export function createProvider(input: ProviderInput): Promise<ProviderConfig> {
+  return mutateProvider("/api/providers", "POST", input);
+}
+
+export function updateProvider(
+  id: string,
+  input: ProviderInput,
+): Promise<ProviderConfig> {
+  return mutateProvider(`/api/providers/${encodeURIComponent(id)}`, "PUT", input);
+}
+
+export async function deleteProvider(id: string): Promise<void> {
+  await request(`/api/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {

@@ -1,6 +1,9 @@
 //! Provider routing: dispatches each completion request to the concrete
 //! provider named by `ModelRef.provider`, so one composition root can serve
 //! sessions on different providers at the same time.
+//!
+//! Routes are mutable at runtime: custom providers registered after startup
+//! (from persisted config) join the same table without restarting.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,10 +13,11 @@ use alcoler_contracts::model::{
     CompletionRequest, ModelProvider, ModelStreamEvent, ProviderError, ProviderErrorKind,
 };
 use alcoler_contracts::{BoxFuture, BoxStream};
+use tokio::sync::RwLock;
 
 pub struct RoutingProvider {
     default: ProviderId,
-    routes: HashMap<String, Arc<dyn ModelProvider>>,
+    routes: RwLock<HashMap<String, Arc<dyn ModelProvider>>>,
 }
 
 impl RoutingProvider {
@@ -25,12 +29,29 @@ impl RoutingProvider {
         }
         Self {
             default: default.provider_id().clone(),
-            routes,
+            routes: RwLock::new(routes),
         }
     }
 
-    pub fn providers(&self) -> Vec<ProviderId> {
-        self.routes.keys().map(|k| ProviderId(k.clone())).collect()
+    /// Add or replace the route for `provider.provider_id()`.
+    pub async fn register(&self, provider: Arc<dyn ModelProvider>) {
+        self.routes
+            .write()
+            .await
+            .insert(provider.provider_id().0.clone(), provider);
+    }
+
+    pub async fn unregister(&self, id: &ProviderId) {
+        self.routes.write().await.remove(id.0.as_str());
+    }
+
+    pub async fn providers(&self) -> Vec<ProviderId> {
+        self.routes
+            .read()
+            .await
+            .keys()
+            .map(|k| ProviderId(k.clone()))
+            .collect()
     }
 }
 
@@ -46,8 +67,8 @@ impl ModelProvider for RoutingProvider {
         '_,
         Result<BoxStream<'static, Result<ModelStreamEvent, ProviderError>>, ProviderError>,
     > {
-        let route = self.routes.get(&req.model.provider).cloned();
         Box::pin(async move {
+            let route = self.routes.read().await.get(&req.model.provider).cloned();
             match route {
                 Some(provider) => provider.stream(req).await,
                 None => Err(ProviderError {

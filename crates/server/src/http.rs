@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::projection::{Projection, Row};
+use crate::providers::{self, ApiFormat, ProviderRegistry};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -32,6 +33,7 @@ pub struct AppState {
     pub ids: Arc<dyn IdGenerator>,
     pub profile: SessionProfile,
     pub models: ModelCatalog,
+    pub providers: Arc<ProviderRegistry>,
 }
 
 /// Selectable models for new sessions. `available` is a hint: providers need
@@ -53,6 +55,11 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/api/models", get(list_models))
+        .route("/api/providers", get(list_providers).post(create_provider))
+        .route(
+            "/api/providers/{id}",
+            axum::routing::put(update_provider).delete(delete_provider),
+        )
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/{id}/events", get(session_events))
         .route("/api/sessions/{id}/history", get(session_history))
@@ -80,6 +87,69 @@ async fn list_models(State(state): State<AppState>) -> Response {
     Json(state.models).into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct ProviderBody {
+    name: String,
+    api_format: ApiFormat,
+    base_url: String,
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    models: Vec<String>,
+}
+
+async fn list_providers(State(state): State<AppState>) -> Response {
+    Json(state.providers.list().await).into_response()
+}
+
+async fn create_provider(
+    State(state): State<AppState>,
+    Json(body): Json<ProviderBody>,
+) -> Response {
+    let config = providers::ProviderConfig {
+        id: format!("p-{}", state.ids.next_id()),
+        name: body.name,
+        api_format: body.api_format,
+        base_url: body.base_url,
+        api_key: body.api_key,
+        models: body.models,
+    };
+    match state.providers.upsert(config.clone()).await {
+        Ok(()) => (StatusCode::CREATED, Json(config)).into_response(),
+        Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+    }
+}
+
+async fn update_provider(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ProviderBody>,
+) -> Response {
+    if state.providers.get(&id).await.is_none() {
+        return (StatusCode::NOT_FOUND, "unknown provider").into_response();
+    }
+    let config = providers::ProviderConfig {
+        id,
+        name: body.name,
+        api_format: body.api_format,
+        base_url: body.base_url,
+        api_key: body.api_key,
+        models: body.models,
+    };
+    match state.providers.upsert(config.clone()).await {
+        Ok(()) => Json(config).into_response(),
+        Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+    }
+}
+
+async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if state.providers.remove(&id).await {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "unknown provider").into_response()
+    }
+}
+
 #[derive(serde::Deserialize, Default)]
 struct CreateSession {
     provider: Option<String>,
@@ -102,17 +172,26 @@ async fn create_session(
         if model.trim().is_empty() {
             return (StatusCode::BAD_REQUEST, "model must not be empty").into_response();
         }
-        if !state
+        let builtin = state
             .models
             .entries
             .iter()
-            .any(|entry| entry.provider == provider)
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown provider '{provider}'"),
-            )
-                .into_response();
+            .any(|entry| entry.provider == provider);
+        if !builtin {
+            let Some(config) = state.providers.get(&provider).await else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("unknown provider '{provider}'"),
+                )
+                    .into_response();
+            };
+            if !config.models.iter().any(|m| m == &model) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("model '{model}' is not configured for provider '{provider}'"),
+                )
+                    .into_response();
+            }
         }
         profile.model = alcoler_contracts::model::ModelRef { provider, model };
     }
@@ -149,10 +228,7 @@ async fn session_events(
     // previous run takes the recovery path so submissions are accepted.
     let _ = state
         .cmd_tx
-        .send(Command::StartSession {
-            session: session.clone(),
-            profile: state.profile.clone(),
-        })
+        .send(start_session_command(&state, session.clone()).await)
         .await;
     let rx = state.events.subscribe();
     let rows = state.projection.snapshot(&session).await;
@@ -302,10 +378,7 @@ async fn post_message(
     // session (recovery path for pre-restart sessions) before the Submit.
     let _ = state
         .cmd_tx
-        .send(Command::StartSession {
-            session: session.clone(),
-            profile: state.profile.clone(),
-        })
+        .send(start_session_command(&state, session.clone()).await)
         .await;
     let sent = state
         .cmd_tx
@@ -336,4 +409,14 @@ async fn cancel_session(State(state): State<AppState>, Path(id): Path<String>) -
         return (StatusCode::SERVICE_UNAVAILABLE, "kernel is shutting down").into_response();
     }
     StatusCode::ACCEPTED.into_response()
+}
+
+/// The stored profile wins on recovery: a session keeps the provider it was
+/// created with (which may be a custom one), never the process default.
+async fn start_session_command(state: &AppState, session: SessionId) -> Command {
+    let profile = match state.store.load_session(&session).await {
+        Ok(Some(record)) => record.meta.profile,
+        _ => state.profile.clone(),
+    };
+    Command::StartSession { session, profile }
 }

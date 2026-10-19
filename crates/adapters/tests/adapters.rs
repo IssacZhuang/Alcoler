@@ -395,7 +395,7 @@ async fn routing_provider_dispatches_by_model_provider() {
         mock.clone() as Arc<dyn ModelProvider>,
         vec![Arc::new(AnthropicProvider::new("", "")) as Arc<dyn ModelProvider>],
     );
-    let providers: Vec<String> = router.providers().into_iter().map(|p| p.0).collect();
+    let providers: Vec<String> = router.providers().await.into_iter().map(|p| p.0).collect();
     assert!(providers.contains(&"mock".to_owned()));
     assert!(providers.contains(&"anthropic".to_owned()));
 

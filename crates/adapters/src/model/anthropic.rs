@@ -30,8 +30,18 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self::with_id(ProviderId("anthropic".into()), base_url, api_key)
+    }
+
+    /// Custom-provider variant: the id is what `ModelRef.provider` names, so
+    /// two configured endpoints of the same dialect stay distinguishable.
+    pub fn with_id(
+        id: ProviderId,
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
         Self {
-            id: ProviderId("anthropic".into()),
+            id,
             http: reqwest::Client::new(),
             base_url: base_url.into(),
             api_key: api_key.into(),

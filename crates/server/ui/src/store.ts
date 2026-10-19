@@ -5,6 +5,7 @@ import {
   type KeyedRow,
   type ModelCatalog,
   type ModelRef,
+  type ProviderConfig,
   type Row,
   type RowStatus,
   type SessionSummary,
@@ -27,6 +28,7 @@ export interface GlobalError {
 
 export interface AppState {
   readonly models: ModelCatalog;
+  readonly providers: readonly ProviderConfig[];
   readonly sessions: readonly SessionSummary[];
   readonly titles: Readonly<Record<string, string>>;
   readonly currentId: string | null;
@@ -46,6 +48,7 @@ const EVENT_BUFFER = 500;
 
 const initialState: AppState = {
   models: { default: null, entries: [] },
+  providers: [],
   sessions: [],
   titles: {},
   currentId: null,
@@ -123,6 +126,10 @@ function rowStatusToUi(status: RowStatus): ToolUiStatus {
 
 export function setModels(models: ModelCatalog): void {
   store.set({ models });
+}
+
+export function setProviders(providers: readonly ProviderConfig[]): void {
+  store.set({ providers });
 }
 
 export function setSessions(sessions: readonly SessionSummary[]): void {

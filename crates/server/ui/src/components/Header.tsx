@@ -12,6 +12,7 @@ const CONN_META = {
 export function Header() {
   const currentId = useApp((s) => s.currentId);
   const model = useApp((s) => s.model);
+  const providers = useApp((s) => s.providers);
   const running = useApp((s) => s.running);
   const runningTurn = useApp((s) => s.runningTurn);
   const conn = useApp((s) => s.conn);
@@ -29,7 +30,8 @@ export function Header() {
       <span className="min-w-0 truncate text-sm font-medium">{title}</span>
       {model !== null && (
         <span className="pill shrink-0 font-mono text-foreground-subtle">
-          {model.provider} / {model.model}
+          {providers.find((p) => p.id === model.provider)?.name ?? model.provider} /{" "}
+          {model.model}
         </span>
       )}
       <div className="ml-auto flex shrink-0 items-center gap-3">

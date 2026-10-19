@@ -1,6 +1,5 @@
-import { toJson, type ModelEntry } from "./types";
+import { toJson } from "./types";
 
-const CUSTOM_MODELS_KEY = "alcoler.custom-models";
 const SELECTED_MODEL_KEY = "alcoler.selected-model";
 const TITLES_KEY = "alcoler.session-titles";
 const SIDEBAR_WIDTH_KEY = "alcoler.sidebar-width";
@@ -28,27 +27,6 @@ function writeStorage(key: string, value: string): void {
   } catch {
     // storage may be unavailable; preferences are best-effort
   }
-}
-
-export function loadCustomModels(): ModelEntry[] {
-  const v = readStorage(CUSTOM_MODELS_KEY);
-  if (!Array.isArray(v)) return [];
-  const out: ModelEntry[] = [];
-  for (const raw of v) {
-    if (typeof raw !== "object" || raw === null) continue;
-    const rec = raw as Record<string, unknown>;
-    if (typeof rec.provider === "string" && typeof rec.model === "string") {
-      out.push({ provider: rec.provider, model: rec.model, available: true });
-    }
-  }
-  return out;
-}
-
-export function saveCustomModels(models: readonly ModelEntry[]): void {
-  writeStorage(
-    CUSTOM_MODELS_KEY,
-    JSON.stringify(models.map((m) => ({ provider: m.provider, model: m.model }))),
-  );
 }
 
 export function loadSelectedModelKey(): string | null {

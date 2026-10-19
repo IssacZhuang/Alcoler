@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Plus, Settings } from "lucide-react";
 import { useApp, setModalOpen } from "../store";
 import {
@@ -7,7 +7,6 @@ import {
   loadSidebarWidth,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
-  modelKey,
   saveSidebarWidth,
 } from "../prefs";
 import { SessionItem } from "./SessionItem";
@@ -16,20 +15,31 @@ export function Sidebar() {
   const sessions = useApp((s) => s.sessions);
   const currentId = useApp((s) => s.currentId);
   const models = useApp((s) => s.models);
+  const providers = useApp((s) => s.providers);
   const [width, setWidth] = useState<number>(
     () => loadSidebarWidth() ?? DEFAULT_SIDEBAR_WIDTH,
   );
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef<{ x: number; width: number } | null>(null);
 
-  const footerModel = useMemo(() => {
+  // Not memoized: the stored selection changes through localStorage writes,
+  // which would leave a memo keyed only on models/providers stale.
+  const footerModel = (() => {
     const saved = loadSelectedModelKey();
-    const match =
-      models.entries.find((e) => modelKey(e.provider, e.model) === saved) ??
-      models.default ??
-      models.entries[0];
-    return match === undefined ? null : `${match.provider} / ${match.model}`;
-  }, [models]);
+    if (saved !== null) {
+      const sep = saved.indexOf("::");
+      if (sep > 0) {
+        const pid = saved.slice(0, sep);
+        const model = saved.slice(sep + 2);
+        const entry = models.entries.find((e) => e.provider === pid);
+        if (entry !== undefined) return `${entry.provider} / ${model}`;
+        const provider = providers.find((p) => p.id === pid);
+        if (provider !== undefined) return `${provider.name} / ${model}`;
+      }
+    }
+    const def = models.default ?? models.entries[0];
+    return def === undefined ? null : `${def.provider} / ${def.model}`;
+  })();
 
   return (
     <aside

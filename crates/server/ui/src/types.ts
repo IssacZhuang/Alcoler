@@ -22,6 +22,26 @@ export interface SessionSummary {
   readonly updated_at_unix_ms: number;
 }
 
+export type ApiFormat = "anthropic-messages" | "openai-chat-completions";
+
+export interface ProviderConfig {
+  readonly id: string;
+  readonly name: string;
+  readonly api_format: ApiFormat;
+  readonly base_url: string;
+  readonly api_key: string;
+  readonly models: readonly string[];
+}
+
+/** Provider create/update body (everything except the server-owned id). */
+export interface ProviderInput {
+  readonly name: string;
+  readonly api_format: ApiFormat;
+  readonly base_url: string;
+  readonly api_key: string;
+  readonly models: readonly string[];
+}
+
 export type ToolStatusWire =
   | "ok"
   | "timed_out"
@@ -141,6 +161,44 @@ export function parseSessionSummaries(v: unknown): SessionSummary[] | null {
       turns_completed: raw.turns_completed,
       updated_at_unix_ms: raw.updated_at_unix_ms,
     });
+  }
+  return out;
+}
+
+function isApiFormat(v: unknown): v is ApiFormat {
+  return v === "anthropic-messages" || v === "openai-chat-completions";
+}
+
+export function parseProviderConfig(v: unknown): ProviderConfig | null {
+  if (
+    !isRecord(v) ||
+    !isString(v.id) ||
+    !isString(v.name) ||
+    !isApiFormat(v.api_format) ||
+    !isString(v.base_url) ||
+    !isString(v.api_key) ||
+    !Array.isArray(v.models) ||
+    !v.models.every(isString)
+  ) {
+    return null;
+  }
+  return {
+    id: v.id,
+    name: v.name,
+    api_format: v.api_format,
+    base_url: v.base_url,
+    api_key: v.api_key,
+    models: v.models,
+  };
+}
+
+export function parseProviderConfigs(v: unknown): ProviderConfig[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: ProviderConfig[] = [];
+  for (const raw of v) {
+    const config = parseProviderConfig(raw);
+    if (config === null) return null;
+    out.push(config);
   }
   return out;
 }
