@@ -1,0 +1,11 @@
+[package]
+name = "e1kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+opt-level = 2

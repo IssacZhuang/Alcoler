@@ -1,0 +1,10 @@
+node_modules/
+experiments/e1-kernel/bin/
+experiments/e1-kernel/results/
+experiments/e1-kernel/kernels/rust/target/
+experiments/e1-kernel/kernels/go/e1kernel.exe
+experiments/e1-kernel/kernels/dotnet/bin/
+experiments/e1-kernel/kernels/dotnet/obj/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

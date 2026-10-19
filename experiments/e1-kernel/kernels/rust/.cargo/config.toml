@@ -1,0 +1,6 @@
+# Build bundled SQLite's sqlite3.c with the local MinGW gcc: no MSVC cl.exe on
+# this machine. -mno-stack-arg-probe suppresses ___chkstk_ms references that
+# link.exe cannot resolve; -g0 keeps DWARF sections out of the MSVC link.
+[env]
+CC = "gcc"
+CFLAGS = "-mno-stack-arg-probe -g0 -O2"
