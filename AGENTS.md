@@ -1,22 +1,18 @@
 # Alcoler Project Structure
 
-Alcoler is a from-scratch coding agent harness (kernel-first, following ZCode's execution semantics rather than its implementation). This file is the single source of truth for agent instructions and the only document maintained in this repository.
+Alcoler is a from-scratch coding agent harness, built kernel-first. This file is the single source of truth for agent instructions and the only document maintained in this repository.
 
-## Crate Layout and Dependency Rules
+## Repository Layout
 
-Only `crates/contracts` exists today; future crates follow this layout:
+The repository is a Cargo workspace with a single member:
 
-- `crates/contracts` — kernel contracts: ports (traits) + domain types + error types. **Zero implementations**; dependencies are serde / serde_json / futures-core only. No async runtime and no concrete technology types (tokio, reqwest, sqlite) may appear.
-- `crates/core` (planned) — kernel core: turn loop, scheduling, context governance. Depends only on contracts.
-- `crates/adapters/*` (planned) — concrete port implementations (SQLite/JSONL storage, HTTP providers, process execution).
-- `crates/plugins/browser` (planned) — the built-in Browser Use plugin, attached through the tool-call boundary.
-- `crates/app` (planned) — composition root: the only place allowed to see both the kernel and its adapters.
+- `crates/contracts` — kernel contracts: ports (traits) + domain types + error types. **Zero implementations**; dependencies are serde / serde_json / futures-core only.
 
-These dependency rules are compiler-enforced; violating them is an architecture breach (this repo's equivalent of a safety boundary):
+Contracts is the innermost layer of the architecture; these rules are the repo's equivalent of a safety boundary:
 
-- The kernel core depends only on contracts and never imports adapters.
-- Adapters never import the kernel core.
-- Concrete technology types live only in adapters and the composition root — not even a type name may leak into contracts.
+- contracts declares ports and domain types only — implementations live in separate downstream crates, never here;
+- no async runtime and no concrete technology (tokio, reqwest, sqlite, …) may appear in contracts — not even a type name;
+- implementations depend on contracts, never the other way around.
 
 ## Key Invariants of the Contracts Layer
 
@@ -24,7 +20,7 @@ Before touching `crates/contracts`, confirm the following semantics hold (`tests
 
 - Event and command JSON shapes (`type` / `cmd` tag names) are defined by the regression tests in `crates/contracts/tests/ports.rs`.
 - Every tool_use has a paired tool_result — cancellation and timeout must also produce a paired result (`ToolStatus::Cancelled` / `TimedOut`).
-- Dropping the model stream cancels the upstream request (a ModelProvider adapter obligation).
+- Dropping the model stream cancels the upstream request (an obligation on `ModelProvider` implementations).
 - Re-invoking `append_turn` for the same turn returns `StoreErrorKind::Conflict` (idempotent dedup for crash recovery).
 - `ProviderError.emitted_output` decides whether the core may retry transparently (the retry rule beyond the visibility boundary).
 - Port methods use hand-rolled `BoxFuture` / `BoxStream` (object safety), not async-trait; port methods taking multiple references must spell out explicit `<'a>` lifetimes.
@@ -32,9 +28,9 @@ Before touching `crates/contracts`, confirm the following semantics hold (`tests
 
 ## Code Style
 
-- Comments appear only where code cannot be self-explanatory, and state constraints — never what the next line does; no large explanation blocks.
+- Comments appear only where code cannot be self-explanatory, and state constraints — never what the next line does; no large explanation blocks. This applies to every language in the repo.
 - contracts keeps `#![forbid(unsafe_code)]`; unsafe added to any crate must be justified at the code site.
-- All comments, rustdoc, and documentation in English.
+- All comments, API docs, and documentation in English, regardless of language.
 - No emoji.
 
 ## Workflow

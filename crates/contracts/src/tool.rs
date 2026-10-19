@@ -1,7 +1,7 @@
 //! Tool port: the unified interface for built-in tools, external MCP tools,
 //! and browser-plugin capabilities.
 //!
-//! Core mechanism (inherited from the ZCode tool subsystem): scheduling,
+//! Core mechanism: scheduling,
 //! concurrency, approval, timeout, and output budget are all driven by
 //! [`ToolPolicy`] metadata — no special-casing at call sites; external tools
 //! are wrapped as [`Tool`] implementations isomorphic to built-in ones —

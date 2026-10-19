@@ -27,7 +27,7 @@ pub struct PermissionRequest {
     pub input_digest: String,
 }
 
-/// Adjudication outcome (inheriting ZCode's polymorphic verdict semantics:
+/// Adjudication outcome (polymorphic verdict semantics:
 /// allow / deny / modify / escalate).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
