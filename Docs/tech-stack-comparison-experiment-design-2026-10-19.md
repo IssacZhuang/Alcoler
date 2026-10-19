@@ -283,7 +283,18 @@ E0 (2–3d)
 - 实现位置：`experiments/e1-kernel/`（契约、七个被测变体、mock provider、驱动器、采样器、运行器，见其 README）。
 - 七变体：TCP 传输四内核 node/go/rust/dotnet；补充三变体 bun（与 node 同源 JS，bun:sqlite）、rustfeed（stdin 事件喂入传输的 Rust 内核，原生二进制）、wasm（rustfeed 同源编译的 wasm32-wasip1 模块，wasmtime v49 运行）。全部通过黑盒契约一致性测试（`node harness/conform.mjs all`）。
 - 已完成：medium 剖面 1/4/16 会话 × 7 变体正式测量（`results/official-medium-7v/`，21 运行全部干净退出），结论存档于 `Docs/e1-kernel-first-results-2026-10-19.md`。四内核首测要点：稳态内存 Rust 显著领先、Node 驻留最高且 gc 不回落、16 会话峰值四者趋同、Go 峰值跨重复波动大。补充变体要点：**WASM 相对原生 Rust 固定开销约 +3.8MB/×1.6 且随会话数持平**（流式工作负载下 wasm 线性内存不增长），ready +11ms；**Bun 同源对比 Node 稳态高一个量级（idle 252–266MB vs 26–38MB）**，但时延与正确性与 Node 完全同级；WASI p1 无 socket/无进程派生/无线程/无 C 工具链四项约束均被实测证实，意味着 WASM 形态的内核必须依赖宿主扩展补齐网络与 exec。单重复数据不足以触发第九节门禁。
-- 仍未执行：E2–E5；standard 剖面 N≥3 完整统计（`--profile standard --reps 7`）留待安排；.NET Native AOT 为可选加测项。
+
+### E3-UI 前端架构变体（2026-10-19 追加执行，用户授权）
+
+为回答"UI 是否为内存大头、会话切换飙升从何而来"（第六节 E3 外壳对比的前置子问题），实施了 E3 的前端架构子实验（区别于原 E3 的四外壳对比）：
+
+- 实现位置：`experiments/e3-ui/`（场景服务器、三前端变体、Tauri 2 壳、采样/运行/聚合 harness，见其 README）。
+- 被测：同一 Tauri 壳 + WebView2 内三种前端架构——React 全量驻留 / React 窗口化（50 条窗口）/ 无状态 HTML-over-the-wire；场景 = 16 会话 × 400 条 → 50 次切换 → gc → 30s 流式 → 静置；N=3 轮转交错。
+- 另含 Blitz（dioxus 0.7 native = Stylo+Taffy+Vello，无 JS 引擎）能力 spike（N=1）：中英混排渲染、流式追加、textarea、IME 代码级接线、内存轨迹。
+- 结论存档于 `Docs/e3-ui-frontend-arch-results-2026-10-19.md`。要点：**JS 堆大小完全由前端架构决定**（驻留 27.5MB / 窗口化 2.4MB / 无状态 0.7MB）；**切换飙升的第二来源是所有变体共担的渲染器高水位**（+55~102MB 峰值、净残留 ~20MB，与 JS 无关）；无状态前端 final 树 179MB（含壳空载锚点 151MB，其中 gpu 进程 65MB）；Blitz 当前 idle 即爬至 ~427MB 平台且存在混排全角标点豆腐块、无 placeholder，**暂不可用作主路径**。N=3 方向性有效，不触发门禁。
+- 原第六节 E3 四外壳对比（Tauri/Electron/Wails/Avalonia）仍未执行；本子实验的 Tauri+WebView2 数据可作为其一个数据点复用。
+
+- 仍未执行：E2、E4、E5；standard 剖面 N≥3 完整统计（`--profile standard --reps 7`）留待安排；.NET Native AOT 为可选加测项；E3 四外壳对比。
 
 ## 附录 C：E1 标准任务剖面参数
 
