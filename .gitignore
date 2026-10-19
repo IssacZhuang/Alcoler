@@ -1,11 +1,2 @@
-# Rust 构建产物
-/target/
-
-# 本地测试数据库（持久化适配器联调时的临时文件）
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-
-# Web UI smoke-test artifacts (mock server data dir and alternate target dir)
+# Local runtime data dir
 .alcoler-dev/
-target-smoke/
