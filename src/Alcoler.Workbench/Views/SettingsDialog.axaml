@@ -1,0 +1,144 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Alcoler.Workbench.ViewModel"
+        x:Class="Alcoler.Workbench.Views.SettingsDialog"
+        x:DataType="vm:SettingsViewModel"
+        Title="Settings"
+        Width="780" Height="560" MinWidth="680" MinHeight="480"
+        CanResize="True" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource AlcolerBackground}">
+  <Window.Styles>
+    <Style Selector="TextBlock.fieldLabel">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+    </Style>
+  </Window.Styles>
+  <DockPanel Margin="16">
+    <TextBlock DockPanel.Dock="Top" Text="Settings" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"
+               Foreground="{DynamicResource AlcolerTextPrimary}" />
+    <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0" Spacing="{DynamicResource AlcolerSpacingSmall}">
+      <TextBlock Text="{Binding Error}" FontSize="11" TextWrapping="Wrap"
+                 Foreground="{DynamicResource AlcolerError}" IsVisible="{Binding HasError}" />
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                  Spacing="{DynamicResource AlcolerSpacingMedium}">
+        <Button Classes="subtleAction" Content="Cancel" Click="OnCancelClick" IsCancel="True" />
+        <Button Classes="accentAction" Content="Save" Click="OnSaveClick" IsDefault="True" />
+      </StackPanel>
+    </StackPanel>
+    <Grid ColumnDefinitions="170,*">
+      <ListBox x:Name="SectionList" Grid.Column="0" Margin="0,0,12,0"
+               Background="{DynamicResource AlcolerSurface}"
+               BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+               SelectionChanged="OnSectionChanged">
+        <ListBoxItem Content="Providers" />
+        <ListBoxItem Content="MCP servers" />
+        <ListBoxItem Content="Appearance" />
+      </ListBox>
+      <Grid Grid.Column="1">
+        <ScrollViewer x:Name="ProvidersPanel" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="{DynamicResource AlcolerSpacingLarge}">
+            <ItemsControl ItemsSource="{Binding Providers}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:ProviderViewModel">
+                  <Border Background="{DynamicResource AlcolerSurface}"
+                          BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+                          CornerRadius="{DynamicResource AlcolerRadius}" Padding="12">
+                    <StackPanel Spacing="{DynamicResource AlcolerSpacingMedium}">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="Provider" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AlcolerTextPrimary}" />
+                        <Button Grid.Column="1" Classes="subtleAction" Content="Remove"
+                                Command="{Binding RemoveProviderCommand}" />
+                      </Grid>
+                      <Grid ColumnDefinitions="*,*">
+                        <StackPanel Grid.Column="0" Margin="0,0,4,0" Spacing="{DynamicResource AlcolerSpacingSmall}">
+                          <TextBlock Classes="fieldLabel" Text="Kind" />
+                          <TextBox Text="{Binding Kind, Mode=TwoWay}" Watermark="anthropic or openai-compatible" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="4,0,0,0" Spacing="{DynamicResource AlcolerSpacingSmall}">
+                          <TextBlock Classes="fieldLabel" Text="Base URL" />
+                          <TextBox Text="{Binding BaseUrl, Mode=TwoWay}" Watermark="https://api.example.com" />
+                        </StackPanel>
+                      </Grid>
+                      <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
+                        <TextBlock Classes="fieldLabel" Text="API key" />
+                        <TextBox Text="{Binding ApiKey, Mode=TwoWay}" Watermark="sk-..." />
+                      </StackPanel>
+                      <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
+                        <TextBlock Classes="fieldLabel" Text="Models" />
+                        <ItemsControl ItemsSource="{Binding Models}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ModelViewModel">
+                              <Grid ColumnDefinitions="2*,*,Auto" Margin="0,2">
+                                <TextBox Grid.Column="0" Margin="0,0,4,0"
+                                         Text="{Binding ModelId, Mode=TwoWay}" Watermark="model id" />
+                                <TextBox Grid.Column="1" Margin="0,0,4,0"
+                                         Text="{Binding ContextWindowTokens, Mode=TwoWay}" Watermark="Context tokens" />
+                                <Button Grid.Column="2" Classes="subtleAction" Content="Remove"
+                                        Command="{Binding RemoveCommand}" />
+                              </Grid>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Button Classes="subtleAction" Content="Add model" Command="{Binding AddModelCommand}" />
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Button Classes="subtleAction" Content="Add provider" Command="{Binding AddProviderCommand}" />
+          </StackPanel>
+        </ScrollViewer>
+        <ScrollViewer x:Name="McpPanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="{DynamicResource AlcolerSpacingLarge}">
+            <ItemsControl ItemsSource="{Binding McpServers}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:McpServerViewModel">
+                  <Border Background="{DynamicResource AlcolerSurface}"
+                          BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+                          CornerRadius="{DynamicResource AlcolerRadius}" Padding="12">
+                    <StackPanel Spacing="{DynamicResource AlcolerSpacingMedium}">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="MCP server" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AlcolerTextPrimary}" />
+                        <Button Grid.Column="1" Classes="subtleAction" Content="Remove"
+                                Command="{Binding RemoveServerCommand}" />
+                      </Grid>
+                      <Grid ColumnDefinitions="*,*">
+                        <StackPanel Grid.Column="0" Margin="0,0,4,0" Spacing="{DynamicResource AlcolerSpacingSmall}">
+                          <TextBlock Classes="fieldLabel" Text="Name" />
+                          <TextBox Text="{Binding Name, Mode=TwoWay}" Watermark="filesystem" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="4,0,0,0" Spacing="{DynamicResource AlcolerSpacingSmall}">
+                          <TextBlock Classes="fieldLabel" Text="Command" />
+                          <TextBox Text="{Binding Command, Mode=TwoWay}" Watermark="npx" />
+                        </StackPanel>
+                      </Grid>
+                      <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
+                        <TextBlock Classes="fieldLabel" Text="Arguments" />
+                        <TextBox Text="{Binding ArgsLine, Mode=TwoWay}" Watermark="-y @scope/server --flag value" />
+                      </StackPanel>
+                      <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
+                        <TextBlock Classes="fieldLabel" Text="Environment (KEY=VALUE per line)" />
+                        <TextBox Text="{Binding EnvText, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
+                                 MinHeight="56" MaxHeight="120" Watermark="NODE_ENV=production" />
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Button Classes="subtleAction" Content="Add server" Command="{Binding AddServerCommand}" />
+          </StackPanel>
+        </ScrollViewer>
+        <StackPanel x:Name="AppearancePanel" IsVisible="False" Spacing="{DynamicResource AlcolerSpacingSmall}">
+          <TextBlock Classes="fieldLabel" Text="Theme" />
+          <ComboBox ItemsSource="{Binding ThemeChoices}" SelectedItem="{Binding Theme, Mode=TwoWay}"
+                    HorizontalAlignment="Left" MinWidth="160" />
+        </StackPanel>
+      </Grid>
+    </Grid>
+  </DockPanel>
+</Window>

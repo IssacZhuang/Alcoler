@@ -1,0 +1,93 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:conv="using:Alcoler.Workbench.Converters">
+  <ResourceDictionary.ThemeDictionaries>
+    <ResourceDictionary x:Key="Dark">
+      <Color x:Key="AlcolerBackgroundColor">#FF16171A</Color>
+      <Color x:Key="AlcolerSurfaceColor">#FF1E2024</Color>
+      <Color x:Key="AlcolerSurfaceHighColor">#FF2A2D33</Color>
+      <Color x:Key="AlcolerBorderColor">#FF33363D</Color>
+      <Color x:Key="AlcolerTextPrimaryColor">#FFE6E7EA</Color>
+      <Color x:Key="AlcolerTextSecondaryColor">#FF9BA0A8</Color>
+      <Color x:Key="AlcolerAccentColor">#FF4C8DFF</Color>
+      <Color x:Key="AlcolerAccentTextColor">#FF0B1220</Color>
+      <Color x:Key="AlcolerSuccessColor">#FF3FB950</Color>
+      <Color x:Key="AlcolerWarningColor">#FFD29922</Color>
+      <Color x:Key="AlcolerErrorColor">#FFF85149</Color>
+      <Color x:Key="AlcolerInfoColor">#FF58A6FF</Color>
+      <Color x:Key="AlcolerPhaseIdleColor">#FF8B9099</Color>
+      <Color x:Key="AlcolerPhaseBusyColor">#FF4C8DFF</Color>
+      <Color x:Key="AlcolerPhaseToolsColor">#FFD29922</Color>
+      <Color x:Key="AlcolerPhaseAttentionColor">#FFDB6D28</Color>
+      <Color x:Key="AlcolerPhaseErrorColor">#FFF85149</Color>
+      <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
+      <SolidColorBrush x:Key="AlcolerSurface" Color="{DynamicResource AlcolerSurfaceColor}" />
+      <SolidColorBrush x:Key="AlcolerSurfaceHigh" Color="{DynamicResource AlcolerSurfaceHighColor}" />
+      <SolidColorBrush x:Key="AlcolerBorder" Color="{DynamicResource AlcolerBorderColor}" />
+      <SolidColorBrush x:Key="AlcolerTextPrimary" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="AlcolerTextSecondary" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="AlcolerAccent" Color="{DynamicResource AlcolerAccentColor}" />
+      <SolidColorBrush x:Key="AlcolerAccentText" Color="{DynamicResource AlcolerAccentTextColor}" />
+      <SolidColorBrush x:Key="AlcolerSuccess" Color="{DynamicResource AlcolerSuccessColor}" />
+      <SolidColorBrush x:Key="AlcolerWarning" Color="{DynamicResource AlcolerWarningColor}" />
+      <SolidColorBrush x:Key="AlcolerError" Color="{DynamicResource AlcolerErrorColor}" />
+      <SolidColorBrush x:Key="AlcolerInfo" Color="{DynamicResource AlcolerInfoColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseIdle" Color="{DynamicResource AlcolerPhaseIdleColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseBusy" Color="{DynamicResource AlcolerPhaseBusyColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseTools" Color="{DynamicResource AlcolerPhaseToolsColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseAttention" Color="{DynamicResource AlcolerPhaseAttentionColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseError" Color="{DynamicResource AlcolerPhaseErrorColor}" />
+    </ResourceDictionary>
+    <ResourceDictionary x:Key="Light">
+      <Color x:Key="AlcolerBackgroundColor">#FFF6F7F9</Color>
+      <Color x:Key="AlcolerSurfaceColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerSurfaceHighColor">#FFECEEF1</Color>
+      <Color x:Key="AlcolerBorderColor">#FFD5D9E0</Color>
+      <Color x:Key="AlcolerTextPrimaryColor">#FF1A1C20</Color>
+      <Color x:Key="AlcolerTextSecondaryColor">#FF5A6472</Color>
+      <Color x:Key="AlcolerAccentColor">#FF1F6FEB</Color>
+      <Color x:Key="AlcolerAccentTextColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerSuccessColor">#FF1A7F37</Color>
+      <Color x:Key="AlcolerWarningColor">#FF9A6700</Color>
+      <Color x:Key="AlcolerErrorColor">#FFCF222E</Color>
+      <Color x:Key="AlcolerInfoColor">#FF0969DA</Color>
+      <Color x:Key="AlcolerPhaseIdleColor">#FF6E7781</Color>
+      <Color x:Key="AlcolerPhaseBusyColor">#FF1F6FEB</Color>
+      <Color x:Key="AlcolerPhaseToolsColor">#FF9A6700</Color>
+      <Color x:Key="AlcolerPhaseAttentionColor">#FFBC4C00</Color>
+      <Color x:Key="AlcolerPhaseErrorColor">#FFCF222E</Color>
+      <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
+      <SolidColorBrush x:Key="AlcolerSurface" Color="{DynamicResource AlcolerSurfaceColor}" />
+      <SolidColorBrush x:Key="AlcolerSurfaceHigh" Color="{DynamicResource AlcolerSurfaceHighColor}" />
+      <SolidColorBrush x:Key="AlcolerBorder" Color="{DynamicResource AlcolerBorderColor}" />
+      <SolidColorBrush x:Key="AlcolerTextPrimary" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="AlcolerTextSecondary" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="AlcolerAccent" Color="{DynamicResource AlcolerAccentColor}" />
+      <SolidColorBrush x:Key="AlcolerAccentText" Color="{DynamicResource AlcolerAccentTextColor}" />
+      <SolidColorBrush x:Key="AlcolerSuccess" Color="{DynamicResource AlcolerSuccessColor}" />
+      <SolidColorBrush x:Key="AlcolerWarning" Color="{DynamicResource AlcolerWarningColor}" />
+      <SolidColorBrush x:Key="AlcolerError" Color="{DynamicResource AlcolerErrorColor}" />
+      <SolidColorBrush x:Key="AlcolerInfo" Color="{DynamicResource AlcolerInfoColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseIdle" Color="{DynamicResource AlcolerPhaseIdleColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseBusy" Color="{DynamicResource AlcolerPhaseBusyColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseTools" Color="{DynamicResource AlcolerPhaseToolsColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseAttention" Color="{DynamicResource AlcolerPhaseAttentionColor}" />
+      <SolidColorBrush x:Key="AlcolerPhaseError" Color="{DynamicResource AlcolerPhaseErrorColor}" />
+    </ResourceDictionary>
+  </ResourceDictionary.ThemeDictionaries>
+
+  <SolidColorBrush x:Key="AlcolerTransparent" Color="#00FFFFFF" />
+
+  <CornerRadius x:Key="AlcolerRadiusSmall">4</CornerRadius>
+  <CornerRadius x:Key="AlcolerRadius">6</CornerRadius>
+  <CornerRadius x:Key="AlcolerRadiusLarge">10</CornerRadius>
+  <x:Double x:Key="AlcolerSpacingSmall">4</x:Double>
+  <x:Double x:Key="AlcolerSpacingMedium">8</x:Double>
+  <x:Double x:Key="AlcolerSpacingLarge">12</x:Double>
+
+  <conv:PhaseBrushConverter x:Key="AlcolerPhaseBrush" />
+  <conv:ContextUsageBrushConverter x:Key="AlcolerContextUsageBrush" />
+  <conv:PercentToWidthConverter x:Key="AlcolerPercentToWidth" />
+  <conv:BoolBrushConverter x:Key="AlcolerBoolBrush" />
+  <conv:ZeroToVisibleConverter x:Key="AlcolerZeroToVisible" />
+</ResourceDictionary>

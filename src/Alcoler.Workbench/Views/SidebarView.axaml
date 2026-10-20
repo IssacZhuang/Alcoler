@@ -1,0 +1,66 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             x:Class="Alcoler.Workbench.Views.SidebarView"
+             x:DataType="vm:WorkbenchViewModel">
+  <UserControl.Styles>
+    <Style Selector="Button.sessionItem">
+      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="Button.sessionItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+  </UserControl.Styles>
+  <DockPanel Background="{DynamicResource AlcolerSurface}">
+    <Button DockPanel.Dock="Top" Classes="accentAction" Content="New session"
+            Click="OnNewSessionClick" Margin="12,12,12,4" HorizontalAlignment="Stretch"
+            HorizontalContentAlignment="Center" />
+    <TextBlock DockPanel.Dock="Top" Text="Loading sessions..." FontSize="11" Margin="14,4,14,2"
+               Foreground="{DynamicResource AlcolerTextSecondary}"
+               IsVisible="{Binding Sidebar.IsLoading}" />
+    <TextBlock x:Name="PART_SidebarEmpty" DockPanel.Dock="Top" Text="No sessions yet"
+               Margin="14,12,14,4" FontSize="12"
+               Foreground="{DynamicResource AlcolerTextSecondary}"
+               IsVisible="{Binding Sidebar.Groups.Count, Converter={StaticResource AlcolerZeroToVisible}}" />
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+      <ItemsControl ItemsSource="{Binding Sidebar.Groups}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:SessionGroupViewModel">
+            <StackPanel Margin="12,10,8,2" Spacing="{DynamicResource AlcolerSpacingSmall}">
+              <TextBlock Text="{Binding DisplayTitle}" ToolTip.Tip="{Binding WorkspaceRoot}"
+                         FontFamily="Consolas,Courier New" FontSize="11" Margin="2,0,2,2"
+                         TextTrimming="CharacterEllipsis"
+                         Foreground="{DynamicResource AlcolerTextSecondary}" />
+              <ItemsControl ItemsSource="{Binding Sessions}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:SessionSummaryViewModel">
+                    <Button Classes="sessionItem" Click="OnSessionClick"
+                            Background="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerSurfaceHigh|AlcolerTransparent}">
+                      <Grid ColumnDefinitions="3,10,*,Auto" Margin="0,1">
+                        <Border Grid.Column="0" x:Name="PART_ActiveIndicator" Width="3"
+                                CornerRadius="2" Margin="0,2"
+                                Background="{DynamicResource AlcolerAccent}"
+                                IsVisible="{Binding IsActive}" />
+                        <TextBlock Grid.Column="2" Classes="sessionTitle" Text="{Binding DisplayTitle}"
+                                   FontSize="12" TextTrimming="CharacterEllipsis"
+                                   Foreground="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerAccent|AlcolerTextPrimary}" />
+                        <TextBlock Grid.Column="3" Classes="sessionTime" Text="{Binding UpdatedAtText}"
+                                   FontSize="11" Margin="8,0,0,0"
+                                   Foreground="{DynamicResource AlcolerTextSecondary}" />
+                      </Grid>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+  </DockPanel>
+</UserControl>

@@ -1,0 +1,105 @@
+using Alcoler.Workbench.ViewModel;
+using Avalonia.Controls;
+using Avalonia.Interactivity;
+
+namespace Alcoler.Workbench.Views;
+
+public partial class TimelineView : UserControl
+{
+    private const double BottomStickThreshold = 80;
+
+    private ConversationViewModel? _conversation;
+    private bool _pendingScrollToEnd;
+    private bool _awaitingLayout;
+
+    // InitializeComponent is supplied by the Avalonia name generator; a manual
+    // AvaloniaXamlLoader.Load overload here would leave x:Name fields unassigned.
+    public TimelineView()
+    {
+        InitializeComponent();
+        DataContextChanged += OnDataContextChanged;
+        TimelineScroll.ScrollChanged += OnTimelineScrollChanged;
+    }
+
+    /// <summary>Number of append notifications that caused a scroll to the bottom; test hook.</summary>
+    internal int AutoScrollCount { get; private set; }
+
+    internal ScrollViewer Scroller => TimelineScroll;
+
+    private void OnDataContextChanged(object? sender, EventArgs e)
+    {
+        if (_conversation is not null)
+        {
+            _conversation.TimelineAppended -= OnTimelineAppended;
+        }
+        _conversation = DataContext as ConversationViewModel;
+        if (_conversation is null)
+        {
+            return;
+        }
+        _conversation.TimelineAppended += OnTimelineAppended;
+        if (_conversation.Items.Count > 0)
+        {
+            RequestScrollToEndAfterLayout();
+        }
+    }
+
+    private void OnTimelineAppended()
+    {
+        // The near-bottom check runs against the pre-append extent: only users already
+        // reading the tail of the conversation get pinned to it.
+        if (!IsNearBottom())
+        {
+            return;
+        }
+        AutoScrollCount++;
+        RequestScrollToEndAfterLayout();
+    }
+
+    private void OnTimelineScrollChanged(object? sender, ScrollChangedEventArgs e)
+    {
+        // Streaming upserts grow the extent without appending rows; keep pinning while the
+        // user stays near the bottom. Offset-only changes must not re-trigger (feedback loop).
+        if (e.ExtentDelta == default || !IsNearBottom())
+        {
+            return;
+        }
+        TimelineScroll.ScrollToEnd();
+    }
+
+    private bool IsNearBottom() =>
+        TimelineScroll.Extent.Height - TimelineScroll.Viewport.Height - TimelineScroll.Offset.Y
+            <= BottomStickThreshold;
+
+    private void RequestScrollToEndAfterLayout()
+    {
+        _pendingScrollToEnd = true;
+        if (_awaitingLayout)
+        {
+            return;
+        }
+        _awaitingLayout = true;
+        TimelineScroll.LayoutUpdated += OnLayoutUpdatedForScroll;
+    }
+
+    private void OnLayoutUpdatedForScroll(object? sender, EventArgs e)
+    {
+        TimelineScroll.LayoutUpdated -= OnLayoutUpdatedForScroll;
+        _awaitingLayout = false;
+        if (!_pendingScrollToEnd)
+        {
+            return;
+        }
+        _pendingScrollToEnd = false;
+        TimelineScroll.ScrollToEnd();
+    }
+
+    private void OnToolRowClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ToolCallItemViewModel item })
+        {
+            item.IsExpanded = !item.IsExpanded;
+            e.Handled = true;
+        }
+    }
+}

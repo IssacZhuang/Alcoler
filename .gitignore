@@ -1,2 +1,11 @@
 # Local runtime data dir
 .alcoler-dev/
+
+# .NET build output
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+*.binlog
+artifacts/

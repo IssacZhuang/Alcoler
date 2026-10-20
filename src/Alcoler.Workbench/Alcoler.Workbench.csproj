@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.4" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.4" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.4" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="LibGit2Sharp" Version="0.32.0" />
+    <PackageReference Include="Markdown.Avalonia.Tight" Version="11.0.3" />
+    <PackageReference Include="Porta.Pty" Version="2.2.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Alcoler.Workbench.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Alcoler.Contracts\Alcoler.Contracts.csproj" />
+    <ProjectReference Include="..\Alcoler.Kernel\Alcoler.Kernel.csproj" />
+    <ProjectReference Include="..\Alcoler.Adapters\Alcoler.Adapters.csproj" />
+    <ProjectReference Include="..\Alcoler.Browser\Alcoler.Browser.csproj" />
+  </ItemGroup>
+</Project>
