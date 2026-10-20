@@ -183,7 +183,8 @@ public sealed class ProjectionBuilder
                     Append(new SystemNoticeRow(
                         $"subagent:{subagentStarted.State.Id.Value}",
                         "subagent",
-                        $"Subagent started: {subagentStarted.State.Description}"), ops);
+                        $"Subagent started: {subagentStarted.State.Description}",
+                        subagentStarted.State), ops);
                     break;
 
                 case SubagentStatusChangedEvent subagentChanged:
@@ -191,7 +192,8 @@ public sealed class ProjectionBuilder
                         $"subagent:{subagentChanged.State.Id.Value}",
                         "subagent",
                         $"Subagent {subagentChanged.State.Description}: {subagentChanged.State.Status}" +
-                        (subagentChanged.State.ResultSummary is { } summary ? $" - {summary}" : string.Empty)), ops);
+                        (subagentChanged.State.ResultSummary is { } summary ? $" - {summary}" : string.Empty),
+                        subagentChanged.State), ops);
                     break;
 
                 case InputQueuedEvent queued:

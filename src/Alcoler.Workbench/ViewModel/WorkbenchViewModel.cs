@@ -22,6 +22,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private readonly IAgentRuntime _runtime;
     private readonly SessionProjectionHub _hub;
     private readonly WorkbenchConfig _config;
+    private readonly Action<WorkbenchComposerConfig>? _saveComposer;
+    private WorkbenchComposerConfig _composerConfig;
+    private readonly Dictionary<ComposerViewModel, Action<PermissionMode>> _modeObservers = [];
     private readonly IAsyncDisposable? _ownedResource;
     private readonly IUiScheduler _scheduler;
     private readonly IGitService _gitService = new LibGit2GitService();
@@ -39,10 +42,19 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         IUiScheduler scheduler,
         WorkbenchConfig config,
         IAsyncDisposable? ownedResource = null,
-        BrowserPaneViewModel? browserPane = null)
+        BrowserPaneViewModel? browserPane = null,
+        Action<WorkbenchComposerConfig>? saveComposer = null)
     {
         _runtime = runtime;
         _config = config;
+        _saveComposer = saveComposer;
+        var composerConfig = config.Composer ?? new WorkbenchComposerConfig();
+        _composerConfig = composerConfig with
+        {
+            DefaultMode = Enum.IsDefined(composerConfig.DefaultMode) ? composerConfig.DefaultMode : PermissionMode.Build,
+            PendingSessionModes = composerConfig.PendingSessionModes?
+                .Where(pair => Enum.IsDefined(pair.Value)).ToDictionary(),
+        };
         _ownedResource = ownedResource;
         _scheduler = scheduler;
         BrowserPane = browserPane;
@@ -76,6 +88,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     public IComposerHost? ComposerHost => Active ?? (IComposerHost?)Draft;
 
     public bool IsDraft => Active is null;
+
+    partial void OnActiveChanged(ConversationViewModel? value) => value?.Status.BindGit(GitPane);
+
+    partial void OnGitPaneChanged(GitPaneViewModel? value) => Active?.Status.BindGit(value);
 
     [ObservableProperty]
     private string? _banner;
@@ -222,6 +238,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         CloseActive();
+        foreach (var (composer, observer) in _modeObservers)
+            composer.ModeSelected -= observer;
+        _modeObservers.Clear();
         _hub.Dispose();
         Terminal?.Dispose();
         Documents.PropertyChanged -= OnDocumentsPropertyChanged;
@@ -271,6 +290,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 UnsentText = saved.UnsentText;
             }
         }
+        if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
+            conversation.RestorePendingMode(pendingMode);
+        ObserveMode(conversation.Composer, () => sessionId);
+        conversation.ModeSubmitted += mode => ClearSubmittedMode(sessionId, mode);
         Active = conversation;
         Sidebar.SetActive(sessionId);
         BrowserPane?.Bind(sessionId);
@@ -324,12 +347,63 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
         var selection = WorkbenchModelCatalog.DefaultSelection(_config);
         draft = new DraftConversationViewModel(root, FindModel(selection), SendDraftAsync);
+        draft.Composer.RestoreMode(_composerConfig.DefaultMode);
+        var observedDraft = draft;
+        ObserveMode(draft.Composer, () => observedDraft.CreatedSessionId);
         if (selection?.Options?.ReasoningLevel is { } reasoning)
         {
             draft.ThoughtLevel = reasoning;
         }
         _drafts[root] = draft;
         return draft;
+    }
+
+    private void ObserveMode(ComposerViewModel composer, Func<SessionId?> sessionId)
+    {
+        if (_modeObservers.ContainsKey(composer))
+            return;
+        Action<PermissionMode> observer = mode =>
+        {
+            if (!Enum.IsDefined(mode))
+                return;
+            var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes ?? new Dictionary<string, PermissionMode>());
+            if (sessionId() is { } id)
+                pending[id.Value] = mode;
+            SaveComposerConfig(_composerConfig with { DefaultMode = mode, PendingSessionModes = pending });
+        };
+        _modeObservers[composer] = observer;
+        composer.ModeSelected += observer;
+    }
+
+    private void SavePendingMode(SessionId sessionId, PermissionMode mode)
+    {
+        var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes ?? new Dictionary<string, PermissionMode>())
+        {
+            [sessionId.Value] = mode,
+        };
+        SaveComposerConfig(_composerConfig with { PendingSessionModes = pending });
+    }
+
+    private void ClearSubmittedMode(SessionId sessionId, PermissionMode mode)
+    {
+        if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) != true || pendingMode != mode)
+            return;
+        var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes);
+        pending.Remove(sessionId.Value);
+        SaveComposerConfig(_composerConfig with { PendingSessionModes = pending });
+    }
+
+    private void SaveComposerConfig(WorkbenchComposerConfig config)
+    {
+        _composerConfig = config;
+        try
+        {
+            _saveComposer?.Invoke(config);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            Banner = $"Could not save conversation mode. {exception.Message}";
+        }
     }
 
     private ModelChoice? FindModel(ModelSelection? selection) => selection is null ? null : ModelChoices.FirstOrDefault(choice =>
@@ -361,6 +435,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection), CancellationToken.None);
             createdId = handle.Id;
             draft.CreatedSessionId = handle.Id;
+            SavePendingMode(handle.Id, draft.Composer.Mode);
             _sessionRoots[handle.Id] = handle.WorkspaceRoot;
             var draftOwnerId = GetDraftDocumentOwnerId(draft);
             var browserDocuments = Documents.Items.Where(document => document.OwnerId == draftOwnerId
@@ -387,6 +462,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 StrongId.NewCommandId(), handle.Id, revision, text, mode, selection), CancellationToken.None);
             if (ack.Accepted)
             {
+                ClearSubmittedMode(handle.Id, mode);
+                if (Active?.SessionId == handle.Id)
+                    Active.AcknowledgeMode(mode);
                 draft.Composer.ClearIfSendable(text);
             }
             else
@@ -433,7 +511,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             new SessionOptions(
                 workspaceRoot,
                 title,
-                PermissionMode.Build,
+                _composerConfig.DefaultMode,
                 WorkbenchModelCatalog.DefaultSelection(_config)),
             CancellationToken.None);
         _sessionRoots[handle.Id] = workspaceRoot;
@@ -502,6 +580,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 as GitPaneViewModel ?? new GitPaneViewModel(root, _gitService, _scheduler);
         }
         _paneRoot = root;
+        Active?.Status.BindGit(GitPane);
+        if (GitPane is { } git)
+            _ = git.LoadAsync();
     }
 
     private void CloseActive()

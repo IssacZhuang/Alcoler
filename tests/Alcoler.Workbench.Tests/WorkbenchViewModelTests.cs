@@ -6,6 +6,7 @@ using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Kernel.Runtime;
@@ -118,6 +119,50 @@ public sealed class WorkbenchViewModelTests : IDisposable
         Assert.Equal(new[] { firstReply, nextReply },
             conversation.Items.OfType<AssistantMessageItemViewModel>().Select(item => item.MarkdownText));
         await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
+    public async Task UnsentMode_AfterRuntimeRestart_RestoresSelectionWithoutChangingPersistedSessionPolicy()
+    {
+        var configPath = Path.Combine(_root, "config.json");
+        var config = new WorkbenchConfig([]);
+        config.Save(configPath);
+        SessionHandle session;
+        await using (var store = new SqliteSessionStore(DatabasePath))
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            await using var runtime = CreateRuntime(store);
+            session = await runtime.CreateSessionAsync(new SessionOptions(_root), CancellationToken.None);
+            var scheduler = new QueuedUiScheduler();
+            using var workbench = new WorkbenchViewModel(runtime, scheduler, config,
+                saveComposer: composer => (WorkbenchConfig.LoadOrDefault(configPath) with { Composer = composer }).Save(configPath));
+            await workbench.OpenSessionAsync(session.Id);
+            await WaitUntilAsync(() => workbench.Active!.Title.Length > 0, scheduler);
+            workbench.Active!.Composer.Mode = PermissionMode.Plan;
+            Assert.Equal(PermissionMode.Build, Assert.Single(await runtime.ListSessionsAsync(null, 200, CancellationToken.None)).PermissionMode);
+            await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+        }
+        await using var reopenedStore = new SqliteSessionStore(DatabasePath);
+        await reopenedStore.InitializeAsync(CancellationToken.None);
+        await using var reopenedRuntime = CreateRuntime(reopenedStore, Reply("Plan restored."));
+        var reopenedScheduler = new QueuedUiScheduler();
+        using var restarted = new WorkbenchViewModel(reopenedRuntime, reopenedScheduler, WorkbenchConfig.LoadOrDefault(configPath),
+            saveComposer: composer => (WorkbenchConfig.LoadOrDefault(configPath) with { Composer = composer }).Save(configPath));
+
+        await restarted.OpenSessionAsync(session.Id);
+        await WaitUntilAsync(() => restarted.Active!.CurrentSelection is not null, reopenedScheduler);
+
+        var conversation = restarted.Active!;
+        Assert.Equal(PermissionMode.Plan, conversation.Composer.Mode);
+        Assert.Equal(PermissionMode.Build, conversation.Composer.SessionMode);
+        conversation.Composer.Draft = "Continue in plan mode.";
+        await conversation.SendAsync();
+        await WaitUntilAsync(() => conversation.Items.OfType<AssistantMessageItemViewModel>()
+            .Any(item => item.MarkdownText == "Plan restored." && !item.IsStreaming), reopenedScheduler);
+        Assert.Equal(PermissionMode.Plan, Assert.Single(await reopenedRuntime.ListSessionsAsync(null, 200, CancellationToken.None)).PermissionMode);
+        Assert.False(WorkbenchConfig.LoadOrDefault(configPath).Composer!.PendingSessionModes!.ContainsKey(session.Id.Value));
+        Assert.Equal(PermissionMode.Plan, conversation.Composer.Mode);
+        await WaitUntilAsync(() => restarted.GitPane is { IsLoading: false }, reopenedScheduler);
     }
 
     [Fact]

@@ -127,9 +127,9 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     private static (string DisplayName, string IconPath) GetPresentation(string toolName) => toolName.ToLowerInvariant() switch
     {
         "bash" or "shell" or "terminal" or "runcommand" => ("Terminal", ToolIcons.Terminal),
-        "readfile" => ("Read", ToolIcons.Read),
-        "editfile" => ("Edit", ToolIcons.Edit),
-        "writefile" => ("Write", ToolIcons.Write),
+        "read" or "readfile" => ("Read", ToolIcons.Read),
+        "edit" or "editfile" => ("Edit", ToolIcons.Edit),
+        "write" or "writefile" => ("Write", ToolIcons.Write),
         "grep" or "glob" => ("Search", ToolIcons.Search),
         "browser" => ("Browser", ToolIcons.Browser),
         "todoread" or "todowrite" => ("Tasks", ToolIcons.Tasks),

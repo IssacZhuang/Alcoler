@@ -71,7 +71,7 @@ public static class TokenEstimator
 
         var tail = 0;
         for (var i = anchorIndex + 1; i < history.Count; i++)
-            if (ContextBuilder.Project(history[i]) is { } projected)
+            foreach (var projected in ContextBuilder.Project(history[i]))
                 tail += EstimateTokens(SerializeMessage(projected));
         return (anchor.Value + tail, ProviderUsageSource);
     }
@@ -96,6 +96,8 @@ public static class TokenEstimator
         content = message.Content.Select(block => block switch
         {
             InputTextBlock text => (object)new { type = "text", text = text.Text },
+            InputReasoningBlock reasoning => new { type = "reasoning", text = reasoning.Text },
+            InputImageBlock image => new { type = "image", mimeType = image.MimeType, data = image.Base64Data },
             InputToolCallBlock call => new { type = "tool_call", id = call.Id.Value, name = call.Name, input = call.Input },
             InputToolResultBlock result => new { type = "tool_result", id = result.Id.Value, content = result.Content, isError = result.IsError },
             _ => throw new InvalidOperationException($"Unhandled model content block {block.GetType().Name}."),

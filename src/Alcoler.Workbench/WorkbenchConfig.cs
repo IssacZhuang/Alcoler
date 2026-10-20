@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Alcoler.Contracts.Permissions;
 
 namespace Alcoler.Workbench;
 
@@ -40,6 +41,10 @@ public sealed record WorkbenchProviderConfig(
 
 public sealed record WorkbenchDefaultModelConfig(string ProviderId, string ModelId);
 
+public sealed record WorkbenchComposerConfig(
+    PermissionMode DefaultMode = PermissionMode.Build,
+    IReadOnlyDictionary<string, PermissionMode>? PendingSessionModes = null);
+
 public sealed record WorkbenchMcpServerConfig(
     string Name,
     string Command,
@@ -51,7 +56,8 @@ public sealed record WorkbenchConfig(
     WorkbenchDefaultModelConfig? DefaultModel = null,
     IReadOnlyList<WorkbenchMcpServerConfig>? McpServers = null,
     string Theme = "dark",
-    string? BraveApiKey = null)
+    string? BraveApiKey = null,
+    WorkbenchComposerConfig? Composer = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

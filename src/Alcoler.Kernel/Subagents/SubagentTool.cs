@@ -6,58 +6,76 @@ namespace Alcoler.Kernel.Subagents;
 
 public sealed class SubagentTool : ITool
 {
-    private readonly ISubagentPort _port;
-    private readonly Func<SubagentResult, ValueTask> _onBackgroundCompleted;
+    private const string EmptyOutputText = "(Subagent completed but returned no output.)";
 
-    public SubagentTool(ISubagentPort port, Func<SubagentResult, ValueTask>? onBackgroundCompleted = null)
+    private readonly ISubagentPort _port;
+    private readonly Func<SubagentRequest, SubagentResult, ValueTask>? _onBackgroundCompleted;
+
+    public SubagentTool(ISubagentPort port, Func<SubagentRequest, SubagentResult, ValueTask>? onBackgroundCompleted = null)
     {
         _port = port;
-        _onBackgroundCompleted = onBackgroundCompleted ?? NoOpCompleted;
+        _onBackgroundCompleted = onBackgroundCompleted;
     }
 
     public ToolContract Contract { get; } = new(
-        "Task",
-        "Delegates a self-contained task to a subagent with its own session and tool scope; the subagent sees no parent conversation. Foreground subagents block until done and return their final result; background subagents start immediately, let the parent continue, and notify the parent session on completion.",
+        "Agent",
+        SubagentPrompts.BuildToolDescription(),
         ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "prompt": { "type": "string", "description": "Full, self-contained instructions for the subagent." },
-            "description": { "type": "string", "description": "Short task label shown in the UI." },
-            "role": { "type": "string", "description": "Optional role shaping the subagent's behavior." },
-            "background": { "type": "boolean", "description": "Run without blocking the parent session; defaults to false." },
-            "allowedTools": { "type": "array", "items": { "type": "string" }, "description": "Tool names the subagent may use; omit for the default set." }
+            "description": { "type": "string", "description": "A short (3-5 word) description of the task" },
+            "prompt": { "type": "string", "description": "The task for the agent to perform" },
+            "subagent_type": { "type": "string", "enum": ["general-purpose", "Explore"], "description": "The type of specialized agent to use for this task" },
+            "run_in_background": { "type": "boolean", "description": "Set to true to run this agent in the background. You will be notified when it completes." }
           },
-          "required": ["prompt"],
+          "required": ["description", "prompt"],
           "additionalProperties": false
         }
         """));
 
     public ToolMetadata Metadata { get; } = new(
-        ReadOnly: false,
+        ReadOnly: true,
         Destructive: false,
-        ConcurrentSafe: false,
+        ConcurrentSafe: true,
         RequiresUserInteraction: false,
-        SideEffectScope: SideEffectScope.Workspace,
-        RiskLevel: RiskLevel.Medium,
+        SideEffectScope: SideEffectScope.Session,
+        RiskLevel: RiskLevel.Low,
         NeedsApproval: false,
         AllowedInPlanMode: false);
 
     public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken)
     {
-        if (input.ValueKind != JsonValueKind.Object
-            || !input.TryGetProperty("prompt", out var prompt)
-            || prompt.ValueKind != JsonValueKind.String
-            || string.IsNullOrWhiteSpace(prompt.GetString()))
+        if (input.ValueKind != JsonValueKind.Object)
             return ValueTask.FromResult<ToolInputIssue?>(new ToolInputIssue(
                 "missing_prompt",
                 "'prompt' must be a non-empty string"));
 
-        if (input.TryGetProperty("allowedTools", out var allowedTools) && !IsValidToolList(allowedTools))
+        foreach (var (name, code) in new[] { ("prompt", "missing_prompt"), ("description", "missing_description") })
+        {
+            if (!input.TryGetProperty(name, out var value)
+                || value.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(value.GetString()))
+                return ValueTask.FromResult<ToolInputIssue?>(new ToolInputIssue(
+                    code,
+                    $"'{name}' must be a non-empty string"));
+        }
+
+        if (input.TryGetProperty("subagent_type", out var agentType))
+        {
+            if (agentType.ValueKind != JsonValueKind.String
+                || !SubagentPrompts.IsKnownAgentType(agentType.GetString()))
+                return ValueTask.FromResult<ToolInputIssue?>(new ToolInputIssue(
+                    "unknown_subagent_type",
+                    $"'subagent_type' must be one of: {string.Join(", ", SubagentPrompts.AgentTypes)}"));
+        }
+
+        if (input.TryGetProperty("run_in_background", out var background)
+            && background.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             return ValueTask.FromResult<ToolInputIssue?>(new ToolInputIssue(
-                "invalid_allowed_tools",
-                "'allowedTools' must be an array of non-empty strings"));
+                "invalid_run_in_background",
+                "'run_in_background' must be a boolean"));
 
         return ValueTask.FromResult<ToolInputIssue?>(null);
     }
@@ -68,14 +86,13 @@ public sealed class SubagentTool : ITool
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
         var prompt = context.Input.GetProperty("prompt").GetString()!;
-        var description = StringOrNull(context.Input, "description");
-        var background = BoolOrDefault(context.Input, "background");
+        var description = context.Input.GetProperty("description").GetString()!;
+        var background = BoolOrDefault(context.Input, "run_in_background");
         var request = new SubagentRequest(
             context.SessionId,
             prompt,
-            Role: StringOrNull(context.Input, "role"),
+            AgentType: StringOrNull(context.Input, "subagent_type"),
             Description: description,
-            AllowedTools: StringArrayOrNull(context.Input, "allowedTools"),
             ModelSelection: null,
             Background: background);
 
@@ -83,30 +100,52 @@ public sealed class SubagentTool : ITool
         {
             var result = await _port.RunAsync(request, cancellationToken).ConfigureAwait(false);
             return ToolExecutionResult.Text(
-                result.Output,
+                FormatForegroundResult(result),
                 isError: result.State.Status == SubagentStatus.Failed,
                 displaySummary: description);
         }
 
-        var handle = await _port.StartBackgroundAsync(request, _onBackgroundCompleted, cancellationToken).ConfigureAwait(false);
+        var handle = await _port.StartBackgroundAsync(
+            request,
+            result => _onBackgroundCompleted?.Invoke(request, result) ?? ValueTask.CompletedTask,
+            cancellationToken).ConfigureAwait(false);
         return ToolExecutionResult.Text(
-            $"Subagent started: {handle.Description}\nagentId: {handle.Id.Value} (use SendMessage with to: '{handle.Id.Value}' to continue this agent)",
+            string.Join("\n",
+                [
+                    "Async agent launched successfully.",
+                    $"agentId: {handle.Id.Value} (internal ID - do not mention to user. Use SendMessage with to: '{handle.Id.Value}' to continue this agent.)",
+                    "The agent is working in the background. You will be notified automatically when it completes.",
+                    "Do not duplicate this agent's work - avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
+                ]),
             displaySummary: description);
     }
 
-    private static ValueTask NoOpCompleted(SubagentResult result) => ValueTask.CompletedTask;
-
-    private static bool IsValidToolList(JsonElement allowedTools)
+    internal static string FormatForegroundResult(SubagentResult result)
     {
-        if (allowedTools.ValueKind != JsonValueKind.Array)
-            return false;
-        foreach (var item in allowedTools.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()))
-                return false;
-        }
-        return true;
+        var childText = result.Output;
+        var body = childText.Trim().Length > 0 ? childText : EmptyOutputText;
+        var durationMs = Math.Max(
+            0,
+            (int)Math.Round((result.State.EndedAt.GetValueOrDefault() - result.State.StartedAt).TotalMilliseconds));
+        var usageLines = new List<string>();
+        if (result.ToolUseCount is int toolUses)
+            usageLines.Add($"tool_uses: {toolUses}");
+        usageLines.Add($"duration_ms: {durationMs}");
+
+        return string.Join("\n",
+            [
+                body,
+                $"agentId: {result.State.Id.Value} (use SendMessage with to: '{result.State.Id.Value}' to continue this agent)",
+                $"<usage>{string.Join("\n", usageLines)}</usage>",
+            ]);
     }
+
+    internal static string BackgroundStatus(SubagentStatus status) => status switch
+    {
+        SubagentStatus.Completed => "completed",
+        SubagentStatus.Failed => "failed",
+        _ => "stopped",
+    };
 
     private static string? StringOrNull(JsonElement input, string name) =>
         input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
@@ -117,13 +156,6 @@ public sealed class SubagentTool : ITool
         input.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? value.GetBoolean()
             : false;
-
-    private static IReadOnlyList<string>? StringArrayOrNull(JsonElement input, string name)
-    {
-        if (!input.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
-            return null;
-        return value.EnumerateArray().Select(item => item.GetString()!).ToArray();
-    }
 
     private static JsonElement ParseSchema(string rawJson) =>
         JsonDocument.Parse(rawJson).RootElement.Clone();

@@ -68,7 +68,7 @@ public sealed class GrepTool : ITool
           "type": "object",
           "properties": {
             "pattern": { "type": "string", "minLength": 1, "description": "The regular expression pattern to search for in file contents" },
-            "path": { "type": "string", "description": "File or directory to search in (rg PATH). Defaults to the workspace root; relative to the workspace root or absolute inside it." },
+            "path": { "type": "string", "description": "File or directory to search in (rg PATH). Defaults to current working directory." },
             "glob": { "type": "string", "description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\") - maps to rg --glob" },
             "output_mode": { "type": "string", "enum": ["content", "files_with_matches", "count"], "description": "Output mode: \"content\" shows matching lines (supports -A/-B/-C context, -n line numbers, head_limit), \"files_with_matches\" shows file paths (supports head_limit), \"count\" shows match counts (supports head_limit). Defaults to \"files_with_matches\"." },
             "-B": { "type": "integer", "minimum": 0, "description": "Number of lines to show before each match (rg -B). Requires output_mode: \"content\", ignored otherwise." },

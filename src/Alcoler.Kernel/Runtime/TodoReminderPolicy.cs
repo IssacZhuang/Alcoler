@@ -27,7 +27,7 @@ public static class TodoReminderPolicy
         && stepsSinceTodoWrite >= StepsSinceWriteThreshold
         && stepsSinceReminder >= StepsBetweenReminders;
 
-    public static ModelInputMessage BuildReminderMessage(IReadOnlyList<TodoItem>? todos = null)
+    public static string BuildReminderBody(IReadOnlyList<TodoItem>? todos = null)
     {
         var body = new StringBuilder(ReminderBody);
         if (todos is { Count: > 0 })
@@ -37,8 +37,13 @@ public static class TodoReminderPolicy
                 body.Append(i == 0 ? "" : "\n").Append(i + 1).Append(". [").Append(StatusName(todos[i].Status)).Append("] ").Append(todos[i].Content);
             body.Append(']');
         }
-        return new ModelInputMessage(MessageRole.User, [new InputTextBlock($"<system-reminder>\n{body}\n</system-reminder>")]);
+        return body.ToString();
     }
+
+    public static ModelInputMessage BuildReminderMessage(IReadOnlyList<TodoItem>? todos = null) =>
+        new(MessageRole.User, [new InputTextBlock($"<system-reminder>\n{BuildReminderBody(todos)}\n</system-reminder>")]);
+
+    public static bool IsTodoReminder(string text) => text.Contains(ReminderBody, StringComparison.Ordinal);
 
     private static string StatusName(TodoItemStatus status) => status switch
     {

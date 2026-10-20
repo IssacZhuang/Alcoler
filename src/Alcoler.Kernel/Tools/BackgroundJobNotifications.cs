@@ -9,7 +9,7 @@ namespace Alcoler.Kernel.Tools;
 /// </summary>
 public static class BackgroundJobNotifications
 {
-    private const string Prefix =
+    internal const string SystemNotificationPrefix =
         "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
         + "This is an automated background-task event, NOT a message from the user.\n"
         + "Do NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\n"
@@ -29,7 +29,49 @@ public static class BackgroundJobNotifications
         lines.Add($"<status>{NotificationStatus(job)}</status>");
         lines.Add($"<summary>{Escape(Summary(job))}</summary>");
         lines.Add("</task-notification>");
-        return Prefix + string.Join("\n", lines);
+        return SystemNotificationPrefix + string.Join("\n", lines);
+    }
+
+    /// <summary>
+    /// local_agent task notification per ZCode runtime-task/notification.ts (formatLocalAgentTaskNotification):
+    /// no output-file, summary "Agent {type} task \"{desc}\" {status}.", usage carries tool_uses and
+    /// duration_ms when available.
+    /// </summary>
+    public static string FormatLocalAgentCompleted(
+        string taskId,
+        string status,
+        string agentType,
+        string description,
+        string? result,
+        string? error = null,
+        int? toolUses = null,
+        int? durationMs = null)
+    {
+        var summary = $"Agent {agentType} task \"{description}\" {status}.";
+        if (string.Equals(status, "failed", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(error))
+            summary = $"{summary} {error}";
+
+        var lines = new List<string>
+        {
+            "<task-notification>",
+            $"<task-id>{EscapeXml(taskId)}</task-id>",
+            $"<status>{EscapeXml(status)}</status>",
+            $"<summary>{EscapeXml(summary)}</summary>",
+        };
+        if (result is not null)
+            lines.Add($"<result>{EscapeXml(result)}</result>");
+        if (error is not null)
+            lines.Add($"<error>{EscapeXml(error)}</error>");
+
+        var usage = new List<string>();
+        if (toolUses is { } uses)
+            usage.Add($"<tool_uses>{uses}</tool_uses>");
+        if (durationMs is { } duration)
+            usage.Add($"<duration_ms>{duration}</duration_ms>");
+        if (usage.Count > 0)
+            lines.Add($"<usage>{string.Concat(usage)}</usage>");
+        lines.Add("</task-notification>");
+        return SystemNotificationPrefix + string.Join("\n", lines);
     }
 
     private static string NotificationStatus(BackgroundJobInfo job) => job.Status switch
@@ -60,4 +102,12 @@ public static class BackgroundJobNotifications
         value.Replace("&", "&amp;", StringComparison.Ordinal)
             .Replace("<", "&lt;", StringComparison.Ordinal)
             .Replace(">", "&gt;", StringComparison.Ordinal);
+
+    // ZCode escapeXml escapes all five XML specials for local_agent notifications.
+    private static string EscapeXml(string value) =>
+        value.Replace("&", "&amp;", StringComparison.Ordinal)
+            .Replace("<", "&lt;", StringComparison.Ordinal)
+            .Replace(">", "&gt;", StringComparison.Ordinal)
+            .Replace("'", "&apos;", StringComparison.Ordinal)
+            .Replace("\"", "&quot;", StringComparison.Ordinal);
 }

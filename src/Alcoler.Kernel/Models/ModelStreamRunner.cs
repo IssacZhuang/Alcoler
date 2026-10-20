@@ -8,7 +8,9 @@ public sealed record ModelRunnerOptions
     public int MaxAttempts { get; init; } = 11;
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromSeconds(2);
     public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(60);
-    public double JitterFactor { get; init; } = 0.2;
+    // ZCode jitters the capped delay uniformly into [50%, 100%]; the factor is the
+    // shrink span so 0.5 reproduces that distribution exactly and 0 disables it.
+    public double JitterFactor { get; init; } = 0.5;
     // Mirrors ZCode DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS; grows by IdleTimeoutGrowthPerRetry per retry.
     public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromSeconds(600);
     public TimeSpan IdleTimeoutGrowthPerRetry { get; init; } = TimeSpan.FromSeconds(30);
@@ -150,7 +152,6 @@ public static class ModelStreamRunner
     {
         ModelTextDelta text => text.Delta.Length > 0,
         ModelReasoningDelta reasoning => reasoning.Delta.Length > 0,
-        ModelToolInputDelta toolInput => toolInput.DeltaJson.Length > 0,
         ModelToolCallReady => true,
         ModelStreamFinished => true,
         _ => false,
@@ -167,15 +168,21 @@ public static class ModelStreamRunner
         }
     }
 
+    // Mirrors ZCode calculateRetryDelay: a reasonable retry-after replaces the backoff
+    // entirely (reasonableness is judged against the uncapped exponential delay), and
+    // jitter only ever shrinks the capped delay.
+    private static readonly TimeSpan s_maxReasonableRetryAfter = TimeSpan.FromMinutes(5);
+
     private static TimeSpan ComputeDelay(ModelRunnerOptions options, int attempt, ModelFailure failure)
     {
-        var raw = TimeSpan.FromMilliseconds(options.BaseDelay.TotalMilliseconds * Math.Pow(2, attempt - 1));
-        if (raw > options.MaxDelay)
-            raw = options.MaxDelay;
-        var jitter = raw * options.JitterFactor;
-        var delay = raw - jitter + (Random.Shared.NextDouble() * 2 * jitter);
-        if (failure.RetryAfter is { } retryAfter && retryAfter > delay)
-            delay = retryAfter;
-        return delay < TimeSpan.Zero ? TimeSpan.Zero : delay;
+        var uncapped = TimeSpan.FromMilliseconds(options.BaseDelay.TotalMilliseconds * Math.Pow(2, attempt - 1));
+        var capped = uncapped > options.MaxDelay ? options.MaxDelay : uncapped;
+        if (failure.RetryAfter is { } retryAfter &&
+            retryAfter >= TimeSpan.Zero &&
+            (retryAfter <= s_maxReasonableRetryAfter || retryAfter < uncapped))
+            return retryAfter;
+        if (options.JitterFactor <= 0 || capped <= TimeSpan.Zero)
+            return capped;
+        return capped * (1 - options.JitterFactor * Random.Shared.NextDouble());
     }
 }

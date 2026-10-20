@@ -13,7 +13,6 @@ namespace Alcoler.Kernel.Runtime;
 internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelection, Func<ModelSelection, IChatModel> resolveModel) : IAuxModelClient
 {
     private const int MaxOutputTokensCap = 5_000;
-    private const int MaxAttempts = 3;
 
     public async ValueTask<string> CompleteAsync(AuxModelRequest request, CancellationToken cancellationToken)
     {
@@ -44,7 +43,7 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
         await foreach (var streamEvent in ModelStreamRunner.RunAsync(
                            model,
                            modelRequest,
-                           new ModelRunnerOptions { MaxAttempts = MaxAttempts },
+                           new ModelRunnerOptions(),
                            cancellationToken)
                            .WithCancellation(cancellationToken).ConfigureAwait(false))
         {

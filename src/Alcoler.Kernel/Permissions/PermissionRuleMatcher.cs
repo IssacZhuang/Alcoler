@@ -10,7 +10,7 @@ public static class PermissionRuleMatcher
         ["command", "url", "file_path", "path", "pattern", "patch_text"];
 
     private const string WriteTool = "Write";
-    private const string EditFileTool = "EditFile";
+    private const string EditTool = "Edit";
 
     public static bool Matches(PermissionRule rule, string toolName, JsonElement input) =>
         ToolNameMatches(rule.ToolName, toolName) && ContentMatches(rule.Content, ExtractSubject(input));
@@ -35,13 +35,13 @@ public static class PermissionRuleMatcher
         if (string.Equals(ruleToolName, toolName, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        // Write and EditFile are the same tool family; a rule written for either name covers both.
-        return (IsWrite(ruleToolName) && IsEditFile(toolName)) || (IsEditFile(ruleToolName) && IsWrite(toolName));
+        // Write and Edit are the same tool family; a rule written for either name covers both.
+        return (IsWrite(ruleToolName) && IsEdit(toolName)) || (IsEdit(ruleToolName) && IsWrite(toolName));
     }
 
     private static bool IsWrite(string name) => string.Equals(name, WriteTool, StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsEditFile(string name) => string.Equals(name, EditFileTool, StringComparison.OrdinalIgnoreCase);
+    private static bool IsEdit(string name) => string.Equals(name, EditTool, StringComparison.OrdinalIgnoreCase);
 
     private static bool ContentMatches(string? ruleContent, string? subject)
     {

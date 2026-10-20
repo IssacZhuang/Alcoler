@@ -75,7 +75,8 @@ public sealed class SubagentService : ISubagentPort
             await child.SubmitAsync(request.Prompt, cancellationToken).ConfigureAwait(false);
             await child.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
             var output = await child.ReadFinalOutputAsync().ConfigureAwait(false) ?? string.Empty;
-            return Complete(id, SubagentStatus.Completed, output);
+            var toolUseCount = await ReadToolUseCountQuietlyAsync(child).ConfigureAwait(false);
+            return Complete(id, SubagentStatus.Completed, output, toolUseCount);
         }
         catch (OperationCanceledException)
         {
@@ -116,6 +117,19 @@ public sealed class SubagentService : ISubagentPort
         }
     }
 
+    private static async Task<int?> ReadToolUseCountQuietlyAsync(SubagentChildSession child)
+    {
+        try
+        {
+            return await child.ReadToolUseCountAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The count is advisory; the final output is the load-bearing payload.
+            return null;
+        }
+    }
+
     private void TrackStarted(SubagentId id, SessionId childSessionId, string description) =>
         _states[id] = new SubagentState(
             id,
@@ -126,7 +140,7 @@ public sealed class SubagentService : ISubagentPort
             StartedAt: _clock.GetUtcNow(),
             EndedAt: null);
 
-    private SubagentResult Complete(SubagentId id, SubagentStatus status, string output)
+    private SubagentResult Complete(SubagentId id, SubagentStatus status, string output, int? toolUseCount = null)
     {
         var state = _states[id] with
         {
@@ -135,7 +149,7 @@ public sealed class SubagentService : ISubagentPort
             EndedAt = _clock.GetUtcNow(),
         };
         _states[id] = state;
-        return new SubagentResult(state, output);
+        return new SubagentResult(state, output, toolUseCount);
     }
 
     private static string DescriptionOf(SubagentRequest request) =>

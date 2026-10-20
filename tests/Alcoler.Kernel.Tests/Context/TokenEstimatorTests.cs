@@ -47,7 +47,7 @@ public class TokenEstimatorTests
         [
             new TextPart(StrongId.NewPartId(), "abc"),
                 new ReasoningPart(StrongId.NewPartId(), "reasoning text"),
-                new ToolCallPart(StrongId.NewPartId(), callId, "ReadFile", TestJson.Element(new { path = "src/Program.cs" })),
+                new ToolCallPart(StrongId.NewPartId(), callId, "Read", TestJson.Element(new { path = "src/Program.cs" })),
                 new ToolResultPart(StrongId.NewPartId(), callId, [new ToolResultText("0123456789")]),
                 new FilePart(StrongId.NewPartId(), "alcoler-artifact://s/a.png", "image/png", "a.png"),
                 new AttachmentPart(StrongId.NewPartId(), AttachmentKind.SystemReminder, "reminder content"),
@@ -72,7 +72,7 @@ public class TokenEstimatorTests
         var withCall = new ConversationMessage(
             StrongId.NewMessageId(),
             MessageRole.Assistant,
-            [new ToolCallPart(StrongId.NewPartId(), callId, "ReadFile", longInput)],
+            [new ToolCallPart(StrongId.NewPartId(), callId, "Read", longInput)],
             DateTimeOffset.UtcNow);
         var withoutCall = new ConversationMessage(
             StrongId.NewMessageId(),

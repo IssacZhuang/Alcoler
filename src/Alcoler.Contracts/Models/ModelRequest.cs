@@ -15,11 +15,17 @@ public sealed record CacheControl(CacheControlKind Kind = CacheControlKind.Ephem
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
 [JsonDerivedType(typeof(InputTextBlock), "text")]
+[JsonDerivedType(typeof(InputReasoningBlock), "reasoning")]
+[JsonDerivedType(typeof(InputImageBlock), "image")]
 [JsonDerivedType(typeof(InputToolCallBlock), "tool_call")]
 [JsonDerivedType(typeof(InputToolResultBlock), "tool_result")]
 public abstract record ModelContentBlock;
 
 public sealed record InputTextBlock(string Text) : ModelContentBlock;
+
+public sealed record InputReasoningBlock(string Text, string? Signature = null) : ModelContentBlock;
+
+public sealed record InputImageBlock(string MimeType, string Base64Data) : ModelContentBlock;
 
 public sealed record InputToolCallBlock(ToolCallId Id, string Name, JsonElement Input) : ModelContentBlock;
 

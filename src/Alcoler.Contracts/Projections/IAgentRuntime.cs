@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Sessions;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Contracts.Projections;
 
@@ -14,6 +15,15 @@ public interface IConversationProjection : IDisposable
     ConversationSnapshot Snapshot();
 
     IAsyncEnumerable<ConversationDelta> Deltas(CancellationToken cancellationToken);
+}
+
+public interface ISessionActivityRuntime
+{
+    IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId);
+
+    bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId);
+
+    IConversationProjection? TryObserveSubagent(SessionId parentSessionId, SessionId childSessionId) => null;
 }
 
 public interface IAgentRuntime : IAsyncDisposable

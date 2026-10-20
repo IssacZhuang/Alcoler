@@ -156,6 +156,59 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
         Assert.Same(invalid, workbench.Documents.ActiveDocument);
     }
 
+    [Fact]
+    public async Task StatusDocuments_OpenWithinParentWithoutSubmittingCommands()
+    {
+        var runtime = new FakeAgentRuntime();
+        var parentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        runtime.RegisterSession(childId, new ConversationSnapshot(0, 1,
+        [
+            new UserMessageRow("user", "Review this change", DateTimeOffset.UtcNow),
+            new AssistantMessageRow("assistant", StrongId.NewMessageId(),
+                [new Alcoler.Contracts.Conversation.TextPart(StrongId.NewPartId(), "The change is safe.")], false, DateTimeOffset.UtcNow),
+        ], TestSnapshots.State()));
+        using var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+
+        var plan = new StatusPlan { RowId = "plan", Title = "Implementation", Markdown = "# Implementation\n\nUse the existing API." };
+        workbench.OpenStatusPlan(plan);
+        var document = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        Assert.Equal(plan.Markdown, Assert.IsType<TextDocumentViewModel>(document.Content).Text);
+        Assert.Equal(parentId.Value, document.OwnerId);
+        workbench.OpenStatusPlan(plan);
+        Assert.Same(document, workbench.Documents.ActiveDocument);
+
+        await workbench.OpenStatusActivityAsync(new StatusActivity { Id = "agent", Title = "Review", ChildSessionId = childId });
+        var transcript = Assert.IsType<TextDocumentViewModel>(workbench.Documents.ActiveDocument!.Content).Text;
+        Assert.Contains("## User\n\nReview this change", transcript.Replace("\r\n", "\n"));
+        Assert.Contains("The change is safe.", transcript);
+        Assert.Equal(parentId, workbench.Active!.SessionId);
+        Assert.Equal(parentId.Value, workbench.Documents.ActiveDocument.OwnerId);
+
+        var outputPath = Path.Combine(_root, "job-output.txt");
+        await File.WriteAllTextAsync(outputPath, "actual detached output");
+        await workbench.OpenStatusActivityAsync(new StatusActivity { Id = "job", Title = "Build", OutputPath = outputPath });
+        Assert.Equal("actual detached output", Assert.IsType<TextDocumentViewModel>(workbench.Documents.ActiveDocument!.Content).Text);
+        Assert.Empty(runtime.Submitted);
+    }
+
+    [Fact]
+    public async Task StatusActivity_UnavailableAgentUsesSummaryAndForegroundUsesOutput()
+    {
+        using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenStatusActivityAsync(new StatusActivity
+        {
+            Id = "ended", Title = "Ended agent", ChildSessionId = StrongId.NewSessionId(), OutputText = "Review complete",
+        });
+        Assert.Equal("Review complete", Assert.IsType<TextDocumentViewModel>(workbench.Documents.ActiveDocument!.Content).Text);
+        await workbench.OpenStatusActivityAsync(new StatusActivity { Id = "shell", Title = "Build", OutputText = "partial output" });
+        Assert.Equal("partial output", Assert.IsType<TextDocumentViewModel>(workbench.Documents.ActiveDocument!.Content).Text);
+    }
+
     public void Dispose() => Directory.Delete(_root, recursive: true);
 
     private sealed class QueuedScheduler : IUiScheduler

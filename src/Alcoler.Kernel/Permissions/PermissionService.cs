@@ -7,7 +7,7 @@ namespace Alcoler.Kernel.Permissions;
 
 public sealed class PermissionService : IPermissionGate
 {
-    public const string PlanModeDenyReason = "plan mode disallows this tool";
+    public const string PlanModeDenyReason = "Plan mode only allows read-only, non-destructive tools";
     public const string BrokerTimeoutReason = "permission request timed out";
     public static readonly TimeSpan DefaultBrokerTimeout = TimeSpan.FromMinutes(10);
 

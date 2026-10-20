@@ -8,7 +8,7 @@ namespace Alcoler.Kernel.Subagents;
 /// <summary>
 /// Delivers a follow-up message to a background subagent of this session: a busy child is
 /// steered (its queue drains into its running turn), an idle child is resumed in the
-/// background. Scoped to the parent side of Alcoler's subagent model, where the Task
+/// background. Scoped to the parent side of Alcoler's subagent model, where the Agent
 /// tool already returns the child's final output directly.
 /// </summary>
 public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
@@ -19,20 +19,20 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
     public ToolContract Contract { get; } = new(
         "SendMessage",
         """
-        Send a message to a background subagent started via Task in this session.
+        Send a message to a background subagent started via the Agent tool in this session.
 
         ```json
         {"to": "sub_<id>", "summary": "narrow the search", "message": "focus only on the Kernel project"}
         ```
 
-        Your plain text output is NOT visible to subagents — to communicate with one, you MUST call this tool. A running subagent is steered with your message inside its current turn; a completed subagent resumes in the background and you'll be notified when it finishes. Refer to subagents by the agentId returned when Task started them.
+        Your plain text output is NOT visible to subagents — to communicate with one, you MUST call this tool. A running subagent is steered with your message inside its current turn; a completed subagent resumes in the background and you'll be notified when it finishes. Refer to subagents by the agentId returned when the Agent tool started them.
         """,
         ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "to": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Recipient: the agentId (sub_...) or child session id (sess_...) returned by Task." },
+            "to": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Recipient: the agentId (sub_...) or child session id (sess_...) returned when the agent was launched." },
             "summary": { "type": "string", "minLength": 1, "maxLength": 200, "description": "A 5-10 word summary shown as a preview in the UI." },
             "message": { "type": "string", "minLength": 1, "maxLength": 20000, "description": "Plain text message content." }
           },

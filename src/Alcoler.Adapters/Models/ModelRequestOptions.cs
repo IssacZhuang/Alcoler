@@ -43,7 +43,7 @@ internal static class ModelRequestOptions
 
     private static void CapOutputLimits(JsonObject body, int max)
     {
-        foreach (var key in new[] { "max_tokens", "max_completion_tokens", "max_output_tokens" })
+        foreach (var key in new[] { "max_tokens", "max_completion_tokens", "max_output_tokens", "budget_tokens" })
         {
             if (body[key] is null) continue;
             var value = body[key];
@@ -60,7 +60,7 @@ internal static class ModelRequestOptions
             throw new ArgumentException("This model does not support tool calls. Choose a tool-capable model or remove tools from the request.");
         foreach (var message in request.Messages)
             foreach (var block in message.Content)
-                if (block is not (InputTextBlock or InputToolCallBlock or InputToolResultBlock))
+                if (block is not (InputTextBlock or InputReasoningBlock or InputImageBlock or InputToolCallBlock or InputToolResultBlock))
                     throw new ArgumentException($"Unsupported model input block '{block.GetType().Name}'.");
     }
 

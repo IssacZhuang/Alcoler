@@ -22,6 +22,8 @@ public sealed class GitPaneViewModelTests
 
         public GitRepositoryStatus Status { get; set; } = new([], [], []);
 
+        public GitChangeSummary ChangeSummary { get; set; } = new(0, 0);
+
         public IReadOnlyList<GitCommit> Log { get; set; } = [];
 
         public Exception? CheckoutError { get; set; }
@@ -46,6 +48,8 @@ public sealed class GitPaneViewModelTests
             }
             return Status;
         }
+
+        public GitChangeSummary GetChangeSummary(string repositoryRoot) => ChangeSummary;
 
         public IReadOnlyList<GitBranch> GetBranches(string repositoryRoot) => Branches;
 
@@ -87,6 +91,10 @@ public sealed class GitPaneViewModelTests
 
         Assert.False(viewModel.IsRepo);
         Assert.Equal(string.Empty, viewModel.CurrentBranch);
+        Assert.Equal(0, viewModel.AddedLines);
+        Assert.Equal(0, viewModel.RemovedLines);
+        Assert.Equal(0, viewModel.ChangedFileCount);
+        Assert.False(viewModel.HasChanges);
         Assert.Empty(viewModel.Branches);
         Assert.Empty(viewModel.Staged);
         Assert.Empty(viewModel.Unstaged);
@@ -112,6 +120,7 @@ public sealed class GitPaneViewModelTests
                 [new GitFileChange("staged.txt", ChangeState.Added)],
                 [new GitFileChange("modified.txt", ChangeState.Modified)],
                 [new GitFileChange("new.txt", ChangeState.Added)]),
+            ChangeSummary = new GitChangeSummary(7, 3),
             Log = ManyCommits(30),
         };
         var viewModel = Create(git);
@@ -130,10 +139,116 @@ public sealed class GitPaneViewModelTests
         Assert.Single(viewModel.Staged, f => f.Path == "staged.txt" && f.StateText == "added");
         Assert.Single(viewModel.Unstaged, f => f.Path == "modified.txt" && f.StateText == "modified");
         Assert.Single(viewModel.Untracked, f => f.Path == "new.txt" && f.StateText == "added");
+        Assert.Equal(7, viewModel.AddedLines);
+        Assert.Equal(3, viewModel.RemovedLines);
+        Assert.Equal(3, viewModel.ChangedFileCount);
+        Assert.True(viewModel.HasChanges);
 
         Assert.Equal(GitPaneViewModel.RecentCommitLimit, git.LastLogLimit);
         Assert.Equal(GitPaneViewModel.RecentCommitLimit, viewModel.RecentCommits.Count);
         Assert.Equal("commit 0", viewModel.RecentCommits[0].Message);
+    }
+
+    [Fact]
+    public async Task LoadAsync_RealRepository_CountsDistinctPathsAcrossAllBuckets()
+    {
+        using var workspace = new TempDirectory();
+        var repositoryRoot = System.IO.Path.Combine(workspace.Path, "repo");
+        Repository.Init(repositoryRoot);
+        string branch;
+        using (var repository = new Repository(repositoryRoot))
+        {
+            File.WriteAllText(System.IO.Path.Combine(repositoryRoot, "shared.txt"), "original\n");
+            File.WriteAllBytes(System.IO.Path.Combine(repositoryRoot, "tracked.bin"), [0, 1, 2]);
+            Commands.Stage(repository, "*");
+            var author = new Signature("Alcoler Tests", "tests@alcoler.local", DateTimeOffset.Now);
+            repository.Commit("initial", author, author);
+            branch = repository.Head.FriendlyName;
+            File.WriteAllText(System.IO.Path.Combine(repositoryRoot, "shared.txt"), "staged\n");
+            Commands.Stage(repository, "shared.txt");
+            File.WriteAllText(System.IO.Path.Combine(repositoryRoot, "shared.txt"), "original\n");
+            File.WriteAllBytes(System.IO.Path.Combine(repositoryRoot, "tracked.bin"), [0, 3, 4]);
+            File.WriteAllText(System.IO.Path.Combine(repositoryRoot, "new.txt"), "untracked\ntext\n");
+        }
+        using var git = new LibGit2GitService();
+        var viewModel = new GitPaneViewModel(repositoryRoot, git, InlineUiScheduler.Instance);
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(branch, viewModel.CurrentBranch);
+        Assert.Equal(2, viewModel.AddedLines);
+        Assert.Equal(2, viewModel.RemovedLines);
+        Assert.Equal(3, viewModel.ChangedFileCount);
+        Assert.True(viewModel.HasChanges);
+        Assert.Contains(viewModel.Staged, f => f.Path == "shared.txt");
+        Assert.Contains(viewModel.Unstaged, f => f.Path == "shared.txt");
+        Assert.Single(viewModel.Untracked);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LoadAsync_ZeroLineChanges_KeepFileCountFallback(bool untracked)
+    {
+        var change = new GitFileChange(
+            untracked ? "new.txt" : "tracked.bin", untracked ? ChangeState.Added : ChangeState.Modified);
+        var git = new FakeGitService
+        {
+            Root = @"C:\ws\demo",
+            Status = untracked ? new([], [], [change]) : new([], [change], []),
+        };
+        var viewModel = Create(git);
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(0, viewModel.AddedLines);
+        Assert.Equal(0, viewModel.RemovedLines);
+        Assert.Equal(1, viewModel.ChangedFileCount);
+        Assert.True(viewModel.HasChanges);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LoadAsync_RefreshesAndClearsSummary_WithNotifications(bool remainsRepository)
+    {
+        var git = new FakeGitService
+        {
+            Root = @"C:\ws\demo",
+            Status = new([new GitFileChange("a.txt", ChangeState.Modified)], [], []),
+            ChangeSummary = new(5, 2),
+        };
+        var viewModel = Create(git);
+        var notifications = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
+
+        await viewModel.LoadAsync();
+
+        Assert.Contains(nameof(GitPaneViewModel.AddedLines), notifications);
+        Assert.Contains(nameof(GitPaneViewModel.RemovedLines), notifications);
+        Assert.Contains(nameof(GitPaneViewModel.ChangedFileCount), notifications);
+        Assert.Contains(nameof(GitPaneViewModel.HasChanges), notifications);
+
+        git.ChangeSummary = new(8, 4);
+        await viewModel.LoadAsync();
+        Assert.Equal(8, viewModel.AddedLines);
+        Assert.Equal(4, viewModel.RemovedLines);
+
+        notifications.Clear();
+        git.Root = remainsRepository ? git.Root : null;
+        git.Status = new([], [], []);
+        git.ChangeSummary = new(0, 0);
+        await viewModel.LoadAsync();
+
+        Assert.Equal(remainsRepository, viewModel.IsRepo);
+        Assert.Equal(0, viewModel.AddedLines);
+        Assert.Equal(0, viewModel.RemovedLines);
+        Assert.Equal(0, viewModel.ChangedFileCount);
+        Assert.False(viewModel.HasChanges);
+        Assert.Contains(nameof(GitPaneViewModel.AddedLines), notifications);
+        Assert.Contains(nameof(GitPaneViewModel.RemovedLines), notifications);
+        Assert.Contains(nameof(GitPaneViewModel.ChangedFileCount), notifications);
+        Assert.Contains(nameof(GitPaneViewModel.HasChanges), notifications);
     }
 
     [Theory]

@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Workbench.ViewModel;
 using Avalonia.Controls;
@@ -55,8 +54,11 @@ public partial class InteractionAreaView : UserControl
     private void OnDenyClick(object? sender, RoutedEventArgs e) =>
         _ = ViewModel?.ResolvePermissionAsync(PermissionDecision.Deny);
 
-    private void OnSubmitAnswersClick(object? sender, RoutedEventArgs e) =>
+    private void OnSubmitAnswersClick(object? sender, EventArgs e) =>
         _ = ViewModel?.SubmitInteractionAnswersAsync();
+
+    private void OnDismissQuestion(object? sender, EventArgs e) =>
+        _ = ViewModel?.DismissInteractionAsync();
 
     private void OnPermissionCardKeyDown(object? sender, KeyEventArgs e)
     {
@@ -74,17 +76,6 @@ public partial class InteractionAreaView : UserControl
         {
             e.Handled = true;
             _ = viewModel.ResolvePermissionAsync(resolved);
-        }
-    }
-
-    private void OnOptionClick(object? sender, RoutedEventArgs e)
-    {
-        if (sender is Control { Tag: InteractionOption option } control
-            && control.GetVisualAncestors().Select(a => a.DataContext).OfType<InteractionQuestion>().FirstOrDefault() is { } question
-            && ViewModel is { } viewModel)
-        {
-            viewModel.PendingInteraction?.SetOptionSelected(question, option.Label,
-                sender is not CheckBox checkBox || checkBox.IsChecked == true);
         }
     }
 }

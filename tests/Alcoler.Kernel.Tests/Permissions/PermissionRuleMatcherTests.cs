@@ -47,7 +47,7 @@ public class PermissionRuleMatcherTests
     [Fact]
     public void Content_MatchesSubjectFromPatchText()
     {
-        Assert.True(Matches("EditFile", "@@ -1 +1 @@", "EditFile", new { patch_text = "@@ -1 +1 @@" }));
+        Assert.True(Matches("Edit", "@@ -1 +1 @@", "Edit", new { patch_text = "@@ -1 +1 @@" }));
     }
 
     [Fact]
@@ -95,21 +95,21 @@ public class PermissionRuleMatcherTests
     }
 
     [Fact]
-    public void WriteRule_MatchesEditFileTool()
+    public void WriteRule_MatchesEditTool()
     {
-        Assert.True(Matches("Write", "src/a.cs", "EditFile", new { file_path = "src/a.cs" }));
+        Assert.True(Matches("Write", "src/a.cs", "Edit", new { file_path = "src/a.cs" }));
     }
 
     [Fact]
-    public void EditFileRule_MatchesWriteTool()
+    public void EditRule_MatchesWriteTool()
     {
-        Assert.True(Matches("EditFile", "src/a.cs", "Write", new { file_path = "src/a.cs" }));
+        Assert.True(Matches("Edit", "src/a.cs", "Write", new { file_path = "src/a.cs" }));
     }
 
     [Fact]
     public void AliasedToolNames_StillRequireContentMatch()
     {
-        Assert.False(Matches("Write", "src/a.cs", "EditFile", new { file_path = "other" }));
+        Assert.False(Matches("Write", "src/a.cs", "Edit", new { file_path = "other" }));
     }
 
     [Fact]

@@ -93,7 +93,7 @@ public static class CompactionPlanner
                 : new AttachmentPart(
                     StrongId.NewPartId(),
                     AttachmentKind.ResumeReferencedContext,
-                    $"File {file.Path} was read before compaction; use the ReadFile tool if you need it again",
+                    $"File {file.Path} was read before compaction; use the Read tool if you need it again",
                     ProviderVisible: true))
             .ToList();
         return

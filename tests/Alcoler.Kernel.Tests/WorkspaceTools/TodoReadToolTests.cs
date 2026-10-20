@@ -14,25 +14,21 @@ public class TodoReadToolTests
         WorkspaceToolTestContext.ForSession(Session, "{}");
 
     [Fact]
-    public async Task Read_ReturnsCurrentListWithoutModifyingIt()
+    public async Task Read_ReturnsCurrentListAsReferenceJson()
     {
         var store = new InMemoryTodoStore();
         var write = new TodoWriteTool(store);
         await write.ExecuteAsync(
             WorkspaceToolTestContext.ForSession(
                 Session,
-                """{"todos": [{"content": "alpha", "status": "completed"}, {"content": "beta"}]}"""),
+                """{"todos": [{"content": "alpha", "status": "completed", "priority": "high"}, {"content": "beta", "status": "pending", "priority": "low"}]}"""),
             CancellationToken.None);
 
         var result = await new TodoReadTool(store).ExecuteAsync(Context(), CancellationToken.None);
 
         Assert.False(result.IsError);
         Assert.Equal(
-            """
-            Current todo list: 1 done, 0 in progress, 1 pending
-            - [x] alpha
-            - [ ] beta
-            """,
+            """{"todos":[{"content":"alpha","status":"completed","priority":"high"},{"content":"beta","status":"pending","priority":"low"}]}""",
             result.SingleText());
     }
 
@@ -44,25 +40,39 @@ public class TodoReadToolTests
         var read = new TodoReadTool(store);
 
         await write.ExecuteAsync(
-            WorkspaceToolTestContext.ForSession(Session, """{"todos": [{"content": "stale"}]}"""),
+            WorkspaceToolTestContext.ForSession(
+                Session,
+                """{"todos": [{"content": "stale", "status": "pending", "priority": "low"}]}"""),
             CancellationToken.None);
         await write.ExecuteAsync(
-            WorkspaceToolTestContext.ForSession(Session, """{"todos": [{"content": "fresh", "status": "in_progress"}]}"""),
+            WorkspaceToolTestContext.ForSession(
+                Session,
+                """{"todos": [{"content": "fresh", "status": "in_progress", "priority": "medium"}]}"""),
             CancellationToken.None);
         var result = await read.ExecuteAsync(Context(), CancellationToken.None);
 
         var text = result.SingleText();
         Assert.DoesNotContain("stale", text);
-        Assert.Contains("- [~] fresh", text);
+        Assert.Contains("\"in_progress\"", text);
+        Assert.Contains("fresh", text);
     }
 
     [Fact]
-    public async Task Read_EmptyStore_RendersZeroCounts()
+    public async Task Read_EmptyStore_ReturnsEmptyTodosArray()
     {
         var result = await new TodoReadTool(new InMemoryTodoStore()).ExecuteAsync(Context(), CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Equal("Current todo list: 0 done, 0 in progress, 0 pending", result.SingleText());
+        Assert.Equal("""{"todos":[]}""", result.SingleText());
+    }
+
+    [Fact]
+    public void Contract_DescriptionMatchesReference()
+    {
+        var contract = new TodoReadTool(new InMemoryTodoStore()).Contract;
+
+        Assert.Equal("TodoRead", contract.Name);
+        Assert.Equal("Read the current session todo list", contract.Description);
     }
 
     [Fact]

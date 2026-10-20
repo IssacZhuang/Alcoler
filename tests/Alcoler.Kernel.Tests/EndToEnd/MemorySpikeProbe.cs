@@ -53,7 +53,7 @@ public class MemorySpikeProbe
             var todoStore = new InMemoryTodoStore();
             var tools = new List<ITool>
             {
-                new ReadFileTool(), new WriteFileTool(), new EditFileTool(), new GlobTool(), new GrepTool(), new BashTool(),
+                new ReadTool(), new WriteTool(), new EditTool(), new GlobTool(), new GrepTool(), new BashTool(),
                 new TodoWriteTool(todoStore), new TodoReadTool(todoStore), new ExitPlanModeTool(),
                 SubagentWiring.CreateTool(() => runtime!),
             };

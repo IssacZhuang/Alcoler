@@ -51,9 +51,12 @@ internal sealed class ScriptedCallHarness(IReadOnlyList<IReadOnlyList<ModelStrea
 
     public ScriptedCallModel Model { get; } = new(calls);
 
+    /// <summary>Replaces the scripted per-call model (custom descriptors, hanging streams).</summary>
+    public IChatModel? OverrideModel { get; set; }
+
     public static ScriptedCallHarness Create(params IReadOnlyList<ModelStreamEvent>[] calls) => new(calls);
 
-    public AgentRuntime BuildRuntime()
+    public AgentRuntime BuildRuntime(params ITool[] extraTools)
     {
         Directory.CreateDirectory(Root);
         var store = new SqliteSessionStore(Path.Combine(Root, "db.sqlite"));
@@ -67,12 +70,14 @@ internal sealed class ScriptedCallHarness(IReadOnlyList<IReadOnlyList<ModelStrea
         {
             new TodoWriteTool(todoStore),
             new TodoReadTool(todoStore),
+            new ExitPlanModeTool(),
         };
+        tools.AddRange(extraTools);
         runtime = new AgentRuntime(new AgentRuntimeOptions
         {
             Store = store,
             Artifacts = artifacts,
-            Providers = [new ScriptedModelProvider(Model)],
+            Providers = [new ScriptedModelProvider(OverrideModel ?? Model)],
             Tools = tools,
             WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
             DefaultModel = new ModelSelection("scripted", "test-model"),

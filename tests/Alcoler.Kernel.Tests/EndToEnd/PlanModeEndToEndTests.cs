@@ -60,7 +60,7 @@ public class PlanModeEndToEndTests
         Assert.Contains(snapshot.Rows, r => r is ToolCallRow t
             && t.ToolName == "ExitPlanMode"
             && t.Status == ToolCallStatus.Succeeded
-            && t.Output!.OfType<Contracts.Conversation.ToolResultText>().Any(b => b.Text.Contains("Plan approved")));
+            && t.Output!.OfType<Contracts.Conversation.ToolResultText>().Any(b => b.Text.Contains("User has approved your plan")));
         Assert.Contains(snapshot.Rows, r => r is AssistantMessageRow a
             && a.Parts.OfType<Contracts.Conversation.TextPart>().Any(p => p.Text.Contains("Implementing now.")));
     }

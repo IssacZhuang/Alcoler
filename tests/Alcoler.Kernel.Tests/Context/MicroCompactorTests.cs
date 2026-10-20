@@ -12,7 +12,7 @@ public class MicroCompactorTests
     [Fact]
     public void NotIdleAndBelowPressure_IsNoOp()
     {
-        var history = TestMessages.Rounds(count: 8, "ReadFile", resultChars: 600);
+        var history = TestMessages.Rounds(count: 8, "Read", resultChars: 600);
 
         var result = MicroCompactor.Apply(history, Now.AddMinutes(-5), Now, autoCompactThresholdTokens: 166_000);
 
@@ -24,7 +24,7 @@ public class MicroCompactorTests
     [Fact]
     public void IdleTrigger_ClearsResultsBeyondFiveMostRecentGroups()
     {
-        var history = TestMessages.Rounds(count: 8, "ReadFile", resultChars: 600);
+        var history = TestMessages.Rounds(count: 8, "Read", resultChars: 600);
 
         var result = MicroCompactor.Apply(history, Now.AddMinutes(-61), Now, autoCompactThresholdTokens: 166_000);
 
@@ -50,7 +50,7 @@ public class MicroCompactorTests
     [Fact]
     public void PressureTrigger_ClearsEvenWhenRecentlyActive()
     {
-        var history = TestMessages.Rounds(count: 7, "ReadFile", resultChars: 5_000);
+        var history = TestMessages.Rounds(count: 7, "Read", resultChars: 5_000);
         var threshold = 10_000; // trigger = min(9_000, 8_000) = 8_000 tokens
 
         var result = MicroCompactor.Apply(history, Now, Now, autoCompactThresholdTokens: threshold);
@@ -63,12 +63,12 @@ public class MicroCompactorTests
     public void MediaAndErrorResults_AreNeverCleared()
     {
         var history = new List<ConversationMessage>();
-        var (normalRound, normalCall) = TestMessages.Round("ReadFile", new string('x', 1_000));
+        var (normalRound, normalCall) = TestMessages.Round("Read", new string('x', 1_000));
 
         var mediaCall = StrongId.NewToolCallId();
         var mediaRound = new List<ConversationMessage>
         {
-            TestMessages.AssistantToolCall(mediaCall, "ReadFile", new { path = "img.png" }),
+            TestMessages.AssistantToolCall(mediaCall, "Read", new { path = "img.png" }),
             TestMessages.ToolResult(mediaCall,
             [
                 new ToolResultText(new string('x', 1_000)),
@@ -101,7 +101,7 @@ public class MicroCompactorTests
         var history = new List<ConversationMessage>();
         history.AddRange(TestMessages.Round("TodoWrite", new string('x', 600)).Messages);
         history.AddRange(TestMessages.Round("ApplyPatch", new string('x', 600)).Messages);
-        history.AddRange(TestMessages.Rounds(count: 1, "ReadFile", 1_000));
+        history.AddRange(TestMessages.Rounds(count: 1, "Read", 1_000));
         history.AddRange(TestMessages.Rounds(count: 5, "Grep", 600));
 
         var result = MicroCompactor.Apply(history, Now.AddMinutes(-90), Now, autoCompactThresholdTokens: 166_000);
@@ -139,8 +139,8 @@ public class MicroCompactorTests
         {
             TestMessages.UserText("hi"),
         };
-        history.AddRange(TestMessages.Round("ReadFile", "tiny").Messages);
-        history.AddRange(TestMessages.Rounds(count: 5, "ReadFile", 600));
+        history.AddRange(TestMessages.Round("Read", "tiny").Messages);
+        history.AddRange(TestMessages.Rounds(count: 5, "Read", 600));
 
         var result = MicroCompactor.Apply(history, Now.AddMinutes(-90), Now, autoCompactThresholdTokens: 166_000);
 
@@ -156,7 +156,7 @@ public class MicroCompactorTests
         var filePart = new FilePart(StrongId.NewPartId(), "alcoler-artifact://s/a.png", "image/png", "a.png");
         var round = new List<ConversationMessage>
         {
-            TestMessages.AssistantToolCall(callId, "ReadFile", new { path = "a.cs" }),
+            TestMessages.AssistantToolCall(callId, "Read", new { path = "a.cs" }),
                 new ConversationMessage(
                 StrongId.NewMessageId(),
                 MessageRole.User,
@@ -165,7 +165,7 @@ public class MicroCompactorTests
         };
 
         var history = new List<ConversationMessage>(round);
-        history.AddRange(TestMessages.Rounds(count: 5, "ReadFile", 600));
+        history.AddRange(TestMessages.Rounds(count: 5, "Read", 600));
 
         var result = MicroCompactor.Apply(history, Now.AddMinutes(-90), Now, autoCompactThresholdTokens: 166_000);
 

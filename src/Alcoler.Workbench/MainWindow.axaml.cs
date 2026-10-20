@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Alcoler.Workbench.Ui;
+using Alcoler.Workbench.Controls;
 using Alcoler.Workbench.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
@@ -17,6 +18,7 @@ public partial class MainWindow : Window
     private double _sidePaneWidth;
     private double _terminalHeight;
     private WorkbenchViewModel? _viewModel;
+    private ConversationViewModel? _conversation;
 
     private ColumnDefinition SidePaneColumn => ShellGrid.ColumnDefinitions[^1];
     private RowDefinition TerminalSplitterRow => MainCard.RowDefinitions[^2];
@@ -27,7 +29,22 @@ public partial class MainWindow : Window
         InitializeComponent(true);
         WindowChrome.Attach(this);
         AddHandler(KeyDownEvent, OnShellKeyDown, RoutingStrategies.Tunnel);
-        SizeChanged += (_, _) => ApplyPaneVisibility();
+        SizeChanged += (_, _) =>
+        {
+            ApplyPaneVisibility();
+            ApplyConversationOverlays();
+        };
+        ConversationArea.SizeChanged += (_, _) => ApplyConversationOverlays();
+        SessionStatus.DisplayModeChanged += (_, _) => ApplyConversationOverlays();
+        SessionStatus.ReviewRequested += () => _viewModel?.ShowGitPaneCommand.Execute(null);
+        SessionStatus.PlanRequested += plan => _viewModel?.OpenStatusPlan(plan);
+        SessionStatus.ActivityRequested += async activity =>
+        {
+            if (_viewModel is { } viewModel)
+            {
+                await viewModel.OpenStatusActivityAsync(activity);
+            }
+        };
     }
 
     public MainWindow(WorkbenchViewModel viewModel) : this() => DataContext = viewModel;
@@ -44,8 +61,60 @@ public partial class MainWindow : Window
         {
             _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         }
+        ObserveConversation();
         ApplyPaneVisibility();
         ApplyConversationLayout();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        if (_viewModel is not null)
+        {
+            _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        }
+        if (_conversation is not null)
+        {
+            _conversation.PropertyChanged -= OnConversationPropertyChanged;
+            _conversation.Status.PropertyChanged -= OnStatusPropertyChanged;
+        }
+        base.OnClosed(e);
+    }
+
+    private void ObserveConversation()
+    {
+        if (_conversation is not null)
+        {
+            _conversation.PropertyChanged -= OnConversationPropertyChanged;
+            _conversation.Status.PropertyChanged -= OnStatusPropertyChanged;
+        }
+        _conversation = _viewModel?.Active;
+        if (_conversation is not null)
+        {
+            _conversation.PropertyChanged += OnConversationPropertyChanged;
+            _conversation.Status.PropertyChanged += OnStatusPropertyChanged;
+        }
+    }
+
+    private void OnConversationPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(ConversationViewModel.HasPendingQuestion)
+            or nameof(ConversationViewModel.HasPendingInteraction) or nameof(ConversationViewModel.Banner))
+        {
+            var restoreFocus = !MainComposer.IsVisible && _conversation?.HasPendingQuestion != true;
+            ApplyConversationOverlays();
+            if (restoreFocus)
+            {
+                Dispatcher.UIThread.Post(() => MainComposer.FocusInput(), DispatcherPriority.Input);
+            }
+        }
+    }
+
+    private void OnStatusPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ConversationStatusViewModel.HasContent))
+        {
+            ApplyConversationOverlays();
+        }
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -55,7 +124,12 @@ public partial class MainWindow : Window
         {
             ApplyPaneVisibility();
         }
-        if (e.PropertyName is nameof(WorkbenchViewModel.IsDraft) or nameof(WorkbenchViewModel.Draft))
+        if (e.PropertyName == nameof(WorkbenchViewModel.Active))
+        {
+            ObserveConversation();
+        }
+        if (e.PropertyName is nameof(WorkbenchViewModel.IsDraft) or nameof(WorkbenchViewModel.Draft)
+            or nameof(WorkbenchViewModel.Active))
         {
             ApplyConversationLayout();
         }
@@ -65,10 +139,25 @@ public partial class MainWindow : Window
     {
         var isDraft = _viewModel?.IsDraft != false;
         ConversationArea.RowDefinitions[2].Height = isDraft ? GridLength.Star : new GridLength(0);
+        ApplyConversationOverlays();
         if (isDraft)
         {
             Dispatcher.UIThread.Post(() => MainComposer.FocusInput(), DispatcherPriority.Input);
         }
+    }
+
+    private void ApplyConversationOverlays()
+    {
+        MainComposer.IsVisible = _conversation?.HasPendingQuestion != true;
+        InteractionArea.IsVisible = _conversation is { } conversation
+            && (conversation.HasPendingInteraction || !string.IsNullOrEmpty(conversation.Banner));
+        InteractionArea.MaxHeight = _conversation?.HasPendingQuestion == true
+            ? Math.Max(120, Math.Min(672, Math.Min(Bounds.Height * .72, ConversationArea.Bounds.Height - 48)))
+            : double.PositiveInfinity;
+        SessionStatus.MaxHeight = Math.Max(80, Math.Min(512, Math.Min(Bounds.Height * .64, ConversationArea.Bounds.Height - 32)));
+        SessionStatus.SetConversationWidth(ConversationArea.Bounds.Width);
+        ConversationLayout.SetReserveStatusPanelSpace(ConversationArea,
+            _conversation?.Status.HasContent == true && SessionStatus.IsExpanded && ConversationArea.Bounds.Width >= 1280);
     }
 
     internal void FocusComposer() => MainComposer.FocusInput();

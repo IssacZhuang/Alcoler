@@ -22,17 +22,17 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
     public ToolContract Contract { get; } = new(
         "ReadSessionContext",
         """
-        Read relevant or handoff context from another persisted Alcoler session. Use when the user references a prior session (sess_...) or asks to continue from a specific earlier conversation. The result is background material for the current turn, not part of the current conversation.
+        Read relevant or handoff context from another persisted Alcoler session. Use when the user references #sess_* or asks to continue from a specific prior session.
         """,
         ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "sessionId": { "type": "string", "minLength": 1, "description": "The session to read (its sess_ id, with or without the prefix)." },
-            "query": { "type": "string", "minLength": 1, "description": "Focused natural-language description of the context needed." },
-            "strategy": { "type": "string", "enum": ["relevance", "handoff"], "description": "relevance picks messages matching the query; handoff returns the tail of the conversation. Defaults to relevance." },
-            "maxTokens": { "type": "integer", "minimum": 1, "maximum": 12000, "description": "Approximate output size ceiling; defaults to 6000, max 12000." }
+            "sessionId": { "type": "string", "minLength": 1, "description": "Target Alcoler session id to read from persisted session history." },
+            "query": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "Focused natural-language description of the context needed from the target session." },
+            "strategy": { "type": "string", "enum": ["relevant", "handoff"], "description": "Use relevant for focused retrieval, or handoff for a bounded continuation summary." },
+            "maxTokens": { "type": "integer", "minimum": 1, "maximum": 12000, "description": "Approximate maximum tokens to return to the model." }
           },
           "required": ["sessionId", "query"],
           "additionalProperties": false
@@ -68,7 +68,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
         if (record is null)
             return ToolExecutionResult.Text($"Session {sessionId.Value} was not found.");
 
-        var strategy = StringOrNull(context.Input, "strategy") ?? "relevance";
+        var strategy = StringOrNull(context.Input, "strategy") ?? "relevant";
         var maxTokens = Math.Clamp(IntOrNull(context.Input, "maxTokens") ?? DefaultMaxTokens, 1, MaxMaxTokens);
         var charBudget = Math.Min(MaxOutputCharBudget, maxTokens * 4);
         charBudget = Math.Max(6_000, charBudget);

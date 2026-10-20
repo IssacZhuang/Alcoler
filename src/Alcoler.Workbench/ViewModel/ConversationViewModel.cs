@@ -33,16 +33,23 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         _store = store;
         Composer = composer ?? new ComposerViewModel();
         SessionId = store.SessionId;
+        Status = new ConversationStatusViewModel(SessionId, runtime);
         _store.Updated += ApplyUpdate;
         ApplyUpdate(new ProjectionUpdate(0, store.State, [], Reset: true, ResetRows: store.Rows));
+        Composer.ModeSelected += OnModeSelected;
     }
 
     public SessionId SessionId { get; }
 
     public ComposerViewModel Composer { get; }
 
+    public ConversationStatusViewModel Status { get; }
+
     public ModelSelection? CurrentSelection => _currentSelection;
 
+    public event Action<PermissionMode>? ModeSubmitted;
+
+    private bool _restoredMode;
     private bool _restoredComposer;
     private long _restoredRevision;
     private ModelChoice? _configuredModel;
@@ -94,11 +101,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     public bool HasPendingInteraction => PendingInteraction is not null;
 
+    public bool HasPendingQuestion => PendingInteraction is { IsPermission: false };
+
+    [ObservableProperty]
+    private bool _isInteractionSubmitting;
+
     [ObservableProperty]
     private string? _banner;
 
     internal void ApplyUpdate(ProjectionUpdate update)
     {
+        Status.ApplyUpdate(update);
         if (update.Reset)
         {
             ReconcileRows(update.ResetRows ?? []);
@@ -242,9 +255,9 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             _applyingState = false;
         }
         Title = state.Title;
-        if (!_restoredComposer && Composer.Mode == Mode)
+        if (!_restoredMode && !_restoredComposer && Composer.Mode == Mode)
         {
-            Composer.Mode = state.Mode;
+            Composer.RestoreMode(state.Mode);
         }
         Mode = state.Mode;
         Composer.SessionMode = state.Mode;
@@ -261,15 +274,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         if (ContextUsage?.Usage != context)
             ContextUsage = context is { UsedTokens: > 0, MaxTokens: > 0 } ? new ContextUsageViewModel(context) : null;
 
-        var pending = state.PendingPermission is { } permission
-            ? PendingInteractionViewModel.FromPermission(permission)
-            : state.PendingInteraction is { } interaction
-                ? PendingInteractionViewModel.FromInteraction(interaction)
-                : null;
-        if (PendingInteraction?.InteractionId != pending?.InteractionId)
+        var interactionId = state.PendingPermission?.InteractionId ?? state.PendingInteraction?.InteractionId;
+        if (PendingInteraction?.InteractionId != interactionId)
         {
-            PendingInteraction = pending;
+            PendingInteraction = state.PendingPermission is { } permission
+                ? PendingInteractionViewModel.FromPermission(permission)
+                : state.PendingInteraction is { } interaction
+                    ? PendingInteractionViewModel.FromInteraction(interaction)
+                    : null;
+            IsInteractionSubmitting = false;
             OnPropertyChanged(nameof(HasPendingInteraction));
+            OnPropertyChanged(nameof(HasPendingQuestion));
         }
     }
 
@@ -291,6 +306,11 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: restoredSelection, Mode: mode));
             if (ack.Accepted)
             {
+                if (mode is { } submittedMode)
+                {
+                    AcknowledgeMode(submittedMode);
+                    ModeSubmitted?.Invoke(submittedMode);
+                }
                 Composer.ClearIfSendable(text);
             }
             else
@@ -310,12 +330,26 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     public async Task CompactAsync() =>
         await SubmitAsync(new CompactCommand(StrongId.NewCommandId(), SessionId, _store.Revision));
 
+    internal void AcknowledgeMode(PermissionMode mode)
+    {
+        if (Composer.Mode == mode)
+            _restoredMode = false;
+    }
+
+    private void OnModeSelected(PermissionMode mode) => _restoredMode = true;
+
+    internal void RestorePendingMode(PermissionMode mode)
+    {
+        _restoredMode = true;
+        Composer.RestoreMode(mode);
+    }
+
     public void RestoreComposerState(string draft, PermissionMode mode, ModelSelection? selection)
     {
         _restoredComposer = true;
         _restoredRevision = _store.Revision;
         Composer.Draft = draft;
-        Composer.Mode = mode;
+        RestorePendingMode(mode);
         _applyingState = true;
         try
         {
@@ -388,15 +422,38 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             StrongId.NewCommandId(), SessionId, _store.Revision, pending.InteractionId, PermissionDecision: decision));
     }
 
-    public async Task SubmitInteractionAnswersAsync()
+    public Task SubmitInteractionAnswersAsync() => ResolveQuestionAsync(dismiss: false);
+
+    public Task DismissInteractionAsync() => ResolveQuestionAsync(dismiss: true);
+
+    private async Task ResolveQuestionAsync(bool dismiss)
     {
-        if (PendingInteraction is not { IsPermission: false, CanSubmit: true } pending)
+        if (IsInteractionSubmitting || PendingInteraction is not { IsPermission: false } pending)
         {
             return;
         }
-        await SubmitAsync(new ResolveInteractionCommand(
-            StrongId.NewCommandId(), SessionId, _store.Revision, pending.InteractionId,
-            InteractionAnswer: new InteractionAnswer(pending.SelectedAnswers)));
+        IsInteractionSubmitting = true;
+        var awaitingProjection = false;
+        try
+        {
+            var answers = dismiss ? new Dictionary<string, string>() : pending.SelectedAnswers;
+            var ack = await SubmitAsync(new ResolveInteractionCommand(
+                StrongId.NewCommandId(), SessionId, _store.Revision, pending.InteractionId,
+                InteractionAnswer: new InteractionAnswer(answers)));
+            if (!ack.Accepted)
+                Banner = ack.RejectionReason ?? "Answers were not accepted";
+            else
+                awaitingProjection = ReferenceEquals(PendingInteraction, pending);
+        }
+        catch (Exception exception)
+        {
+            Banner = $"Could not submit answers. {exception.Message}";
+        }
+        finally
+        {
+            if (ReferenceEquals(PendingInteraction, pending))
+                IsInteractionSubmitting = awaitingProjection;
+        }
     }
 
     public void SelectInteractionAnswer(string header, string value) =>
@@ -414,5 +471,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     public void Dispose()
     {
         _store.Updated -= ApplyUpdate;
+        Composer.ModeSelected -= OnModeSelected;
+        Status.Dispose();
     }
 }

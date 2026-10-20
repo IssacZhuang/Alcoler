@@ -20,12 +20,18 @@ public sealed class TaskOutputTool : ITool
     public ToolContract Contract { get; } = new(
         "TaskOutput",
         """
-        - Retrieves output from a running or completed background task (background shell)
+        DEPRECATED: Background tasks return their output file path in the tool result, and you receive a <task-notification> with the same path when the task completes.
+        - For bash tasks: prefer using the Read tool on that output file path — it contains stdout/stderr.
+        - For local_agent tasks: use the Agent tool result directly. Do NOT Read the .output file — it is a symlink to the full subagent conversation transcript (JSONL) and will overflow your context window.
+        - For remote_agent tasks: prefer using the Read tool on the output file path — it contains the streamed remote session output (same as bash).
+
+        - Retrieves output from a running or completed task (background shell, agent, or remote session)
         - Takes a task_id parameter identifying the task
         - Returns the task output along with status information
         - Use block=true (default) to wait for task completion
         - Use block=false for non-blocking check of current status
-        - The task output file path is returned when the task starts; read it with ReadFile for interim output
+        - Task IDs can be found using the /tasks command
+        - Works with all task types: background shells, async agents, and remote sessions
         """,
         ParseSchema("""
         {
@@ -34,9 +40,9 @@ public sealed class TaskOutputTool : ITool
           "properties": {
             "task_id": { "type": "string", "description": "The task ID to get output from" },
             "block": { "type": "boolean", "default": true, "description": "Whether to wait for completion" },
-            "timeout": { "type": "integer", "minimum": 0, "maximum": 600000, "default": 30000, "description": "Max wait time in ms" }
+            "timeout": { "type": "number", "minimum": 0, "maximum": 600000, "default": 30000, "description": "Max wait time in ms" }
           },
-          "required": ["task_id"],
+          "required": ["task_id", "block", "timeout"],
           "additionalProperties": false
         }
         """));

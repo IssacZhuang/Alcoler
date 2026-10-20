@@ -127,6 +127,58 @@ public class ModelFailureClassifierTests
     }
 
     [Fact]
+    public void Overloaded_529_MapsToRateLimitedAndIsRetryable()
+    {
+        var failure = ModelFailureClassifier.FromHttpResponse(
+            529, "12", """{"error":{"type":"overloaded_error","message":"overloaded"}}""");
+
+        Assert.Equal(ModelFailureKind.RateLimited, failure.Kind);
+        Assert.Equal(TimeSpan.FromSeconds(12), failure.RetryAfter);
+        Assert.True(failure.IsRetryable);
+    }
+
+    [Fact]
+    public void UnknownClientError_MapsToInvalidRequestAndIsNotRetryable()
+    {
+        var failure = ModelFailureClassifier.FromHttpResponse(418, null, "teapot");
+
+        Assert.Equal(ModelFailureKind.InvalidRequest, failure.Kind);
+        Assert.False(failure.IsRetryable);
+    }
+
+    [Fact]
+    public void RetryAfterMsHeader_WinsOverRetryAfterSeconds()
+    {
+        var failure = ModelFailureClassifier.FromHttpResponse(
+            429, "30", "slow down", retryAfterMsHeader: "1500");
+
+        Assert.Equal(TimeSpan.FromMilliseconds(1500), failure.RetryAfter);
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("0")]
+    public void ShouldRetryHeaderFalse_DemotesRetryAfterToNull(string shouldRetry)
+    {
+        var failure = ModelFailureClassifier.FromHttpResponse(
+            429, "30", "slow down", retryAfterMsHeader: "1500", shouldRetryHeader: shouldRetry);
+
+        Assert.Null(failure.RetryAfter);
+    }
+
+    [Fact]
+    public void ContextOverflow_IsDetectedFromServerErrorBody()
+    {
+        var body = """{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210325 tokens > 200000 maximum"}}""";
+
+        var failure = ModelFailureClassifier.FromHttpResponse(500, null, body);
+
+        Assert.Equal(ModelFailureKind.ContextOverflow, failure.Kind);
+        Assert.Equal(10325, failure.DeclaredTokenGap);
+        Assert.False(failure.IsRetryable);
+    }
+
+    [Fact]
     public void HttpRequestException_MapsToNetworkError()
     {
         var failure = ModelFailureClassifier.FromException(new HttpRequestException("connection refused"));

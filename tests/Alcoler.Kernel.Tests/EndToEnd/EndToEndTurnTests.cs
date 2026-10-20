@@ -35,7 +35,7 @@ public class EndToEndTurnTests
     public async Task FullTurn_WithToolCall_PermissionAsk_PersistsAndResumes()
     {
         await using var harness = TestHarness.Create(
-            ToolCall("WriteFile", new { file_path = "notes.txt", content = "Hello Alcoler" }),
+            ToolCall("Write", new { file_path = "notes.txt", content = "Hello Alcoler" }),
             FinalText("File written successfully."));
 
         File.WriteAllText(Path.Combine(harness.Root, "README.md"), "# workspace");
@@ -68,7 +68,7 @@ public class EndToEndTurnTests
         var snapshot = projection.Snapshot();
         Assert.Contains(snapshot.Rows, r => r is UserMessageRow u && u.Text.Contains("Create notes.txt"));
         Assert.Contains(snapshot.Rows, r => r is AssistantMessageRow a && a.Parts.OfType<Contracts.Conversation.TextPart>().Any(p => p.Text.Contains("File written")));
-        Assert.Contains(snapshot.Rows, r => r is ToolCallRow t && t.ToolName == "WriteFile" && t.Status == ToolCallStatus.Succeeded);
+        Assert.Contains(snapshot.Rows, r => r is ToolCallRow t && t.ToolName == "Write" && t.Status == ToolCallStatus.Succeeded);
         Assert.True(File.Exists(Path.Combine(harness.Root, "notes.txt")));
 
         // Resume: new runtime over the same database, full timeline survives.
@@ -78,7 +78,7 @@ public class EndToEndTurnTests
         using var projection2 = resumed.Subscribe(session.Id);
         var snapshot2 = projection2.Snapshot();
         Assert.Contains(snapshot2.Rows, r => r is UserMessageRow u && u.Text.Contains("Create notes.txt"));
-        Assert.Contains(snapshot2.Rows, r => r is ToolCallRow t && t.ToolName == "WriteFile" && t.Status == ToolCallStatus.Succeeded);
+        Assert.Contains(snapshot2.Rows, r => r is ToolCallRow t && t.ToolName == "Write" && t.Status == ToolCallStatus.Succeeded);
         Assert.Equal(TurnPhase.Idle, snapshot2.State.Phase);
     }
 

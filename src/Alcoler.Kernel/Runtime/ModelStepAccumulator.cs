@@ -10,9 +10,9 @@ public sealed class ModelStepAccumulator
 {
     private readonly TurnId _turnId;
     private readonly StringBuilder _text = new();
-    private readonly StringBuilder _reasoning = new();
+    private readonly List<ReasoningDraft> _reasoningBlocks = [];
+    private ReasoningDraft? _openReasoning;
     private readonly List<ToolCall> _toolCalls = [];
-    private string? _reasoningSignature;
     private ModelFinishReason _finishReason = ModelFinishReason.Stop;
 
     public ModelStepAccumulator(TurnId turnId)
@@ -42,16 +42,24 @@ public sealed class ModelStepAccumulator
                 _text.Append(textDelta.Delta);
                 return emit(new ModelStreamingTextEvent(_turnId, textDelta.Delta));
 
+            case ModelReasoningStarted:
+                OpenReasoningBlock();
+                break;
+
             case ModelReasoningDelta reasoningDelta:
                 if (reasoningDelta.Delta.Length > 0)
                 {
                     HasBoundaryContent = true;
                 }
-                _reasoning.Append(reasoningDelta.Delta);
+                OpenReasoningBlock().Text.Append(reasoningDelta.Delta);
                 return emit(new ModelStreamingReasoningEvent(_turnId, reasoningDelta.Delta));
 
             case ModelReasoningEnded reasoningEnded:
-                _reasoningSignature = reasoningEnded.ProviderSignature;
+                // A signature without text cannot be replayed, so a text-less block
+                // is intentionally dropped here.
+                if (_openReasoning is not null)
+                    _openReasoning.Signature = reasoningEnded.ProviderSignature;
+                _openReasoning = null;
                 break;
 
             case ModelToolInputDelta toolInputDelta:
@@ -96,14 +104,28 @@ public sealed class ModelStepAccumulator
     private List<MessagePart> BuildCommonParts()
     {
         var parts = new List<MessagePart>();
-        if (_reasoning.Length > 0)
+        foreach (var block in _reasoningBlocks)
         {
-            parts.Add(new ReasoningPart(StrongId.NewPartId(), _reasoning.ToString(), _reasoningSignature));
+            if (block.Text.Length > 0)
+                parts.Add(new ReasoningPart(StrongId.NewPartId(), block.Text.ToString(), block.Signature));
         }
         if (_text.Length > 0)
         {
             parts.Add(new TextPart(StrongId.NewPartId(), _text.ToString()));
         }
         return parts;
+    }
+
+    private ReasoningDraft OpenReasoningBlock()
+    {
+        if (_openReasoning is null)
+            _reasoningBlocks.Add(_openReasoning = new ReasoningDraft());
+        return _openReasoning;
+    }
+
+    private sealed class ReasoningDraft
+    {
+        public StringBuilder Text { get; } = new();
+        public string? Signature { get; set; }
     }
 }

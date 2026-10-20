@@ -24,6 +24,7 @@ public sealed class SkillToolTests : IDisposable
             """{"skill": ""}""",
             """{"skill": "   "}""",
             """{"skill": 42}""",
+            """{"name": ""}""",
             """{"args": "no skill"}"""
         })
         {
@@ -38,6 +39,43 @@ public sealed class SkillToolTests : IDisposable
         Assert.Null(await tool.ValidateInputAsync(
             JsonDocument.Parse("""{"skill": "web-gui-tester", "args": "login page"}""").RootElement,
             CancellationToken.None));
+        Assert.Null(await tool.ValidateInputAsync(
+            JsonDocument.Parse("""{"name": "web-gui-tester"}""").RootElement,
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ResolveInput_RewritesLegacyNameToSkill()
+    {
+        var tool = new SkillTool();
+
+        var resolved = await tool.ResolveInputAsync(
+            JsonDocument.Parse("""{"name": "web-gui-tester", "args": "login page"}""").RootElement,
+            CancellationToken.None);
+
+        Assert.Equal("web-gui-tester", resolved.GetProperty("skill").GetString());
+        Assert.Equal("login page", resolved.GetProperty("args").GetString());
+        Assert.False(resolved.TryGetProperty("name", out _));
+
+        var unchanged = await tool.ResolveInputAsync(
+            JsonDocument.Parse("""{"skill": "web-gui-tester", "args": "login page"}""").RootElement,
+            CancellationToken.None);
+        Assert.Equal("web-gui-tester", unchanged.GetProperty("skill").GetString());
+        Assert.False(unchanged.TryGetProperty("name", out _));
+    }
+
+    [Fact]
+    public async Task Execute_LegacyNameInput_LoadsTheSkill()
+    {
+        _provider.WriteSkill("legacy-skill", "# Legacy\nOld input shape.");
+
+        var result = await new SkillTool().ExecuteAsync(
+            Context("""{"name": "legacy-skill", "args": "anything"}""", _provider),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.StartsWith("<skill_content name=\"legacy-skill\">", result.SingleText());
+        Assert.Equal(["legacy-skill"], _provider.RequestedNames);
     }
 
     [Fact]
@@ -57,9 +95,7 @@ public sealed class SkillToolTests : IDisposable
             Context("""{"skill": "does-not-exist"}""", _provider), CancellationToken.None);
 
         Assert.True(result.IsError);
-        Assert.Equal(
-            "Skill 'does-not-exist' was not found. Use only skills from the available skills listing; do not guess names.",
-            result.SingleText());
+        Assert.Equal("Skill not found: does-not-exist", result.SingleText());
         Assert.Equal(["does-not-exist"], _provider.RequestedNames);
     }
 

@@ -8,7 +8,7 @@ public sealed class AnthropicModelProvider(
     IReadOnlyDictionary<string, ModelProperties>? modelProperties = null,
     string? providerId = null) : IModelProvider
 {
-    private static readonly HttpClient SharedClient = new();
+    private static readonly HttpClient SharedClient = ModelProviderCatalog.CreateSharedClient();
 
     public string Kind => "anthropic";
     public string Id => providerId ?? Kind;
@@ -26,7 +26,7 @@ public sealed class OpenAiCompatibleModelProvider(
     IReadOnlyDictionary<string, ModelProperties>? modelProperties = null,
     string? providerId = null) : IModelProvider
 {
-    private static readonly HttpClient SharedClient = new();
+    private static readonly HttpClient SharedClient = ModelProviderCatalog.CreateSharedClient();
 
     public string Kind => "openai-compatible";
     public string Id => providerId ?? Kind;
@@ -43,7 +43,7 @@ public sealed class OpenAiResponsesModelProvider(
     IReadOnlyDictionary<string, ModelProperties>? modelProperties = null,
     string? providerId = null) : IModelProvider
 {
-    private static readonly HttpClient SharedClient = new();
+    private static readonly HttpClient SharedClient = ModelProviderCatalog.CreateSharedClient();
 
     public string Kind => "openai-responses";
     public string Id => providerId ?? Kind;
@@ -72,6 +72,11 @@ public sealed class ScriptedModelProvider(IChatModel model, string? providerId =
 
 internal static class ModelProviderCatalog
 {
+    // The stream runner's idle timer is the only stream deadline; HttpClient's default
+    // 100-second timeout would abort silent-but-healthy SSE streams.
+    internal static HttpClient CreateSharedClient() =>
+        new() { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
+
     internal static ModelProperties? Resolve(string providerId, ModelSelection selection, IReadOnlyDictionary<string, ModelProperties>? catalog)
     {
         if (!string.Equals(providerId, selection.ProviderId, StringComparison.OrdinalIgnoreCase))

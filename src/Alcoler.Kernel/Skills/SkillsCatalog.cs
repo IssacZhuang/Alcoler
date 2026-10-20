@@ -8,7 +8,13 @@ public enum SkillSource
     User,
 }
 
-public sealed record SkillInfo(string Name, string Description, SkillSource Source, string SkPath);
+public sealed record SkillInfo(
+    string Name,
+    string Description,
+    SkillSource Source,
+    string SkPath,
+    string? WhenToUse = null,
+    string? Alias = null);
 
 /// <summary>
 /// Loads skills from {workspaceRoot}/.alcoler/skills and {userProfile}/.alcoler/skills.
@@ -93,10 +99,12 @@ public sealed class SkillsCatalog
 
         string? name = null;
         string? description = null;
+        string? whenToUse = null;
         if (frontMatter is not null)
         {
             name = FrontMatterValue(frontMatter, "name");
             description = FrontMatterValue(frontMatter, "description");
+            whenToUse = FrontMatterValue(frontMatter, "when_to_use");
         }
         if (name is null || description is null)
         {
@@ -107,8 +115,11 @@ public sealed class SkillsCatalog
 
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(description))
             return null;
-        return new SkillInfo(name.Trim(), description.Trim(), source, skillPath);
+        return new SkillInfo(name.Trim(), description.Trim(), source, skillPath, NormalizeOptionalValue(whenToUse));
     }
+
+    private static string? NormalizeOptionalValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static string StripFrontMatter(string text, out IReadOnlyList<string>? frontMatter)
     {

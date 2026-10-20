@@ -7,13 +7,10 @@ using Alcoler.Contracts.Identifiers;
 
 namespace Alcoler.Workbench.ViewModel;
 
-/// <summary>
-/// Presentation state for a pending permission request or interaction question. Commands
-/// are owned by <see cref="ConversationViewModel"/>; this type only carries display data.
-/// </summary>
 public sealed partial class PendingInteractionViewModel : ObservableObject
 {
     private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private IReadOnlyList<QuestionDraftViewModel> _drafts = [];
 
     private PendingInteractionViewModel(InteractionId interactionId)
     {
@@ -21,11 +18,8 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
     }
 
     public InteractionId InteractionId { get; }
-
     public bool IsPermission { get; private init; }
-
     public string ToolName { get; private init; } = string.Empty;
-
     public RiskLevel RiskLevel { get; private init; }
 
     [ObservableProperty]
@@ -42,6 +36,21 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
 
     [ObservableProperty]
     private IReadOnlyDictionary<string, string> _selectedAnswers = new Dictionary<string, string>();
+
+    [ObservableProperty]
+    private int _currentQuestionIndex;
+
+    [ObservableProperty]
+    private int _activeOptionIndex = -1;
+
+    public QuestionDraftViewModel? CurrentQuestion => _drafts.ElementAtOrDefault(CurrentQuestionIndex);
+    public int QuestionCount => _drafts.Count;
+    public bool HasQuestions => QuestionCount > 0;
+    public string PageText => $"{Math.Min(CurrentQuestionIndex + 1, Math.Max(QuestionCount, 1))} / {Math.Max(QuestionCount, 1)}";
+    public bool CanMovePrevious => CurrentQuestionIndex > 0;
+    public bool CanMoveNext => CurrentQuestionIndex < QuestionCount - 1;
+    public string PrimaryActionText => CanMoveNext ? "Continue" : "Submit";
+    public bool CanSubmit => !IsPermission;
 
     public static PendingInteractionViewModel FromPermission(PermissionRequest request)
     {
@@ -67,72 +76,193 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
         return vm;
     }
 
-    private readonly Dictionary<string, HashSet<string>> _multipleAnswers = [];
-
-    public bool CanSubmit => Questions.Count > 0
-        && Questions.All(question => SelectedAnswers.TryGetValue(question.Header, out var answer)
-            && !string.IsNullOrWhiteSpace(answer));
-
     public void SelectAnswer(string header, string value)
     {
-        if (Questions.FirstOrDefault(question => question.Header == header) is not { } question
-            || !question.Options.Any(option => option.Label == value))
-        {
-            return;
-        }
-        if (question.MultiSelect)
-        {
-            SetOptionSelected(question, value, true);
-            return;
-        }
-        SetAnswer(header, value);
+        var draft = _drafts.FirstOrDefault(question => question.Header == header);
+        draft?.SetOptionSelected(value, true);
     }
 
-    public void SetOptionSelected(InteractionQuestion question, string value, bool selected)
+    public void SetOptionSelected(InteractionQuestion question, string value, bool selected) =>
+        _drafts.FirstOrDefault(draft => draft.Source == question)?.SetOptionSelected(value, selected);
+
+    public bool ActivateOption(int index)
     {
-        if (!Questions.Contains(question) || !question.Options.Any(option => option.Label == value))
-        {
+        if (CurrentQuestion is not { } question || index < 0 || index >= question.Options.Count)
+            return false;
+        ActiveOptionIndex = index;
+        var option = question.Options[index];
+        question.SetOptionSelected(option.Label, !question.MultiSelect || !option.IsSelected);
+        return !question.MultiSelect && ContinueQuestion();
+    }
+
+    public bool ContinueQuestion()
+    {
+        AutoSelectActiveOption();
+        if (!CanMoveNext)
+            return true;
+        CurrentQuestionIndex++;
+        return false;
+    }
+
+    public void MovePrevious()
+    {
+        if (CanMovePrevious)
+            CurrentQuestionIndex--;
+    }
+
+    public void MoveNext()
+    {
+        if (!CanMoveNext)
             return;
-        }
-        if (!question.MultiSelect)
-        {
-            if (selected)
-            {
-                SetAnswer(question.Header, value);
-            }
+        AutoSelectActiveOption();
+        CurrentQuestionIndex++;
+    }
+
+    public void MoveSelection(int direction)
+    {
+        if (CurrentQuestion is not { } question)
             return;
-        }
-        if (!_multipleAnswers.TryGetValue(question.Header, out var values))
+        var count = question.Options.Count + 1;
+        ActiveOptionIndex = ActiveOptionIndex < 0
+            ? direction > 0 ? 0 : count - 1
+            : (ActiveOptionIndex + direction + count) % count;
+    }
+
+    private void AutoSelectActiveOption()
+    {
+        if (CurrentQuestion is { MultiSelect: false, HasAnswer: false } question
+            && ActiveOptionIndex >= 0 && ActiveOptionIndex < question.Options.Count)
+            question.SetOptionSelected(question.Options[ActiveOptionIndex].Label, true);
+    }
+
+    private void RefreshAnswers()
+    {
+        SelectedAnswers = _drafts.Where(question => question.HasAnswer)
+            .ToDictionary(question => question.Header, question => question.Answer);
+    }
+
+    private void RefreshPage()
+    {
+        OnPropertyChanged(nameof(CurrentQuestion));
+        OnPropertyChanged(nameof(PageText));
+        OnPropertyChanged(nameof(CanMovePrevious));
+        OnPropertyChanged(nameof(CanMoveNext));
+        OnPropertyChanged(nameof(PrimaryActionText));
+        var question = CurrentQuestion;
+        var preferred = question is null ? -1 : question.Options.ToList().FindIndex(option => option.IsSelected);
+        if (preferred < 0 && question?.IsCustomSelected == true)
+            preferred = question.Options.Count;
+        ActiveOptionIndex = preferred;
+        UpdateActiveOption();
+    }
+
+    private void UpdateActiveOption()
+    {
+        if (CurrentQuestion is not { } question)
+            return;
+        foreach (var option in question.Options)
+            option.IsActive = option.Index == ActiveOptionIndex;
+        question.IsCustomActive = ActiveOptionIndex == question.Options.Count;
+    }
+
+    partial void OnQuestionsChanged(IReadOnlyList<InteractionQuestion> value)
+    {
+        _drafts = value.Select(question => new QuestionDraftViewModel(question, RefreshAnswers)).ToArray();
+        CurrentQuestionIndex = 0;
+        SelectedAnswers = new Dictionary<string, string>();
+        OnPropertyChanged(nameof(QuestionCount));
+        OnPropertyChanged(nameof(HasQuestions));
+        RefreshPage();
+    }
+
+    partial void OnCurrentQuestionIndexChanged(int value) => RefreshPage();
+    partial void OnActiveOptionIndexChanged(int value) => UpdateActiveOption();
+}
+
+public sealed partial class QuestionDraftViewModel : ObservableObject
+{
+    private readonly Action _answerChanged;
+
+    internal QuestionDraftViewModel(InteractionQuestion source, Action answerChanged)
+    {
+        Source = source;
+        _answerChanged = answerChanged;
+        Options = source.Options.Select((option, index) => new QuestionOptionViewModel(option, index, source.MultiSelect)).ToArray();
+    }
+
+    public InteractionQuestion Source { get; }
+    public string Header => Source.Header;
+    public string Text => Source.Text;
+    public bool MultiSelect => Source.MultiSelect;
+    public IReadOnlyList<QuestionOptionViewModel> Options { get; }
+    public string CustomNumber => $"{Options.Count + 1}.";
+    public bool IsCustomSelected => !string.IsNullOrWhiteSpace(CustomAnswer);
+    public bool HasAnswer => IsCustomSelected || Options.Any(option => option.IsSelected);
+    public string Answer => string.Join(", ", Options.Where(option => option.IsSelected).Select(option => option.Label)
+        .Concat(IsCustomSelected ? [CustomAnswer.Trim()] : []));
+
+    [ObservableProperty]
+    private string _customAnswer = string.Empty;
+
+    [ObservableProperty]
+    private bool _isCustomActive;
+
+    internal void SetOptionSelected(string value, bool selected)
+    {
+        if (Options.FirstOrDefault(option => option.Label == value) is not { } target)
+            return;
+        if (!MultiSelect)
         {
-            values = [];
-            _multipleAnswers[question.Header] = values;
-        }
-        if (selected)
-        {
-            values.Add(value);
+            if (!selected)
+                return;
+            foreach (var option in Options)
+                option.IsSelected = option == target;
+            CustomAnswer = string.Empty;
         }
         else
         {
-            values.Remove(value);
+            target.IsSelected = selected;
         }
-        SetAnswer(question.Header, string.Join(", ", question.Options
-            .Where(option => values.Contains(option.Label)).Select(option => option.Label)));
+        NotifyAnswerChanged();
     }
 
-    private void SetAnswer(string header, string value)
+    partial void OnCustomAnswerChanged(string value)
     {
-        var answers = new Dictionary<string, string>(SelectedAnswers);
-        if (string.IsNullOrEmpty(value))
-        {
-            answers.Remove(header);
-        }
-        else
-        {
-            answers[header] = value;
-        }
-        SelectedAnswers = answers;
+        if (!MultiSelect && !string.IsNullOrWhiteSpace(value))
+            foreach (var option in Options)
+                option.IsSelected = false;
+        NotifyAnswerChanged();
     }
 
-    partial void OnSelectedAnswersChanged(IReadOnlyDictionary<string, string> value) =>
-        OnPropertyChanged(nameof(CanSubmit));
+    private void NotifyAnswerChanged()
+    {
+        OnPropertyChanged(nameof(IsCustomSelected));
+        OnPropertyChanged(nameof(HasAnswer));
+        OnPropertyChanged(nameof(Answer));
+        _answerChanged();
+    }
+}
+
+public sealed partial class QuestionOptionViewModel : ObservableObject
+{
+    internal QuestionOptionViewModel(InteractionOption source, int index, bool multiSelect)
+    {
+        Label = source.Label;
+        Description = source.Description;
+        Index = index;
+        MultiSelect = multiSelect;
+    }
+
+    public string Label { get; }
+    public string? Description { get; }
+    public string InlineDescription => string.IsNullOrEmpty(Description) ? string.Empty : $"  {Description}";
+    public int Index { get; }
+    public string Number => $"{Index + 1}.";
+    public bool MultiSelect { get; }
+
+    [ObservableProperty]
+    private bool _isSelected;
+
+    [ObservableProperty]
+    private bool _isActive;
 }

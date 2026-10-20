@@ -42,7 +42,7 @@ public class ConversationViewModelTests
         new("Test session", PermissionMode.Build, null, 200_000, phase, null,
             100_000, "estimate", [], permission, null);
 
-    private static PermissionRequest Permission(string tool = "WriteFile", RiskLevel risk = RiskLevel.Medium) => new(
+    private static PermissionRequest Permission(string tool = "Write", RiskLevel risk = RiskLevel.Medium) => new(
         StrongId.NewInteractionId(),
         new SessionId(Guid.NewGuid().ToString("N")),
         tool,
@@ -232,7 +232,7 @@ public class ConversationViewModelTests
             {
                 "assistant-id" => assistantRow with { Id = StrongId.NewMessageId() },
                 "tool-id" => toolRow with { Id = StrongId.NewToolCallId() },
-                "tool-name" => toolRow with { ToolName = "ReadFile" },
+                "tool-name" => toolRow with { ToolName = "Read" },
                 "row-type" => toolRow,
                 "user-text" => userRow with { Text = "after" },
                 "notice-kind" => noticeRow with { Kind = "turn_error" },
@@ -329,7 +329,7 @@ public class ConversationViewModelTests
         Assert.False(viewModel.Composer.CanSend);
         Assert.Equal(.5, viewModel.ContextUsage!.Fraction);
         Assert.True(viewModel.HasPendingInteraction);
-        Assert.Equal("WriteFile", viewModel.PendingInteraction!.ToolName);
+        Assert.Equal("Write", viewModel.PendingInteraction!.ToolName);
         store.Dispose();
     }
 
@@ -407,7 +407,7 @@ public class ConversationViewModelTests
     }
 
     [Fact]
-    public async Task SubmitInteractionAnswers_Incomplete_DoesNotSubmit()
+    public async Task SubmitInteractionAnswers_Empty_SubmitsWithoutInventingAnswers()
     {
         var (viewModel, runtime, store) = Create();
         using (store)
@@ -423,8 +423,184 @@ public class ConversationViewModelTests
 
             await viewModel.SubmitInteractionAnswersAsync();
 
-            Assert.Empty(runtime.Submitted);
+            var command = Assert.IsType<ResolveInteractionCommand>(Assert.Single(runtime.Submitted));
+            Assert.Empty(command.InteractionAnswer!.Answers);
         }
+    }
+
+    [Fact]
+    public async Task SubmitInteractionAnswers_PartialOrDismissed_SendsOnlyIntendedAnswers()
+    {
+        foreach (var dismiss in new[] { false, true })
+        {
+            var (viewModel, runtime, store) = Create();
+            using (store)
+            using (viewModel)
+            {
+                var state = TestSnapshots.State(TurnPhase.AwaitingInteraction) with
+                {
+                    PendingInteraction = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Choose",
+                    [
+                        new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?", [new Alcoler.Contracts.Events.InteractionOption("main")]),
+                        new Alcoler.Contracts.Events.InteractionQuestion("Next", "Next?", [new Alcoler.Contracts.Events.InteractionOption("Done")]),
+                    ]),
+                };
+                viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+                viewModel.SelectInteractionAnswer("Target", "main");
+                if (dismiss)
+                    await viewModel.DismissInteractionAsync();
+                else
+                    await viewModel.SubmitInteractionAnswersAsync();
+
+                var command = Assert.IsType<ResolveInteractionCommand>(Assert.Single(runtime.Submitted));
+                Assert.Equal(state.PendingInteraction.InteractionId, command.InteractionId);
+                if (dismiss)
+                    Assert.Empty(command.InteractionAnswer!.Answers);
+                else
+                    Assert.Equal("main", Assert.Single(command.InteractionAnswer!.Answers).Value);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task SubmitInteractionAnswers_RejectionKeepsDraftsAndAllowsRetry()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var state = TestSnapshots.State(TurnPhase.AwaitingInteraction) with
+            {
+                PendingInteraction = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Choose",
+                    [new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?", [new Alcoler.Contracts.Events.InteractionOption("main")])]),
+            };
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            viewModel.PendingInteraction!.CurrentQuestion!.CustomAnswer = " custom ";
+            runtime.RejectNextCommand = true;
+
+            await viewModel.SubmitInteractionAnswersAsync();
+
+            Assert.Single(runtime.Submitted);
+            Assert.False(viewModel.IsInteractionSubmitting);
+            Assert.Equal("rejected for test", viewModel.Banner);
+            Assert.Equal(" custom ", viewModel.PendingInteraction.CurrentQuestion.CustomAnswer);
+            Assert.Equal("custom", viewModel.PendingInteraction.SelectedAnswers["Target"]);
+            runtime.RejectNextCommand = false;
+            viewModel.ClearBanner();
+            await viewModel.SubmitInteractionAnswersAsync();
+            Assert.Equal(2, runtime.Submitted.Count);
+            Assert.True(viewModel.IsInteractionSubmitting);
+            Assert.Null(viewModel.Banner);
+        }
+    }
+
+    [Fact]
+    public async Task SubmitInteractionAnswers_AcceptanceDisablesDuplicateSubmissionUntilProjectionResolves()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var state = TestSnapshots.State(TurnPhase.AwaitingInteraction) with
+            {
+                PendingInteraction = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Choose", []),
+            };
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], false));
+            await viewModel.SubmitInteractionAnswersAsync();
+            await viewModel.SubmitInteractionAnswersAsync();
+            await viewModel.DismissInteractionAsync();
+            Assert.Single(runtime.Submitted);
+            Assert.True(viewModel.IsInteractionSubmitting);
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, state, [new StatePatched(state)], false));
+            Assert.True(viewModel.IsInteractionSubmitting);
+            var idle = TestSnapshots.State();
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, idle, [new StatePatched(idle)], false));
+            Assert.False(viewModel.IsInteractionSubmitting);
+            Assert.Null(viewModel.PendingInteraction);
+        }
+    }
+
+    [Fact]
+    public void InteractionDrafts_NavigationAndStatePatchPreserveCustomAndMultiSelection()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var single = new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?",
+                [new Alcoler.Contracts.Events.InteractionOption("main"), new("branch")]);
+            var multi = new Alcoler.Contracts.Events.InteractionQuestion("Features", "Which features?",
+                [new Alcoler.Contracts.Events.InteractionOption("Search"), new("History")], true);
+            var request = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Choose", [single, multi]);
+            var state = TestSnapshots.State(TurnPhase.AwaitingInteraction) with { PendingInteraction = request };
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            var pending = viewModel.PendingInteraction!;
+            Assert.Empty(pending.SelectedAnswers);
+            Assert.Equal(-1, pending.ActiveOptionIndex);
+            pending.SelectAnswer("Target", "main");
+            pending.CurrentQuestion!.CustomAnswer = "  release branch  ";
+            Assert.Equal("release branch", pending.SelectedAnswers["Target"]);
+            Assert.DoesNotContain(pending.CurrentQuestion.Options, option => option.IsSelected);
+            Assert.False(pending.ContinueQuestion());
+            pending.SetOptionSelected(multi, "History", true);
+            pending.SetOptionSelected(multi, "Search", true);
+            pending.CurrentQuestion!.CustomAnswer = "  Offline  ";
+            pending.SetOptionSelected(multi, "History", false);
+
+            var patchedState = state with { PendingInteraction = request with { Prompt = "Refreshed prompt" } };
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, patchedState, [new StatePatched(patchedState)], Reset: false));
+
+            Assert.Same(pending, viewModel.PendingInteraction);
+            Assert.Equal(1, pending.CurrentQuestionIndex);
+            Assert.Equal("Search, Offline", pending.SelectedAnswers["Features"]);
+            Assert.Equal("  Offline  ", pending.CurrentQuestion.CustomAnswer);
+            pending.MovePrevious();
+            Assert.Equal("  release branch  ", pending.CurrentQuestion!.CustomAnswer);
+            pending.MoveNext();
+            Assert.True(pending.ContinueQuestion());
+            Assert.Equal(2, pending.SelectedAnswers.Count);
+        }
+    }
+
+    [Fact]
+    public void InteractionDrafts_OnlyExplicitSingleKeyboardFocusIsAutoSelectedOnContinue()
+    {
+        var single = new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?",
+            [new Alcoler.Contracts.Events.InteractionOption("main"), new("branch")]);
+        var multi = new Alcoler.Contracts.Events.InteractionQuestion("Features", "Which features?",
+            [new Alcoler.Contracts.Events.InteractionOption("Search")], true);
+        var pending = PendingInteractionViewModel.FromInteraction(new Alcoler.Contracts.Events.InteractionRequest(
+            StrongId.NewInteractionId(), "Choose", [single, multi]));
+
+        Assert.False(pending.ContinueQuestion());
+        Assert.Empty(pending.SelectedAnswers);
+        pending.MovePrevious();
+        pending.MoveSelection(1);
+        pending.MoveSelection(1);
+        Assert.Empty(pending.SelectedAnswers);
+        Assert.False(pending.ContinueQuestion());
+        Assert.Equal("branch", pending.SelectedAnswers["Target"]);
+        pending.MoveSelection(1);
+        Assert.True(pending.ContinueQuestion());
+        Assert.False(pending.SelectedAnswers.ContainsKey("Features"));
+    }
+
+    [Fact]
+    public void InteractionDrafts_WhitespaceCustomIsOmittedAndPresetClearsCustom()
+    {
+        var question = new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?",
+            [new Alcoler.Contracts.Events.InteractionOption("main")]);
+        var pending = PendingInteractionViewModel.FromInteraction(new Alcoler.Contracts.Events.InteractionRequest(
+            StrongId.NewInteractionId(), "Choose", [question]));
+        pending.CurrentQuestion!.CustomAnswer = " \n  ";
+        Assert.Empty(pending.SelectedAnswers);
+        pending.CurrentQuestion.CustomAnswer = " custom ";
+        Assert.Equal("custom", pending.SelectedAnswers["Target"]);
+        pending.SelectAnswer("Target", "main");
+        Assert.Equal(string.Empty, pending.CurrentQuestion.CustomAnswer);
+        Assert.Equal("main", pending.SelectedAnswers["Target"]);
+        pending.SelectAnswer("Target", "invalid");
+        Assert.Equal("main", pending.SelectedAnswers["Target"]);
     }
 
     [Fact]

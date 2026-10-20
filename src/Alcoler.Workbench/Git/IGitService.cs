@@ -10,6 +10,8 @@ public enum ChangeState
 
 public sealed record GitFileChange(string Path, ChangeState State);
 
+public sealed record GitChangeSummary(int AddedLines, int RemovedLines);
+
 public sealed record GitRepositoryStatus(
     IReadOnlyList<GitFileChange> Staged,
     IReadOnlyList<GitFileChange> Unstaged,
@@ -34,6 +36,9 @@ public interface IGitService : IDisposable
     string? GetCurrentBranchName(string repositoryRoot);
 
     GitRepositoryStatus GetStatus(string repositoryRoot);
+
+    /// <summary>Staged plus unstaged text lines; untracked and binary files contribute no lines.</summary>
+    GitChangeSummary GetChangeSummary(string repositoryRoot) => new(0, 0);
 
     IReadOnlyList<GitBranch> GetBranches(string repositoryRoot);
 

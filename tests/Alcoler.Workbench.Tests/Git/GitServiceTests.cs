@@ -148,6 +148,140 @@ public sealed class GitServiceTests : IDisposable
     }
 
     [Fact]
+    public void GetChangeSummary_EmptyAndCleanRepository_ReturnsZero()
+    {
+        var repositoryRoot = InitRepo();
+        Assert.Equal(new GitChangeSummary(0, 0), _service.GetChangeSummary(repositoryRoot));
+
+        using (var repository = new Repository(repositoryRoot))
+        {
+            File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "one\ntwo\n");
+            Commit(repository, "initial");
+        }
+
+        Assert.Equal(new GitChangeSummary(0, 0), _service.GetChangeSummary(repositoryRoot));
+    }
+
+    [Fact]
+    public void GetChangeSummary_ReloadsIndex_AfterExternalStagingAndCommit()
+    {
+        var repositoryRoot = InitRepo();
+        using var repository = new Repository(repositoryRoot);
+        File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "original\n");
+        Commit(repository, "initial");
+        Assert.Equal(new GitChangeSummary(0, 0), _service.GetChangeSummary(repositoryRoot));
+
+        File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "staged-one\nstaged-two\n");
+        Commands.Stage(repository, "a.txt");
+        Assert.Equal(new GitChangeSummary(2, 1), _service.GetChangeSummary(repositoryRoot));
+
+        File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "original\n");
+        Assert.Equal(new GitChangeSummary(3, 3), _service.GetChangeSummary(repositoryRoot));
+
+        Commands.Stage(repository, "a.txt");
+        Assert.Equal(new GitChangeSummary(0, 0), _service.GetChangeSummary(repositoryRoot));
+
+        File.AppendAllText(FilePath(repositoryRoot, "a.txt"), "committed\n");
+        Commit(repository, "external commit");
+        Assert.Equal(new GitChangeSummary(0, 0), _service.GetChangeSummary(repositoryRoot));
+    }
+
+    [Fact]
+    public void GetChangeSummary_SumsStagedAndUnstagedLines_WithoutNettingSamePath()
+    {
+        var repositoryRoot = InitRepo();
+        using (var repository = new Repository(repositoryRoot))
+        {
+            File.WriteAllText(FilePath(repositoryRoot, "shared.txt"), "original\nkept\n");
+            File.WriteAllText(FilePath(repositoryRoot, "deleted.txt"), "delete-one\ndelete-two\n");
+            Commit(repository, "initial");
+
+            File.WriteAllText(FilePath(repositoryRoot, "shared.txt"), "staged\nkept\n");
+            File.WriteAllText(FilePath(repositoryRoot, "added.txt"), "added-one\nadded-two\n");
+            Commands.Stage(repository, "*");
+            File.WriteAllText(FilePath(repositoryRoot, "shared.txt"), "original\nkept\n");
+            File.Delete(FilePath(repositoryRoot, "deleted.txt"));
+        }
+
+        var summary = _service.GetChangeSummary(repositoryRoot);
+        var status = _service.GetStatus(repositoryRoot);
+
+        Assert.Equal(new GitChangeSummary(4, 4), summary);
+        Assert.Contains(status.Staged, f => f.Path == "shared.txt");
+        Assert.Contains(status.Unstaged, f => f.Path == "shared.txt");
+    }
+
+    [Fact]
+    public void GetChangeSummary_UnbornRepository_CountsStagedAndUnstagedLines()
+    {
+        var repositoryRoot = InitRepo();
+        using (var repository = new Repository(repositoryRoot))
+        {
+            File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "one\ntwo\n");
+            Commands.Stage(repository, "a.txt");
+            File.AppendAllText(FilePath(repositoryRoot, "a.txt"), "three\n");
+        }
+
+        Assert.Equal(new GitChangeSummary(3, 0), _service.GetChangeSummary(repositoryRoot));
+    }
+
+    [Fact]
+    public void GetChangeSummary_UntrackedAndBinaryFiles_ContributeNoLines()
+    {
+        var repositoryRoot = InitRepo();
+        using (var repository = new Repository(repositoryRoot))
+        {
+            File.WriteAllBytes(FilePath(repositoryRoot, "tracked.bin"), [0, 1, 2]);
+            Commit(repository, "initial");
+
+            File.WriteAllBytes(FilePath(repositoryRoot, "tracked.bin"), [0, 3, 4]);
+            Commands.Stage(repository, "tracked.bin");
+            File.WriteAllBytes(FilePath(repositoryRoot, "tracked.bin"), [0, 5, 6]);
+            Directory.CreateDirectory(FilePath(repositoryRoot, "nested"));
+            File.WriteAllText(FilePath(repositoryRoot, "nested/new.txt"), "untracked\ntext\n");
+            File.WriteAllBytes(FilePath(repositoryRoot, "nested/new.bin"), [0, 7, 8]);
+        }
+
+        Assert.Equal(new GitChangeSummary(0, 0), _service.GetChangeSummary(repositoryRoot));
+        var status = _service.GetStatus(repositoryRoot);
+        Assert.Single(status.Staged, f => f.Path == "tracked.bin");
+        Assert.Single(status.Unstaged, f => f.Path == "tracked.bin");
+        Assert.Equal(2, status.Untracked.Count);
+    }
+
+    [Fact]
+    public void GetChangeSummary_RepeatedQueries_DoNotModifyRepositoryOrWorkTree()
+    {
+        var repositoryRoot = InitRepo();
+        using (var repository = new Repository(repositoryRoot))
+        {
+            File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "original\n");
+            Commit(repository, "initial");
+            File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "staged\n");
+            Commands.Stage(repository, "a.txt");
+            File.WriteAllText(FilePath(repositoryRoot, "a.txt"), "unstaged\n");
+            File.WriteAllText(FilePath(repositoryRoot, "new.txt"), "untracked\n");
+        }
+        var before = Directory.EnumerateFiles(repositoryRoot, "*", SearchOption.AllDirectories)
+            .ToDictionary(path => path, path => (
+                Content: File.ReadAllBytes(path),
+                LastWrite: File.GetLastWriteTimeUtc(path)));
+
+        Assert.Equal(new GitChangeSummary(2, 2), _service.GetChangeSummary(repositoryRoot));
+        Assert.Equal(new GitChangeSummary(2, 2), _service.GetChangeSummary(repositoryRoot));
+        _service.GetStatus(repositoryRoot);
+        _service.GetCurrentBranchName(repositoryRoot);
+
+        Assert.Equal(before.Keys.Order(StringComparer.Ordinal),
+            Directory.EnumerateFiles(repositoryRoot, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal));
+        foreach (var (path, original) in before)
+        {
+            Assert.Equal(original.Content, File.ReadAllBytes(path));
+            Assert.Equal(original.LastWrite, File.GetLastWriteTimeUtc(path));
+        }
+    }
+
+    [Fact]
     public void GetBranches_And_Checkout_SwitchCurrentBranch()
     {
         var repositoryRoot = InitRepo();

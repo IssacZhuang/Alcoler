@@ -70,7 +70,7 @@ public class RealProviderSmokeTests
                     StrongId.NewCommandId(),
                     session.Id,
                     projection.Snapshot().Revision,
-                    "Create a file named smoke.txt whose only content is the line deepseek-smoke-ok (use the WriteFile tool). After the tool call succeeds, reply with the single word DONE."),
+                    "Create a file named smoke.txt whose only content is the line deepseek-smoke-ok (use the Write tool). After the tool call succeeds, reply with the single word DONE."),
                     CancellationToken.None);
                 Assert.True(ack.Accepted, ack.RejectionReason);
 
@@ -84,7 +84,7 @@ public class RealProviderSmokeTests
                 Assert.Contains("deepseek-smoke-ok", File.ReadAllText(Path.Combine(root, "smoke.txt")));
 
                 var writeRow = snapshot.Rows.OfType<ToolCallRow>()
-                    .SingleOrDefault(r => r.ToolName == "WriteFile");
+                    .SingleOrDefault(r => r.ToolName == "Write");
                 Assert.NotNull(writeRow);
                 Assert.Equal(ToolCallStatus.Succeeded, writeRow.Status);
 

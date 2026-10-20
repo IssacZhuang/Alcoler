@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Alcoler.Adapters.Models;
 using Alcoler.Contracts.Conversation;
+using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Xunit;
 
@@ -107,6 +108,98 @@ public class ModelStreamRunnerTests
         Assert.Equal(2, retry.Attempt);
         Assert.Equal(TimeSpan.FromSeconds(30), retry.Delay);
         Assert.Equal(2, events.Count);
+    }
+
+    [Fact]
+    public async Task UnreasonableRetryAfter_FallsBackToBackoff()
+    {
+        var model = new ScriptedChatModel(
+        [
+            new ScriptStep.FailOnce(new ModelFailure(
+                ModelFailureKind.RateLimited, "slow down", RetryAfter: TimeSpan.FromMinutes(10))),
+            new ScriptStep.Events(new ModelTextDelta("done"), new ModelStreamFinished(ModelFinishReason.Stop)),
+        ]);
+        var delays = new List<(int Attempt, TimeSpan Delay)>();
+        var options = new ModelRunnerOptions
+        {
+            JitterFactor = 0,
+            IdleTimeout = Timeout.InfiniteTimeSpan,
+            TimeProvider = new ManualTimeProvider { AutoFireTimers = true },
+            RetryDelayObserver = (attempt, delay) =>
+            {
+                delays.Add((attempt, delay));
+                return ValueTask.CompletedTask;
+            },
+        };
+
+        await CollectAsync(ModelStreamRunner.RunAsync(model, s_request, options));
+
+        var retry = Assert.Single(delays);
+        Assert.Equal(TimeSpan.FromSeconds(2), retry.Delay);
+    }
+
+    [Fact]
+    public async Task LongRetryAfter_IsHonoredWhenBackoffWaitsLonger()
+    {
+        var model = new ScriptedChatModel(
+        [
+            new ScriptStep.FailOnce(new ModelFailure(
+                ModelFailureKind.RateLimited, "slow down", RetryAfter: TimeSpan.FromMinutes(6))),
+            new ScriptStep.Events(new ModelTextDelta("done"), new ModelStreamFinished(ModelFinishReason.Stop)),
+        ]);
+        var delays = new List<(int Attempt, TimeSpan Delay)>();
+        var options = new ModelRunnerOptions
+        {
+            BaseDelay = TimeSpan.FromMinutes(7),
+            MaxDelay = TimeSpan.FromMinutes(10),
+            JitterFactor = 0,
+            IdleTimeout = Timeout.InfiniteTimeSpan,
+            TimeProvider = new ManualTimeProvider { AutoFireTimers = true },
+            RetryDelayObserver = (attempt, delay) =>
+            {
+                delays.Add((attempt, delay));
+                return ValueTask.CompletedTask;
+            },
+        };
+
+        await CollectAsync(ModelStreamRunner.RunAsync(model, s_request, options));
+
+        var retry = Assert.Single(delays);
+        Assert.Equal(TimeSpan.FromMinutes(6), retry.Delay);
+    }
+
+    [Fact]
+    public async Task ToolInputDelta_IsNotABoundaryAndRetriesSilently()
+    {
+        var model = new ScriptedChatModel(
+        [
+            new ScriptStep.FailOnce(
+                NetworkFailure(),
+                new ModelToolInputStarted(new ToolCallId("call-1"), "Read"),
+                new ModelToolInputDelta(new ToolCallId("call-1"), """{"file_path":"a.txt"}""")),
+            new ScriptStep.Events(
+                new ModelToolCallReady(new ToolCall(
+                    new ToolCallId("call-1"), "Read",
+                    System.Text.Json.JsonSerializer.SerializeToElement(new { file_path = "a.txt" }))),
+                new ModelStreamFinished(ModelFinishReason.ToolCalls)),
+        ]);
+        var options = new ModelRunnerOptions
+        {
+            BaseDelay = TimeSpan.FromMilliseconds(1),
+            IdleTimeout = Timeout.InfiniteTimeSpan,
+        };
+
+        var events = await CollectAsync(ModelStreamRunner.RunAsync(model, s_request, options));
+
+        Assert.Equal(2, model.Attempts);
+        Assert.Equal(
+        [
+            typeof(ModelToolInputStarted),
+            typeof(ModelToolInputDelta),
+            typeof(ModelToolCallReady),
+            typeof(ModelStreamFinished),
+        ], events.Select(e => e.GetType()).ToArray());
+        Assert.DoesNotContain(events, e => e is ModelStreamFailed);
     }
 
     [Fact]

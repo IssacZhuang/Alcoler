@@ -14,7 +14,7 @@ public class ToolSchedulerTests
     [Fact]
     public void ParallelSafeCalls_RunInOneGroup()
     {
-        var read = new FakeTool("ReadFile");
+        var read = new FakeTool("Read");
         var grep = new FakeTool("Grep");
         var groups = Scheduler(read, grep).Schedule([Call(read), Call(grep), Call(read)]);
 
@@ -26,8 +26,8 @@ public class ToolSchedulerTests
     [Fact]
     public void UnsafeCall_GetsOwnGroupBetweenParallelGroups()
     {
-        var read = new FakeTool("ReadFile");
-        var write = new FakeTool("WriteFile", FakeToolMetadata.Serial());
+        var read = new FakeTool("Read");
+        var write = new FakeTool("Write", FakeToolMetadata.Serial());
         var groups = Scheduler(read, write).Schedule([Call(read), Call(write), Call(read)]);
 
         Assert.Equal(3, groups.Count);
@@ -40,7 +40,7 @@ public class ToolSchedulerTests
     [Fact]
     public void TwoUnsafeCalls_NeverShareAGroup()
     {
-        var write = new FakeTool("WriteFile", FakeToolMetadata.Serial());
+        var write = new FakeTool("Write", FakeToolMetadata.Serial());
         var bash = new FakeTool("Bash", FakeToolMetadata.SystemSideEffect());
         var groups = Scheduler(write, bash).Schedule([Call(write), Call(bash)]);
 
@@ -58,7 +58,7 @@ public class ToolSchedulerTests
         var destructive = new FakeTool("Danger", FakeToolMetadata.Destructive());
         Assert.False(ToolScheduler.CanRunParallel(destructive));
 
-        var read = new FakeTool("ReadFile");
+        var read = new FakeTool("Read");
         var groups = Scheduler(destructive, read).Schedule([Call(destructive), Call(read)]);
         Assert.Equal(2, groups.Count);
         Assert.False(groups[0].Parallel);
@@ -81,7 +81,7 @@ public class ToolSchedulerTests
     [Fact]
     public void ParallelGroup_CapsAtMaxConcurrency()
     {
-        var read = new FakeTool("ReadFile");
+        var read = new FakeTool("Read");
         var calls = Enumerable.Range(0, 25).Select(_ => Call(read)).ToList();
         var groups = Scheduler(read).Schedule(calls);
 
@@ -93,7 +93,7 @@ public class ToolSchedulerTests
     [Fact]
     public void UnknownTool_GetsOwnSerialGroup()
     {
-        var read = new FakeTool("ReadFile");
+        var read = new FakeTool("Read");
         var unknown = new ScheduledToolCall(new ToolCall(
             StrongId.NewToolCallId(),
             "DoesNotExist",

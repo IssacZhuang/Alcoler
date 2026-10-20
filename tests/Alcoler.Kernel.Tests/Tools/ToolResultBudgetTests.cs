@@ -18,16 +18,17 @@ public class ToolResultBudgetTests
     }
 
     [Fact]
-    public void OversizedOutput_TruncatedWithMarker_WithinBudget()
+    public void OversizedOutput_TruncatedWithParameterizedMarker_WithinBudget()
     {
         var result = ToolExecutionResult.Text(new string('x', 100));
 
-        var budgeted = ToolResultBudget.ApplyBudget(result, 50);
+        var budgeted = ToolResultBudget.ApplyBudget(result, 90);
 
         var text = Assert.IsType<ToolResultText>(Assert.Single(budgeted.Content)).Text;
-        Assert.EndsWith(ToolResultBudget.TruncationMarker, text);
-        Assert.Equal(50, text.Length);
-        Assert.Contains("[Tool output truncated by resultBudget]", text);
+        var marker = ToolResultBudget.TruncationMarker(100, 90);
+        Assert.EndsWith(marker, text);
+        Assert.Equal(90, text.Length);
+        Assert.Equal("[Tool output truncated by resultBudget: originalChars=100, maxModelChars=90]", marker);
     }
 
     [Fact]
@@ -71,6 +72,8 @@ public class ToolResultBudgetTests
 
         Assert.Equal(2, budgeted.Content.Count);
         Assert.Equal(60, Assert.IsType<ToolResultText>(budgeted.Content[0]).Text.Length);
-        Assert.Equal(ToolResultBudget.TruncationMarker, Assert.IsType<ToolResultText>(budgeted.Content[1]).Text);
+        Assert.Equal(
+            ToolResultBudget.TruncationMarker(120, 60),
+            Assert.IsType<ToolResultText>(budgeted.Content[1]).Text);
     }
 }

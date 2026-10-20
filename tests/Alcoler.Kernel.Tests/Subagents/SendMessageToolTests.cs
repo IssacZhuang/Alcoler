@@ -60,7 +60,11 @@ public class SendMessageToolTests
         Assert.False(result.IsError);
         Assert.Contains("resumed it in the background with your message", result.SingleText());
 
-        await WaitForPhaseAsync(childProjection, TurnPhase.Idle);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (childProjection.Snapshot() is var snapshot &&
+               (snapshot.State.Phase != TurnPhase.Idle || !snapshot.Rows.OfType<UserMessageRow>()
+                   .Any(row => row.Text.Contains("check the kernel again"))))
+            await Task.Delay(20, timeout.Token);
         var delivered = childProjection.Snapshot().Rows
             .OfType<UserMessageRow>()
             .Select(static row => row.Text)

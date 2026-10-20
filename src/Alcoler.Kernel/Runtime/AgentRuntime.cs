@@ -8,6 +8,7 @@ using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Workspace;
+using Alcoler.Kernel.Prompts;
 using Alcoler.Kernel.Skills;
 using Alcoler.Kernel.Tools;
 using Microsoft.Extensions.Logging;
@@ -15,7 +16,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Alcoler.Kernel.Runtime;
 
-public sealed class AgentRuntimeOptions
+public sealed record AgentRuntimeOptions
 {
     public required ISessionStore Store { get; init; }
 
@@ -33,6 +34,12 @@ public sealed class AgentRuntimeOptions
 
     public string? AgentInstructions { get; init; }
 
+    public string? CustomSystemPrompt { get; init; }
+
+    public string? ShellName { get; init; }
+
+    public Func<string, GitSnapshot?>? GitSnapshotProvider { get; init; }
+
     public string? SkillsListing { get; init; }
 
     public ITodoStore? TodoStore { get; init; }
@@ -42,10 +49,11 @@ public sealed class AgentRuntimeOptions
     public ILoggerFactory? Logging { get; init; }
 }
 
-public sealed class AgentRuntime : IAgentRuntime
+public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 {
     private readonly AgentRuntimeOptions _options;
     private readonly ConcurrentDictionary<SessionId, SessionRuntime> _sessions = new();
+    private readonly ConcurrentDictionary<(SessionId Parent, SessionId Child), WeakReference<AgentRuntime>> _subagentRuntimes = new();
     private readonly ToolRegistry _tools;
     private readonly ConcurrentDictionary<(string ProviderId, string ModelId), IChatModel> _modelCache = new();
     private readonly ILoggerFactory _logging;
@@ -111,6 +119,24 @@ public sealed class AgentRuntime : IAgentRuntime
     public IConversationProjection? TryObserve(SessionId sessionId) =>
         _sessions.TryGetValue(sessionId, out var runtime) ? runtime.CreateProjection() : null;
 
+    public IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId) =>
+        !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime)
+            ? runtime.GetBackgroundJobs()
+            : [];
+
+    public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId) =>
+        !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime) && runtime.StopBackgroundJob(jobId);
+
+    public IConversationProjection? TryObserveSubagent(SessionId parentSessionId, SessionId childSessionId)
+    {
+        if (Volatile.Read(ref _disposed) || !_sessions.ContainsKey(parentSessionId) ||
+            !_subagentRuntimes.TryGetValue((parentSessionId, childSessionId), out var reference) ||
+            !reference.TryGetTarget(out var runtime) || Volatile.Read(ref runtime._disposed))
+            return null;
+
+        return runtime.TryObserve(childSessionId);
+    }
+
     private SessionRuntime? GetActiveRuntime(SessionId sessionId) =>
         _sessions.TryGetValue(sessionId, out var runtime) ? runtime : null;
 
@@ -126,10 +152,14 @@ public sealed class AgentRuntime : IAgentRuntime
             _logging.CreateLogger<SessionRuntime>(),
             new SessionRuntimeOptions
             {
-                AgentInstructions = _options.AgentInstructions,
-                SkillsListing = SkillsCatalog.RenderListing(new SkillsCatalog().Load(record.WorkspaceRoot)),
+                AgentInstructions = RenderAgentInstructions(record.WorkspaceRoot),
+                CustomSystemPrompt = _options.CustomSystemPrompt,
+                ShellName = _options.ShellName,
+                GitSnapshot = _options.GitSnapshotProvider?.Invoke(record.WorkspaceRoot),
+                SkillsListing = SkillsListing.Render(new SkillsCatalog().Load(record.WorkspaceRoot)),
                 DefaultModel = _options.DefaultModel,
             },
+            _options.Artifacts,
             _options.TodoStore),
             CancellationToken.None,
             persistStartEvents: isNewSession).ConfigureAwait(false);
@@ -137,7 +167,28 @@ public sealed class AgentRuntime : IAgentRuntime
         return runtime;
     }
 
+    // A host-provided AgentInstructions value is treated as the workspace source verbatim;
+    // otherwise instructions are discovered on disk (user scope first, then workspace walk-up).
+    private string? RenderAgentInstructions(string workspaceRoot)
+    {
+        var sources = _options.AgentInstructions is { Length: > 0 } raw
+            ? [new AgentInstructionSource("AGENTS.md", "AGENTS.md", raw, Truncated: false, AgentInstructionScope.Workspace)]
+            : AgentInstructionsLoader.Load(workspaceRoot);
+        return AgentsMdSection.Render(sources);
+    }
+
     internal AgentRuntimeOptions Options => _options;
+
+    internal void RegisterSubagentRuntime(SessionId parentSessionId, SessionId childSessionId, AgentRuntime runtime)
+    {
+        if (Volatile.Read(ref _disposed) || !_sessions.ContainsKey(parentSessionId))
+            return;
+
+        var key = (parentSessionId, childSessionId);
+        _subagentRuntimes[key] = new WeakReference<AgentRuntime>(runtime);
+        if (Volatile.Read(ref _disposed))
+            _subagentRuntimes.TryRemove(key, out _);
+    }
 
     internal SessionRuntime? GetSession(SessionId sessionId) =>
         _sessions.TryGetValue(sessionId, out var runtime) ? runtime : null;
@@ -167,6 +218,7 @@ public sealed class AgentRuntime : IAgentRuntime
             return;
         }
         _disposed = true;
+        _subagentRuntimes.Clear();
         foreach (var runtime in _sessions.Values)
         {
             await runtime.DisposeAsync().ConfigureAwait(false);

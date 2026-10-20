@@ -35,7 +35,52 @@ public sealed class TestHarness : IAsyncDisposable
         return new TestHarness(root, databasePath, scripted);
     }
 
-    public AgentRuntime BuildRuntime(params ITool[] extraTools)
+    /// <summary>Full toolset runtime around a caller-supplied model and workspace root.</summary>
+    public static AgentRuntime BuildRuntimeFor(IChatModel model, string root, Contracts.Storage.ISessionStore? store = null)
+    {
+        store ??= new SqliteSessionStore(Path.Combine(root, "db.sqlite"));
+        store.InitializeAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
+        var artifacts = new FileArtifactStore(Path.Combine(root, "artifacts"));
+        AgentRuntime? runtime = null;
+        var todoStore = new InMemoryTodoStore();
+        var messenger = new SubagentMessenger();
+        var tools = new List<ITool>
+        {
+            new ReadTool(),
+            new WriteTool(),
+            new EditTool(),
+            new GlobTool(),
+            new GrepTool(),
+            new BashTool(),
+            new TodoWriteTool(todoStore),
+            new TodoReadTool(todoStore),
+            new ExitPlanModeTool(),
+            new AskUserQuestionTool(),
+            new SkillTool(),
+            new TaskOutputTool(),
+            new TaskStopTool(),
+            new SendMessageTool(messenger),
+            SubagentWiring.CreateTool(
+                () => runtime ?? throw new InvalidOperationException("runtime is not initialized"),
+                messenger),
+        };
+        runtime = new AgentRuntime(new AgentRuntimeOptions
+        {
+            Store = store,
+            Artifacts = artifacts,
+            Providers = [new ScriptedModelProvider(model)],
+            Tools = tools,
+            WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
+            DefaultModel = new ModelSelection("scripted", "test-model"),
+            TodoStore = todoStore,
+        });
+        return runtime;
+    }
+
+    public AgentRuntime BuildRuntime(params ITool[] extraTools) => BuildRuntime(null, extraTools);
+
+    public AgentRuntime BuildRuntime(
+        Func<AgentRuntimeOptions, AgentRuntimeOptions>? transform, params ITool[] extraTools)
     {
         var store = new SqliteSessionStore(DatabasePath);
         store.InitializeAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
@@ -45,9 +90,9 @@ public sealed class TestHarness : IAsyncDisposable
         var messenger = new SubagentMessenger();
         var tools = new List<ITool>
         {
-            new ReadFileTool(),
-            new WriteFileTool(),
-            new EditFileTool(),
+            new ReadTool(),
+            new WriteTool(),
+            new EditTool(),
             new GlobTool(),
             new GrepTool(),
             new BashTool(),
@@ -65,7 +110,7 @@ public sealed class TestHarness : IAsyncDisposable
                 messenger),
         };
         tools.AddRange(extraTools);
-        runtime = new AgentRuntime(new AgentRuntimeOptions
+        var options = new AgentRuntimeOptions
         {
             Store = store,
             Artifacts = artifacts,
@@ -74,8 +119,30 @@ public sealed class TestHarness : IAsyncDisposable
             WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
             DefaultModel = new ModelSelection("scripted", "test-model"),
             TodoStore = todoStore,
-        });
+        };
+        runtime = new AgentRuntime(transform?.Invoke(options) ?? options);
         return runtime;
+    }
+
+    /// <summary>Records every request served by the inner model so prompt assembly can be asserted.</summary>
+    public sealed class RequestCapturingModel(IChatModel inner) : IChatModel
+    {
+        private readonly List<ModelRequest> _requests = [];
+
+        public IReadOnlyList<ModelRequest> Requests => _requests;
+
+        public ModelDescriptor Descriptor => inner.Descriptor;
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
+            ModelRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            _requests.Add(request);
+            await foreach (var streamEvent in inner.StreamAsync(request, cancellationToken).WithCancellation(cancellationToken))
+            {
+                yield return streamEvent;
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()

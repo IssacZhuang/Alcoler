@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
@@ -96,7 +97,7 @@ public sealed class ToolCallExecutor
                 cancellationToken).ConfigureAwait(false);
 
             if (decision.Outcome == PermissionOutcome.Denied)
-                return ToolExecutionResult.Text("permission denied by user", isError: true);
+                return DeniedResult(tool, context);
 
             if (decision.Outcome == PermissionOutcome.Modified && decision.ModifiedInput is { } modified)
             {
@@ -108,13 +109,19 @@ public sealed class ToolCallExecutor
                 context = await contextFactory(effectiveCall, cancellationToken).ConfigureAwait(false);
             }
 
+            // Mirrors the reference guard: ExitPlanMode only executes while the session is in plan mode.
+            if (string.Equals(tool.Contract.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal)
+                && _modeResolver(context) != PermissionMode.Plan)
+                return ToolExecutionResult.Text(ExitPlanModeTool.NotInPlanModeMessage, isError: true);
+
             var executionContext = context with { Input = input };
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             if (tool.Metadata.DefaultTimeoutMs is > 0)
                 timeoutCts.CancelAfter(tool.Metadata.DefaultTimeoutMs.Value);
             try
             {
-                return await tool.ExecuteAsync(executionContext, timeoutCts.Token).ConfigureAwait(false);
+                var result = await tool.ExecuteAsync(executionContext, timeoutCts.Token).ConfigureAwait(false);
+                return WithEmptyOutputPlaceholder(result, tool.Contract.Name);
             }
             catch (OperationCanceledException)
             {
@@ -135,7 +142,32 @@ public sealed class ToolCallExecutor
         }
     }
 
-    private static ToolExecutionResult CancelledResult() => ToolExecutionResult.Text("Tool execution was cancelled");
+    private static ToolExecutionResult CancelledResult() => ToolExecutionResult.Text("Tool execution cancelled");
+
+    private ToolExecutionResult DeniedResult(ITool tool, ToolExecutionContext context)
+    {
+        if (string.Equals(tool.Contract.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal)
+            && _modeResolver(context) == PermissionMode.Plan)
+            return ToolExecutionResult.Text(ExitPlanModeTool.PlanDeniedMessage, isError: true);
+        return ToolExecutionResult.Text($"Permission denied for {tool.Contract.Name}", isError: true);
+    }
+
+    private static ToolExecutionResult WithEmptyOutputPlaceholder(ToolExecutionResult result, string toolName)
+    {
+        if (result.IsError || !HasOnlyBlankText(result))
+            return result;
+        return ToolExecutionResult.Text($"({toolName} completed with no output)", displaySummary: result.DisplaySummary);
+    }
+
+    private static bool HasOnlyBlankText(ToolExecutionResult result)
+    {
+        if (result.Content.Count == 0)
+            return true;
+        foreach (var block in result.Content)
+            if (block is not ToolResultText text || !string.IsNullOrWhiteSpace(text.Text))
+                return false;
+        return true;
+    }
 
     private static ToolExecutionResult ToolUseError(string message) =>
         ToolExecutionResult.Text($"{ErrorPrefix}{message}{ErrorSuffix}", isError: true);

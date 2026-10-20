@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Workspace;
@@ -7,14 +8,15 @@ namespace Alcoler.Kernel.Tools;
 
 /// <summary>
 /// Wholesale replacement of the session todo list. The model submits the complete list on
-/// every call; ids and statuses are normalized before storing.
+/// every call; the model-visible result is the reference JSON shape (oldTodos, todos, summary).
 /// </summary>
 public sealed class TodoWriteTool : ITool
 {
-    public const int MaxItems = 100;
-    public const int MaxTotalContentChars = 20_000;
-
-    private const string Title = "Todo list updated";
+    // Matches JSON.stringify output for the reference result contract: compact, non-ASCII kept literal.
+    private static readonly JsonSerializerOptions ResultJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     private readonly ITodoStore _store;
 
@@ -22,7 +24,13 @@ public sealed class TodoWriteTool : ITool
 
     public ToolContract Contract { get; } = new(
         "TodoWrite",
-        "Replaces the session todo list with the submitted items. Submit the complete list every time, not just the changed item. Use it to plan and track multi-step work.",
+        """
+        Create and update a task list for the current session. The list is rendered to the user as your working plan.
+
+        - Each todo has `content`, `status` ("pending" | "in_progress" | "completed"), and `priority` ("high" | "medium" | "low").
+        - Send the full list each call; it replaces the previous one.
+        - Keep one item `in_progress` at a time and mark it `completed` when done.
+        """,
         ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -30,17 +38,15 @@ public sealed class TodoWriteTool : ITool
           "properties": {
             "todos": {
               "type": "array",
-              "maxItems": 100,
-              "description": "The complete todo list.",
+              "description": "The complete updated todo list. At most one item may be in_progress at a time.",
               "items": {
                 "type": "object",
                 "properties": {
-                  "content": { "type": "string", "description": "Task description." },
-                  "status": { "type": "string", "enum": ["pending", "in_progress", "completed"], "default": "pending", "description": "Task status." },
-                  "id": { "type": "string", "description": "Stable item id; generated as todo-N when omitted." }
+                  "content": { "type": "string", "minLength": 1, "description": "Brief description of the task" },
+                  "status": { "type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Current status of the task" },
+                  "priority": { "type": "string", "enum": ["high", "medium", "low"], "description": "Priority level of the task" }
                 },
-                "required": ["content"],
-                "additionalProperties": false
+                "required": ["content", "status", "priority"]
               }
             }
           },
@@ -61,7 +67,7 @@ public sealed class TodoWriteTool : ITool
 
     public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken)
     {
-        TryNormalize(input, out _, out _, out var error);
+        TryNormalize(input, out _, out var error);
         return ValueTask.FromResult(error is null ? null : new ToolInputIssue("invalid_todos", error));
     }
 
@@ -70,24 +76,37 @@ public sealed class TodoWriteTool : ITool
 
     public ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
-        if (!TryNormalize(context.Input, out var items, out var notes, out var error))
+        if (!TryNormalize(context.Input, out var items, out var error))
             return ValueTask.FromResult(ToolExecutionResult.Text(error, isError: true));
 
-        var stored = _store.Replace(context.SessionId, items);
-        var text = TodoListRenderer.Render(stored, Title);
-        if (notes.Count > 0)
-            text = string.Join("\n", [text, .. notes]);
-        return ValueTask.FromResult(ToolExecutionResult.Text(text));
+        var oldTodos = _store.Get(context.SessionId);
+        var todos = _store.Replace(context.SessionId, items);
+        return ValueTask.FromResult(ToolExecutionResult.Text(SerializeWriteResult(oldTodos, todos)));
     }
+
+    internal static string SerializeWriteResult(IReadOnlyList<TodoItem> oldTodos, IReadOnlyList<TodoItem> todos) =>
+        JsonSerializer.Serialize(new
+        {
+            oldTodos = ToDto(oldTodos),
+            todos = ToDto(todos),
+            summary = new
+            {
+                total = todos.Count,
+                pending = Count(todos, TodoItemStatus.Pending),
+                inProgress = Count(todos, TodoItemStatus.InProgress),
+                completed = Count(todos, TodoItemStatus.Completed),
+            },
+        }, ResultJsonOptions);
+
+    internal static string SerializeReadResult(IReadOnlyList<TodoItem> todos) =>
+        JsonSerializer.Serialize(new { todos = ToDto(todos) }, ResultJsonOptions);
 
     internal static bool TryNormalize(
         JsonElement input,
         [NotNullWhen(true)] out IReadOnlyList<TodoItem> items,
-        out IReadOnlyList<string> notes,
         [NotNullWhen(false)] out string? error)
     {
         items = [];
-        notes = [];
         error = null;
 
         if (input.ValueKind != JsonValueKind.Object
@@ -117,44 +136,24 @@ public sealed class TodoWriteTool : ITool
                 return false;
             }
 
-            var status = TodoItemStatus.Pending;
-            if (element.TryGetProperty("status", out var statusElement)
-                && (statusElement.ValueKind != JsonValueKind.String || !TryParseStatus(statusElement.GetString(), out status)))
+            if (!element.TryGetProperty("status", out var statusElement)
+                || statusElement.ValueKind != JsonValueKind.String
+                || !TryParseStatus(statusElement.GetString(), out var status))
             {
                 error = $"todos[{index - 1}].status '{statusElement}' is not one of: pending, in_progress, completed";
                 return false;
             }
 
-            var id = element.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String
-                ? idElement.GetString()
-                : null;
-            if (string.IsNullOrWhiteSpace(id))
-                id = $"todo-{index}";
-
-            normalized.Add(new TodoItem(id, contentElement.GetString()!, status));
-
-            if (normalized.Count == MaxItems && index < todos.GetArrayLength())
+            if (!element.TryGetProperty("priority", out var priorityElement)
+                || priorityElement.ValueKind != JsonValueKind.String
+                || !TryParsePriority(priorityElement.GetString(), out var priority))
             {
-                notes = [.. notes, $"[todo list truncated at {MaxItems} items]"];
-                break;
+                error = $"todos[{index - 1}].priority '{priorityElement}' is not one of: high, medium, low";
+                return false;
             }
-        }
 
-        var truncatedContent = false;
-        var budget = MaxTotalContentChars;
-        for (var i = 0; i < normalized.Count; i++)
-        {
-            if (normalized[i].Content.Length <= budget)
-            {
-                budget -= normalized[i].Content.Length;
-                continue;
-            }
-            normalized[i] = normalized[i] with { Content = normalized[i].Content[..budget] };
-            budget = 0;
-            truncatedContent = true;
+            normalized.Add(new TodoItem(contentElement.GetString()!, status, priority));
         }
-        if (truncatedContent)
-            notes = [.. notes, $"[todo content truncated at the {MaxTotalContentChars:N0} character total limit]"];
 
         items = normalized;
         return true;
@@ -178,6 +177,57 @@ public sealed class TodoWriteTool : ITool
             return true;
         }
         return false;
+    }
+
+    internal static bool TryParsePriority(string? raw, out TodoPriority priority)
+    {
+        priority = TodoPriority.Medium;
+        if (raw is null)
+            return false;
+        if (string.Equals(raw, "high", StringComparison.OrdinalIgnoreCase))
+        {
+            priority = TodoPriority.High;
+            return true;
+        }
+        if (string.Equals(raw, "medium", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (string.Equals(raw, "low", StringComparison.OrdinalIgnoreCase))
+        {
+            priority = TodoPriority.Low;
+            return true;
+        }
+        return false;
+    }
+
+    internal static string StatusName(TodoItemStatus status) => status switch
+    {
+        TodoItemStatus.InProgress => "in_progress",
+        TodoItemStatus.Completed => "completed",
+        _ => "pending",
+    };
+
+    internal static string PriorityName(TodoPriority priority) => priority switch
+    {
+        TodoPriority.High => "high",
+        TodoPriority.Low => "low",
+        _ => "medium",
+    };
+
+    private static object[] ToDto(IReadOnlyList<TodoItem> items) =>
+        items.Select(static item => new
+        {
+            content = item.Content,
+            status = StatusName(item.Status),
+            priority = PriorityName(item.Priority),
+        }).ToArray();
+
+    private static int Count(IReadOnlyList<TodoItem> items, TodoItemStatus status)
+    {
+        var count = 0;
+        foreach (var item in items)
+            if (item.Status == status)
+                count++;
+        return count;
     }
 
     private static JsonElement ParseSchema(string rawJson) =>

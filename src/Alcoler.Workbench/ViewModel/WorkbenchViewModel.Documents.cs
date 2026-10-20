@@ -1,3 +1,7 @@
+using System.Text;
+using Alcoler.Contracts.Conversation;
+using Alcoler.Contracts.Projections;
+
 namespace Alcoler.Workbench.ViewModel;
 
 public sealed partial class WorkbenchViewModel
@@ -16,6 +20,61 @@ public sealed partial class WorkbenchViewModel
             retained.UpdateText(content);
         }
         return document;
+    }
+
+    public void OpenStatusPlan(StatusPlan plan) =>
+        OpenTextDocument($"plan:{plan.RowId}", plan.Title, plan.Markdown, "markdown");
+
+    public async Task OpenStatusActivityAsync(StatusActivity activity)
+    {
+        try
+        {
+            if (activity.ChildSessionId is { } childSessionId)
+            {
+                using var projection = Active is { } active && _runtime is ISessionActivityRuntime activities
+                    ? activities.TryObserveSubagent(active.SessionId, childSessionId) ?? _runtime.TryObserve(childSessionId)
+                    : _runtime.TryObserve(childSessionId);
+                if (projection is null)
+                {
+                    OpenTextDocument($"agent:{activity.Id}", activity.Title,
+                        activity.OutputText ?? "This agent transcript is no longer available.", "markdown");
+                    return;
+                }
+                var transcript = new StringBuilder();
+                foreach (var row in projection.Snapshot().Rows)
+                {
+                    var (heading, text) = row switch
+                    {
+                        UserMessageRow user => ("User", user.Text),
+                        AssistantMessageRow assistant => ("Assistant", string.Join("\n\n",
+                            assistant.Parts.OfType<TextPart>().Select(part => part.Text))),
+                        ToolCallRow tool => (tool.ToolName, string.Join("\n",
+                            tool.Output?.OfType<ToolResultText>().Select(block => block.Text) ?? [])),
+                        SystemNoticeRow notice => ("Status", notice.Text),
+                        _ => (string.Empty, string.Empty),
+                    };
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        transcript.Append("## ").AppendLine(heading).AppendLine().AppendLine(text).AppendLine();
+                    }
+                }
+                OpenTextDocument($"agent:{activity.Id}", activity.Title,
+                    transcript.Length > 0 ? transcript.ToString() : "This agent has not produced output yet.", "markdown");
+            }
+            else if (activity.OutputPath is { Length: > 0 } path)
+            {
+                await OpenFileDocumentAsync(path);
+            }
+            else
+            {
+                OpenTextDocument($"activity:{activity.Id}", activity.Title,
+                    string.IsNullOrEmpty(activity.OutputText) ? "This command has not produced output yet." : activity.OutputText);
+            }
+        }
+        catch (Exception exception)
+        {
+            Banner = $"Could not open activity output. {exception.Message}";
+        }
     }
 
     public async Task<DocumentViewModel> OpenFileDocumentAsync(

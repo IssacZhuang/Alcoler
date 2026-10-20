@@ -16,88 +16,50 @@ public class TodoWriteToolTests
         WorkspaceToolTestContext.ForSession(Session, json);
 
     [Fact]
-    public async Task Write_NormalizesIdsStatusesAndRendersCheckboxes()
+    public async Task Write_ReturnsReferenceJsonShape_WithOldTodosAndSummary()
     {
         var store = new InMemoryTodoStore();
+        store.Replace(Session, [new TodoItem("stale", TodoItemStatus.Completed, TodoPriority.Low)]);
         var tool = new TodoWriteTool(store);
 
         var result = await tool.ExecuteAsync(
             Context("""
             {"todos": [
-              {"content": "alpha"},
-              {"content": "beta", "status": "IN_PROGRESS"},
-              {"content": "gamma", "status": "Completed"},
-              {"content": "delta", "id": "custom", "status": "pending"}
+              {"content": "alpha", "status": "pending", "priority": "medium"},
+              {"content": "beta", "status": "IN_PROGRESS", "priority": "HIGH"},
+              {"content": "gamma", "status": "Completed", "priority": "low"}
             ]}
             """),
             CancellationToken.None);
 
         Assert.False(result.IsError);
         Assert.Equal(
-            """
-            Todo list updated: 1 done, 1 in progress, 2 pending
-            - [ ] alpha
-            - [~] beta
-            - [x] gamma
-            - [ ] delta
-            """,
+            """{"oldTodos":[{"content":"stale","status":"completed","priority":"low"}],"todos":[{"content":"alpha","status":"pending","priority":"medium"},{"content":"beta","status":"in_progress","priority":"high"},{"content":"gamma","status":"completed","priority":"low"}],"summary":{"total":3,"pending":1,"inProgress":1,"completed":1}}""",
             result.SingleText());
 
         var stored = store.Get(Session);
-        Assert.Equal(["todo-1", "todo-2", "todo-3", "custom"], stored.Select(item => item.Id));
         Assert.Equal(
-            [TodoItemStatus.Pending, TodoItemStatus.InProgress, TodoItemStatus.Completed, TodoItemStatus.Pending],
+            [TodoItemStatus.Pending, TodoItemStatus.InProgress, TodoItemStatus.Completed],
             stored.Select(item => item.Status));
+        Assert.Equal(
+            [TodoPriority.Medium, TodoPriority.High, TodoPriority.Low],
+            stored.Select(item => item.Priority));
     }
 
     [Fact]
-    public async Task Write_EmptyList_ReplacesEverythingAndRendersZeroCounts()
+    public async Task Write_EmptyList_ReplacesEverythingWithZeroCounts()
     {
         var store = new InMemoryTodoStore();
-        store.Replace(Session, [new TodoItem("todo-1", "stale", TodoItemStatus.Pending)]);
+        store.Replace(Session, [new TodoItem("stale", TodoItemStatus.Pending, TodoPriority.Medium)]);
         var tool = new TodoWriteTool(store);
 
         var result = await tool.ExecuteAsync(Context("""{"todos": []}"""), CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Equal("Todo list updated: 0 done, 0 in progress, 0 pending", result.SingleText());
-        Assert.Empty(store.Get(Session));
-    }
-
-    [Fact]
-    public async Task Write_CapsItemsAtLimitWithNote()
-    {
-        var store = new InMemoryTodoStore();
-        var tool = new TodoWriteTool(store);
-        var items = string.Join(",", Enumerable.Range(1, 105).Select(i => $$"""{"content": "task {{i}}"}"""));
-
-        var result = await tool.ExecuteAsync(Context($$"""{"todos": [{{items}}]}"""), CancellationToken.None);
-
-        Assert.False(result.IsError);
-        Assert.Equal(TodoWriteTool.MaxItems, store.Get(Session).Count);
-        var text = result.SingleText();
-        Assert.Contains($"[todo list truncated at {TodoWriteTool.MaxItems} items]", text);
-        Assert.DoesNotContain("task 101", text);
-    }
-
-    [Fact]
-    public async Task Write_TruncatesTotalContentWithNote()
-    {
-        var store = new InMemoryTodoStore();
-        var tool = new TodoWriteTool(store);
-        var first = new string('a', 10_000);
-        var second = new string('b', 10_000);
-        var json = $$"""{"todos": [{"content": "{{first}}"}, {"content": "{{second}}"}, {"content": "tail"}]}""";
-
-        var result = await tool.ExecuteAsync(Context(json), CancellationToken.None);
-
-        Assert.False(result.IsError);
-        var stored = store.Get(Session);
-        Assert.Equal(TodoWriteTool.MaxTotalContentChars, stored.Sum(item => item.Content.Length));
-        Assert.Equal(string.Empty, stored[2].Content);
-        Assert.Contains(
-            $"[todo content truncated at the {TodoWriteTool.MaxTotalContentChars:N0} character total limit]",
+        Assert.Equal(
+            """{"oldTodos":[{"content":"stale","status":"pending","priority":"medium"}],"todos":[],"summary":{"total":0,"pending":0,"inProgress":0,"completed":0}}""",
             result.SingleText());
+        Assert.Empty(store.Get(Session));
     }
 
     [Fact]
@@ -107,7 +69,7 @@ public class TodoWriteToolTests
         var tool = new TodoWriteTool(store);
 
         var result = await tool.ExecuteAsync(
-            Context("""{"todos": [{"content": "alpha", "status": "blocked"}]}"""),
+            Context("""{"todos": [{"content": "alpha", "status": "blocked", "priority": "low"}]}"""),
             CancellationToken.None);
 
         Assert.True(result.IsError);
@@ -116,15 +78,54 @@ public class TodoWriteToolTests
     }
 
     [Fact]
-    public async Task ValidateInput_RejectsMissingContent()
+    public async Task Write_UnknownPriority_ReturnsError()
+    {
+        var store = new InMemoryTodoStore();
+        var tool = new TodoWriteTool(store);
+
+        var result = await tool.ExecuteAsync(
+            Context("""{"todos": [{"content": "alpha", "status": "pending", "priority": "urgent"}]}"""),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Contains("high, medium, low", result.SingleText());
+        Assert.Empty(store.Get(Session));
+    }
+
+    [Fact]
+    public async Task ValidateInput_RejectsMissingContentStatusOrPriority()
     {
         var tool = new TodoWriteTool(new InMemoryTodoStore());
 
-        var issue = await tool.ValidateInputAsync(
-            JsonDocument.Parse("""{"todos": [{"status": "pending"}]}""").RootElement,
-            CancellationToken.None);
+        foreach (var json in new[]
+        {
+            """{"todos": [{"status": "pending", "priority": "low"}]}""",
+            """{"todos": [{"content": "alpha", "priority": "low"}]}""",
+            """{"todos": [{"content": "alpha", "status": "pending"}]}"""
+        })
+        {
+            var issue = await tool.ValidateInputAsync(
+                JsonDocument.Parse(json).RootElement,
+                CancellationToken.None);
+            Assert.NotNull(issue);
+        }
 
-        Assert.NotNull(issue);
+        Assert.Null(await tool.ValidateInputAsync(
+            JsonDocument.Parse("""{"todos": [{"content": "alpha", "status": "pending", "priority": "low"}]}""").RootElement,
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public void Contract_ExposesReferenceSchema()
+    {
+        var contract = new TodoWriteTool(new InMemoryTodoStore()).Contract;
+
+        Assert.Equal("TodoWrite", contract.Name);
+        Assert.StartsWith(
+            "Create and update a task list for the current session. The list is rendered to the user as your working plan.",
+            contract.Description);
+        Assert.Contains("\"priority\"", contract.InputSchema.GetRawText());
+        Assert.DoesNotContain("\"id\"", contract.InputSchema.GetRawText());
     }
 
     [Fact]

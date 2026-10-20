@@ -5,6 +5,23 @@ namespace Alcoler.Workbench.ViewModel;
 
 public sealed partial class ComposerViewModel : ObservableObject
 {
+    private bool _restoringMode;
+
+    public event Action<PermissionMode>? ModeSelected;
+
+    internal void RestoreMode(PermissionMode mode)
+    {
+        _restoringMode = true;
+        try
+        {
+            Mode = mode;
+        }
+        finally
+        {
+            _restoringMode = false;
+        }
+    }
+
     [ObservableProperty]
     private string _draft = string.Empty;
 
@@ -58,6 +75,10 @@ public sealed partial class ComposerViewModel : ObservableObject
         OnPropertyChanged(nameof(ModeLabel));
         OnPropertyChanged(nameof(IsFullAccess));
         NotifySendState();
+        if (!_restoringMode)
+        {
+            ModeSelected?.Invoke(value);
+        }
     }
 
     private void NotifySendState()

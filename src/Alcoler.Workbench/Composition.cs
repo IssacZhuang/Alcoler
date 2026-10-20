@@ -9,6 +9,7 @@ using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
+using Alcoler.Workbench.Git;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 
@@ -48,7 +49,8 @@ public static class Composition
             {
                 using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 return Avalonia.Media.Imaging.Bitmap.DecodeToWidth(stream, 1280);
-            }));
+            }),
+            saveComposer: composer => (WorkbenchConfig.LoadOrDefault() with { Composer = composer }).Save());
         await workbench.RefreshFromRuntimeAsync();
         return workbench;
     }
@@ -102,6 +104,7 @@ public static class Composition
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
             DefaultModel = WorkbenchModelCatalog.DefaultSelection(config),
             TodoStore = todoStore,
+            GitSnapshotProvider = GitSnapshotCollector.Collect,
         });
         return runtime;
     }

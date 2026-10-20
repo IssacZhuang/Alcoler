@@ -4,13 +4,13 @@ using Xunit;
 
 namespace Alcoler.Kernel.Tests.Tools;
 
-public class WriteFileToolTests
+public class WriteToolTests
 {
     [Fact]
     public async Task CreatesNewFile_CreatesDirectories_ReportsCreatedMessage()
     {
         using var workspace = new TempWorkspace();
-        var tool = new WriteFileTool();
+        var tool = new WriteTool();
 
         var result = await tool.ExecuteAsync(
             workspace.ContextFor("""{"file_path": "sub/dir/new.txt", "content": "line one\nline two"}"""),
@@ -30,7 +30,7 @@ public class WriteFileToolTests
         using var workspace = new TempWorkspace();
         var path = Path.Combine(workspace.Root, "a.txt");
         await File.WriteAllTextAsync(path, "original");
-        var tool = new WriteFileTool();
+        var tool = new WriteTool();
 
         var result = await tool.ExecuteAsync(
             workspace.ContextFor("""{"file_path": "a.txt", "content": "replacement"}""") with { FileReads = new FileReadState() },
@@ -48,8 +48,8 @@ public class WriteFileToolTests
         var path = Path.Combine(workspace.Root, "a.txt");
         await File.WriteAllTextAsync(path, "original");
         var reads = new FileReadState();
-        var reader = new ReadFileTool();
-        var tool = new WriteFileTool();
+        var reader = new ReadTool();
+        var tool = new WriteTool();
 
         await reader.ExecuteAsync(
             workspace.ContextFor("""{"file_path": "a.txt"}""") with { FileReads = reads },
@@ -72,8 +72,8 @@ public class WriteFileToolTests
         var path = Path.Combine(workspace.Root, "a.txt");
         await File.WriteAllTextAsync(path, "original");
         var reads = new FileReadState();
-        var reader = new ReadFileTool();
-        var tool = new WriteFileTool();
+        var reader = new ReadTool();
+        var tool = new WriteTool();
 
         await reader.ExecuteAsync(
             workspace.ContextFor("""{"file_path": "a.txt"}""") with { FileReads = reads },
@@ -95,7 +95,7 @@ public class WriteFileToolTests
     {
         using var workspace = new TempWorkspace();
         var reads = new FileReadState();
-        var tool = new WriteFileTool();
+        var tool = new WriteTool();
 
         var first = await tool.ExecuteAsync(
             workspace.ContextFor("""{"file_path": "a.txt", "content": "one"}""") with { FileReads = reads },
@@ -117,8 +117,8 @@ public class WriteFileToolTests
         var path = Path.Combine(workspace.Root, "a.txt");
         await File.WriteAllTextAsync(path, "one\ntwo\nthree");
         var reads = new FileReadState();
-        var reader = new ReadFileTool();
-        var tool = new WriteFileTool();
+        var reader = new ReadTool();
+        var tool = new WriteTool();
 
         await reader.ExecuteAsync(
             workspace.ContextFor("""{"file_path": "a.txt", "limit": 2}""") with { FileReads = reads },
@@ -136,7 +136,7 @@ public class WriteFileToolTests
     public async Task PathEscapingWorkspace_Rejected_NoFileWrittenOutside()
     {
         using var workspace = new TempWorkspace();
-        var tool = new WriteFileTool();
+        var tool = new WriteTool();
 
         var result = await tool.ExecuteAsync(
             workspace.ContextFor("""{"file_path": "../evil.txt", "content": "nope"}"""),

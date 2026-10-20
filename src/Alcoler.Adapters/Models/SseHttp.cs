@@ -35,10 +35,12 @@ internal static class SseHttp
         if (!response.IsSuccessStatusCode)
         {
             var errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var retryAfter = response.Headers.TryGetValues("retry-after", out var values)
-                ? string.Join(",", values)
-                : null;
-            var failure = ModelFailureClassifier.FromHttpResponse((int)response.StatusCode, retryAfter, errorBody);
+            var failure = ModelFailureClassifier.FromHttpResponse(
+                (int)response.StatusCode,
+                Header(response, "retry-after"),
+                errorBody,
+                Header(response, "retry-after-ms"),
+                Header(response, "x-should-retry"));
             yield return new SseFrame(FailureEventName, Alcoler.Contracts.Serialization.AlcolerJson.Serialize(failure));
             yield break;
         }
@@ -80,5 +82,8 @@ internal static class SseHttp
 
         static SseFrame FailureFrame(ModelFailure failure) =>
             new(FailureEventName, Alcoler.Contracts.Serialization.AlcolerJson.Serialize(failure));
+
+        static string? Header(HttpResponseMessage response, string name) =>
+            response.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : null;
     }
 }

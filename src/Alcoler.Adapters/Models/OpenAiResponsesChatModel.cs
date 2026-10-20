@@ -84,9 +84,11 @@ public sealed class OpenAiResponsesChatModel(
 
     private HttpRequestMessage BuildRequest(ModelRequest request)
     {
-        ModelRequestOptions.ValidateRequest(request, Descriptor.Properties);
+        var normalized = ReasoningHistoryNormalizer.Normalize(
+            request.Messages, keepReasoning: false, Descriptor.Properties.SupportsImage);
+        ModelRequestOptions.ValidateRequest(request with { Messages = normalized }, Descriptor.Properties);
         var input = new List<object>();
-        foreach (var message in ModelRequestSystemBlocks.Normalize(request.Messages, Descriptor.Properties.SupportsMidConversationSystem))
+        foreach (var message in ModelRequestSystemBlocks.Normalize(normalized, Descriptor.Properties.SupportsMidConversationSystem))
         {
             var text = new List<object>();
             void FlushText()
@@ -108,6 +110,13 @@ public sealed class OpenAiResponsesChatModel(
                         {
                             ["type"] = message.Role == MessageRole.Assistant ? "output_text" : "input_text",
                             ["text"] = t.Text,
+                        });
+                        break;
+                    case InputImageBlock image:
+                        text.Add(new Dictionary<string, object?>
+                        {
+                            ["type"] = "input_image",
+                            ["image_url"] = $"data:{image.MimeType};base64,{image.Base64Data}",
                         });
                         break;
                     case InputToolCallBlock call:

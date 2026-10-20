@@ -10,4 +10,7 @@ public static class OutputContinuation
     public const string ContinuePromptText =
         "Output token limit hit. Resume directly — no apology, no recap of what you were doing. " +
         "Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.";
+
+    public const string LimitExceededMessage =
+        "The model's response exceeded the output token maximum.";
 }

@@ -37,7 +37,7 @@ public sealed class BashTool : ITool, IToolInputPolicy
 
         - Working directory persists between calls, but prefer absolute paths — `cd` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.
         - IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.
-        - `timeout_ms` is in milliseconds: default {DefaultTimeoutMs}, max {MaxTimeoutMs}.
+        - `timeout` is in milliseconds: default {DefaultTimeoutMs}, max {MaxTimeoutMs}.
         - `run_in_background` runs the command detached: it keeps running across turns and re-invokes you when it exits. No `&` needed.
 
         # Git
@@ -51,9 +51,10 @@ public sealed class BashTool : ITool, IToolInputPolicy
           "type": "object",
           "properties": {
             "command": { "type": "string", "minLength": 1, "description": "The command to execute" },
-            "timeout_ms": { "type": "integer", "minimum": 1, "maximum": {{MaxTimeoutMs}}, "description": "Optional timeout in milliseconds (max {{MaxTimeoutMs}})" },
+            "timeout": { "type": "integer", "minimum": 1, "maximum": {{MaxTimeoutMs}}, "description": "Optional timeout in milliseconds (max {{MaxTimeoutMs}})" },
             "description": { "type": "string", "description": "{{DescriptionFieldPromptJson}}" },
-            "run_in_background": { "type": "boolean", "description": "Set to true to run this command in the background. Use ReadFile to read the output later." }
+            "run_in_background": { "type": "boolean", "description": "Set to true to run this command in the background. Use Read to read the output later." },
+            "dangerouslyDisableSandbox": { "type": "boolean", "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing." }
           },
           "required": ["command"],
           "additionalProperties": false
@@ -106,7 +107,7 @@ public sealed class BashTool : ITool, IToolInputPolicy
             return ToolExecutionResult.Text(string.Empty);
 
         var timeoutMs = Math.Clamp(
-            ToolInput.IntOrNull(context.Input, "timeout_ms") ?? DefaultTimeoutMs,
+            ToolInput.IntOrNull(context.Input, "timeout") ?? DefaultTimeoutMs,
             1,
             MaxTimeoutMs);
         var description = ToolInput.StringOrNull(context.Input, "description");

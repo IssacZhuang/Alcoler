@@ -5,12 +5,19 @@ namespace Alcoler.Kernel.Tools;
 
 public static class ToolResultBudget
 {
-    public const string TruncationMarker = "[Tool output truncated by resultBudget]";
+    public static string TruncationMarker(int originalChars, int maxModelChars) =>
+        $"[Tool output truncated by resultBudget: originalChars={originalChars}, maxModelChars={maxModelChars}]";
 
     public static ToolExecutionResult ApplyBudget(ToolExecutionResult result, int maxChars)
     {
         if (maxChars < 0)
             maxChars = 0;
+
+        var originalChars = 0;
+        foreach (var block in result.Content)
+            if (block is ToolResultText original)
+                originalChars += original.Text.Length;
+        var marker = TruncationMarker(originalChars, maxChars);
 
         var blocks = new List<ToolResultBlock>(result.Content.Count);
         var totalChars = 0;
@@ -35,9 +42,9 @@ public static class ToolResultBudget
             }
 
             var room = maxChars - totalChars;
-            var kept = room > TruncationMarker.Length + 1
-                ? text.Text[..(room - TruncationMarker.Length - 1)] + "\n" + TruncationMarker
-                : TruncationMarker;
+            var kept = room > marker.Length + 1
+                ? text.Text[..(room - marker.Length - 1)] + "\n" + marker
+                : marker;
             blocks.Add(new ToolResultText(kept));
             truncated = true;
         }

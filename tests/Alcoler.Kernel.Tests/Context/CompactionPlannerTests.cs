@@ -52,7 +52,7 @@ public class CompactionPlannerTests
         var promptText = Assert.IsType<InputTextBlock>(plan.SummaryModelRequest.Messages[1].Content[0]).Text;
         Assert.StartsWith(SummarizationPrompt.TextOnlyDirective, promptText);
         Assert.EndsWith(SummarizationPrompt.TextOnlyDirective, promptText.TrimEnd());
-        Assert.Contains("[tool call ReadFile]", promptText);
+        Assert.Contains("[tool call Read]", promptText);
         Assert.Contains("## Optional Next Step", promptText);
     }
 
@@ -121,7 +121,7 @@ public class CompactionPlannerTests
         Assert.Equal(2, parts.Count);
         Assert.Contains("namespace T {}", parts[0].Content);
         Assert.Equal(
-            "File big.cs was read before compaction; use the ReadFile tool if you need it again",
+            "File big.cs was read before compaction; use the Read tool if you need it again",
             parts[1].Content);
     }
 

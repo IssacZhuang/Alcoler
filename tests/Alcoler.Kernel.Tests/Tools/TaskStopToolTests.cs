@@ -54,7 +54,7 @@ public class TaskStopToolTests
     }
 
     [Fact]
-    public async Task RunningTask_IsStoppedAndReported()
+    public async Task RunningTask_IsStoppedAndReturnsReferenceJson()
     {
         using var workspace = new TempWorkspace();
         var jobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
@@ -73,8 +73,46 @@ public class TaskStopToolTests
             CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Equal($"Successfully stopped task: {started.Id.Value} (ping -n 20 127.0.0.1)", result.SingleText());
+        Assert.Equal(
+            $$"""{"message":"Successfully stopped task: {{started.Id.Value}} (ping -n 20 127.0.0.1)","task_id":"{{started.Id.Value}}","task_type":"local_bash","command":"ping -n 20 127.0.0.1"}""",
+            result.SingleText());
         await WaitForStatusAsync(jobs, started.Id, BackgroundJobStatus.Stopped);
+    }
+
+    [Fact]
+    public async Task DeprecatedShellId_IsAcceptedAsTaskId()
+    {
+        using var workspace = new TempWorkspace();
+        var jobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
+        var started = jobs.Start(
+            "node server.js",
+            null,
+            async ct =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return new BackgroundJobResult(0);
+            });
+        var tool = new TaskStopTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, jobs, $$"""{"shell_id": "{{started.Id.Value}}"}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("\"task_id\":\"" + started.Id.Value + "\"", result.SingleText());
+        await WaitForStatusAsync(jobs, started.Id, BackgroundJobStatus.Stopped);
+    }
+
+    [Fact]
+    public void Contract_SchemaExposesDeprecatedShellId()
+    {
+        var contract = new TaskStopTool().Contract;
+
+        Assert.Equal("TaskStop", contract.Name);
+        var schema = contract.InputSchema.GetRawText();
+        Assert.Contains("\"shell_id\"", schema);
+        Assert.Contains("Deprecated: use task_id instead", schema);
+        Assert.DoesNotContain("\"required\"", schema);
     }
 
     private static ToolExecutionContext Context(TempWorkspace workspace, BackgroundJobService jobs, string json) =>

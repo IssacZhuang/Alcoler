@@ -108,8 +108,10 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
     private HttpRequestMessage BuildRequest(ModelRequest request)
     {
-        ModelRequestOptions.ValidateRequest(request, Descriptor.Properties);
-        var (conversation, systemBlocks) = ModelRequestSystemBlocks.ExtractLeading(request.Messages);
+        var messages = ReasoningHistoryNormalizer.Normalize(
+            request.Messages, keepReasoning: true, Descriptor.Properties.SupportsImage);
+        ModelRequestOptions.ValidateRequest(request with { Messages = messages }, Descriptor.Properties);
+        var (conversation, systemBlocks) = ModelRequestSystemBlocks.ExtractLeading(messages);
         var payload = new Dictionary<string, object?>
         {
             ["model"] = options.Model,
@@ -150,6 +152,24 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
             Dictionary<string, object?> providerBlock = block switch
             {
                 InputTextBlock text => new() { ["type"] = "text", ["text"] = text.Text },
+                // Unsigned thinking blocks are preserved with an empty signature, mirroring
+                // the reference's providerOptionsForReasoningBlock fallback.
+                InputReasoningBlock reasoning => new()
+                {
+                    ["type"] = "thinking",
+                    ["thinking"] = reasoning.Text,
+                    ["signature"] = reasoning.Signature ?? "",
+                },
+                InputImageBlock image => new()
+                {
+                    ["type"] = "image",
+                    ["source"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "base64",
+                        ["media_type"] = image.MimeType,
+                        ["data"] = image.Base64Data,
+                    },
+                },
                 InputToolCallBlock toolCall => new()
                 {
                     ["type"] = "tool_use",

@@ -140,6 +140,18 @@ public sealed partial class GitPaneViewModel : ObservableObject
     [ObservableProperty]
     private string _currentBranch = string.Empty;
 
+    [ObservableProperty]
+    private int _addedLines;
+
+    [ObservableProperty]
+    private int _removedLines;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasChanges))]
+    private int _changedFileCount;
+
+    public bool HasChanges => ChangedFileCount > 0;
+
     // Entry points run on the UI thread; results of background git calls are marshaled through
     // the scheduler so observable state never mutates off the UI thread.
     [RelayCommand]
@@ -211,6 +223,7 @@ public sealed partial class GitPaneViewModel : ObservableObject
             _gitService.GetCurrentBranchName(repositoryRoot),
             _gitService.GetBranches(repositoryRoot),
             _gitService.GetStatus(repositoryRoot),
+            _gitService.GetChangeSummary(repositoryRoot),
             _gitService.GetLog(repositoryRoot, RecentCommitLimit));
     }
 
@@ -220,6 +233,9 @@ public sealed partial class GitPaneViewModel : ObservableObject
         {
             IsRepo = false;
             CurrentBranch = string.Empty;
+            AddedLines = 0;
+            RemovedLines = 0;
+            ChangedFileCount = 0;
             _repositoryRoot = null;
             Branches.Clear();
             Staged.Clear();
@@ -237,6 +253,14 @@ public sealed partial class GitPaneViewModel : ObservableObject
         ReplaceAll(Staged, snapshot.Status.Staged.Select(f => new GitFileChangeViewModel(f.Path, f.State)));
         ReplaceAll(Unstaged, snapshot.Status.Unstaged.Select(f => new GitFileChangeViewModel(f.Path, f.State)));
         ReplaceAll(Untracked, snapshot.Status.Untracked.Select(f => new GitFileChangeViewModel(f.Path, f.State)));
+        AddedLines = snapshot.ChangeSummary.AddedLines;
+        RemovedLines = snapshot.ChangeSummary.RemovedLines;
+        ChangedFileCount = snapshot.Status.Staged
+            .Concat(snapshot.Status.Unstaged)
+            .Concat(snapshot.Status.Untracked)
+            .Select(f => f.Path)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
         ReplaceAll(RecentCommits, snapshot.Commits.Select(c =>
             new GitCommitViewModel(c.Sha, c.Message, c.Author, c.When)));
     }
@@ -255,5 +279,6 @@ public sealed partial class GitPaneViewModel : ObservableObject
         string? CurrentBranch,
         IReadOnlyList<GitBranch> Branches,
         GitRepositoryStatus Status,
+        GitChangeSummary ChangeSummary,
         IReadOnlyList<GitCommit> Commits);
 }

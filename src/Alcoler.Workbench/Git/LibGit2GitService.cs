@@ -73,6 +73,27 @@ public sealed class LibGit2GitService : IGitService
         }, BusyRetryDelay);
     }
 
+    public GitChangeSummary GetChangeSummary(string repositoryRoot)
+    {
+        var repository = Open(repositoryRoot);
+        return ExecuteWithBusyRetry(() =>
+        {
+            // Diff uses the cached index; RetrieveStatus reloads it from disk without writing it.
+            repository.RetrieveStatus(new StatusOptions
+            {
+                Show = StatusShowOption.IndexOnly,
+                DetectRenamesInIndex = false,
+                IncludeIgnored = false,
+                IncludeUntracked = false,
+            });
+            using var staged = repository.Diff.Compare<Patch>(repository.Head.Tip?.Tree, DiffTargets.Index);
+            using var unstaged = repository.Diff.Compare<Patch>();
+            return new GitChangeSummary(
+                staged.LinesAdded + unstaged.LinesAdded,
+                staged.LinesDeleted + unstaged.LinesDeleted);
+        }, BusyRetryDelay);
+    }
+
     public IReadOnlyList<GitBranch> GetBranches(string repositoryRoot)
     {
         var repository = Open(repositoryRoot);

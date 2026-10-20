@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Tools;
@@ -42,9 +43,10 @@ public sealed class SkillTool : ITool
           "type": "object",
           "properties": {
             "skill": { "type": "string", "description": "The name of a skill from the available-skills list. Do not guess names." },
+            "name": { "type": "string", "description": "Deprecated: use skill instead" },
             "args": { "type": "string", "description": "Optional arguments for the skill" }
           },
-          "required": ["skill"],
+          "anyOf": [ { "required": ["skill"] }, { "required": ["name"] } ],
           "additionalProperties": false
         }
         """));
@@ -62,36 +64,65 @@ public sealed class SkillTool : ITool
     public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken)
     {
         if (input.ValueKind is not JsonValueKind.Object
-            || !input.TryGetProperty("skill", out var skill)
-            || skill.ValueKind is not JsonValueKind.String
-            || string.IsNullOrWhiteSpace(skill.GetString()))
+            || !TryReadSkillName(input, out var name)
+            || string.IsNullOrWhiteSpace(name))
             return ValueTask.FromResult<ToolInputIssue?>(new("missing_skill", "'skill' must be a non-empty string"));
 
         return ValueTask.FromResult<ToolInputIssue?>(null);
     }
 
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
+    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken)
+    {
+        // Legacy {name, args} input is rewritten to {skill, args} before execution and permission checks.
+        if (input.ValueKind is not JsonValueKind.Object
+            || !input.TryGetProperty("name", out var name)
+            || name.ValueKind is not JsonValueKind.String
+            || input.TryGetProperty("skill", out _))
+            return ValueTask.FromResult(input);
+
+        var rewritten = new JsonObject();
+        foreach (var property in input.EnumerateObject())
+        {
+            if (property.NameEquals("name"))
+                continue;
+            rewritten[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+        }
+        rewritten["skill"] = name.GetString();
+        return ValueTask.FromResult(JsonSerializer.SerializeToElement(rewritten));
+    }
 
     public ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
         if (context.Skills is null)
             return ValueTask.FromResult(ToolExecutionResult.Text(
                 "Skill tool is not available in this session", isError: true));
-        if (!context.Input.TryGetProperty("skill", out var skillElement)
-            || skillElement.ValueKind is not JsonValueKind.String
-            || string.IsNullOrWhiteSpace(skillElement.GetString()))
+        if (!TryReadSkillName(context.Input, out var name) || string.IsNullOrWhiteSpace(name))
             return ValueTask.FromResult(ToolExecutionResult.Text(
                 "'skill' must be a non-empty string", isError: true));
 
-        var name = skillElement.GetString()!;
         var document = context.Skills.TryLoad(name, cancellationToken);
         if (document is null)
             return ValueTask.FromResult(ToolExecutionResult.Text(
-                $"Skill '{name}' was not found. Use only skills from the available skills listing; do not guess names.",
+                $"Skill not found: {name}",
                 isError: true));
 
         return ValueTask.FromResult(ToolExecutionResult.Text(Render(document)));
+    }
+
+    private static bool TryReadSkillName(JsonElement input, out string? name)
+    {
+        if (input.TryGetProperty("skill", out var skill) && skill.ValueKind is JsonValueKind.String)
+        {
+            name = skill.GetString();
+            return true;
+        }
+        if (input.TryGetProperty("name", out var legacy) && legacy.ValueKind is JsonValueKind.String)
+        {
+            name = legacy.GetString();
+            return true;
+        }
+        name = null;
+        return false;
     }
 
     internal static string Render(SkillDocument document)

@@ -18,10 +18,10 @@ public class PermissionFlowDiagnostics(ITestOutputHelper output)
         await using var harness = TestHarness.Create(
             new ScriptStep.Events(
                 new Contracts.Models.ModelTextDelta("Working on it."),
-                new Contracts.Models.ModelToolInputStarted(new ToolCallId("call-1"), "WriteFile"),
+                new Contracts.Models.ModelToolInputStarted(new ToolCallId("call-1"), "Write"),
                 new Contracts.Models.ModelToolInputDelta(new ToolCallId("call-1"), JsonSerializer.Serialize(new { file_path = "notes.txt", content = "Hello" })),
                 new Contracts.Models.ModelToolInputEnded(new ToolCallId("call-1")),
-                new Contracts.Models.ModelToolCallReady(new Contracts.Models.ToolCall(new ToolCallId("call-1"), "WriteFile", JsonSerializer.SerializeToElement(new { file_path = "notes.txt", content = "Hello" }))),
+                new Contracts.Models.ModelToolCallReady(new Contracts.Models.ToolCall(new ToolCallId("call-1"), "Write", JsonSerializer.SerializeToElement(new { file_path = "notes.txt", content = "Hello" }))),
                 new Contracts.Models.ModelStreamFinished(Contracts.Models.ModelFinishReason.ToolCalls)),
             new ScriptStep.Events(
                 new Contracts.Models.ModelTextDelta("Done."),

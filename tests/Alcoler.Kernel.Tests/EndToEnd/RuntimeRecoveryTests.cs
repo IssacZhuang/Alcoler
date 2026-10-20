@@ -23,6 +23,10 @@ public class RuntimeRecoveryTests
     private static IReadOnlyList<ModelStreamEvent> EmptyFinish() =>
         [new ModelStreamFinished(ModelFinishReason.Stop)];
 
+    // ZCode isSuspiciousEmptyModelResult shape: non-stop finish, zero usage, no content.
+    private static IReadOnlyList<ModelStreamEvent> SuspiciousEmptyFinish() =>
+        [new ModelStreamFinished(ModelFinishReason.Other)];
+
     private static IReadOnlyList<ModelStreamEvent> Failure(ModelFailure failure) =>
         [new ModelStreamFailed(failure)];
 
@@ -49,7 +53,7 @@ public class RuntimeRecoveryTests
         new(ModelFailureKind.InvalidRequest, message);
 
     [Fact]
-    public async Task LengthFinish_AppendsContinueUserMessageAndResumesOutput()
+    public async Task LengthFinish_ContinuesViaRequestLocalPromptAndResumesOutput()
     {
         await using var harness = ScriptedCallHarness.Create(
             LengthText("part one "),
@@ -61,18 +65,22 @@ public class RuntimeRecoveryTests
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "write a long essay");
 
         Assert.Equal(2, harness.Model.Requests.Count);
+        var continuation = harness.Model.Requests[1].Messages
+            .SelectMany(m => m.Content.OfType<InputTextBlock>())
+            .SingleOrDefault(t => t.Text == OutputContinuation.ContinuePromptText);
+        Assert.NotNull(continuation);
         await using var store = harness.OpenStore();
         var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
         Assert.Contains(messages, m => m.Message.Parts.OfType<TextPart>().Any(p => p.Text.Contains("part one")));
         Assert.Contains(messages, m => m.Message.Parts.OfType<TextPart>().Any(p => p.Text.Contains("part two")));
-        var continueMessages = messages.Where(m =>
+        // The Continue prompt is request-local and never persisted into history.
+        Assert.DoesNotContain(messages, m =>
             m.Message.Role == MessageRole.User &&
-            m.Message.Parts.OfType<TextPart>().Any(p => p.Text == OutputContinuation.ContinuePromptText)).ToList();
-        Assert.Single(continueMessages);
+            m.Message.Parts.OfType<TextPart>().Any(p => p.Text == OutputContinuation.ContinuePromptText));
     }
 
     [Fact]
-    public async Task LengthFinish_FourthTruncation_EndsTurnWithoutFurtherContinuation()
+    public async Task LengthFinish_FourthTruncation_FailsTurnWithOutputLimitError()
     {
         await using var harness = ScriptedCallHarness.Create(
             LengthText("one "), LengthText("two "), LengthText("three "), LengthText("four"));
@@ -80,22 +88,38 @@ public class RuntimeRecoveryTests
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
 
-        await SendAndWaitIdleAsync(runtime, projection, session.Id, "keep writing");
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "keep writing", expectedReplies: 0);
 
+        // Three continuations, then the fourth truncation fails the turn with the
+        // output-limit error instead of a fifth request or a silent finish.
         Assert.Equal(4, harness.Model.Requests.Count);
+        Assert.Equal(TurnPhase.Idle, projection.Snapshot().State.Phase);
         await using var store = harness.OpenStore();
         var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
-        Assert.Equal(3, messages.Count(m =>
-            m.Message.Role == MessageRole.User &&
-            m.Message.Parts.OfType<TextPart>().Any(p => p.Text == OutputContinuation.ContinuePromptText)));
-        Assert.Equal(4, messages.Count(m => m.Message.Role == MessageRole.Assistant));
+        Assert.Contains(messages, m => m.Message.Parts.OfType<TextPart>().Any(p => p.Text.Contains("four")));
     }
 
     [Fact]
-    public async Task EmptyCompletion_IsRetriedOnceAndSecondAttemptCommits()
+    public async Task EmptyCompletion_StopFinish_CommitsEmptyAssistantAndCompletes()
+    {
+        await using var harness = ScriptedCallHarness.Create(EmptyFinish());
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "say something", expectedReplies: 1);
+
+        Assert.Equal(1, harness.Model.Requests.Count);
+        await using var store = harness.OpenStore();
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        Assert.Contains(messages, m => m.Message.Role == MessageRole.Assistant && m.Message.Parts.Count == 0);
+    }
+
+    [Fact]
+    public async Task SuspiciousEmptyCompletion_IsRetriedOnceAndSecondAttemptCommits()
     {
         await using var harness = ScriptedCallHarness.Create(
-            EmptyFinish(),
+            SuspiciousEmptyFinish(),
             StopText("recovered"));
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
@@ -110,11 +134,11 @@ public class RuntimeRecoveryTests
     }
 
     [Fact]
-    public async Task EmptyCompletion_RetryAlsoEmpty_FailsTurnWithoutAssistant()
+    public async Task SuspiciousEmptyCompletion_RetryAlsoEmpty_FailsTurnWithoutAssistant()
     {
         await using var harness = ScriptedCallHarness.Create(
-            EmptyFinish(),
-            EmptyFinish());
+            SuspiciousEmptyFinish(),
+            SuspiciousEmptyFinish());
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);

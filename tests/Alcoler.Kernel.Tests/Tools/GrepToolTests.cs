@@ -6,6 +6,16 @@ namespace Alcoler.Kernel.Tests.Tools;
 public class GrepToolTests
 {
     [Fact]
+    public void Contract_PathDescription_MatchesReferenceWording()
+    {
+        var path = new GrepTool().Contract.InputSchema.GetProperty("properties").GetProperty("path");
+
+        Assert.Equal(
+            "File or directory to search in (rg PATH). Defaults to current working directory.",
+            path.GetProperty("description").GetString());
+    }
+
+    [Fact]
     public async Task ContentMode_FormatsPathLineNumberText()
     {
         using var workspace = new TempWorkspace();

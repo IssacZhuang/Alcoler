@@ -1,7 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:converters="using:Alcoler.Workbench.Converters"
-             xmlns:events="using:Alcoler.Contracts.Events"
+             xmlns:views="using:Alcoler.Workbench.Views"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
              xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.InteractionAreaView"
@@ -28,7 +28,7 @@
   </UserControl.Styles>
 
   <controls:ConversationLayout Padding="16,0">
-    <StackPanel Spacing="8">
+    <Grid RowDefinitions="Auto,*" RowSpacing="8">
       <Border x:Name="BannerStrip"
               IsVisible="False"
               Background="{DynamicResource AlcolerCard}"
@@ -45,10 +45,11 @@
         </DockPanel>
       </Border>
 
-      <ContentControl x:Name="InteractionHost" Content="{Binding PendingInteraction}" IsVisible="{Binding HasPendingInteraction}">
+      <ContentControl x:Name="InteractionHost" Grid.Row="1" Content="{Binding PendingInteraction}" IsVisible="{Binding HasPendingInteraction}"
+                      HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
         <ContentControl.ContentTemplate>
           <DataTemplate x:DataType="vm:PendingInteractionViewModel">
-            <StackPanel Spacing="8">
+            <Grid>
               <Border x:Name="PermissionCard" Classes="card" IsVisible="{Binding IsPermission}" KeyDown="OnPermissionCardKeyDown">
                 <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
                   <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
@@ -85,66 +86,13 @@
                 </Grid>
               </Border>
 
-              <Border x:Name="QuestionCard" Classes="card" IsVisible="{Binding !IsPermission}">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="{Binding Prompt}" FontSize="13" FontWeight="Medium" TextWrapping="Wrap" />
-                  <ItemsControl ItemsSource="{Binding Questions}">
-                    <ItemsControl.Template>
-                      <ControlTemplate>
-                        <ItemsPresenter />
-                      </ControlTemplate>
-                    </ItemsControl.Template>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="events:InteractionQuestion">
-                        <StackPanel Spacing="6" Margin="0,2">
-                          <TextBlock Text="{Binding Header}" FontSize="12" FontWeight="Medium" />
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="12"
-                                     Foreground="{DynamicResource AlcolerTextSecondary}" />
-                          <TextBlock Text="Select all that apply" FontSize="11" IsVisible="{Binding MultiSelect}"
-                                     Foreground="{DynamicResource AlcolerTextSecondary}" />
-                          <!-- Compiled bindings cannot express the owning question from an option scope. -->
-                          <ItemsControl ItemsSource="{Binding Options}" x:CompileBindings="False">
-                            <ItemsControl.Template>
-                              <ControlTemplate>
-                                <ItemsPresenter />
-                              </ControlTemplate>
-                            </ItemsControl.Template>
-                            <ItemsControl.ItemTemplate>
-                              <DataTemplate>
-                                <StackPanel Spacing="4" Margin="0,2">
-                                  <RadioButton Content="{Binding Label}"
-                                               Tag="{Binding}"
-                                               GroupName="{Binding $parent[ItemsControl].DataContext.Header}"
-                                               FontSize="13" MinHeight="32" Padding="8,4"
-                                               IsVisible="{Binding $parent[ItemsControl].DataContext.MultiSelect, Converter={x:Static converters:ComposerConverters.Not}}"
-                                               Click="OnOptionClick" />
-                                  <CheckBox Content="{Binding Label}"
-                                            Tag="{Binding}" FontSize="13" MinHeight="32" Padding="8,4"
-                                            IsVisible="{Binding $parent[ItemsControl].DataContext.MultiSelect}"
-                                            Click="OnOptionClick" />
-                                  <TextBlock Text="{Binding Description}" TextWrapping="Wrap" Margin="32,0,8,4"
-                                             FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}"
-                                             IsVisible="{Binding Description, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                                </StackPanel>
-                              </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                          </ItemsControl>
-                        </StackPanel>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                  <Button x:Name="SubmitAnswersButton"
-                          Content="Submit"
-                          Classes="primary"
-                          MinWidth="72" Height="28" Padding="12,0"
-                          HorizontalAlignment="Right" IsEnabled="{Binding CanSubmit}"
-                          Click="OnSubmitAnswersClick" />
-                </StackPanel>
-              </Border>
-            </StackPanel>
+              <views:QuestionCardView IsVisible="{Binding !IsPermission}"
+                                      IsEnabled="{Binding !$parent[UserControl].((vm:ConversationViewModel)DataContext).IsInteractionSubmitting}"
+                                      SubmitRequested="OnSubmitAnswersClick" DismissRequested="OnDismissQuestion" />
+            </Grid>
           </DataTemplate>
         </ContentControl.ContentTemplate>
       </ContentControl>
-    </StackPanel>
+    </Grid>
   </controls:ConversationLayout>
 </UserControl>

@@ -15,11 +15,13 @@ public sealed record ToolBatchOutcome(
     bool Ran,
     bool CancelledByStop);
 
-public sealed record ToolBatchResult(IReadOnlyList<ToolBatchOutcome> Outcomes);
+public sealed record ToolBatchResult(IReadOnlyList<ToolBatchOutcome> Outcomes, bool StoppedAfterResult = false);
 
 public sealed class ToolBatchRunner
 {
-    private const string CancelledText = "Tool execution was cancelled";
+    // ZCode call-runner abort text; the skip-after-stop-turn path carries its own message.
+    private const string CancelledText = "Tool execution cancelled";
+    private const string SkippedAfterStopTurnText = "Tool cancelled because a previous tool result requested a turn stop.";
 
     private readonly ToolScheduler _scheduler;
     private readonly ToolCallExecutor _executor;
@@ -66,15 +68,18 @@ public sealed class ToolBatchRunner
 
         for (var i = 0; i < outcomes.Length; i++)
         {
-            outcomes[i] ??= new ToolBatchOutcome(
+            if (outcomes[i] is not null)
+                continue;
+            var skippedByStop = stopped && !cancellationToken.IsCancellationRequested;
+            outcomes[i] = new ToolBatchOutcome(
                 calls[i].Call,
-                ToolExecutionResult.Text(CancelledText),
+                ToolExecutionResult.Text(skippedByStop ? SkippedAfterStopTurnText : CancelledText),
                 TimeSpan.Zero,
                 Ran: false,
-                CancelledByStop: stopped);
+                CancelledByStop: skippedByStop);
         }
 
-        return new ToolBatchResult(outcomes!);
+        return new ToolBatchResult(outcomes!, StoppedAfterResult: stopped);
     }
 
     private async Task<List<(ScheduledToolCall Call, ToolExecutionOutcome Outcome)>> ExecuteGroupParallelAsync(

@@ -110,7 +110,7 @@ public class PermissionServiceTests
         var broker = new StubBroker { Next = PermissionDecision.Allow };
         var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Plan);
 
-        var decision = await service.CheckAsync(Request("WriteFile", Preset("workspaceWrite"), mode: PermissionMode.Plan), CancellationToken.None);
+        var decision = await service.CheckAsync(Request("Write", Preset("workspaceWrite"), mode: PermissionMode.Plan), CancellationToken.None);
 
         Assert.Equal(PermissionOutcome.Denied, decision.Outcome);
         Assert.Equal(0, broker.Calls);

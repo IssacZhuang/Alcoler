@@ -137,11 +137,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<ProviderTemplate> ProviderTemplates => WorkbenchModelCatalog.Templates;
 
-    private readonly WorkbenchDefaultModelConfig? _defaultModel;
+    private readonly WorkbenchConfig _config;
 
     public SettingsViewModel(WorkbenchConfig config)
     {
-        _defaultModel = config.DefaultModel;
+        _config = config;
         Theme = config.Theme == Light ? Light : Dark;
         foreach (var provider in config.Providers ?? [])
         {
@@ -280,11 +280,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         return errors;
     }
 
-    private WorkbenchConfig BuildConfig() => new(
-        Providers.Select(ToProviderConfig).ToList(),
-        _defaultModel,
-        McpServers.Select(ToMcpServerConfig).ToList(),
-        Theme);
+    private WorkbenchConfig BuildConfig() => _config with
+    {
+        Providers = Providers.Select(ToProviderConfig).ToList(),
+        McpServers = McpServers.Select(ToMcpServerConfig).ToList(),
+        Theme = Theme,
+    };
 
     private static WorkbenchProviderConfig ToProviderConfig(ProviderViewModel provider) => provider.ToConfig();
 

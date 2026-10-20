@@ -38,7 +38,7 @@ public class ToolCallExecutorTests
     public async Task UnknownTool_ReturnsPairedToolUseError()
     {
         using var workspace = new TempWorkspace();
-        var registry = new ToolRegistry([new FakeTool("ReadFile")]);
+        var registry = new ToolRegistry([new FakeTool("Read")]);
         var executor = Executor(registry, workspace: workspace);
         var call = new ToolCall(StrongId.NewToolCallId(), "Nope", JsonDocument.Parse("{}").RootElement.Clone());
 
@@ -88,7 +88,7 @@ public class ToolCallExecutorTests
     public async Task PermissionDenied_ReturnsPairedErrorResult_WithoutExecuting()
     {
         using var workspace = new TempWorkspace();
-        var tool = new FakeTool("WriteFile", FakeToolMetadata.Serial());
+        var tool = new FakeTool("Write", FakeToolMetadata.Serial());
         var gate = new ScriptedPermissionGate(PermissionDecision.Deny);
         var executor = Executor(new ToolRegistry([tool]), gate, workspace);
         var call = tool.Call();
@@ -97,14 +97,97 @@ public class ToolCallExecutorTests
         var outcome = await RunAsync(executor, call, workspace, notifications);
 
         Assert.True(outcome.Result.IsError);
-        Assert.Equal("permission denied by user", outcome.Result.SingleText());
+        Assert.Equal("Permission denied for Write", outcome.Result.SingleText());
         Assert.Empty(tool.ExecutedContexts);
         Assert.Single(gate.Requests);
-        Assert.Equal("WriteFile", gate.Requests[0].ToolName);
+        Assert.Equal("Write", gate.Requests[0].ToolName);
         Assert.Equal(tool.Metadata, gate.Requests[0].Tool);
         var asked = Assert.Single(notifications.Of<ToolExecutionPermissionAsked>());
         Assert.Equal(call.Id, asked.Call.Id);
-        Assert.Equal("WriteFile", asked.Request.ToolName);
+        Assert.Equal("Write", asked.Request.ToolName);
+    }
+
+    [Fact]
+    public async Task SuccessfulEmptyOutput_IsReplacedWithPlaceholder()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Quiet", execute: (_, _) => ValueTask.FromResult(ToolExecutionResult.Text("   ")));
+        var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
+
+        var outcome = await RunAsync(executor, tool.Call(), workspace);
+
+        Assert.False(outcome.Result.IsError);
+        Assert.Equal("(Quiet completed with no output)", outcome.Result.SingleText());
+    }
+
+    [Fact]
+    public async Task EmptyErrorOutput_IsKeptAsIs()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Failing", execute: (_, _) => ValueTask.FromResult(ToolExecutionResult.Text("", isError: true)));
+        var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
+
+        var outcome = await RunAsync(executor, tool.Call(), workspace);
+
+        Assert.True(outcome.Result.IsError);
+        Assert.Equal(string.Empty, outcome.Result.SingleText());
+    }
+
+    [Fact]
+    public async Task ExitPlanMode_OutsidePlanMode_ReturnsGuardMessageWithoutExecuting()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new ExitPlanModeTool();
+        var executor = new ToolCallExecutor(new ToolRegistry([tool]), new ScriptedPermissionGate());
+        var call = new ToolCall(
+            StrongId.NewToolCallId(),
+            "ExitPlanMode",
+            JsonDocument.Parse("""{"plan": "1. Do the work."}""").RootElement.Clone());
+
+        var outcome = await RunAsync(executor, call, workspace);
+
+        Assert.True(outcome.Result.IsError);
+        Assert.Equal(
+            "You are not in plan mode. This tool is only for exiting plan mode after writing a plan. If your plan was already approved, continue with implementation.",
+            outcome.Result.SingleText());
+    }
+
+    [Fact]
+    public async Task ExitPlanMode_DeniedInPlanMode_ReportsPlanNotApproved()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new ExitPlanModeTool();
+        var gate = new ScriptedPermissionGate(PermissionDecision.Deny);
+        var executor = new ToolCallExecutor(
+            new ToolRegistry([tool]), gate, static _ => PermissionMode.Plan);
+        var call = new ToolCall(
+            StrongId.NewToolCallId(),
+            "ExitPlanMode",
+            JsonDocument.Parse("""{"plan": "1. Do the work."}""").RootElement.Clone());
+
+        var outcome = await RunAsync(executor, call, workspace);
+
+        Assert.True(outcome.Result.IsError);
+        Assert.Equal("The plan was not approved by the user.", outcome.Result.SingleText());
+    }
+
+    [Fact]
+    public async Task Skill_LegacyNameInput_PassesSchemaAndValidates()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new SkillTool();
+        var executor = new ToolCallExecutor(new ToolRegistry([tool]), new ScriptedPermissionGate());
+        var call = new ToolCall(
+            StrongId.NewToolCallId(),
+            "Skill",
+            JsonDocument.Parse("""{"name": "report", "args": "quarterly"}""").RootElement.Clone());
+
+        var outcome = await RunAsync(executor, call, workspace);
+
+        // The legacy shape survives schema and input validation; execution only fails
+        // because the test context has no skill provider.
+        Assert.True(outcome.Result.IsError);
+        Assert.Equal("Skill tool is not available in this session", outcome.Result.SingleText());
     }
 
     [Fact]
@@ -157,7 +240,7 @@ public class ToolCallExecutorTests
 
         var outcome = await RunAsync(executor, tool.Call(), workspace);
 
-        Assert.Equal("Tool execution was cancelled", outcome.Result.SingleText());
+        Assert.Equal("Tool execution cancelled", outcome.Result.SingleText());
         Assert.False(outcome.Result.IsError);
         Assert.True(outcome.Duration < TimeSpan.FromSeconds(10));
     }
@@ -178,7 +261,7 @@ public class ToolCallExecutorTests
 
         var outcome = await RunAsync(executor, tool.Call(), workspace, cancellationToken: cts.Token);
 
-        Assert.Equal("Tool execution was cancelled", outcome.Result.SingleText());
+        Assert.Equal("Tool execution cancelled", outcome.Result.SingleText());
     }
 
     [Fact]
@@ -201,7 +284,7 @@ public class ToolCallExecutorTests
     public async Task Success_ReturnsToolResultAndRunsPipelineInOrder()
     {
         using var workspace = new TempWorkspace();
-        var tool = new FakeTool("ReadFile");
+        var tool = new FakeTool("Read");
         var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
         var call = tool.Call("""{"file_path": "a.txt"}""");
 

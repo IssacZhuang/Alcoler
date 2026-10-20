@@ -105,7 +105,7 @@
         <Grid Grid.Row="2" RowDefinitions="*,Auto,*" x:Name="ConversationArea">
           <Grid Grid.Row="0" RowDefinitions="*,Auto" IsVisible="{Binding !IsDraft}">
             <views:TimelineView Grid.Row="0" DataContext="{Binding Active}" />
-            <views:InteractionAreaView Grid.Row="1" DataContext="{Binding Active}" />
+            <views:InteractionAreaView x:Name="InteractionArea" Grid.Row="1" DataContext="{Binding Active}" Margin="0,0,0,16" />
           </Grid>
           <StackPanel Grid.Row="0" x:Name="DraftHeader" VerticalAlignment="Bottom" Spacing="16" Margin="16,24,16,24"
                       IsVisible="{Binding IsDraft}">
@@ -147,6 +147,9 @@
           </StackPanel>
           <views:ComposerView x:Name="MainComposer" Grid.Row="1" DataContext="{Binding ComposerHost}" />
         </Grid>
+        <views:ConversationStatusView x:Name="SessionStatus" Grid.Row="2" ZIndex="10"
+                                      DataContext="{Binding Active.Status}" IsVisible="{Binding HasContent}"
+                                      HorizontalAlignment="Right" VerticalAlignment="Top" Margin="16" />
         <GridSplitter Grid.Row="3" ResizeDirection="Rows" IsVisible="{Binding IsTerminalVisible}"
                       DragCompleted="OnTerminalSplitterDragCompleted" />
         <Border Grid.Row="4" Background="{DynamicResource AlcolerTerminalBackground}"

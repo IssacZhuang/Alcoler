@@ -115,9 +115,11 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
 
     private HttpRequestMessage BuildRequest(ModelRequest request)
     {
-        ModelRequestOptions.ValidateRequest(request, Descriptor.Properties);
+        var normalized = ReasoningHistoryNormalizer.Normalize(
+            request.Messages, keepReasoning: false, Descriptor.Properties.SupportsImage);
+        ModelRequestOptions.ValidateRequest(request with { Messages = normalized }, Descriptor.Properties);
         var messages = new List<object>();
-        foreach (var input in ModelRequestSystemBlocks.Normalize(request.Messages, Descriptor.Properties.SupportsMidConversationSystem))
+        foreach (var input in ModelRequestSystemBlocks.Normalize(normalized, Descriptor.Properties.SupportsMidConversationSystem))
             messages.AddRange(ToProviderMessages(input));
 
         var payload = new Dictionary<string, object?>
@@ -190,7 +192,28 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         }
 
         var textBlocks = message.Content.OfType<InputTextBlock>().ToList();
-        if (textBlocks.Count > 0)
+        var imageBlocks = message.Content.OfType<InputImageBlock>().ToList();
+        if (imageBlocks.Count > 0)
+        {
+            var content = new List<object>();
+            foreach (var text in textBlocks)
+                content.Add(new Dictionary<string, object?> { ["type"] = "text", ["text"] = text.Text });
+            foreach (var image in imageBlocks)
+                content.Add(new Dictionary<string, object?>
+                {
+                    ["type"] = "image_url",
+                    ["image_url"] = new Dictionary<string, object?>
+                    {
+                        ["url"] = $"data:{image.MimeType};base64,{image.Base64Data}",
+                    },
+                });
+            yield return new Dictionary<string, object?>
+            {
+                ["role"] = message.Role == MessageRole.System ? "system" : "user",
+                ["content"] = content,
+            };
+        }
+        else if (textBlocks.Count > 0)
         {
             yield return new Dictionary<string, object?>
             {
@@ -396,7 +419,9 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         {
             "stop" or null => ModelFinishReason.Stop,
             "tool_calls" or "function_call" => ModelFinishReason.ToolCalls,
-            "length" => ModelFinishReason.Length,
+            // Gateway providers surface the output-limit family under raw non-standard
+            // reasons; all of them mean the response was truncated.
+            "length" or "max_tokens" or "max_output_tokens" or "model_context_window_exceeded" => ModelFinishReason.Length,
             "content_filter" => ModelFinishReason.ContentFilter,
             _ => ModelFinishReason.Other,
         };

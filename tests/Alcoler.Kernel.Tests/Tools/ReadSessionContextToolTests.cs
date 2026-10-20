@@ -60,7 +60,7 @@ public sealed class ReadSessionContextToolTests : IAsyncDisposable
 
         var text = result.SingleText();
         Assert.False(result.IsError);
-        Assert.Contains("strategy: relevance", text);
+        Assert.Contains("strategy: relevant", text);
         Assert.Contains("shader cache invalidation", text);
         Assert.DoesNotContain("database layer", text);
     }
@@ -90,6 +90,22 @@ public sealed class ReadSessionContextToolTests : IAsyncDisposable
         Assert.Equal("sess_abc", ReadSessionContextTool.ParseSessionId("abc").Value);
         Assert.Equal("sess_abc", ReadSessionContextTool.ParseSessionId("sess_abc").Value);
         Assert.Equal("sess_abc", ReadSessionContextTool.ParseSessionId("  sess_abc ").Value);
+    }
+
+    [Fact]
+    public void Contract_UsesReferenceEnumAndDescriptions()
+    {
+        var contract = new ReadSessionContextTool(_store).Contract;
+
+        Assert.Equal("ReadSessionContext", contract.Name);
+        Assert.Equal(
+            "Read relevant or handoff context from another persisted Alcoler session. Use when the user references #sess_* or asks to continue from a specific prior session.",
+            contract.Description);
+
+        var schema = contract.InputSchema.GetRawText();
+        Assert.Contains("\"enum\": [\"relevant\", \"handoff\"]", schema);
+        Assert.Contains("Use relevant for focused retrieval, or handoff for a bounded continuation summary.", schema);
+        Assert.Contains("Target Alcoler session id to read from persisted session history.", schema);
     }
 
     private async Task<SessionId> SeedSessionAsync(params (string Role, string Text)[] turns)

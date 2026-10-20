@@ -5,6 +5,7 @@ using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Subagents;
 
 namespace Alcoler.Contracts.Projections;
 
@@ -104,7 +105,8 @@ public sealed record ToolCallRow(
 public sealed record SystemNoticeRow(
     string RowId,
     string Kind,
-    string Text) : ConversationRow(RowId);
+    string Text,
+    SubagentState? Subagent = null) : ConversationRow(RowId);
 
 public sealed record ConversationSnapshot(
     long Revision,

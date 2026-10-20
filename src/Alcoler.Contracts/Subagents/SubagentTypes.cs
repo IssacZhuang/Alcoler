@@ -6,7 +6,7 @@ namespace Alcoler.Contracts.Subagents;
 public sealed record SubagentRequest(
     SessionId ParentSessionId,
     string Prompt,
-    string? Role = null,
+    string? AgentType = null,
     string? Description = null,
     IReadOnlyList<string>? AllowedTools = null,
     ModelSelection? ModelSelection = null,
@@ -32,7 +32,7 @@ public sealed record SubagentState(
     DateTimeOffset StartedAt,
     DateTimeOffset? EndedAt);
 
-public sealed record SubagentResult(SubagentState State, string Output);
+public sealed record SubagentResult(SubagentState State, string Output, int? ToolUseCount = null);
 
 /// <summary>
 /// Same-process logical subagent runner. Foreground runs block the calling tool until the

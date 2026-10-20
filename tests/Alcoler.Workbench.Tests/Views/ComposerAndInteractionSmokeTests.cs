@@ -10,6 +10,8 @@ using Alcoler.Workbench.ViewModel;
 using Alcoler.Workbench.Views;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
+using Avalonia.Controls.Presenters;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
@@ -82,7 +84,44 @@ public class ComposerAndInteractionSmokeTests
             permission,
             interaction);
 
-    private static PermissionRequest Permission(string tool = "WriteFile", RiskLevel risk = RiskLevel.Medium) => new(
+    private static ConversationState QuestionState(params InteractionQuestion[] questions) =>
+        StateWith(interaction: new InteractionRequest(StrongId.NewInteractionId(), "Choose", questions));
+
+    private static Button Option(Harness harness, string label) => harness.View.GetVisualDescendants().OfType<Button>()
+        .Single(button => button.Tag is QuestionOptionViewModel option && option.Label == label);
+
+    private static async Task PrepareQuestionAsync(Harness harness, double width = 900, double height = 700)
+    {
+        harness.Window.Width = width;
+        harness.Window.Height = height;
+        await PumpAsync();
+        harness.Window.UpdateLayout();
+        var rendered = ElementComposition.GetElementVisual(harness.Window)!.Compositor.RequestCompositionBatchCommitAsync().Rendered;
+        Dispatcher.UIThread.RunJobs();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        await rendered.WaitAsync(TimeSpan.FromSeconds(5));
+        await PumpAsync();
+    }
+
+    private static async Task ClickAsync(Harness harness, Control control)
+    {
+        var point = control.TranslatePoint(new Point(control.Bounds.Width / 2, control.Bounds.Height / 2), harness.Window)!.Value;
+        harness.Window.MouseMove(point);
+        harness.Window.MouseDown(point, MouseButton.Left);
+        harness.Window.MouseUp(point, MouseButton.Left);
+        await PumpAsync();
+        harness.Window.UpdateLayout();
+    }
+
+    private static async Task PressAsync(Harness harness, PhysicalKey key, RawInputModifiers modifiers = RawInputModifiers.None)
+    {
+        harness.Window.KeyPressQwerty(key, modifiers);
+        harness.Window.KeyReleaseQwerty(key, modifiers);
+        await PumpAsync();
+        harness.Window.UpdateLayout();
+    }
+
+    private static PermissionRequest Permission(string tool = "Write", RiskLevel risk = RiskLevel.Medium) => new(
         StrongId.NewInteractionId(),
         new SessionId(Guid.NewGuid().ToString("N")),
         tool,
@@ -126,34 +165,24 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
-    public async Task QuestionCard_SelectOptionAndSubmit_SendsAnswer()
+    public async Task QuestionCard_PointerSelectSingleOption_SubmitsImmediately()
     {
-        using var harness = Show<InteractionAreaView>();
-        await PumpAsync();
-        var question = new InteractionQuestion(
-            "Destination",
-            "Where should the branch land?",
-            [new InteractionOption("main"), new InteractionOption("feature/x")],
-            MultiSelect: false);
-        var interaction = new InteractionRequest(StrongId.NewInteractionId(), "Pick a target", [question]);
-        var state = StateWith(interaction: interaction);
-        harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
-        await PumpAsync();
+        var question = new InteractionQuestion("Destination", "Where should the branch land?",
+            [new InteractionOption("main"), new InteractionOption("feature/x")]);
+        using var harness = Show<InteractionAreaView>(QuestionState(question));
+        await PrepareQuestionAsync(harness);
 
-        var submit = FindNamed<Button>(harness.View, "SubmitAnswersButton");
-        Assert.False(submit.IsEnabled);
+        Assert.True(FindNamed<Button>(harness.View, "SubmitAnswersButton").IsEnabled);
+        Assert.True(FindNamed<Border>(harness.View, "QuestionCard").IsFocused);
+        Assert.Empty(harness.ViewModel.PendingInteraction!.SelectedAnswers);
+        Assert.Equal(-1, harness.ViewModel.PendingInteraction.ActiveOptionIndex);
+        Assert.Equal("1 / 1", FindNamed<TextBlock>(harness.View, "QuestionPage").Text);
+        Assert.False(FindNamed<Button>(harness.View, "PreviousQuestionButton").IsEnabled);
+        Assert.False(FindNamed<Button>(harness.View, "NextQuestionButton").IsEnabled);
 
-        var option = harness.View.GetVisualDescendants()
-            .OfType<RadioButton>()
-            .Single(radio => radio.Content as string == "feature/x");
-        option.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-
-        Assert.Equal("feature/x", harness.ViewModel.PendingInteraction!.SelectedAnswers["Destination"]);
-        Assert.True(submit.IsEnabled);
-        submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await ClickAsync(harness, Option(harness, "feature/x"));
 
         var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
-        Assert.NotNull(command.InteractionAnswer);
         Assert.Equal("feature/x", command.InteractionAnswer!.Answers["Destination"]);
     }
 
@@ -457,41 +486,257 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task QuestionCard_PageNavigationAndStatePatch_PreserveDraftsAndCurrentPage()
+    {
+        var state = QuestionState(
+            new InteractionQuestion("Target", "Choose target", [new InteractionOption("main"), new InteractionOption("branch")]),
+            new InteractionQuestion("Features", "Choose features", [new InteractionOption("Search")], MultiSelect: true));
+        using var harness = Show<InteractionAreaView>(state);
+        await PrepareQuestionAsync(harness);
+        var pending = harness.ViewModel.PendingInteraction!;
+
+        await ClickAsync(harness, Option(harness, "main"));
+        Assert.Equal(1, pending.CurrentQuestionIndex);
+        Assert.Equal("2 / 2", FindNamed<TextBlock>(harness.View, "QuestionPage").Text);
+        Assert.DoesNotContain(harness.View.GetVisualDescendants().OfType<Button>(), button =>
+            button.Tag is QuestionOptionViewModel { Label: "main" });
+        await ClickAsync(harness, Option(harness, "Search"));
+        await ClickAsync(harness, FindNamed<TextBox>(harness.View, "CustomAnswerInput"));
+        harness.Window.KeyTextInput("  Offline  ");
+        await PumpAsync();
+        Assert.Equal("Search, Offline", pending.SelectedAnswers["Features"]);
+
+        var refreshed = state with { PendingInteraction = state.PendingInteraction! with { Prompt = "Updated prompt" } };
+        harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, refreshed, [new StatePatched(refreshed)], Reset: false));
+        await PumpAsync();
+        Assert.Same(pending, harness.ViewModel.PendingInteraction);
+        Assert.Equal(1, pending.CurrentQuestionIndex);
+
+        await PressAsync(harness, PhysicalKey.Escape);
+        Assert.Equal(0, pending.CurrentQuestionIndex);
+        Assert.True(((QuestionOptionViewModel)Option(harness, "main").Tag!).IsSelected);
+        await ClickAsync(harness, FindNamed<Button>(harness.View, "NextQuestionButton"));
+        Assert.Equal(1, pending.CurrentQuestionIndex);
+        Assert.Equal("  Offline  ", FindNamed<TextBox>(harness.View, "CustomAnswerInput").Text);
+        Assert.True(((QuestionOptionViewModel)Option(harness, "Search").Tag!).IsSelected);
+        Assert.Empty(harness.Runtime.Submitted);
+
+        await ClickAsync(harness, FindNamed<Button>(harness.View, "SubmitAnswersButton"));
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("main", command.InteractionAnswer!.Answers["Target"]);
+        Assert.Equal("Search, Offline", command.InteractionAnswer.Answers["Features"]);
+    }
+
+    [AvaloniaFact]
+    public async Task QuestionCard_KeyboardNavigatesChoicesAndCustomSingleReplacesPreset()
+    {
+        using var harness = Show<InteractionAreaView>(QuestionState(
+            new InteractionQuestion("Target", "Choose target", [new InteractionOption("main"), new InteractionOption("branch")]),
+            new InteractionQuestion("Next", "Continue?", [new InteractionOption("Done")])));
+        await PrepareQuestionAsync(harness);
+        var pending = harness.ViewModel.PendingInteraction!;
+
+        await PressAsync(harness, PhysicalKey.ArrowDown);
+        Assert.True(Option(harness, "main").IsFocused);
+        Assert.Empty(pending.SelectedAnswers);
+        await PressAsync(harness, PhysicalKey.ArrowRight);
+        Assert.True(Option(harness, "branch").IsFocused);
+        await ClickAsync(harness, FindNamed<Button>(harness.View, "SubmitAnswersButton"));
+        Assert.Equal("branch", pending.SelectedAnswers["Target"]);
+        Assert.Equal(1, pending.CurrentQuestionIndex);
+        await PressAsync(harness, PhysicalKey.Escape);
+        Assert.Equal(0, pending.CurrentQuestionIndex);
+        await PressAsync(harness, PhysicalKey.Tab);
+        var input = FindNamed<TextBox>(harness.View, "CustomAnswerInput");
+        Assert.True(input.IsFocused);
+        harness.Window.KeyTextInput("  release branch  ");
+        await PumpAsync();
+        Assert.Equal("release branch", pending.SelectedAnswers["Target"]);
+        Assert.False(((QuestionOptionViewModel)Option(harness, "branch").Tag!).IsSelected);
+        await PressAsync(harness, PhysicalKey.Enter, RawInputModifiers.Shift);
+        Assert.Equal(1, pending.CurrentQuestionIndex);
+        await PressAsync(harness, PhysicalKey.Enter);
+
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("release branch", command.InteractionAnswer!.Answers["Target"]);
+        Assert.Single(command.InteractionAnswer.Answers);
+    }
+
+    [AvaloniaFact]
+    public async Task QuestionCard_MultiSpaceTogglesAndEnterAdvancesWithoutSelectingFocusedChoice()
+    {
+        using var harness = Show<InteractionAreaView>(QuestionState(
+            new InteractionQuestion("Features", "Choose features", [new InteractionOption("Search"), new InteractionOption("History")], true),
+            new InteractionQuestion("Next", "Continue?", [new InteractionOption("Done")])));
+        await PrepareQuestionAsync(harness);
+        var pending = harness.ViewModel.PendingInteraction!;
+
+        await PressAsync(harness, PhysicalKey.Tab);
+        await PressAsync(harness, PhysicalKey.Space);
+        Assert.Equal("Search", pending.SelectedAnswers["Features"]);
+        Assert.Equal(0, pending.CurrentQuestionIndex);
+        await PressAsync(harness, PhysicalKey.ArrowDown);
+        Assert.True(Option(harness, "History").IsFocused);
+        await PressAsync(harness, PhysicalKey.Enter);
+        Assert.Equal(1, pending.CurrentQuestionIndex);
+        Assert.Equal("Search", pending.SelectedAnswers["Features"]);
+        await PressAsync(harness, PhysicalKey.Escape);
+        Assert.Equal(0, pending.CurrentQuestionIndex);
+        await PressAsync(harness, PhysicalKey.Space);
+        Assert.Empty(pending.SelectedAnswers);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaTheory]
+    [Xunit.InlineData(false)]
+    [Xunit.InlineData(true)]
+    public async Task QuestionCard_CustomControlEnterSubmitsAllDraftsFromIntermediatePage(bool multiSelect)
+    {
+        using var harness = Show<InteractionAreaView>(QuestionState(
+            new InteractionQuestion("Target", "Choose target", [new InteractionOption("main")], multiSelect),
+            new InteractionQuestion("Next", "Continue?", [new InteractionOption("Done")])));
+        await PrepareQuestionAsync(harness);
+        if (multiSelect)
+            await ClickAsync(harness, Option(harness, "main"));
+        await ClickAsync(harness, FindNamed<TextBox>(harness.View, "CustomAnswerInput"));
+        harness.Window.KeyTextInput("  custom target  ");
+        await PumpAsync();
+        await PressAsync(harness, PhysicalKey.Enter, RawInputModifiers.Control);
+
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal(multiSelect ? "main, custom target" : "custom target", command.InteractionAnswer!.Answers["Target"]);
+        Assert.Single(command.InteractionAnswer.Answers);
+    }
+
+    [AvaloniaTheory]
+    [Xunit.InlineData("empty")]
+    [Xunit.InlineData("partial")]
+    [Xunit.InlineData("dismiss")]
+    [Xunit.InlineData("escape")]
+    [Xunit.InlineData("no-questions")]
+    public async Task QuestionCard_SkipOrDismiss_DoesNotInventAnswers(string action)
+    {
+        var questions = action == "no-questions" ? Array.Empty<InteractionQuestion>() :
+        [new InteractionQuestion("Target", "Choose target", [new InteractionOption("main")]),
+         new InteractionQuestion("Next", "Continue?", [new InteractionOption("Done")])];
+        using var harness = Show<InteractionAreaView>(QuestionState(questions));
+        await PrepareQuestionAsync(harness);
+        if (action == "partial")
+            await ClickAsync(harness, Option(harness, "main"));
+        else if (action is "dismiss" or "escape")
+        {
+            harness.ViewModel.SelectInteractionAnswer("Target", "main");
+            if (action == "dismiss")
+                await ClickAsync(harness, FindNamed<Button>(harness.View, "DismissQuestionButton"));
+            else
+                await PressAsync(harness, PhysicalKey.Escape);
+        }
+        else if (action == "empty")
+            await PressAsync(harness, PhysicalKey.Enter);
+        if (action is "empty" or "partial" or "no-questions")
+            await PressAsync(harness, PhysicalKey.Enter);
+
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        if (action == "partial")
+            Assert.Equal("main", Assert.Single(command.InteractionAnswer!.Answers).Value);
+        else
+            Assert.Empty(command.InteractionAnswer!.Answers);
+    }
+
+    [AvaloniaFact]
+    public async Task QuestionCard_CustomImeComposition_DoesNotNavigateOrSubmit()
+    {
+        using var harness = Show<InteractionAreaView>(QuestionState(
+            new InteractionQuestion("Target", "Choose target", [new InteractionOption("main")])));
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "CustomAnswerInput");
+        await ClickAsync(harness, input);
+        var presenter = Assert.Single(input.GetVisualDescendants().OfType<TextPresenter>());
+        presenter.PreeditText = "composition";
+        await PressAsync(harness, PhysicalKey.Enter);
+        await PressAsync(harness, PhysicalKey.Escape);
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Equal(0, harness.ViewModel.PendingInteraction!.CurrentQuestionIndex);
+        presenter.PreeditText = null;
+        harness.Window.KeyTextInput("Committed answer");
+        await PressAsync(harness, PhysicalKey.Enter);
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("Committed answer", command.InteractionAnswer!.Answers["Target"]);
+    }
+
+    [AvaloniaTheory]
+    [Xunit.InlineData(360, false)]
+    [Xunit.InlineData(360, true)]
+    [Xunit.InlineData(900, false)]
+    [Xunit.InlineData(900, true)]
+    public async Task QuestionCard_ResponsiveThemeGeometry_KeepsFooterVisibleAndBodyScrollable(double width, bool light)
+    {
+        var question = new InteractionQuestion("Destination", "Which destination should receive the complete implementation and its verification changes?",
+            Enumerable.Range(1, 18).Select(index => new InteractionOption($"Option {index}", "Secondary description that wraps on a narrow card.")).ToArray());
+        using var harness = Show<InteractionAreaView>(QuestionState(question));
+        var theme = light ? ThemeVariant.Light : ThemeVariant.Dark;
+        harness.Window.RequestedThemeVariant = theme;
+        harness.View.MaxHeight = 400;
+        await PrepareQuestionAsync(harness, width, 600);
+        var card = FindNamed<Border>(harness.View, "QuestionCard");
+        var footer = FindNamed<Grid>(harness.View, "QuestionFooter");
+        var body = FindNamed<ScrollViewer>(harness.View, "QuestionBody");
+        var hint = FindNamed<Grid>(harness.View, "KeyboardHint");
+        var actions = FindNamed<StackPanel>(harness.View, "QuestionActions");
+        var compact = card.Bounds.Width < 560;
+        Assert.Equal(compact ? 2 : 1, Grid.GetColumnSpan(hint));
+        Assert.Equal(compact ? 1 : 0, Grid.GetRow(actions));
+        if (compact)
+            Assert.True(actions.Bounds.Y >= hint.Bounds.Bottom + 7);
+        Assert.Equal(new CornerRadius(16), card.CornerRadius);
+        Assert.Equal(new Thickness(12), card.Padding);
+        Assert.Equal(new Thickness(1), card.BorderThickness);
+        Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerPopover")).Color,
+            Assert.IsAssignableFrom<ISolidColorBrush>(card.Background).Color);
+        Assert.InRange(card.Bounds.Width, 1, width - 30);
+        Assert.InRange(card.Bounds.Height, 100, 400);
+        Assert.True(body.Extent.Height > body.Viewport.Height);
+        var footerOrigin = footer.TranslatePoint(default, card)!.Value;
+        Assert.InRange(footerOrigin.Y + footer.Bounds.Height, 1, card.Bounds.Height - 10);
+        foreach (var name in new[] { "DismissQuestionButton", "SubmitAnswersButton" })
+        {
+            var button = FindNamed<Button>(harness.View, name);
+            var origin = button.TranslatePoint(default, card)!.Value;
+            Assert.InRange(origin.X, 0, card.Bounds.Width - button.Bounds.Width);
+            Assert.InRange(origin.Y, 0, card.Bounds.Height - button.Bounds.Height);
+        }
+        var option = Option(harness, "Option 1");
+        Assert.Equal(new CornerRadius(12), option.CornerRadius);
+        Assert.Equal(new Thickness(12, 8), option.Padding);
+        Assert.Equal(14, option.GetVisualDescendants().OfType<TextBlock>().Last().FontSize);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
     public async Task QuestionCard_MultiSelectAccumulatesAndRemovesAnswers()
     {
-        using var harness = Show<InteractionAreaView>();
-        await PumpAsync();
         var question = new InteractionQuestion("Features", "Which features?",
             [new InteractionOption("Search", "Find files quickly"), new InteractionOption("History")], MultiSelect: true);
-        var interaction = new InteractionRequest(StrongId.NewInteractionId(), "Choose features", [question]);
-        var state = StateWith(interaction: interaction);
-        harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
-        await PumpAsync();
-
+        using var harness = Show<InteractionAreaView>(QuestionState(question));
+        await PrepareQuestionAsync(harness);
+        var pending = harness.ViewModel.PendingInteraction!;
         var submit = FindNamed<Button>(harness.View, "SubmitAnswersButton");
-        var options = harness.View.GetVisualDescendants().OfType<CheckBox>().Where(option => option.IsVisible).ToArray();
-        Assert.Equal(2, options.Length);
-        Assert.False(submit.IsEnabled);
-        foreach (var option in options.Reverse())
-        {
-            option.IsChecked = true;
-            option.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        }
-        Assert.Equal("Search, History", harness.ViewModel.PendingInteraction!.SelectedAnswers["Features"]);
         Assert.True(submit.IsEnabled);
-        Assert.Contains(harness.View.GetVisualDescendants(), control => control is TextBlock { Text: "Find files quickly" });
 
-        foreach (var option in options)
-        {
-            option.IsChecked = false;
-            option.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        }
-        Assert.Empty(harness.ViewModel.PendingInteraction.SelectedAnswers);
-        Assert.False(submit.IsEnabled);
+        await ClickAsync(harness, Option(harness, "History"));
+        await ClickAsync(harness, Option(harness, "Search"));
+        Assert.Equal("Search, History", pending.SelectedAnswers["Features"]);
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Contains(Option(harness, "Search").GetVisualDescendants().OfType<TextBlock>(),
+            text => text.Inlines!.OfType<Run>().Any(run => run.Text == "  Find files quickly"));
 
-        options[0].IsChecked = true;
-        options[0].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await ClickAsync(harness, Option(harness, "Search"));
+        await ClickAsync(harness, Option(harness, "History"));
+        Assert.Empty(pending.SelectedAnswers);
+        Assert.True(submit.IsEnabled);
+
+        await ClickAsync(harness, Option(harness, "Search"));
+        await ClickAsync(harness, submit);
         var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
         Assert.Equal("Search", command.InteractionAnswer!.Answers["Features"]);
     }

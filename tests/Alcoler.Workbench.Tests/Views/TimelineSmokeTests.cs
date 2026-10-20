@@ -155,6 +155,42 @@ public class TimelineSmokeTests
     }
 
     [AvaloniaFact]
+    public void ConversationLayout_InheritedStatusReservationShiftsWideContentOnly()
+    {
+        var child = new Border { Height = 32 };
+        var layout = new ConversationLayout { Child = child, Padding = new Thickness(16, 0) };
+        var parent = new Grid { Children = { layout } };
+        var window = new Window { Content = parent, Width = 1400, Height = 200 };
+        window.Show();
+        try
+        {
+            Pump();
+            var initial = child.Bounds.X;
+            ConversationLayout.SetReserveStatusPanelSpace(parent, true);
+            Pump();
+            Assert.Equal(initial - 168, child.Bounds.X, 1);
+            Assert.True(ConversationLayout.GetReserveStatusPanelSpace(layout));
+            ConversationLayout.SetReserveStatusPanelSpace(parent, false);
+            Pump();
+            Assert.Equal(initial, child.Bounds.X, 1);
+            window.Width = 900;
+            Pump();
+            var narrow = child.Bounds.X;
+            Assert.Equal((layout.Bounds.Width - ConversationLayout.CalculateSectionWidth(layout.Bounds.Width)) / 2 + 16, narrow, 1);
+            window.Width = 1280;
+            layout.Margin = new Thickness(0, 0, 14, 0);
+            Pump();
+            var withScrollbar = child.Bounds.X;
+            ConversationLayout.SetReserveStatusPanelSpace(parent, true);
+            Pump();
+            Assert.True(layout.Bounds.Width < 1280);
+            Assert.Equal(withScrollbar - 168, child.Bounds.X, 1);
+            Assert.True(child.Bounds.X >= 0);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
     public async Task ThinkingBlock_ToggleExpandsAndCollapsesReasoning()
     {
         EnsureFluentTheme();
@@ -261,7 +297,7 @@ public class TimelineSmokeTests
                 IsStreaming = true,
             };
             var filler = Enumerable.Range(0, 40).Select(index => (ConversationRow)new ToolCallRow($"f{index}",
-                StrongId.NewToolCallId(), "ReadFile", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
+                StrongId.NewToolCallId(), "Read", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
                 ToolCallStatus.Succeeded, null, false, TimeSpan.Zero, DateTimeOffset.UtcNow)).ToArray();
             viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming), [], Reset: true,
                 ResetRows: [updated, tool, .. filler]));
@@ -494,7 +530,7 @@ public class TimelineSmokeTests
         try
         {
             var input = JsonSerializer.SerializeToElement(new { file_path = "AGENTS.md" });
-            ToolCallRow Tool(string rowId) => new(rowId, StrongId.NewToolCallId(), "ReadFile", input,
+            ToolCallRow Tool(string rowId) => new(rowId, StrongId.NewToolCallId(), "Read", input,
                 ToolCallStatus.Succeeded, Output: [new ToolResultText("File contents")], IsError: false,
                 Duration: TimeSpan.FromMilliseconds(3), StartedAt: DateTimeOffset.UtcNow);
             var reasoning = new AssistantMessageRow("a1", StrongId.NewMessageId(),
@@ -583,7 +619,7 @@ public class TimelineSmokeTests
         {
             var tools = new (string Name, string Label)[]
             {
-                ("Bash", "Terminal"), ("ReadFile", "Read"), ("EditFile", "Edit"), ("WriteFile", "Write"),
+                ("Bash", "Terminal"), ("Read", "Read"), ("Edit", "Edit"), ("Write", "Write"),
                 ("Glob", "Search"), ("Grep", "Search"), ("Browser", "Browser"), ("Task", "Agent"),
                 ("TodoRead", "Tasks"), ("TodoWrite", "Tasks"), ("ExitPlanMode", "Plan"),
             };
@@ -618,7 +654,7 @@ public class TimelineSmokeTests
                         Assert.IsAssignableFrom<ISolidColorBrush>(summary.Foreground).Color);
                     Assert.DoesNotContain(texts, block => block.IsEffectivelyVisible && block.Text is "Succeeded" or "succeeded");
                     AssertHeaderDuration(header, "1.5s");
-                    if (item.ToolName is "ReadFile" or "EditFile" or "WriteFile" or "TodoRead" or "TodoWrite" or "ExitPlanMode")
+                    if (item.ToolName is "TodoRead" or "TodoWrite" or "ExitPlanMode")
                     {
                         Assert.NotEqual(item.ToolName, item.DisplayName);
                         Assert.DoesNotContain(texts, block => block.IsEffectivelyVisible && block.Text == item.ToolName);
@@ -773,7 +809,7 @@ public class TimelineSmokeTests
         try
         {
             var tools = Enumerable.Range(0, 100).Select(index => (ConversationRow)new ToolCallRow($"t{index}",
-                StrongId.NewToolCallId(), "ReadFile", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
+                StrongId.NewToolCallId(), "Read", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
                 ToolCallStatus.Succeeded, null, false, TimeSpan.FromMilliseconds(3), DateTimeOffset.UtcNow)).ToArray();
             var text = string.Join("\n\n", Enumerable.Range(0, 60).Select(index =>
                 $"Long answer paragraph {index}. The measured height of this streaming message must remain known while reading earlier operations."));
@@ -821,7 +857,7 @@ public class TimelineSmokeTests
         EnsureFluentTheme();
         var (view, viewModel, store) = CreateTimeline();
         var tools = Enumerable.Range(0, 100).Select(index => (ConversationRow)new ToolCallRow($"t{index}",
-            StrongId.NewToolCallId(), "ReadFile", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
+            StrongId.NewToolCallId(), "Read", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
             ToolCallStatus.Succeeded, null, false, TimeSpan.FromMilliseconds(3), DateTimeOffset.UtcNow)).ToArray();
         var text = string.Join("\n\n", Enumerable.Repeat("Preloaded streaming answer remains measured outside the viewport.", 60));
         var assistant = new AssistantMessageRow("a1", StrongId.NewMessageId(),

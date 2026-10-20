@@ -1,3 +1,4 @@
+using Alcoler.Contracts.Permissions;
 using Alcoler.Workbench.Themes;
 using Alcoler.Workbench.ViewModel;
 using Avalonia;
@@ -91,6 +92,32 @@ public class SettingsViewModelTests
                 File.Delete(path);
             }
         }
+    }
+
+    [Fact]
+    public async Task SaveAsync_PreservesComposerPreferencesAndUneditedSettings()
+    {
+        var path = TempConfigPath();
+        try
+        {
+            var config = SampleConfig() with
+            {
+                BraveApiKey = "search-key",
+                Composer = new WorkbenchComposerConfig(PermissionMode.Plan,
+                    new Dictionary<string, PermissionMode> { ["session"] = PermissionMode.Edit }),
+            };
+            using var settings = new SettingsViewModel(config);
+            settings.Theme = "light";
+
+            Assert.NotNull(await settings.SaveAsync(path));
+
+            var loaded = WorkbenchConfig.LoadOrDefault(path);
+            Assert.Equal(PermissionMode.Plan, loaded.Composer!.DefaultMode);
+            Assert.Equal(PermissionMode.Edit, loaded.Composer.PendingSessionModes!["session"]);
+            Assert.Equal("search-key", loaded.BraveApiKey);
+            Assert.Equal("light", loaded.Theme);
+        }
+        finally { File.Delete(path); }
     }
 
     [Fact]

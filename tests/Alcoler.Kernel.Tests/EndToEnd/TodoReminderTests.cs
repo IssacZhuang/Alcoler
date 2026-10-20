@@ -18,10 +18,16 @@ public class TodoReminderTests
     private static IReadOnlyList<ModelStreamEvent> TodoWriteCall() =>
     [
         new ModelToolInputStarted(TodoCallId, "TodoWrite"),
-        new ModelToolInputDelta(TodoCallId, JsonSerializer.Serialize(new { todos = new[] { new { content = "keep going" } } })),
+        new ModelToolInputDelta(TodoCallId, JsonSerializer.Serialize(new
+        {
+            todos = new[] { new { content = "keep going", status = "pending", priority = "medium" } }
+        })),
         new ModelToolInputEnded(TodoCallId),
         new ModelToolCallReady(new ToolCall(TodoCallId, "TodoWrite",
-            JsonSerializer.SerializeToElement(new { todos = new[] { new { content = "keep going" } } }))),
+            JsonSerializer.SerializeToElement(new
+            {
+                todos = new[] { new { content = "keep going", status = "pending", priority = "medium" } }
+            }))),
         new ModelStreamFinished(ModelFinishReason.ToolCalls),
     ];
 
@@ -34,23 +40,32 @@ public class TodoReminderTests
 
     private static bool HasTodoReminder(ModelRequest request) => TodoReminderText(request) is not null;
 
+    private static int CountTodoReminders(ModelRequest request) =>
+        request.Messages
+            .Where(m => m.Role == Contracts.Conversation.MessageRole.User)
+            .SelectMany(m => m.Content.OfType<InputTextBlock>())
+            .Count(b => b.Text.Contains("The TodoWrite tool hasn't been used recently.", StringComparison.Ordinal));
+
     [Fact]
-    public async Task Reminder_IsInjectedOnTenthStepAndRecyclesItsCounter()
+    public async Task Reminder_FiresOnEleventhRequestFromHistoryCountsAndRecycles()
     {
-        var calls = Enumerable.Range(0, 20).Select(_ => OkReply()).ToArray();
+        var calls = Enumerable.Range(0, 21).Select(_ => OkReply()).ToArray();
         await using var harness = new ScriptedCallHarness(calls);
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
 
-        for (var i = 1; i <= 20; i++)
+        for (var i = 1; i <= 21; i++)
             await SendAndWaitIdleAsync(runtime, projection, session.Id, $"message {i}", expectedReplies: i);
 
-        Assert.Equal(20, harness.Model.Requests.Count);
-        Assert.False(HasTodoReminder(harness.Model.Requests[8]));
-        Assert.True(HasTodoReminder(harness.Model.Requests[9]));
-        Assert.False(HasTodoReminder(harness.Model.Requests[18]));
-        Assert.True(HasTodoReminder(harness.Model.Requests[19]));
+        // ZCode counts committed assistants, so the 11th request is the first to see 10.
+        // The committed reminder rides along in later requests; the counter recycles and
+        // fires again on the 21st request, which therefore carries two copies.
+        Assert.Equal(21, harness.Model.Requests.Count);
+        Assert.DoesNotContain(harness.Model.Requests.Take(10), HasTodoReminder);
+        Assert.Equal(1, CountTodoReminders(harness.Model.Requests[10]));
+        Assert.Equal(1, CountTodoReminders(harness.Model.Requests[19]));
+        Assert.Equal(2, CountTodoReminders(harness.Model.Requests[20]));
     }
 
     [Fact]
@@ -60,35 +75,37 @@ public class TodoReminderTests
         [
             OkReply(), OkReply(), TodoWriteCall(), OkReply(),
         ];
-        calls.AddRange(Enumerable.Range(0, 9).Select(_ => OkReply()));
+        calls.AddRange(Enumerable.Range(0, 10).Select(_ => OkReply()));
         await using var harness = new ScriptedCallHarness(calls);
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
 
-        for (var i = 1; i <= 12; i++)
+        for (var i = 1; i <= 13; i++)
         {
             var replies = i >= 3 ? i + 1 : i; // turn 3 commits two assistant messages (tool round + follow-up)
             await SendAndWaitIdleAsync(runtime, projection, session.Id, $"message {i}", expectedReplies: replies);
         }
 
-        Assert.Equal(13, harness.Model.Requests.Count);
-        Assert.DoesNotContain(harness.Model.Requests.Take(12), HasTodoReminder);
-        Assert.True(HasTodoReminder(harness.Model.Requests[12]));
+        // The counter resets on the turn-3 TodoWrite call and counts committed
+        // assistants after it, so the reminder lands on the 14th request.
+        Assert.Equal(14, harness.Model.Requests.Count);
+        Assert.DoesNotContain(harness.Model.Requests.Take(13), HasTodoReminder);
+        Assert.True(HasTodoReminder(harness.Model.Requests[13]));
     }
 
     [Fact]
     public async Task Reminder_IncludesCurrentTodoList_WhenTodosExist()
     {
         List<IReadOnlyList<ModelStreamEvent>> calls = [TodoWriteCall(), OkReply()];
-        calls.AddRange(Enumerable.Range(0, 9).Select(_ => OkReply()));
+        calls.AddRange(Enumerable.Range(0, 10).Select(_ => OkReply()));
         await using var harness = new ScriptedCallHarness(calls);
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
 
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "seed todos", expectedReplies: 2);
-        for (var i = 2; i <= 10; i++)
+        for (var i = 2; i <= 11; i++)
             await SendAndWaitIdleAsync(runtime, projection, session.Id, $"message {i}", expectedReplies: i + 1);
 
         var reminder = TodoReminderText(harness.Model.Requests[^1]);

@@ -23,7 +23,7 @@ public class SerializationSmokeTests
         [
             new TextPart(StrongId.NewPartId(), "hello"),
                 new ReasoningPart(StrongId.NewPartId(), "thinking", "sig-1"),
-                new ToolCallPart(StrongId.NewPartId(), StrongId.NewToolCallId(), "ReadFile", input),
+                new ToolCallPart(StrongId.NewPartId(), StrongId.NewToolCallId(), "Read", input),
                 new ToolResultPart(StrongId.NewPartId(), StrongId.NewToolCallId(), [new ToolResultText("content")]),
                 new FilePart(StrongId.NewPartId(), "alcoler-artifact://s/f.png", "image/png", "f.png"),
                 new AttachmentPart(StrongId.NewPartId(), AttachmentKind.ContextPrefix, "# agents md"),
@@ -38,7 +38,7 @@ public class SerializationSmokeTests
         Assert.Equal(6, roundTripped.Parts.Count);
         Assert.IsType<ReasoningPart>(roundTripped.Parts[1]);
         Assert.IsType<ToolCallPart>(roundTripped.Parts[2]);
-        Assert.Equal("ReadFile", ((ToolCallPart)roundTripped.Parts[2]).ToolName);
+        Assert.Equal("Read", ((ToolCallPart)roundTripped.Parts[2]).ToolName);
     }
 
     [Fact]

@@ -73,6 +73,98 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
+    public void Question_ReplacesComposerWithoutDiscardingDraft_AndRestoresItAfterResolution()
+    {
+        var (viewModel, store) = CreateWorkbenchWithoutPump();
+        using (viewModel)
+        using (store)
+        {
+            var window = new MainWindow(viewModel);
+            window.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                var composer = window.FindControl<Workbench.Views.ComposerView>("MainComposer")!;
+                var interaction = window.FindControl<Workbench.Views.InteractionAreaView>("InteractionArea")!;
+                Assert.False(interaction.IsVisible);
+                Assert.True(double.IsPositiveInfinity(interaction.MaxHeight));
+                viewModel.Active!.Composer.Draft = "Keep this unfinished message";
+                var request = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Input required",
+                [
+                    new("Storage", "Which storage should be used?", [new("SQLite"), new("Files")]),
+                ]);
+                var questionState = TestSnapshots.State(TurnPhase.AwaitingInteraction) with { PendingInteraction = request };
+                viewModel.Active.ApplyUpdate(new ProjectionUpdate(2, questionState, [new StatePatched(questionState)], false));
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                Assert.False(composer.IsVisible);
+                Assert.True(interaction.IsVisible);
+                Assert.Empty(window.OwnedWindows);
+                var question = Assert.Single(window.GetVisualDescendants().OfType<Workbench.Views.QuestionCardView>());
+                Assert.True(question.Bounds.Height > 0);
+                Assert.True(question.Bounds.Height <= interaction.MaxHeight);
+                Assert.Equal("Keep this unfinished message", viewModel.Active.Composer.Draft);
+
+                var idle = TestSnapshots.State();
+                viewModel.Active.ApplyUpdate(new ProjectionUpdate(3, idle, [new StatePatched(idle)], false));
+                Dispatcher.UIThread.RunJobs();
+                Assert.True(composer.IsVisible);
+                Assert.False(interaction.IsVisible);
+                Assert.True(double.IsPositiveInfinity(interaction.MaxHeight));
+                Assert.Equal("Keep this unfinished message", viewModel.Active.Composer.Draft);
+            }
+            finally { window.Close(); }
+        }
+    }
+
+    [AvaloniaFact]
+    public void Status_UsesConversationWidthAndReservesSpaceOnlyWhenExpandedAndWide()
+    {
+        var (viewModel, store) = CreateWorkbenchWithoutPump();
+        using (viewModel)
+        using (store)
+        {
+            var window = new MainWindow(viewModel) { Width = 1650 };
+            window.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                var area = window.FindControl<Grid>("ConversationArea")!;
+                var status = window.FindControl<Workbench.Views.ConversationStatusView>("SessionStatus")!;
+                Assert.False(status.IsVisible);
+                var todo = new ToolCallRow("todo", StrongId.NewToolCallId(), "TodoWrite",
+                    System.Text.Json.JsonSerializer.SerializeToElement(new { todos = new[] { new { content = "Review UI", status = "in_progress" } } }),
+                    ToolCallStatus.Succeeded, [], false, TimeSpan.Zero, DateTimeOffset.UtcNow);
+                viewModel.Active!.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(), [new RowAppended(todo)], false));
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                Assert.True(status.IsVisible);
+                Assert.Equal(area.Bounds.Width, status.ConversationWidth);
+                Assert.True(status.IsExpanded);
+                Assert.True(Workbench.Controls.ConversationLayout.GetReserveStatusPanelSpace(area));
+
+                status.ExpandedOverride = false;
+                Assert.False(Workbench.Controls.ConversationLayout.GetReserveStatusPanelSpace(area));
+                status.ExpandedOverride = null;
+                window.Width = 1100;
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                Assert.True(area.Bounds.Width < 1280);
+                Assert.False(status.IsExpanded);
+                status.ExpandedOverride = true;
+                window.UpdateLayout();
+                var column = window.GetVisualDescendants().OfType<Workbench.Controls.ConversationLayout>().First();
+                Assert.True(status.IsExpanded);
+                Assert.False(Workbench.Controls.ConversationLayout.GetReserveStatusPanelSpace(area));
+                Assert.True(column.Bounds.Width < 1280);
+                Assert.Equal(area.Bounds.Width, status.ConversationWidth);
+                Assert.True(status.MaxHeight <= 512);
+            }
+            finally { window.Close(); }
+        }
+    }
+
+    [AvaloniaFact]
     public void Theme_TokensResolveInDarkAndLight()
     {
         var window = new Window();

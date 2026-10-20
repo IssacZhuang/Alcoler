@@ -3,23 +3,23 @@ using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Adapters.Tools;
 
-public sealed class WriteFileTool : ITool
+public sealed class WriteTool : ITool
 {
     private const string StorageSuffix = " (file state is current in your context \u2014 no need to Read it back)";
 
     public ToolContract Contract { get; } = new(
-        "WriteFile",
+        "Write",
         """
         Writes a file to the local filesystem, overwriting if one exists.
 
-        When to use: creating a new file, or fully replacing one you've already ReadFile. Overwriting an existing file you haven't ReadFile will fail. For partial changes, use EditFile instead.
+        When to use: creating a new file, or fully replacing one you've already Read. Overwriting an existing file you haven't Read will fail. For partial changes, use Edit instead.
         """,
         ToolInput.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "file_path": { "type": "string", "description": "File path, relative to the workspace root or absolute inside it." },
+            "file_path": { "type": "string", "description": "The absolute path to the file to write (must be absolute, not relative)" },
             "content": { "type": "string", "description": "The content to write to the file" }
           },
           "required": ["file_path", "content"],

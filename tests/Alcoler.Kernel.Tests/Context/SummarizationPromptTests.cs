@@ -66,7 +66,7 @@ public class SummarizationPromptTests
     {
         var prompt = SummarizationPrompt.BuildSummaryUserPrompt(CompactionSelectorTests.BuildHistory());
 
-        Assert.Contains("[tool call ReadFile]", prompt);
+        Assert.Contains("[tool call Read]", prompt);
         Assert.Contains("r1", prompt);
     }
 }

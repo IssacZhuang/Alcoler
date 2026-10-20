@@ -48,12 +48,12 @@ public static partial class BashModelContent
 
     public static string FormatBackgroundStart(string taskId, string outputPath) =>
         $"Command running in background with ID: {taskId}. Output is being written to: {outputPath}. "
-        + "You will be notified when it completes. To check interim output, use ReadFile on that file path.";
+        + "You will be notified when it completes. To check interim output, use Read on that file path.";
 
     public static string FormatAutoBackgrounded(string taskId, string outputPath, int blockingBudgetMs) =>
         $"Command exceeded the blocking budget ({blockingBudgetMs / 1000.0:0.##}s) and was moved to the background "
         + $"with ID: {taskId}. It is still running — you will be notified when it completes. "
-        + $"Output is being written to: {outputPath}. To check interim output, use ReadFile on that file path. "
+        + $"Output is being written to: {outputPath}. To check interim output, use Read on that file path. "
         + "Delegate long-running work to a subagent or use run_in_background to keep this conversation responsive.";
 
     public static string FormatStaleReadHint(IReadOnlyList<string> paths, string workingDirectory)
@@ -66,7 +66,7 @@ public static partial class BashModelContent
         var hiddenSuffix = hiddenCount > 0 ? $" and {hiddenCount} more" : string.Empty;
         var fileWord = paths.Count == 1 ? "file" : "files";
         return $"[This command modified {paths.Count} {fileWord} you've previously read: "
-            + $"{string.Join(", ", displayPaths)}{hiddenSuffix}. Call ReadFile before editing.]";
+            + $"{string.Join(", ", displayPaths)}{hiddenSuffix}. Call Read before editing.]";
     }
 
     public static string FormatPersistedOutputEnvelope(string content, long originalBytes, string persistedPath)

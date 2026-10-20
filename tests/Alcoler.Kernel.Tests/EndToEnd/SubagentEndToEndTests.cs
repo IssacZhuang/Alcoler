@@ -37,7 +37,7 @@ public class SubagentEndToEndTests
         // The scripted model is shared by parent and child runtimes, so script order is
         // parent Task call -> child final answer -> parent final answer.
         await using var harness = TestHarness.Create(
-            ToolCall("Task", new { prompt = "Summarize the workspace.", description = "summarizer" }),
+            ToolCall("Agent", new { prompt = "Summarize the workspace.", description = "summarizer" }),
             FinalText(ChildAnswer),
             FinalText("All done."));
 
@@ -57,7 +57,7 @@ public class SubagentEndToEndTests
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
 
         var snapshot = projection.Snapshot();
-        var taskRow = snapshot.Rows.OfType<ToolCallRow>().Single(r => r.ToolName == "Task");
+        var taskRow = snapshot.Rows.OfType<ToolCallRow>().Single(r => r.ToolName == "Agent");
         Assert.Equal(ToolCallStatus.Succeeded, taskRow.Status);
         Assert.False(taskRow.IsError);
         Assert.Contains(taskRow.Output ?? [], b => b is ToolResultText t && t.Text.Contains(ChildAnswer));

@@ -146,7 +146,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
             [
                 new TextPart(StrongId.NewPartId(), "answer"),
                 new ReasoningPart(StrongId.NewPartId(), "thinking", ProviderSignature: "sig-1"),
-                new ToolCallPart(StrongId.NewPartId(), new ToolCallId("call_x"), "ReadFile", input),
+                new ToolCallPart(StrongId.NewPartId(), new ToolCallId("call_x"), "Read", input),
                 new ToolResultPart(
                     StrongId.NewPartId(),
                     new ToolCallId("call_x"),
@@ -181,7 +181,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         var toolCall = Assert.IsType<ToolCallPart>(stored.Message.Parts[2]);
         Assert.Equal(new ToolCallId("call_x"), toolCall.ToolCallId);
-        Assert.Equal("ReadFile", toolCall.ToolName);
+        Assert.Equal("Read", toolCall.ToolName);
         Assert.Equal(input.GetRawText(), toolCall.Input.GetRawText());
 
         var toolResult = Assert.IsType<ToolResultPart>(stored.Message.Parts[3]);

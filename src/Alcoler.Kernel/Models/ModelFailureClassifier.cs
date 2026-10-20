@@ -16,10 +16,16 @@ public static partial class ModelFailureClassifier
     [GeneratedRegex(@"maximum context length is (\d+) tokens?.*?requested (\d+) tokens", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline)]
     private static partial Regex OpenAiContextLengthRegex();
 
-    public static ModelFailure FromHttpResponse(int statusCode, string? retryAfterHeader, string body)
+    public static ModelFailure FromHttpResponse(
+        int statusCode,
+        string? retryAfterHeader,
+        string body,
+        string? retryAfterMsHeader = null,
+        string? shouldRetryHeader = null)
     {
         var (providerCode, providerMessage) = ReadErrorBody(body);
         var message = providerMessage ?? Truncate(body);
+        var retryAfter = ParseRetryAfterMs(retryAfterMsHeader, retryAfterHeader, shouldRetryHeader);
 
         if (statusCode == 401 || statusCode == 403)
             return new ModelFailure(ModelFailureKind.AuthenticationFailed, message, providerCode);
@@ -27,19 +33,14 @@ public static partial class ModelFailureClassifier
         if (statusCode == 408)
             return new ModelFailure(ModelFailureKind.Timeout, message, providerCode);
 
-        if (statusCode == 429)
-            return new ModelFailure(ModelFailureKind.RateLimited, message, providerCode, ParseRetryAfter(retryAfterHeader));
+        if (statusCode is 429 or 529)
+            return new ModelFailure(ModelFailureKind.RateLimited, message, providerCode, retryAfter);
 
-        if (statusCode == 400 && TryParseContextOverflow(body, out var gap))
+        if (TryParseContextOverflow(body, out var gap))
             return new ModelFailure(ModelFailureKind.ContextOverflow, message, providerCode, DeclaredTokenGap: gap);
 
         if (statusCode is >= 400 and < 500)
-        {
-            var kind = statusCode is 400 or 404 or 405 or 406 or 413 or 414 or 415 or 422
-                ? ModelFailureKind.InvalidRequest
-                : ModelFailureKind.ProviderError;
-            return new ModelFailure(kind, message, providerCode);
-        }
+            return new ModelFailure(ModelFailureKind.InvalidRequest, message, providerCode);
 
         return new ModelFailure(ModelFailureKind.ProviderError, message, providerCode);
     }
@@ -79,6 +80,25 @@ public static partial class ModelFailureClassifier
             return delta <= TimeSpan.Zero ? TimeSpan.Zero : delta;
         }
         return null;
+    }
+
+    // Mirrors ZCode parseRetryAfterMs: retry-after-ms wins over retry-after, and a
+    // x-should-retry of false/0 demotes any retry-after to diagnostics only.
+    public static TimeSpan? ParseRetryAfterMs(
+        string? retryAfterMsHeader, string? retryAfterHeader, string? shouldRetryHeader)
+    {
+        if (shouldRetryHeader is { } shouldRetry)
+        {
+            var normalized = shouldRetry.Trim();
+            if (normalized.Equals("false", StringComparison.OrdinalIgnoreCase) || normalized == "0")
+                return null;
+        }
+
+        if (long.TryParse(retryAfterMsHeader?.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var ms) &&
+            ms >= 0)
+            return TimeSpan.FromMilliseconds(ms);
+
+        return ParseRetryAfter(retryAfterHeader);
     }
 
     public static bool TryParseContextOverflow(string body, out int? declaredTokenGap)

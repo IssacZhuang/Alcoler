@@ -9,7 +9,7 @@ public class StreamingToolPolicyTests
     [Fact]
     public void ReadOnlyConcurrentSafeScopeNone_CanExecuteDuringStream()
     {
-        var readFile = new ReadFileTool();
+        var readFile = new ReadTool();
         var glob = new GlobTool();
         var grep = new GrepTool();
 
@@ -21,8 +21,8 @@ public class StreamingToolPolicyTests
     [Fact]
     public void SideEffectingTools_CannotExecuteDuringStream()
     {
-        Assert.False(StreamingToolPolicy.CanExecuteDuringStream(new WriteFileTool()));
-        Assert.False(StreamingToolPolicy.CanExecuteDuringStream(new EditFileTool()));
+        Assert.False(StreamingToolPolicy.CanExecuteDuringStream(new WriteTool()));
+        Assert.False(StreamingToolPolicy.CanExecuteDuringStream(new EditTool()));
         Assert.False(StreamingToolPolicy.CanExecuteDuringStream(new BashTool()));
     }
 

@@ -77,13 +77,27 @@ public class BashToolTests
         var stopwatch = Stopwatch.StartNew();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"command": "ping -n 20 127.0.0.1", "timeout_ms": 1000}"""),
+            workspace.ContextFor("""{"command": "ping -n 20 127.0.0.1", "timeout": 1000}"""),
             CancellationToken.None);
 
         stopwatch.Stop();
         Assert.False(result.IsError);
         Assert.Contains("<error>Command was aborted before completion</error>", result.SingleText());
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task TimeoutParam_IsAccepted_DangerouslyDisableSandbox_IsNoOp()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new BashTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"command": "echo sandboxed", "timeout": 30000, "dangerouslyDisableSandbox": true}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal("sandboxed", result.SingleText());
     }
 
     [Fact]
@@ -97,6 +111,23 @@ public class BashToolTests
         Assert.False(tool.IsReadOnlyInput(Json("""{"command": "rm -rf build"}""")));
         Assert.False(tool.IsReadOnlyInput(Json("""{"command": "echo nope"}""")));
         Assert.False(tool.IsReadOnlyInput(Json("""{"command": "grep x f > out.txt"}""")));
+    }
+
+    [Fact]
+    public void ContractSchema_ExposesTimeoutAndDangerouslyDisableSandbox()
+    {
+        var contract = new BashTool().Contract;
+
+        Assert.Contains($"- `timeout` is in milliseconds: default {BashTool.DefaultTimeoutMs}, max {BashTool.MaxTimeoutMs}.", contract.Description);
+        var properties = contract.InputSchema.GetProperty("properties");
+        Assert.False(properties.TryGetProperty("timeout_ms", out _));
+        var timeout = properties.GetProperty("timeout");
+        Assert.Equal($"Optional timeout in milliseconds (max {BashTool.MaxTimeoutMs})", timeout.GetProperty("description").GetString());
+        var sandbox = properties.GetProperty("dangerouslyDisableSandbox");
+        Assert.Equal("boolean", sandbox.GetProperty("type").GetString());
+        Assert.Equal(
+            "Set this to true to dangerously override sandbox mode and run commands without sandboxing.",
+            sandbox.GetProperty("description").GetString());
     }
 
     [Fact]
@@ -182,7 +213,7 @@ public class BashToolTests
 
         Assert.False(result.IsError);
         Assert.Contains(
-            "[This command modified 1 file you've previously read: tracked.txt. Call ReadFile before editing.]",
+            "[This command modified 1 file you've previously read: tracked.txt. Call Read before editing.]",
             result.SingleText());
     }
 
@@ -224,7 +255,7 @@ public class BashToolTests
         Assert.StartsWith("Command running in background with ID: ", text);
         Assert.Contains("Output is being written to: ", text);
         Assert.Contains("You will be notified when it completes.", text);
-        Assert.Contains("To check interim output, use ReadFile on that file path.", text);
+        Assert.Contains("To check interim output, use Read on that file path.", text);
 
         var job = Assert.Single(jobs.List());
         Assert.Equal(BackgroundJobStatus.Running, job.Status);
@@ -246,7 +277,7 @@ public class BashToolTests
 
         var result = await tool.ExecuteAsync(
             workspace.ContextFor(
-                """{"command": "ping -n 20 127.0.0.1", "timeout_ms": 1000}""",
+                """{"command": "ping -n 20 127.0.0.1", "timeout": 1000}""",
                 jobs: jobs),
             CancellationToken.None);
 
@@ -271,7 +302,7 @@ public class BashToolTests
         var tool = new BashTool();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"command": "sleep 5", "timeout_ms": 500}""", jobs: jobs),
+            workspace.ContextFor("""{"command": "sleep 5", "timeout": 500}""", jobs: jobs),
             CancellationToken.None);
 
         Assert.Contains("<error>Command was aborted before completion</error>", result.SingleText());

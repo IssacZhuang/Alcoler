@@ -8,7 +8,18 @@ public sealed class ConversationLayout : Decorator
     public static readonly StyledProperty<bool> UseResponsiveHorizontalPaddingProperty =
         AvaloniaProperty.Register<ConversationLayout, bool>(nameof(UseResponsiveHorizontalPadding));
 
-    static ConversationLayout() => AffectsMeasure<ConversationLayout>(UseResponsiveHorizontalPaddingProperty);
+    public static readonly AttachedProperty<bool> ReserveStatusPanelSpaceProperty =
+        AvaloniaProperty.RegisterAttached<ConversationLayout, Control, bool>("ReserveStatusPanelSpace", inherits: true);
+
+    static ConversationLayout()
+    {
+        AffectsMeasure<ConversationLayout>(UseResponsiveHorizontalPaddingProperty);
+        AffectsArrange<ConversationLayout>(ReserveStatusPanelSpaceProperty);
+    }
+
+    public static bool GetReserveStatusPanelSpace(Control control) => control.GetValue(ReserveStatusPanelSpaceProperty);
+
+    public static void SetReserveStatusPanelSpace(Control control, bool value) => control.SetValue(ReserveStatusPanelSpaceProperty, value);
 
     public bool UseResponsiveHorizontalPadding
     {
@@ -45,7 +56,8 @@ public sealed class ConversationLayout : Decorator
         var sectionWidth = CalculateSectionWidth(finalSize.Width);
         var padding = CalculatePadding(finalSize.Width);
         Child?.Arrange(new Rect(
-            (finalSize.Width - sectionWidth) / 2 + padding.Left,
+            (finalSize.Width - sectionWidth) / 2 + padding.Left -
+                (GetReserveStatusPanelSpace(this) ? 168 : 0),
             padding.Top,
             Math.Max(0, sectionWidth - padding.Left - padding.Right),
             Math.Max(0, finalSize.Height - padding.Top - padding.Bottom)));

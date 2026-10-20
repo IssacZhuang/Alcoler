@@ -19,7 +19,7 @@ public sealed class GlobTool : ITool
           "type": "object",
           "properties": {
             "pattern": { "type": "string", "minLength": 1, "description": "The glob pattern to match files against" },
-            "path": { "type": "string", "description": "The directory to search in. If not specified, the workspace root will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided." }
+            "path": { "type": "string", "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided." }
           },
           "required": ["pattern"],
           "additionalProperties": false

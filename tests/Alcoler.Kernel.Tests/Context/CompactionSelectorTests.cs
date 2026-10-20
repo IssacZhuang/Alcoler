@@ -174,7 +174,7 @@ public class CompactionSelectorTests
         {
             TestMessages.UserAttachment(AttachmentKind.ContextPrefix, "agents md"),
         };
-        history.AddRange(TestMessages.Round("ReadFile", "r1").Messages);
+        history.AddRange(TestMessages.Round("Read", "r1").Messages);
         history.AddRange(TestMessages.Round("Grep", "r2").Messages);
         history.AddRange(TestMessages.Round("Bash", "r3").Messages);
         return history;

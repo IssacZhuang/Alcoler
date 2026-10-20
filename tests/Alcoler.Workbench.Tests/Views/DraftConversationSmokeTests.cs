@@ -1,10 +1,13 @@
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Permissions;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Alcoler.Workbench.Views;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -101,6 +104,60 @@ public sealed class DraftConversationSmokeTests
         {
             window.Close();
         }
+    }
+
+    [AvaloniaFact]
+    public void ModePicker_ClickSavesImmediately_AndNewWindowRestoresSelection()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-mode-picker-{Guid.NewGuid():N}.json");
+        try
+        {
+            var config = new WorkbenchConfig([]);
+            config.Save(path);
+            var runtime = new FakeAgentRuntime();
+            using (var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, config,
+                saveComposer: composer => (WorkbenchConfig.LoadOrDefault(path) with { Composer = composer }).Save(path)))
+            {
+                var window = new MainWindow(workbench);
+                window.Show();
+                try
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    var composer = Assert.Single(window.GetVisualDescendants().OfType<ComposerView>());
+                    var picker = composer.FindControl<Button>("ModeSelector")!;
+                    var pickerPoint = picker.TranslatePoint(new Point(picker.Bounds.Width / 2, picker.Bounds.Height / 2), window)!.Value;
+                    window.MouseDown(pickerPoint, MouseButton.Left);
+                    window.MouseUp(pickerPoint, MouseButton.Left);
+                    Dispatcher.UIThread.RunJobs();
+                    var flyout = Assert.IsType<Flyout>(picker.Flyout);
+                    var panel = Assert.IsType<StackPanel>(flyout.Content);
+                    var plan = Assert.Single(panel.Children.OfType<RadioButton>(), button => Equals(button.Content, "Plan"));
+                    var topLevel = TopLevel.GetTopLevel(plan)!;
+                    var point = plan.TranslatePoint(new Avalonia.Point(plan.Bounds.Width / 2, plan.Bounds.Height / 2), topLevel)!.Value;
+                    topLevel.MouseDown(point, MouseButton.Left);
+                    topLevel.MouseUp(point, MouseButton.Left);
+                    Dispatcher.UIThread.RunJobs();
+
+                    Assert.Equal(PermissionMode.Plan, workbench.Draft!.Composer.Mode);
+                    Assert.Equal(PermissionMode.Plan, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
+                    Assert.Empty(runtime.Submitted);
+                }
+                finally { window.Close(); }
+            }
+            using var restarted = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, WorkbenchConfig.LoadOrDefault(path));
+            var reopened = new MainWindow(restarted);
+            reopened.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                var composer = Assert.Single(reopened.GetVisualDescendants().OfType<ComposerView>());
+                Assert.Contains(composer.FindControl<Button>("ModeSelector")!.GetVisualDescendants().OfType<TextBlock>(),
+                    text => text.Text == "Plan");
+                Assert.Equal(PermissionMode.Plan, restarted.Draft!.Composer.Mode);
+            }
+            finally { reopened.Close(); }
+        }
+        finally { File.Delete(path); }
     }
 
     private static void PressNewTask(Window window) => window.RaiseEvent(new KeyEventArgs

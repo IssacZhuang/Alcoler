@@ -43,6 +43,8 @@ internal sealed class FakeChildSession
 
     public string? FinalOutput { get; set; }
 
+    public int ToolUseCount { get; set; }
+
     public bool ReadOutputThrows { get; set; }
 
     public List<string> SubmittedPrompts { get; } = [];
@@ -54,6 +56,7 @@ internal sealed class FakeChildSession
         SubmitAsync,
         _completion.Task,
         ReadFinalOutputAsync,
+        () => Task.FromResult(ToolUseCount),
         StopAsync);
 
     public void Complete() => _completion.TrySetResult();
@@ -130,17 +133,26 @@ internal sealed class FakeSubagentPort : ISubagentPort
 
 internal static class SubagentTestResults
 {
-    public static SubagentResult Completed(string output = "child output", SubagentStatus status = SubagentStatus.Completed) =>
-        new(
+    public static SubagentResult Completed(
+        string output = "child output",
+        SubagentStatus status = SubagentStatus.Completed,
+        int? toolUseCount = 4,
+        DateTimeOffset? startedAt = null,
+        DateTimeOffset? endedAt = null)
+    {
+        var start = startedAt ?? DateTimeOffset.UtcNow;
+        return new(
             new SubagentState(
                 StrongId.NewSubagentId(),
                 StrongId.NewSessionId(),
                 "task",
                 status,
                 ResultSummary: "summary",
-                StartedAt: DateTimeOffset.UtcNow,
-                EndedAt: DateTimeOffset.UtcNow),
-            output);
+                StartedAt: start,
+                EndedAt: endedAt ?? start),
+            output,
+            toolUseCount);
+    }
 }
 
 internal static class AsyncTestWait

@@ -1,30 +1,42 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Tools;
 
 /// <summary>
-/// Stops a running background job started by the session (e.g. background Bash).
+/// Stops a running background job started by the session (e.g. background Bash). The success
+/// result is the reference JSON shape (message, task_id, task_type, optional command).
 /// </summary>
 public sealed class TaskStopTool : ITool
 {
+    internal const string TaskType = "local_bash";
+
+    private static readonly JsonSerializerOptions ResultJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     public ToolContract Contract { get; } = new(
         "TaskStop",
         """
+
         - Stops a running background task by its ID
         - Takes a task_id parameter identifying the task to stop
         - Returns a success or failure status
         - Use this tool when you need to terminate a long-running task
+
         """,
         ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "task_id": { "type": "string", "description": "The task ID to stop" }
+            "task_id": { "type": "string", "description": "The ID of the background task to stop" },
+            "shell_id": { "type": "string", "description": "Deprecated: use task_id instead" }
           },
-          "required": ["task_id"],
           "additionalProperties": false
         }
         """));
@@ -53,9 +65,7 @@ public sealed class TaskStopTool : ITool
                 "Background job service is not configured for TaskStop",
                 isError: true));
 
-        var taskId = context.Input.TryGetProperty("task_id", out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
+        var taskId = ReadId(context.Input, "task_id") ?? ReadId(context.Input, "shell_id");
         if (string.IsNullOrEmpty(taskId))
             return ValueTask.FromResult(ToolExecutionResult.Text(
                 "Missing required parameter: task_id",
@@ -71,9 +81,21 @@ public sealed class TaskStopTool : ITool
                 $"Task {taskId} is not running (status: {StatusText(job.Status)})",
                 isError: true));
 
-        return ValueTask.FromResult(ToolExecutionResult.Text(
-            $"Successfully stopped task: {job.Id.Value} ({job.Description})"));
+        var payload = new JsonObject
+        {
+            ["message"] = $"Successfully stopped task: {job.Id.Value} ({job.Description})",
+            ["task_id"] = job.Id.Value,
+            ["task_type"] = TaskType,
+        };
+        if (!string.IsNullOrEmpty(job.Description))
+            payload["command"] = job.Description;
+        return ValueTask.FromResult(ToolExecutionResult.Text(payload.ToJsonString(ResultJsonOptions)));
     }
+
+    private static string? ReadId(JsonElement input, string name) =>
+        input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static string StatusText(BackgroundJobStatus status) => status switch
     {

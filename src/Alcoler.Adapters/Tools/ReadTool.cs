@@ -1,11 +1,12 @@
 using System.Globalization;
 using System.Text.Json;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Context;
 
 namespace Alcoler.Adapters.Tools;
 
-public sealed class ReadFileTool : ITool
+public sealed class ReadTool : ITool
 {
     private const int DefaultMaxLines = 2_000;
     private const int MaxFileSizeBytes = 256 * 1024;
@@ -14,7 +15,7 @@ public sealed class ReadFileTool : ITool
     private static readonly int PartialViewTokenTarget = (int)Math.Floor(MaxOutputTokens * 0.85);
 
     private const string FileUnchangedStub =
-        "Wasted call \u2014 file unchanged since your last ReadFile. Refer to that earlier tool_result instead.";
+        "Wasted call \u2014 file unchanged since your last Read. Refer to that earlier tool_result instead.";
     private const string EmptyFileReminder =
         "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>";
 
@@ -25,24 +26,25 @@ public sealed class ReadFileTool : ITool
     };
 
     public ToolContract Contract { get; } = new(
-        "ReadFile",
+        "Read",
         """
         Reads a file from the local filesystem.
 
-        - `file_path` may be relative to the workspace root or absolute inside it.
+        - `file_path` must be an absolute path.
         - Reads up to 2000 lines by default.
         - You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
         - Results are returned using cat -n format, with line numbers starting at 1
+        - Reads images (PNG, JPG, …) and presents them visually.
         - Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content.
-        - Do NOT re-read a file you just edited to verify — EditFile/WriteFile would have errored if the change failed, and the harness tracks file state for you.
+        - Do NOT re-read a file you just edited to verify — Edit/Write would have errored if the change failed, and the harness tracks file state for you.
         """,
         ToolInput.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "file_path": { "type": "string", "description": "File path, relative to the workspace root or absolute inside it." },
-            "offset": { "type": "integer", "minimum": 1, "description": "The 1-based line number to start reading from. Only provide if the file is too large to read at once" },
+            "file_path": { "type": "string", "description": "The absolute path to the file to read" },
+            "offset": { "type": "integer", "minimum": 0, "description": "The line number to start reading from. Only provide if the file is too large to read at once" },
             "limit": { "type": "integer", "minimum": 1, "description": "The number of lines to read. Only provide if the file is too large to read at once." }
           },
           "required": ["file_path"],
@@ -78,6 +80,9 @@ public sealed class ReadFileTool : ITool
         {
             return ToolExecutionResult.Text(ex.Message, isError: true);
         }
+
+        if (ImageMimeFromPath(path) is { } imageMime)
+            return await ReadImageAsync(context, path, imageMime, cancellationToken).ConfigureAwait(false);
 
         if (BinaryExtension(path) is { } binaryExtension)
             return ToolExecutionResult.Text(
@@ -146,7 +151,7 @@ public sealed class ReadFileTool : ITool
         {
             notice = $"The file is too large to display in full ({tokenCount} estimated tokens, limit {MaxOutputTokens}). "
                 + $"Showing a partial view of lines 1-{lineCount} of {lines.Length}. "
-                + $"Use ReadFile with offset {lineCount + 1} and limit {DefaultMaxLines} to continue, or use a search tool to find a specific section.";
+                + $"Use Read with offset {lineCount + 1} and limit {DefaultMaxLines} to continue, or use a search tool to find a specific section.";
             numbered = AddLineNumbers(selected[..lineCount], 1);
         }
         else
@@ -159,7 +164,7 @@ public sealed class ReadFileTool : ITool
                     isError: true);
             notice = $"The file is too large to display in full ({tokenCount} estimated tokens, limit {MaxOutputTokens}). "
                 + "Showing a partial view of the first line because the first line alone exceeds the token budget. "
-                + "Use ReadFile with a smaller range or use a search tool to find a specific section.";
+                + "Use Read with a smaller range or use a search tool to find a specific section.";
             numbered = AddLineNumbers([content[..charCount]], 1);
         }
 
@@ -169,6 +174,46 @@ public sealed class ReadFileTool : ITool
 
     private static string CurrentDirectory(ToolExecutionContext context) =>
         context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
+
+    // Mirrors ZCode READ_IMAGE_* budgets. Without an image transcoder, images that the
+    // reference would resize or compress are rejected instead of transformed.
+    private const int ReadImageMaxInputBytes = 20 * 1024 * 1024;
+    private const int ReadImageMaxBase64Bytes = 5 * 1024 * 1024;
+
+    private static async ValueTask<ToolExecutionResult> ReadImageAsync(
+        ToolExecutionContext context, string path, string mimeType, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+            return ToolExecutionResult.Text(
+                MissingFileSuggestions.CreateMissingFileMessage(path, CurrentDirectory(context)), isError: true);
+
+        var info = new FileInfo(path);
+        if (info.Length > ReadImageMaxInputBytes)
+            return ToolExecutionResult.Text(
+                $"Image file is too large ({FormatFileSize(info.Length)}). Image reads are capped at {FormatFileSize(ReadImageMaxInputBytes)}.",
+                isError: true);
+
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        var base64Length = (long)Math.Ceiling(bytes.Length / 3.0) * 4;
+        if (base64Length > ReadImageMaxBase64Bytes)
+            return ToolExecutionResult.Text(
+                $"Image is too large for the model request budget ({FormatFileSize(bytes.Length)} raw, {FormatFileSize((int)Math.Min(int.MaxValue, base64Length))} encoded; the cap is {FormatFileSize(ReadImageMaxBase64Bytes)} encoded). Downscale or recompress the image, then read it again.",
+                isError: true);
+
+        var artifact = await context.Workspace.SaveArtifactAsync(
+            context.SessionId, Path.GetFileName(path), mimeType, bytes, cancellationToken).ConfigureAwait(false);
+        return new ToolExecutionResult([new ToolResultMedia(artifact.Uri, artifact.MimeType, artifact.FileName)]);
+    }
+
+    private static string? ImageMimeFromPath(string path)
+    {
+        var lower = path.ToLowerInvariant();
+        if (lower.EndsWith(".jpg") || lower.EndsWith(".jpeg")) return "image/jpeg";
+        if (lower.EndsWith(".png")) return "image/png";
+        if (lower.EndsWith(".gif")) return "image/gif";
+        if (lower.EndsWith(".webp")) return "image/webp";
+        return null;
+    }
 
     private static string? BinaryExtension(string path)
     {
@@ -181,7 +226,7 @@ public sealed class ReadFileTool : ITool
     }
 
     private static string AddLineNumbers(string[] lines, int startLine) =>
-        string.Join("\n", lines.Select((line, index) => $"{startLine + index,6}\t{line}"));
+        string.Join("\n", lines.Select((line, index) => $"{startLine + index}\t{line}"));
 
     private static int LargestPrefixWithinTokenBudget(string[] lines)
     {

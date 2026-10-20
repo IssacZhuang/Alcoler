@@ -3,17 +3,18 @@ using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Adapters.Tools;
 
-public sealed class EditFileTool : ITool
+public sealed class EditTool : ITool
 {
     private const string FreshnessSuffix = " (file state is current in your context \u2014 no need to Read it back)";
+    private const long MaxEditableFileSizeBytes = 1024L * 1024 * 1024;
 
     public ToolContract Contract { get; } = new(
-        "EditFile",
+        "Edit",
         """
         Performs exact string replacement in a file.
 
-        - You must ReadFile the file in this conversation before editing, or the call will fail.
-        - `old_string` must match the file exactly, including indentation, and be unique — the edit fails otherwise. Strip the ReadFile line prefix (line number + tab) before matching.
+        - You must Read the file in this conversation before editing, or the call will fail.
+        - `old_string` must match the file exactly, including indentation, and be unique — the edit fails otherwise. Strip the Read line prefix (line number + tab) before matching.
         - `replace_all: true` replaces every occurrence instead.
         """,
         ToolInput.ParseSchema("""
@@ -21,10 +22,10 @@ public sealed class EditFileTool : ITool
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "file_path": { "type": "string", "description": "File path, relative to the workspace root or absolute inside it." },
+            "file_path": { "type": "string", "description": "The absolute path to the file to modify" },
             "old_string": { "type": "string", "description": "The text to replace" },
             "new_string": { "type": "string", "description": "The text to replace it with (must be different from old_string)" },
-            "replace_all": { "type": ["boolean", "string", "number"], "description": "Replace all occurrences of old_string (default false)" }
+            "replace_all": { "type": "boolean", "default": false, "description": "Replace all occurrences of old_string (default false)" }
           },
           "required": ["file_path", "old_string", "new_string"],
           "additionalProperties": false
@@ -81,6 +82,11 @@ public sealed class EditFileTool : ITool
                 isError: true);
         }
 
+        if (new FileInfo(path).Length > MaxEditableFileSizeBytes)
+            return ToolExecutionResult.Text(
+                "File is too large to edit (1GB). Maximum editable file size is 1GB.",
+                isError: true);
+
         var rawContent = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
         var content = EditMatchers.NormalizeLineEndings(rawContent);
         var oldString = EditMatchers.NormalizeLineEndings(oldStringInput);
@@ -96,6 +102,11 @@ public sealed class EditFileTool : ITool
             context.FileReads?.RecordWrite(path);
             return Success(rawPath, replaceAll);
         }
+
+        if (path.EndsWith(".ipynb", StringComparison.Ordinal))
+            return ToolExecutionResult.Text(
+                "File is a Jupyter Notebook. Use the NotebookEdit to edit this file.",
+                isError: true);
 
         if (FileReadGuards.ReadStateFailure(path, context) is { } failure)
             return failure;

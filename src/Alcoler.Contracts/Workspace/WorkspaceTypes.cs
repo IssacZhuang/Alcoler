@@ -9,7 +9,14 @@ public enum TodoItemStatus
     Completed,
 }
 
-public sealed record TodoItem(string Id, string Content, TodoItemStatus Status);
+public enum TodoPriority
+{
+    High,
+    Medium,
+    Low,
+}
+
+public sealed record TodoItem(string Content, TodoItemStatus Status, TodoPriority Priority);
 
 /// <summary>
 /// Per-session todo list state. The model submits the complete list on every write

@@ -15,7 +15,7 @@ public static class MicroCompactor
     // Only tool names that exist (or are about to exist) in the registry; unmatched names are never hit.
     private static readonly HashSet<string> EligibleToolNames =
     [
-        "ReadFile", "WriteFile", "EditFile", "Bash", "Grep", "Glob", "WebFetch", "WebSearch", "TaskOutput",
+        "Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebFetch", "WebSearch", "TaskOutput",
     ];
 
     public static MicrocompactResult Apply(

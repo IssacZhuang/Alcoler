@@ -16,7 +16,7 @@ public class ToolBatchRunnerTests
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var enteredCount = 0;
-        var gateTool = new FakeTool("ReadFile", execute: async (_, _) =>
+        var gateTool = new FakeTool("Read", execute: async (_, _) =>
         {
             if (Interlocked.Increment(ref enteredCount) == 2)
                 entered.TrySetResult();
@@ -45,7 +45,7 @@ public class ToolBatchRunnerTests
     {
         var stopTool = new FakeTool("Grep", execute: (_, _) =>
             ValueTask.FromResult(ToolExecutionResult.Text("found it")));
-        var laterTool = new FakeTool("WriteFile", FakeToolMetadata.Serial());
+        var laterTool = new FakeTool("Write", FakeToolMetadata.Serial());
 
         using var workspace = new TempWorkspace();
         var runner = Runner(stopTool, laterTool);
@@ -63,7 +63,7 @@ public class ToolBatchRunnerTests
         Assert.Equal("found it", result.Outcomes[0].Result.SingleText());
         Assert.False(result.Outcomes[1].Ran);
         Assert.True(result.Outcomes[1].CancelledByStop);
-        Assert.Equal("Tool execution was cancelled", result.Outcomes[1].Result.SingleText());
+        Assert.Equal("Tool cancelled because a previous tool result requested a turn stop.", result.Outcomes[1].Result.SingleText());
         Assert.Empty(laterTool.ExecutedContexts);
     }
 
@@ -72,7 +72,7 @@ public class ToolBatchRunnerTests
     {
         var failing = new FakeTool("Grep", execute: (_, _) =>
             ValueTask.FromResult(ToolExecutionResult.Text("nope", isError: true)));
-        var laterTool = new FakeTool("WriteFile", FakeToolMetadata.Serial());
+        var laterTool = new FakeTool("Write", FakeToolMetadata.Serial());
 
         using var workspace = new TempWorkspace();
         var runner = Runner(failing, laterTool);
@@ -93,8 +93,8 @@ public class ToolBatchRunnerTests
     [Fact]
     public async Task Outcomes_PreserveInputOrder()
     {
-        var read = new FakeTool("ReadFile");
-        var write = new FakeTool("WriteFile", FakeToolMetadata.Serial());
+        var read = new FakeTool("Read");
+        var write = new FakeTool("Write", FakeToolMetadata.Serial());
         var readCall = new ScheduledToolCall(read.Call());
         var writeCall = new ScheduledToolCall(write.Call());
         var secondReadCall = new ScheduledToolCall(read.Call());
@@ -115,7 +115,7 @@ public class ToolBatchRunnerTests
     [Fact]
     public async Task CancelledBeforeStart_MarksAllCallsNotRan()
     {
-        var tool = new FakeTool("ReadFile");
+        var tool = new FakeTool("Read");
         using var workspace = new TempWorkspace();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
@@ -131,7 +131,7 @@ public class ToolBatchRunnerTests
         {
             Assert.False(outcome.Ran);
             Assert.False(outcome.CancelledByStop);
-            Assert.Equal("Tool execution was cancelled", outcome.Result.SingleText());
+            Assert.Equal("Tool execution cancelled", outcome.Result.SingleText());
         });
         Assert.Empty(tool.ExecutedContexts);
     }

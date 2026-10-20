@@ -298,6 +298,164 @@ public sealed class DraftConversationLifecycleTests
         Assert.Equal("Workspace draft", workbench.Draft!.Composer.Draft);
     }
 
+    [Theory]
+    [InlineData(PermissionMode.Build)]
+    [InlineData(PermissionMode.Edit)]
+    [InlineData(PermissionMode.Plan)]
+    [InlineData(PermissionMode.Yolo)]
+    public async Task SelectedMode_IsSavedImmediately_AndRestoredForFreshConversations(PermissionMode mode)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-composer-{Guid.NewGuid():N}.json");
+        try
+        {
+            var config = new WorkbenchConfig([], Composer: new WorkbenchComposerConfig(
+                mode == PermissionMode.Build ? PermissionMode.Plan : PermissionMode.Build));
+            config.Save(path);
+            var runtime = new DraftRuntime();
+            using (var workbench = new WorkbenchViewModel(runtime, _scheduler, config,
+                saveComposer: composer => (WorkbenchConfig.LoadOrDefault(path) with { Composer = composer }).Save(path)))
+            {
+                workbench.Draft!.Composer.Mode = mode;
+                Assert.Equal(mode, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
+                Assert.Empty(runtime.Created);
+                Assert.Empty(runtime.Submitted);
+                workbench.Draft.Composer.Draft = "First prompt";
+                await workbench.Draft.SendAsync();
+                await ApplyInitialProjectionAsync();
+                Assert.Equal(mode, Assert.Single(runtime.Created).PermissionMode);
+                workbench.ShowNewTask();
+                Assert.Equal(mode, workbench.Draft!.Composer.Mode);
+            }
+            using var restarted = new WorkbenchViewModel(new DraftRuntime(), _scheduler, WorkbenchConfig.LoadOrDefault(path));
+            Assert.Equal(mode, restarted.Draft!.Composer.Mode);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task DirectSessionCreation_UsesRememberedMode()
+    {
+        var runtime = new DraftRuntime();
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler,
+            new WorkbenchConfig([], Composer: new WorkbenchComposerConfig(PermissionMode.Plan)));
+
+        await workbench.NewSessionAsync(Environment.CurrentDirectory);
+        await ApplyInitialProjectionAsync();
+
+        Assert.Equal(PermissionMode.Plan, Assert.Single(runtime.Created).PermissionMode);
+        Assert.Equal(PermissionMode.Plan, workbench.Active!.Composer.Mode);
+    }
+
+    [Fact]
+    public async Task UnsentSessionModes_SurviveRestartIndependently_WithoutChangingRuntimePolicy()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-composer-{Guid.NewGuid():N}.json");
+        try
+        {
+            var first = StrongId.NewSessionId();
+            var second = StrongId.NewSessionId();
+            var model = new ModelSelection("provider", "restored-model", new ModelCallOptions(ReasoningLevel: "high"));
+            var runtime = new FakeAgentRuntime();
+            runtime.RegisterSession(first, new ConversationSnapshot(0, 1, [], TestSnapshots.State(modelSelection: model)));
+            runtime.RegisterSession(second, new ConversationSnapshot(0, 1, [], TestSnapshots.State() with { Mode = PermissionMode.Edit }));
+            var config = new WorkbenchConfig([]);
+            config.Save(path);
+            using (var workbench = new WorkbenchViewModel(runtime, _scheduler, config,
+                saveComposer: composer => (WorkbenchConfig.LoadOrDefault(path) with { Composer = composer }).Save(path)))
+            {
+                await workbench.OpenSessionAsync(first);
+                await ApplyInitialProjectionAsync();
+                workbench.Active!.Composer.Mode = PermissionMode.Plan;
+                await workbench.OpenSessionAsync(second);
+                await ApplyInitialProjectionAsync();
+                Assert.Equal(PermissionMode.Edit, workbench.Active!.Composer.Mode);
+                Assert.Equal(PermissionMode.Plan, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
+                workbench.Active.Composer.Mode = PermissionMode.Yolo;
+                Assert.Empty(runtime.Submitted);
+            }
+            using var restarted = new WorkbenchViewModel(runtime, _scheduler, WorkbenchConfig.LoadOrDefault(path));
+            await restarted.OpenSessionAsync(first);
+            await ApplyInitialProjectionAsync();
+            Assert.Equal(PermissionMode.Plan, restarted.Active!.Composer.Mode);
+            Assert.Equal(PermissionMode.Build, restarted.Active.Composer.SessionMode);
+            Assert.Equal(model, restarted.Active.CurrentSelection);
+            Assert.Equal("high", restarted.Active.ThoughtLevel);
+            await restarted.OpenSessionAsync(second);
+            await ApplyInitialProjectionAsync();
+            Assert.Equal(PermissionMode.Yolo, restarted.Active!.Composer.Mode);
+            Assert.Equal(PermissionMode.Edit, restarted.Active.Composer.SessionMode);
+            Assert.Empty(runtime.Submitted);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SubmittedMode_ClearsPendingOverrideOnlyAfterAcceptance(bool rejected)
+    {
+        var runtime = new FakeAgentRuntime { RejectNextCommand = rejected };
+        var id = StrongId.NewSessionId();
+        runtime.RegisterSession(id, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        WorkbenchComposerConfig? saved = null;
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, new WorkbenchConfig([]),
+            saveComposer: composer => saved = composer);
+        await workbench.OpenSessionAsync(id);
+        await ApplyInitialProjectionAsync();
+        workbench.Active!.Composer.Mode = PermissionMode.Plan;
+        workbench.Active.Composer.Draft = "Use the selected mode";
+
+        await workbench.Active.SendAsync();
+
+        Assert.Equal(PermissionMode.Plan, Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted)).Mode);
+        Assert.Equal(rejected, saved!.PendingSessionModes!.ContainsKey(id.Value));
+        Assert.Equal(PermissionMode.Plan, saved.DefaultMode);
+    }
+
+    [Fact]
+    public async Task FirstSend_PreservesNewerModeSelectionUntilItIsSubmitted()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new DraftRuntime { CreateGate = gate.Task };
+        WorkbenchComposerConfig? saved = null;
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, new WorkbenchConfig([]),
+            saveComposer: composer => saved = composer);
+        var draft = workbench.Draft!;
+        draft.Composer.Mode = PermissionMode.Plan;
+        draft.Composer.Draft = "Captured prompt";
+        var sending = draft.SendAsync();
+        draft.Composer.Mode = PermissionMode.Edit;
+        gate.SetResult();
+        await sending;
+        await ApplyInitialProjectionAsync();
+
+        Assert.Equal(PermissionMode.Edit, saved!.DefaultMode);
+        Assert.Equal(PermissionMode.Edit, saved.PendingSessionModes![runtime.LastSessionId.Value]);
+        Assert.Equal(PermissionMode.Edit, workbench.Active!.Composer.Mode);
+        Assert.Equal(PermissionMode.Plan, Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted)).Mode);
+    }
+
+    [Fact]
+    public void InvalidSavedModes_DefaultSafelyToBuild()
+    {
+        using var workbench = new WorkbenchViewModel(new DraftRuntime(), _scheduler,
+            new WorkbenchConfig([], Composer: new WorkbenchComposerConfig((PermissionMode)999)));
+
+        Assert.Equal(PermissionMode.Build, workbench.Draft!.Composer.Mode);
+    }
+
+    [Fact]
+    public void ModeSaveFailure_KeepsSelectionAndShowsError()
+    {
+        using var workbench = new WorkbenchViewModel(new DraftRuntime(), _scheduler, new WorkbenchConfig([]),
+            saveComposer: _ => throw new IOException("Storage unavailable"));
+
+        workbench.Draft!.Composer.Mode = PermissionMode.Plan;
+
+        Assert.Equal(PermissionMode.Plan, workbench.Draft.Composer.Mode);
+        Assert.Contains("Storage unavailable", workbench.Banner);
+    }
+
     private WorkbenchViewModel Create(DraftRuntime runtime) => new(runtime, _scheduler,
         new WorkbenchConfig([
             new WorkbenchProviderConfig("openai-compatible", "https://example.test/v1", "key", [

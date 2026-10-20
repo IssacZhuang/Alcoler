@@ -193,6 +193,21 @@ public class TaskOutputToolTests
     }
 
     [Fact]
+    public void Contract_DescriptionCarriesDeprecatedPreamble_AndAllParamsRequired()
+    {
+        var contract = new TaskOutputTool().Contract;
+
+        Assert.Equal("TaskOutput", contract.Name);
+        Assert.StartsWith("DEPRECATED: Background tasks return their output file path in the tool result", contract.Description);
+        Assert.Contains("Task IDs can be found using the /tasks command", contract.Description);
+
+        var schema = contract.InputSchema.GetRawText();
+        Assert.Contains("\"required\": [\"task_id\", \"block\", \"timeout\"]", schema);
+        Assert.Contains("\"default\": true", schema);
+        Assert.Contains("\"default\": 30000", schema);
+    }
+
+    [Fact]
     public void CompletionNotification_UsesSystemNotificationWrapper()
     {
         var job = new BackgroundJobInfo(

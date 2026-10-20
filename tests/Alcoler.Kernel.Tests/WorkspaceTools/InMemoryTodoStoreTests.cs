@@ -10,6 +10,9 @@ public class InMemoryTodoStoreTests
     private static readonly SessionId SessionA = new("sess_a");
     private static readonly SessionId SessionB = new("sess_b");
 
+    private static TodoItem Item(string content, TodoItemStatus status = TodoItemStatus.Pending) =>
+        new(content, status, TodoPriority.Medium);
+
     [Fact]
     public void Get_ReturnsEmpty_WhenNothingStored()
     {
@@ -22,9 +25,9 @@ public class InMemoryTodoStoreTests
     public void Replace_IsWholesale()
     {
         var store = new InMemoryTodoStore();
-        store.Replace(SessionA, [new TodoItem("todo-1", "first", TodoItemStatus.Pending)]);
+        store.Replace(SessionA, [Item("first")]);
 
-        var stored = store.Replace(SessionA, [new TodoItem("todo-2", "second", TodoItemStatus.Completed)]);
+        var stored = store.Replace(SessionA, [Item("second", TodoItemStatus.Completed)]);
 
         Assert.Equal("second", store.Get(SessionA).Single().Content);
         Assert.Equal(stored, store.Get(SessionA));
@@ -34,8 +37,8 @@ public class InMemoryTodoStoreTests
     public void Sessions_AreIsolated()
     {
         var store = new InMemoryTodoStore();
-        store.Replace(SessionA, [new TodoItem("todo-1", "alpha", TodoItemStatus.Pending)]);
-        store.Replace(SessionB, [new TodoItem("todo-1", "beta", TodoItemStatus.InProgress)]);
+        store.Replace(SessionA, [Item("alpha")]);
+        store.Replace(SessionB, [Item("beta", TodoItemStatus.InProgress)]);
 
         Assert.Equal("alpha", store.Get(SessionA).Single().Content);
         Assert.Equal("beta", store.Get(SessionB).Single().Content);
@@ -45,8 +48,8 @@ public class InMemoryTodoStoreTests
     public void Clear_RemovesOnlyTheTargetSession()
     {
         var store = new InMemoryTodoStore();
-        store.Replace(SessionA, [new TodoItem("todo-1", "alpha", TodoItemStatus.Pending)]);
-        store.Replace(SessionB, [new TodoItem("todo-1", "beta", TodoItemStatus.Pending)]);
+        store.Replace(SessionA, [Item("alpha")]);
+        store.Replace(SessionB, [Item("beta")]);
 
         store.Clear(SessionA);
 
@@ -58,10 +61,10 @@ public class InMemoryTodoStoreTests
     public void Replace_DoesNotAliasCallerList()
     {
         var store = new InMemoryTodoStore();
-        var items = new List<TodoItem> { new("todo-1", "alpha", TodoItemStatus.Pending) };
+        var items = new List<TodoItem> { Item("alpha") };
 
         store.Replace(SessionA, items);
-        items.Add(new TodoItem("todo-2", "mutated-after-replace", TodoItemStatus.Pending));
+        items.Add(Item("mutated-after-replace"));
 
         Assert.Single(store.Get(SessionA));
     }
