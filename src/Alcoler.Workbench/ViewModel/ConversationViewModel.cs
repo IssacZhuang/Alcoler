@@ -47,6 +47,10 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
     [ObservableProperty]
     private string _title = string.Empty;
 
+    public string HeaderTitle => string.IsNullOrWhiteSpace(Title) ? "Untitled session" : Title;
+
+    partial void OnTitleChanged(string value) => OnPropertyChanged(nameof(HeaderTitle));
+
     [ObservableProperty]
     private string _workspaceRoot = string.Empty;
 

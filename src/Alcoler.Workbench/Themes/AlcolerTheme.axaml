@@ -3,76 +3,180 @@
                     xmlns:conv="using:Alcoler.Workbench.Converters">
   <ResourceDictionary.ThemeDictionaries>
     <ResourceDictionary x:Key="Dark">
-      <Color x:Key="AlcolerBackgroundColor">#FF16171A</Color>
-      <Color x:Key="AlcolerSurfaceColor">#FF1E2024</Color>
-      <Color x:Key="AlcolerSurfaceHighColor">#FF2A2D33</Color>
-      <Color x:Key="AlcolerBorderColor">#FF33363D</Color>
-      <Color x:Key="AlcolerTextPrimaryColor">#FFE6E7EA</Color>
-      <Color x:Key="AlcolerTextSecondaryColor">#FF9BA0A8</Color>
-      <Color x:Key="AlcolerAccentColor">#FF4C8DFF</Color>
-      <Color x:Key="AlcolerAccentTextColor">#FF0B1220</Color>
-      <Color x:Key="AlcolerSuccessColor">#FF3FB950</Color>
-      <Color x:Key="AlcolerWarningColor">#FFD29922</Color>
-      <Color x:Key="AlcolerErrorColor">#FFF85149</Color>
-      <Color x:Key="AlcolerInfoColor">#FF58A6FF</Color>
-      <Color x:Key="AlcolerPhaseIdleColor">#FF8B9099</Color>
-      <Color x:Key="AlcolerPhaseBusyColor">#FF4C8DFF</Color>
-      <Color x:Key="AlcolerPhaseToolsColor">#FFD29922</Color>
-      <Color x:Key="AlcolerPhaseAttentionColor">#FFDB6D28</Color>
-      <Color x:Key="AlcolerPhaseErrorColor">#FFF85149</Color>
+      <Color x:Key="AlcolerBackgroundColor">#FF161616</Color>
+      <Color x:Key="AlcolerSidebarColor">#FF161616</Color>
+      <Color x:Key="AlcolerPanelColor">#FF202020</Color>
+      <Color x:Key="AlcolerCardColor">#FF2B2B2B</Color>
+      <Color x:Key="AlcolerPopoverColor">#FF2B2B2B</Color>
+      <Color x:Key="AlcolerInputColor">#FF2B2B2B</Color>
+      <Color x:Key="AlcolerInputFocusedColor">#FF2B2B2B</Color>
+      <Color x:Key="AlcolerSurfaceColor">#0DFFFFFF</Color>
+      <Color x:Key="AlcolerSurfaceHighColor">#1AFFFFFF</Color>
+      <Color x:Key="AlcolerHoverColor">#0DFFFFFF</Color>
+      <Color x:Key="AlcolerSelectedColor">#1AFFFFFF</Color>
+      <Color x:Key="AlcolerBorderColor">#1AFFFFFF</Color>
+      <Color x:Key="AlcolerBorderHoverColor">#26FFFFFF</Color>
+      <Color x:Key="AlcolerTextPrimaryColor">#FFD4D4D4</Color>
+      <Color x:Key="AlcolerTextSecondaryColor">#FF888888</Color>
+      <Color x:Key="AlcolerTextTertiaryColor">#FF4F4F4F</Color>
+      <Color x:Key="AlcolerTextInverseColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerBrandColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerBrandTextColor">#FF000000</Color>
+      <Color x:Key="AlcolerAccentColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerAccentTextColor">#FF000000</Color>
+      <Color x:Key="AlcolerSuccessColor">#FF46BF72</Color>
+      <Color x:Key="AlcolerWarningColor">#FFFF8A30</Color>
+      <Color x:Key="AlcolerErrorColor">#FFFF5C5C</Color>
+      <Color x:Key="AlcolerErrorTextColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerInfoColor">#FF4099FF</Color>
+      <Color x:Key="AlcolerPhaseIdleColor">#FF888888</Color>
+      <Color x:Key="AlcolerPhaseBusyColor">#FF4099FF</Color>
+      <Color x:Key="AlcolerPhaseToolsColor">#FFFF8A30</Color>
+      <Color x:Key="AlcolerPhaseAttentionColor">#FFFF8A30</Color>
+      <Color x:Key="AlcolerPhaseErrorColor">#FFFF5C5C</Color>
+      <Color x:Key="AlcolerDiffAddedColor">#FF46BF72</Color>
+      <Color x:Key="AlcolerDiffRemovedColor">#FFFF5C5C</Color>
+      <Color x:Key="AlcolerGitModifiedColor">#FFFF8A30</Color>
+      <Color x:Key="AlcolerGitAddedColor">#FF46BF72</Color>
+      <Color x:Key="AlcolerGitDeletedColor">#FFFF5C5C</Color>
+      <Color x:Key="AlcolerGitRenamedColor">#FF4099FF</Color>
+      <Color x:Key="AlcolerGitUntrackedColor">#FF46BF72</Color>
+      <Color x:Key="AlcolerTerminalBackgroundColor">#FF161616</Color>
+      <Color x:Key="AlcolerTerminalForegroundColor">#FFD4D4D4</Color>
+      <Color x:Key="AlcolerTooltipColor">#FF2B2B2B</Color>
+      <Color x:Key="AlcolerTooltipForegroundColor">#FFF8F8F8</Color>
+      <Color x:Key="AlcolerOverlayColor">#B3000000</Color>
       <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
+      <SolidColorBrush x:Key="AlcolerSidebar" Color="{DynamicResource AlcolerSidebarColor}" />
+      <SolidColorBrush x:Key="AlcolerPanel" Color="{DynamicResource AlcolerPanelColor}" />
+      <SolidColorBrush x:Key="AlcolerCard" Color="{DynamicResource AlcolerCardColor}" />
+      <SolidColorBrush x:Key="AlcolerPopover" Color="{DynamicResource AlcolerPopoverColor}" />
+      <SolidColorBrush x:Key="AlcolerInput" Color="{DynamicResource AlcolerInputColor}" />
+      <SolidColorBrush x:Key="AlcolerInputFocused" Color="{DynamicResource AlcolerInputFocusedColor}" />
       <SolidColorBrush x:Key="AlcolerSurface" Color="{DynamicResource AlcolerSurfaceColor}" />
       <SolidColorBrush x:Key="AlcolerSurfaceHigh" Color="{DynamicResource AlcolerSurfaceHighColor}" />
+      <SolidColorBrush x:Key="AlcolerHover" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="AlcolerSelected" Color="{DynamicResource AlcolerSelectedColor}" />
       <SolidColorBrush x:Key="AlcolerBorder" Color="{DynamicResource AlcolerBorderColor}" />
+      <SolidColorBrush x:Key="AlcolerBorderHover" Color="{DynamicResource AlcolerBorderHoverColor}" />
       <SolidColorBrush x:Key="AlcolerTextPrimary" Color="{DynamicResource AlcolerTextPrimaryColor}" />
       <SolidColorBrush x:Key="AlcolerTextSecondary" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="AlcolerTextTertiary" Color="{DynamicResource AlcolerTextTertiaryColor}" />
+      <SolidColorBrush x:Key="AlcolerTextInverse" Color="{DynamicResource AlcolerTextInverseColor}" />
+      <SolidColorBrush x:Key="AlcolerBrand" Color="{DynamicResource AlcolerBrandColor}" />
+      <SolidColorBrush x:Key="AlcolerBrandText" Color="{DynamicResource AlcolerBrandTextColor}" />
       <SolidColorBrush x:Key="AlcolerAccent" Color="{DynamicResource AlcolerAccentColor}" />
       <SolidColorBrush x:Key="AlcolerAccentText" Color="{DynamicResource AlcolerAccentTextColor}" />
       <SolidColorBrush x:Key="AlcolerSuccess" Color="{DynamicResource AlcolerSuccessColor}" />
       <SolidColorBrush x:Key="AlcolerWarning" Color="{DynamicResource AlcolerWarningColor}" />
       <SolidColorBrush x:Key="AlcolerError" Color="{DynamicResource AlcolerErrorColor}" />
+      <SolidColorBrush x:Key="AlcolerErrorText" Color="{DynamicResource AlcolerErrorTextColor}" />
       <SolidColorBrush x:Key="AlcolerInfo" Color="{DynamicResource AlcolerInfoColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseIdle" Color="{DynamicResource AlcolerPhaseIdleColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseBusy" Color="{DynamicResource AlcolerPhaseBusyColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseTools" Color="{DynamicResource AlcolerPhaseToolsColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseAttention" Color="{DynamicResource AlcolerPhaseAttentionColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseError" Color="{DynamicResource AlcolerPhaseErrorColor}" />
+      <SolidColorBrush x:Key="AlcolerDiffAdded" Color="{DynamicResource AlcolerDiffAddedColor}" />
+      <SolidColorBrush x:Key="AlcolerDiffRemoved" Color="{DynamicResource AlcolerDiffRemovedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitModified" Color="{DynamicResource AlcolerGitModifiedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitAdded" Color="{DynamicResource AlcolerGitAddedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitDeleted" Color="{DynamicResource AlcolerGitDeletedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitRenamed" Color="{DynamicResource AlcolerGitRenamedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitUntracked" Color="{DynamicResource AlcolerGitUntrackedColor}" />
+      <SolidColorBrush x:Key="AlcolerTerminalBackground" Color="{DynamicResource AlcolerTerminalBackgroundColor}" />
+      <SolidColorBrush x:Key="AlcolerTerminalForeground" Color="{DynamicResource AlcolerTerminalForegroundColor}" />
+      <SolidColorBrush x:Key="AlcolerTooltip" Color="{DynamicResource AlcolerTooltipColor}" />
+      <SolidColorBrush x:Key="AlcolerTooltipForeground" Color="{DynamicResource AlcolerTooltipForegroundColor}" />
+      <SolidColorBrush x:Key="AlcolerOverlay" Color="{DynamicResource AlcolerOverlayColor}" />
     </ResourceDictionary>
     <ResourceDictionary x:Key="Light">
-      <Color x:Key="AlcolerBackgroundColor">#FFF6F7F9</Color>
-      <Color x:Key="AlcolerSurfaceColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerSurfaceHighColor">#FFECEEF1</Color>
-      <Color x:Key="AlcolerBorderColor">#FFD5D9E0</Color>
-      <Color x:Key="AlcolerTextPrimaryColor">#FF1A1C20</Color>
-      <Color x:Key="AlcolerTextSecondaryColor">#FF5A6472</Color>
-      <Color x:Key="AlcolerAccentColor">#FF1F6FEB</Color>
+      <Color x:Key="AlcolerBackgroundColor">#FFF8F8F8</Color>
+      <Color x:Key="AlcolerSidebarColor">#FFF0F0F0</Color>
+      <Color x:Key="AlcolerPanelColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerCardColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerPopoverColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerInputColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerInputFocusedColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerSurfaceColor">#080D0D0D</Color>
+      <Color x:Key="AlcolerSurfaceHighColor">#0D0D0D0D</Color>
+      <Color x:Key="AlcolerHoverColor">#0D0D0D0D</Color>
+      <Color x:Key="AlcolerSelectedColor">#0D0D0D0D</Color>
+      <Color x:Key="AlcolerBorderColor">#1A0D0D0D</Color>
+      <Color x:Key="AlcolerBorderHoverColor">#260D0D0D</Color>
+      <Color x:Key="AlcolerTextPrimaryColor">#FF262626</Color>
+      <Color x:Key="AlcolerTextSecondaryColor">#FF7A7A7A</Color>
+      <Color x:Key="AlcolerTextTertiaryColor">#FFA4A4A4</Color>
+      <Color x:Key="AlcolerTextInverseColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerBrandColor">#FF000000</Color>
+      <Color x:Key="AlcolerBrandTextColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerAccentColor">#FF000000</Color>
       <Color x:Key="AlcolerAccentTextColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerSuccessColor">#FF1A7F37</Color>
-      <Color x:Key="AlcolerWarningColor">#FF9A6700</Color>
-      <Color x:Key="AlcolerErrorColor">#FFCF222E</Color>
-      <Color x:Key="AlcolerInfoColor">#FF0969DA</Color>
-      <Color x:Key="AlcolerPhaseIdleColor">#FF6E7781</Color>
-      <Color x:Key="AlcolerPhaseBusyColor">#FF1F6FEB</Color>
-      <Color x:Key="AlcolerPhaseToolsColor">#FF9A6700</Color>
-      <Color x:Key="AlcolerPhaseAttentionColor">#FFBC4C00</Color>
-      <Color x:Key="AlcolerPhaseErrorColor">#FFCF222E</Color>
+      <Color x:Key="AlcolerSuccessColor">#FF1E8A3E</Color>
+      <Color x:Key="AlcolerWarningColor">#FFE07B00</Color>
+      <Color x:Key="AlcolerErrorColor">#FFE03131</Color>
+      <Color x:Key="AlcolerErrorTextColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerInfoColor">#FF0B7FFF</Color>
+      <Color x:Key="AlcolerPhaseIdleColor">#FF7A7A7A</Color>
+      <Color x:Key="AlcolerPhaseBusyColor">#FF0B7FFF</Color>
+      <Color x:Key="AlcolerPhaseToolsColor">#FFE07B00</Color>
+      <Color x:Key="AlcolerPhaseAttentionColor">#FFE07B00</Color>
+      <Color x:Key="AlcolerPhaseErrorColor">#FFE03131</Color>
+      <Color x:Key="AlcolerDiffAddedColor">#FF1E8A3E</Color>
+      <Color x:Key="AlcolerDiffRemovedColor">#FFE03131</Color>
+      <Color x:Key="AlcolerGitModifiedColor">#FFE07B00</Color>
+      <Color x:Key="AlcolerGitAddedColor">#FF1E8A3E</Color>
+      <Color x:Key="AlcolerGitDeletedColor">#FFE03131</Color>
+      <Color x:Key="AlcolerGitRenamedColor">#FF0B7FFF</Color>
+      <Color x:Key="AlcolerGitUntrackedColor">#FF1E8A3E</Color>
+      <Color x:Key="AlcolerTerminalBackgroundColor">#FFF8F8F8</Color>
+      <Color x:Key="AlcolerTerminalForegroundColor">#FF262626</Color>
+      <Color x:Key="AlcolerTooltipColor">#FFF0F0F0</Color>
+      <Color x:Key="AlcolerTooltipForegroundColor">#FF0D0D0D</Color>
+      <Color x:Key="AlcolerOverlayColor">#66000000</Color>
       <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
+      <SolidColorBrush x:Key="AlcolerSidebar" Color="{DynamicResource AlcolerSidebarColor}" />
+      <SolidColorBrush x:Key="AlcolerPanel" Color="{DynamicResource AlcolerPanelColor}" />
+      <SolidColorBrush x:Key="AlcolerCard" Color="{DynamicResource AlcolerCardColor}" />
+      <SolidColorBrush x:Key="AlcolerPopover" Color="{DynamicResource AlcolerPopoverColor}" />
+      <SolidColorBrush x:Key="AlcolerInput" Color="{DynamicResource AlcolerInputColor}" />
+      <SolidColorBrush x:Key="AlcolerInputFocused" Color="{DynamicResource AlcolerInputFocusedColor}" />
       <SolidColorBrush x:Key="AlcolerSurface" Color="{DynamicResource AlcolerSurfaceColor}" />
       <SolidColorBrush x:Key="AlcolerSurfaceHigh" Color="{DynamicResource AlcolerSurfaceHighColor}" />
+      <SolidColorBrush x:Key="AlcolerHover" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="AlcolerSelected" Color="{DynamicResource AlcolerSelectedColor}" />
       <SolidColorBrush x:Key="AlcolerBorder" Color="{DynamicResource AlcolerBorderColor}" />
+      <SolidColorBrush x:Key="AlcolerBorderHover" Color="{DynamicResource AlcolerBorderHoverColor}" />
       <SolidColorBrush x:Key="AlcolerTextPrimary" Color="{DynamicResource AlcolerTextPrimaryColor}" />
       <SolidColorBrush x:Key="AlcolerTextSecondary" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="AlcolerTextTertiary" Color="{DynamicResource AlcolerTextTertiaryColor}" />
+      <SolidColorBrush x:Key="AlcolerTextInverse" Color="{DynamicResource AlcolerTextInverseColor}" />
+      <SolidColorBrush x:Key="AlcolerBrand" Color="{DynamicResource AlcolerBrandColor}" />
+      <SolidColorBrush x:Key="AlcolerBrandText" Color="{DynamicResource AlcolerBrandTextColor}" />
       <SolidColorBrush x:Key="AlcolerAccent" Color="{DynamicResource AlcolerAccentColor}" />
       <SolidColorBrush x:Key="AlcolerAccentText" Color="{DynamicResource AlcolerAccentTextColor}" />
       <SolidColorBrush x:Key="AlcolerSuccess" Color="{DynamicResource AlcolerSuccessColor}" />
       <SolidColorBrush x:Key="AlcolerWarning" Color="{DynamicResource AlcolerWarningColor}" />
       <SolidColorBrush x:Key="AlcolerError" Color="{DynamicResource AlcolerErrorColor}" />
+      <SolidColorBrush x:Key="AlcolerErrorText" Color="{DynamicResource AlcolerErrorTextColor}" />
       <SolidColorBrush x:Key="AlcolerInfo" Color="{DynamicResource AlcolerInfoColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseIdle" Color="{DynamicResource AlcolerPhaseIdleColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseBusy" Color="{DynamicResource AlcolerPhaseBusyColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseTools" Color="{DynamicResource AlcolerPhaseToolsColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseAttention" Color="{DynamicResource AlcolerPhaseAttentionColor}" />
       <SolidColorBrush x:Key="AlcolerPhaseError" Color="{DynamicResource AlcolerPhaseErrorColor}" />
+      <SolidColorBrush x:Key="AlcolerDiffAdded" Color="{DynamicResource AlcolerDiffAddedColor}" />
+      <SolidColorBrush x:Key="AlcolerDiffRemoved" Color="{DynamicResource AlcolerDiffRemovedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitModified" Color="{DynamicResource AlcolerGitModifiedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitAdded" Color="{DynamicResource AlcolerGitAddedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitDeleted" Color="{DynamicResource AlcolerGitDeletedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitRenamed" Color="{DynamicResource AlcolerGitRenamedColor}" />
+      <SolidColorBrush x:Key="AlcolerGitUntracked" Color="{DynamicResource AlcolerGitUntrackedColor}" />
+      <SolidColorBrush x:Key="AlcolerTerminalBackground" Color="{DynamicResource AlcolerTerminalBackgroundColor}" />
+      <SolidColorBrush x:Key="AlcolerTerminalForeground" Color="{DynamicResource AlcolerTerminalForegroundColor}" />
+      <SolidColorBrush x:Key="AlcolerTooltip" Color="{DynamicResource AlcolerTooltipColor}" />
+      <SolidColorBrush x:Key="AlcolerTooltipForeground" Color="{DynamicResource AlcolerTooltipForegroundColor}" />
+      <SolidColorBrush x:Key="AlcolerOverlay" Color="{DynamicResource AlcolerOverlayColor}" />
     </ResourceDictionary>
   </ResourceDictionary.ThemeDictionaries>
 
@@ -80,10 +184,39 @@
 
   <CornerRadius x:Key="AlcolerRadiusSmall">4</CornerRadius>
   <CornerRadius x:Key="AlcolerRadius">6</CornerRadius>
-  <CornerRadius x:Key="AlcolerRadiusLarge">10</CornerRadius>
+  <CornerRadius x:Key="AlcolerRadiusLarge">8</CornerRadius>
+  <CornerRadius x:Key="AlcolerRadiusXLarge">12</CornerRadius>
+  <CornerRadius x:Key="AlcolerRadius2XLarge">16</CornerRadius>
+  <CornerRadius x:Key="AlcolerRadiusFull">999</CornerRadius>
+
   <x:Double x:Key="AlcolerSpacingSmall">4</x:Double>
   <x:Double x:Key="AlcolerSpacingMedium">8</x:Double>
   <x:Double x:Key="AlcolerSpacingLarge">12</x:Double>
+  <x:Double x:Key="AlcolerSpacingXLarge">16</x:Double>
+
+  <x:Double x:Key="AlcolerFontXs">10</x:Double>
+  <x:Double x:Key="AlcolerFontSmall">12</x:Double>
+  <x:Double x:Key="AlcolerFontCaption">13</x:Double>
+  <x:Double x:Key="AlcolerFontBase">14</x:Double>
+  <x:Double x:Key="AlcolerFontLarge">16</x:Double>
+  <x:Double x:Key="AlcolerFontXLarge">18</x:Double>
+
+  <StreamGeometry x:Key="AlcolerIconPlus">M5 12h14M12 5v14</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconFolder">M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconRefresh">M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16M16 16h5v5</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconSettings">M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconTerminal">M4 17l6-6-6-6M12 19h8</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconPanel">M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2ZM15 3v18</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconChevronRight">m9 18 6-6-6-6</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconChevronDown">m6 9 6 6 6-6</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconArrowUp">M12 19V5m-7 7 7-7 7 7</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconSquare">M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconX">M18 6 6 18M6 6l12 12</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconCheck">M20 6 9 17l-5-5</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconGitBranch">M6 3v12M15 6a3 3 0 1 0 6 0 3 3 0 1 0-6 0M3 18a3 3 0 1 0 6 0 3 3 0 1 0-6 0M18 9a9 9 0 0 1-9 9</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconGlobe">M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconWrench">M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconArchive">M20 8H4M5 8V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4</StreamGeometry>
 
   <conv:PhaseBrushConverter x:Key="AlcolerPhaseBrush" />
   <conv:ContextUsageBrushConverter x:Key="AlcolerContextUsageBrush" />

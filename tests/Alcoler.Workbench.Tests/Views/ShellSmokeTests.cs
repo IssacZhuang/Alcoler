@@ -172,27 +172,27 @@ public class ShellSmokeTests
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("Streaming", phase.Text);
-        Assert.Equal(25.2d, fill.Width, 3);
+        Assert.Equal(16.8d, fill.Width, 3);
         var lowBrush = Assert.IsType<SolidColorBrush>(fill.Background);
-        Assert.Equal(Color.Parse("#FF3FB950"), lowBrush.Color);
+        Assert.Equal(Color.Parse("#FF46BF72"), lowBrush.Color);
 
         var mid = TestSnapshots.State(TurnPhase.ExecutingTools, contextUsageTokens: 120_000);
         viewModel.Active!.ApplyUpdate(new ProjectionUpdate(3, mid, [new StatePatched(mid)], Reset: false));
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("ExecutingTools", phase.Text);
-        Assert.Equal(50.4d, fill.Width, 3);
+        Assert.Equal(33.6d, fill.Width, 3);
         var midBrush = Assert.IsType<SolidColorBrush>(fill.Background);
-        Assert.Equal(Color.Parse("#FFD29922"), midBrush.Color);
+        Assert.Equal(Color.Parse("#FFFF8A30"), midBrush.Color);
 
         var hot = TestSnapshots.State(TurnPhase.Error, contextUsageTokens: 180_000);
         viewModel.Active!.ApplyUpdate(new ProjectionUpdate(4, hot, [new StatePatched(hot)], Reset: false));
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("Error", phase.Text);
-        Assert.Equal(75.6d, fill.Width, 3);
+        Assert.Equal(50.4d, fill.Width, 3);
         var hotBrush = Assert.IsType<SolidColorBrush>(fill.Background);
-        Assert.Equal(Color.Parse("#FFF85149"), hotBrush.Color);
+        Assert.Equal(Color.Parse("#FFFF5C5C"), hotBrush.Color);
 
         window.Close();
         viewModel.Dispose();

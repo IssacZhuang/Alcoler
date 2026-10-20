@@ -11,26 +11,239 @@
     </Application.Resources>
     <Application.Styles>
         <FluentTheme />
-        <Style Selector="Button.accentAction">
-            <Setter Property="Background" Value="{DynamicResource AlcolerAccent}" />
-            <Setter Property="Foreground" Value="{DynamicResource AlcolerAccentText}" />
+        <Style Selector="Window">
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+            <Setter Property="Background" Value="{DynamicResource AlcolerBackground}" />
+        </Style>
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="TextBlock.caption">
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+        </Style>
+        <Style Selector="TextBlock.label">
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextTertiary}" />
+        </Style>
+        <Style Selector="TextBlock.sectionLabel">
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+            <Setter Property="FontWeight" Value="Medium" />
+        </Style>
+        <Style Selector="Path.icon">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="Stretch" Value="Uniform" />
+            <Setter Property="Stroke" Value="{DynamicResource AlcolerTextSecondary}" />
+            <Setter Property="StrokeThickness" Value="1.8" />
+            <Setter Property="StrokeLineCap" Value="Round" />
+            <Setter Property="StrokeJoin" Value="Round" />
+            <Setter Property="Fill" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Path.icon.small">
+            <Setter Property="Width" Value="14" />
+            <Setter Property="Height" Value="14" />
+        </Style>
+
+        <Style Selector="Button">
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
-            <Setter Property="Padding" Value="12,6" />
-            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+            <Setter Property="Cursor" Value="Hand" />
         </Style>
-        <Style Selector="Button.accentAction:pointerover">
-            <Setter Property="Opacity" Value="0.88" />
+        <Style Selector="Button:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
         </Style>
-        <Style Selector="Button.subtleAction">
-            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
-            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusSmall}" />
-            <Setter Property="Padding" Value="10,5" />
-        </Style>
-        <Style Selector="Button.subtleAction:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+        <Style Selector="Button:pressed /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
         </Style>
+        <Style Selector="Button:disabled">
+            <Setter Property="Opacity" Value="0.4" />
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="{DynamicResource AlcolerBrand}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerBrandText}" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="FontWeight" Value="Medium" />
+        </Style>
+        <Style Selector="Button.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerBrand}" />
+        </Style>
+        <Style Selector="Button.primary:pointerover">
+            <Setter Property="Opacity" Value="0.88" />
+        </Style>
+        <Style Selector="Button.primary:pressed">
+            <Setter Property="Opacity" Value="0.76" />
+        </Style>
+        <Style Selector="Button.primary Path.icon">
+            <Setter Property="Stroke" Value="{DynamicResource AlcolerBrandText}" />
+        </Style>
+        <Style Selector="Button.ghost">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+        </Style>
+        <Style Selector="Button.ghost:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="Button.outline">
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+            <Setter Property="Padding" Value="12,5" />
+        </Style>
+        <Style Selector="Button.outline:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+        </Style>
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerError}" />
+            <Setter Property="Padding" Value="12,5" />
+        </Style>
+        <Style Selector="Button.danger:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerError}" />
+        </Style>
+        <Style Selector="Button.icon">
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.icon.tiny">
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="22" />
+        </Style>
+        <Style Selector="Button.icon:pointerover Path.icon">
+            <Setter Property="Stroke" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="Button.icon.active">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+        </Style>
+        <Style Selector="Button.icon.active Path.icon">
+            <Setter Property="Stroke" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="Button.icon.active /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+        </Style>
+        <Style Selector="Button.primaryText">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerBrand}" />
+        </Style>
+
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource AlcolerTextPrimary}" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource AlcolerSurfaceHigh}" />
+        </Style>
+        <Style Selector="TextBox:pointerover /template/ Border#PART_BorderElement">
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+        </Style>
+        <Style Selector="TextBox:focus /template/ Border#PART_BorderElement">
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+            <Setter Property="Background" Value="{DynamicResource AlcolerInputFocused}" />
+        </Style>
+        <Style Selector="TextBox.bare">
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+        </Style>
+        <Style Selector="TextBox.bare:pointerover /template/ Border#PART_BorderElement">
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTransparent}" />
+        </Style>
+        <Style Selector="TextBox.bare:focus /template/ Border#PART_BorderElement">
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+        </Style>
+
+        <Style Selector="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="ComboBox.ghost">
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="6,4" />
+            <Setter Property="MinHeight" Value="26" />
+        </Style>
+        <Style Selector="ComboBox.ghost:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="ComboBox.ghost:pointerover /template/ Border#Background">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="ComboBoxItem">
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+        </Style>
+
+        <Style Selector="RadioButton.segment">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <ControlTemplate>
+                    <Border x:Name="Segment" Padding="9,3" CornerRadius="{DynamicResource AlcolerRadius}" Background="Transparent">
+                        <ContentPresenter Content="{TemplateBinding Content}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center" />
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+        </Style>
+        <Style Selector="RadioButton.segment:pointerover /template/ Border#Segment">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="RadioButton.segment:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="RadioButton.segment:checked /template/ Border#Segment">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+        </Style>
+        <Style Selector="RadioButton.segment:checked">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+            <Setter Property="FontWeight" Value="Medium" />
+        </Style>
+
+        <Style Selector="GridSplitter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+        </Style>
+        <Style Selector="GridSplitter:pointerover">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+
+        <Style Selector="ToolTip">
+            <Setter Property="Background" Value="{DynamicResource AlcolerTooltip}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTooltipForeground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+        </Style>
+
     </Application.Styles>
 </Application>

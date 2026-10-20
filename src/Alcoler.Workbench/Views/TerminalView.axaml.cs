@@ -229,7 +229,6 @@ public sealed class TerminalSurface : Control
 public partial class TerminalView : UserControl
 {
     private TerminalPaneViewModel? _viewModel;
-    private bool _startAttempted;
 
     public TerminalView()
     {
@@ -262,12 +261,6 @@ public partial class TerminalView : UserControl
         {
             _viewModel.BufferChanged -= OnBufferChanged;
             _viewModel.BufferChanged += OnBufferChanged;
-        }
-        // Focus stays with the composer until the user clicks the terminal surface.
-        if (_viewModel is { IsConnected: false } && !_startAttempted)
-        {
-            _startAttempted = true;
-            _ = StartAsync(_viewModel);
         }
     }
 

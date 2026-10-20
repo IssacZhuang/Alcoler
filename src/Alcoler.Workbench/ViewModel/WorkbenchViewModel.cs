@@ -5,6 +5,7 @@ using Alcoler.Workbench.Git;
 using Alcoler.Workbench.Stores;
 using Alcoler.Workbench.Ui;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
@@ -14,6 +15,12 @@ namespace Alcoler.Workbench.ViewModel;
 public sealed record ModelChoice(string ProviderId, string ModelId, string Display)
 {
     public ModelSelection Selection => new(ProviderId, ModelId);
+}
+
+public enum SidePaneKind
+{
+    Git,
+    Browser,
 }
 
 public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
@@ -26,6 +33,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private readonly IGitService _gitService = new LibGit2GitService();
     private readonly Dictionary<SessionId, string> _sessionRoots = [];
     private string? _paneRoot;
+    private bool _terminalAutoStarted;
 
     public WorkbenchViewModel(
         IAgentRuntime runtime,
@@ -61,6 +69,68 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private GitPaneViewModel? _gitPane;
 
     public BrowserPaneViewModel? BrowserPane { get; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsGitPaneSelected))]
+    [NotifyPropertyChangedFor(nameof(IsBrowserPaneSelected))]
+    private SidePaneKind _selectedSidePane = SidePaneKind.Git;
+
+    [ObservableProperty]
+    private bool _isSidePaneVisible;
+
+    [ObservableProperty]
+    private bool _isTerminalVisible;
+
+    public bool IsGitPaneSelected => SelectedSidePane == SidePaneKind.Git;
+
+    public bool IsBrowserPaneSelected => SelectedSidePane == SidePaneKind.Browser;
+
+    [RelayCommand]
+    private void ShowGitPane()
+    {
+        SelectedSidePane = SidePaneKind.Git;
+        IsSidePaneVisible = true;
+    }
+
+    [RelayCommand]
+    private void ShowBrowserPane()
+    {
+        SelectedSidePane = SidePaneKind.Browser;
+        IsSidePaneVisible = true;
+    }
+
+    [RelayCommand]
+    private void ToggleSidePane() => IsSidePaneVisible = !IsSidePaneVisible;
+
+    [RelayCommand]
+    private async Task ToggleTerminalAsync()
+    {
+        IsTerminalVisible = !IsTerminalVisible;
+        if (IsTerminalVisible)
+        {
+            await StartTerminalOnceAsync();
+        }
+    }
+
+    private async Task StartTerminalOnceAsync()
+    {
+        if (_terminalAutoStarted || Terminal is not { IsConnected: false } terminal)
+        {
+            return;
+        }
+        _terminalAutoStarted = true;
+        try
+        {
+            await terminal.StartAsync();
+        }
+        catch (Exception)
+        {
+            // A failed spawn leaves the pane offline; the header Start button retries.
+        }
+    }
+
+    [RelayCommand]
+    private void CloseSidePane() => IsSidePaneVisible = false;
 
     public void Dispose()
     {
@@ -141,6 +211,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         if (Terminal is null)
         {
             Terminal = new TerminalPaneViewModel(root, scheduler: _scheduler);
+            _terminalAutoStarted = false;
+            if (IsTerminalVisible)
+            {
+                _ = StartTerminalOnceAsync();
+            }
         }
         if (GitPane is null || !string.Equals(_paneRoot, root, StringComparison.OrdinalIgnoreCase))
         {

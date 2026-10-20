@@ -3,31 +3,46 @@
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
              x:Class="Alcoler.Workbench.Views.BrowserPaneView"
              x:DataType="vm:BrowserPaneViewModel">
-  <DockPanel Background="{DynamicResource AlcolerSurface}">
-    <Border DockPanel.Dock="Top"
-            Background="{DynamicResource AlcolerSurfaceHigh}"
-            BorderBrush="{DynamicResource AlcolerBorder}"
-            BorderThickness="0,0,0,1"
-            Padding="10,8">
+  <DockPanel Background="{DynamicResource AlcolerPanel}">
+    <Border DockPanel.Dock="Top" Margin="10,10,10,0" Padding="8,6"
+            CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+            Background="{DynamicResource AlcolerCard}"
+            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
-        <TextBlock Text="{Binding StateText}" FontSize="12" FontWeight="SemiBold"
-                   VerticalAlignment="Center" Foreground="{DynamicResource AlcolerAccent}" />
-        <TextBlock Grid.Column="1" Text="{Binding Url}" FontSize="12"
-                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
-                   ToolTip.Tip="{Binding Title}"
-                   Foreground="{DynamicResource AlcolerTextSecondary}" />
-        <Button Grid.Column="2" Classes="subtleAction" Content="Refresh"
-                Command="{Binding RefreshCommand}" />
-        <Button Grid.Column="3" Classes="accentAction" Content="Take over"
+        <Path Grid.Column="0" Classes="icon small" Data="{StaticResource AlcolerIconGlobe}" />
+        <StackPanel Grid.Column="1" Spacing="0" VerticalAlignment="Center">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="{Binding StateText}" FontSize="11" FontWeight="Medium"
+                       Foreground="{DynamicResource AlcolerTextSecondary}" />
+            <TextBlock Text="{Binding UpdatedText}" FontSize="11"
+                       Foreground="{DynamicResource AlcolerTextTertiary}" />
+          </StackPanel>
+          <TextBlock Text="{Binding Url}" FontSize="12"
+                     TextTrimming="CharacterEllipsis"
+                     ToolTip.Tip="{Binding Title}"
+                     Foreground="{DynamicResource AlcolerTextPrimary}" />
+        </StackPanel>
+        <Button Grid.Column="2" Classes="icon tiny" Command="{Binding RefreshCommand}" ToolTip.Tip="Refresh">
+          <Path Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+        </Button>
+        <Button Grid.Column="3" Classes="outline" Content="Take over" FontSize="11" Padding="10,3"
                 Command="{Binding TakeOverCommand}" />
       </Grid>
     </Border>
-    <Grid Margin="12">
-      <Image Source="{Binding Screenshot}" Stretch="Uniform"
-             IsVisible="{Binding HasScreenshot}" />
-      <TextBlock Text="No screenshot yet" FontSize="12" IsVisible="{Binding !HasScreenshot}"
-                 HorizontalAlignment="Center" VerticalAlignment="Center"
-                 Foreground="{DynamicResource AlcolerTextSecondary}" />
-    </Grid>
+    <Border Margin="10" CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+            Background="{DynamicResource AlcolerBackground}" ClipToBounds="True">
+      <Grid>
+        <Image Source="{Binding Screenshot}" Stretch="Uniform"
+               IsVisible="{Binding HasScreenshot}" />
+        <StackPanel Spacing="8" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    IsVisible="{Binding !HasScreenshot}">
+          <Path Classes="icon" Data="{StaticResource AlcolerIconGlobe}" Width="24" Height="24"
+                HorizontalAlignment="Center" Stroke="{DynamicResource AlcolerTextTertiary}" />
+          <TextBlock Text="No screenshot yet" FontSize="12"
+                     HorizontalAlignment="Center"
+                     Foreground="{DynamicResource AlcolerTextTertiary}" />
+        </StackPanel>
+      </Grid>
+    </Border>
   </DockPanel>
 </UserControl>

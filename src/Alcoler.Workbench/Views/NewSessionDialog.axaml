@@ -2,27 +2,29 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Alcoler.Workbench.Views.NewSessionDialog"
         Title="New session"
-        Width="480" SizeToContent="Height"
+        Width="520" SizeToContent="Height"
         CanResize="False" ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
         Background="{DynamicResource AlcolerBackground}">
-  <StackPanel Margin="16" Spacing="{DynamicResource AlcolerSpacingLarge}">
-    <TextBlock Text="New session" FontSize="16" FontWeight="SemiBold"
-               Foreground="{DynamicResource AlcolerTextPrimary}" />
-    <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
+  <StackPanel Margin="20" Spacing="16">
+    <StackPanel Spacing="4">
+      <TextBlock Text="New session" FontSize="15" FontWeight="Medium" />
+      <TextBlock Text="Start a fresh agent session in a workspace folder." FontSize="12"
+                 Foreground="{DynamicResource AlcolerTextSecondary}" />
+    </StackPanel>
+    <StackPanel Spacing="5">
       <TextBlock Text="Workspace root" FontSize="12"
                  Foreground="{DynamicResource AlcolerTextSecondary}" />
       <TextBox x:Name="WorkspaceBox" Watermark="Path to the workspace folder" />
     </StackPanel>
-    <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
+    <StackPanel Spacing="5">
       <TextBlock Text="Title (optional)" FontSize="12"
                  Foreground="{DynamicResource AlcolerTextSecondary}" />
       <TextBox x:Name="TitleBox" Watermark="Shown in the sidebar" />
     </StackPanel>
-    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
-                Spacing="{DynamicResource AlcolerSpacingMedium}">
-      <Button Classes="subtleAction" Content="Cancel" Click="OnCancelClick" IsCancel="True" />
-      <Button Classes="accentAction" Content="Create" Click="OnCreateClick" IsDefault="True" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
+      <Button Classes="outline" Content="Cancel" Click="OnCancelClick" IsCancel="True" />
+      <Button Classes="primary" Content="Create session" Click="OnCreateClick" IsDefault="True" />
     </StackPanel>
   </StackPanel>
 </Window>

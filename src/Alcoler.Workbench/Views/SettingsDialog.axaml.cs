@@ -1,3 +1,4 @@
+using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -19,6 +20,7 @@ public partial class SettingsDialog : Window
         _viewModel = new SettingsViewModel(current);
         DataContext = _viewModel;
         SectionList.SelectedIndex = 0;
+        WindowChrome.Attach(this);
     }
 
     public static async Task<WorkbenchConfig?> ShowAsync(Window owner, WorkbenchConfig current)

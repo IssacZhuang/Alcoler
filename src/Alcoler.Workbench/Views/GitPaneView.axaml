@@ -3,52 +3,70 @@
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
              x:Class="Alcoler.Workbench.Views.GitPaneView"
              x:DataType="vm:GitPaneViewModel">
+  <UserControl.Resources>
+    <DataTemplate x:Key="FileChangeRow" x:DataType="vm:GitFileChangeViewModel">
+      <Grid ColumnDefinitions="44,6,*" Margin="8,3" ToolTip.Tip="{Binding Path}">
+        <TextBlock Grid.Column="0" Text="{Binding StateText}" FontSize="11"
+                   FontFamily="Consolas,Courier New"
+                   Foreground="{DynamicResource AlcolerTextTertiary}" />
+        <TextBlock Grid.Column="2" Text="{Binding Path}" FontSize="12"
+                   TextTrimming="CharacterEllipsis"
+                   Foreground="{DynamicResource AlcolerTextPrimary}" />
+      </Grid>
+    </DataTemplate>
+  </UserControl.Resources>
+
   <UserControl.Styles>
     <Style Selector="Button.branchItem">
       <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
-      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="Padding" Value="8,5" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
     </Style>
     <Style Selector="Button.branchItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
     </Style>
     <Style Selector="TextBlock.gitSection">
       <Setter Property="FontSize" Value="11" />
-      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="FontWeight" Value="Medium" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
     </Style>
   </UserControl.Styles>
 
-  <DockPanel Background="{DynamicResource AlcolerSurface}">
-    <Border DockPanel.Dock="Top"
-            IsVisible="{Binding Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-            Background="{DynamicResource AlcolerError}">
-      <Grid ColumnDefinitions="*,Auto" Margin="12,6,6,6">
+  <DockPanel Background="{DynamicResource AlcolerPanel}">
+    <Border DockPanel.Dock="Top" Margin="10,10,10,0" Padding="10,7"
+            CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+            Background="{DynamicResource AlcolerCard}"
+            BorderBrush="{DynamicResource AlcolerError}" BorderThickness="1"
+            IsVisible="{Binding Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
         <TextBlock Grid.Column="0" Text="{Binding Banner}" FontSize="12" TextWrapping="Wrap"
-                   VerticalAlignment="Center"
-                   Foreground="{DynamicResource AlcolerAccentText}" />
-        <Button Grid.Column="1" Classes="subtleAction" Content="Dismiss"
-                Foreground="{DynamicResource AlcolerAccentText}" Click="OnDismissBannerClick" />
+                   VerticalAlignment="Center" Foreground="{DynamicResource AlcolerError}" />
+        <Button Grid.Column="1" Classes="icon tiny" Click="OnDismissBannerClick" ToolTip.Tip="Dismiss">
+          <Path Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+        </Button>
       </Grid>
     </Border>
 
-    <Border DockPanel.Dock="Top" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1"
-            Padding="12,10,12,8">
-      <Grid ColumnDefinitions="*,Auto">
-        <StackPanel Grid.Column="0" Spacing="{DynamicResource AlcolerSpacingSmall}"
-                    IsVisible="{Binding IsRepo}">
+    <Border DockPanel.Dock="Top" Padding="12,10,8,8"
+            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1"
+            IsVisible="{Binding IsRepo}">
+      <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+        <Path Grid.Column="0" Classes="icon small" Data="{StaticResource AlcolerIconGitBranch}" />
+        <StackPanel Grid.Column="1" Spacing="1" IsVisible="{Binding IsRepo}">
           <TextBlock Text="Current branch" FontSize="11"
-                     Foreground="{DynamicResource AlcolerTextSecondary}" />
-          <TextBlock x:Name="PART_CurrentBranch" Text="{Binding CurrentBranch}" FontSize="13"
-                     FontWeight="SemiBold" FontFamily="Consolas,Courier New"
+                     Foreground="{DynamicResource AlcolerTextTertiary}" />
+          <TextBlock x:Name="PART_CurrentBranch" Text="{Binding CurrentBranch}" FontSize="12"
+                     FontFamily="Consolas,Courier New" FontWeight="Medium"
                      TextTrimming="CharacterEllipsis"
                      Foreground="{DynamicResource AlcolerTextPrimary}" />
         </StackPanel>
-        <Button Grid.Column="1" Classes="subtleAction" Content="Refresh" Click="OnRefreshClick"
-                VerticalAlignment="Top" />
+        <Button Grid.Column="2" Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="Refresh git state"
+                VerticalAlignment="Center">
+          <Path Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+        </Button>
       </Grid>
     </Border>
 
@@ -56,29 +74,30 @@
                Margin="14,16,14,4" FontSize="12" IsVisible="{Binding !IsRepo}"
                Foreground="{DynamicResource AlcolerTextSecondary}" />
 
-    <TextBlock DockPanel.Dock="Top" Text="Loading git state..." FontSize="11" Margin="14,4"
+    <TextBlock DockPanel.Dock="Top" Text="Loading git state..." FontSize="11" Margin="14,8"
                IsVisible="{Binding IsLoading}"
-               Foreground="{DynamicResource AlcolerTextSecondary}" />
+               Foreground="{DynamicResource AlcolerTextTertiary}" />
 
     <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsRepo}">
-      <StackPanel Margin="12,10,12,16" Spacing="{DynamicResource AlcolerSpacingLarge}">
+      <StackPanel Margin="10,12,10,20" Spacing="18">
 
-        <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
-          <TextBlock Classes="gitSection" Text="{Binding Branches.Count, StringFormat='Branches ({0})'}" />
+        <StackPanel Spacing="2">
+          <TextBlock Classes="gitSection" Margin="8,0,8,4"
+                     Text="{Binding Branches.Count, StringFormat='Branches ({0})'}" />
           <ItemsControl ItemsSource="{Binding Branches}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:GitBranchViewModel">
                 <Button Classes="branchItem" Click="OnBranchClick">
-                  <Grid ColumnDefinitions="3,8,*,Auto" Margin="0,1">
-                    <Border Grid.Column="0" Width="3" CornerRadius="2" Margin="0,2"
-                            Background="{DynamicResource AlcolerAccent}"
-                            IsVisible="{Binding IsCurrent}" />
-                    <TextBlock Grid.Column="2" Text="{Binding Name}" FontSize="12"
+                  <Grid ColumnDefinitions="14,*,Auto" ColumnSpacing="6">
+                    <Path Grid.Column="0" Classes="icon small" Data="{StaticResource AlcolerIconCheck}"
+                          IsVisible="{Binding IsCurrent}" Stroke="{DynamicResource AlcolerTextPrimary}" />
+                    <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="12"
                                FontFamily="Consolas,Courier New" TextTrimming="CharacterEllipsis"
-                               Foreground="{Binding IsCurrent, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerAccent|AlcolerTextPrimary}" />
-                    <TextBlock Grid.Column="3" Text="{Binding TrackingText}" FontSize="11"
-                               Margin="8,0,0,0"
-                               Foreground="{DynamicResource AlcolerTextSecondary}" />
+                               VerticalAlignment="Center"
+                               Foreground="{Binding IsCurrent, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerTextPrimary|AlcolerTextSecondary}" />
+                    <TextBlock Grid.Column="2" Text="{Binding TrackingText}" FontSize="11"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource AlcolerTextTertiary}" />
                   </Grid>
                 </Button>
               </DataTemplate>
@@ -86,72 +105,40 @@
           </ItemsControl>
         </StackPanel>
 
-        <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
-          <TextBlock Classes="gitSection" Text="{Binding Staged.Count, StringFormat='Staged ({0})'}" />
-          <ItemsControl ItemsSource="{Binding Staged}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="vm:GitFileChangeViewModel">
-                <Grid ColumnDefinitions="56,6,*" Margin="2,1" ToolTip.Tip="{Binding Path}">
-                  <TextBlock Grid.Column="0" Text="{Binding StateText}" FontSize="11"
-                             Foreground="{DynamicResource AlcolerTextSecondary}" />
-                  <TextBlock Grid.Column="2" Text="{Binding Path}" FontSize="12"
-                             TextTrimming="CharacterEllipsis"
-                             Foreground="{DynamicResource AlcolerTextPrimary}" />
-                </Grid>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
+        <StackPanel Spacing="2">
+          <TextBlock Classes="gitSection" Margin="8,0,8,4"
+                     Text="{Binding Staged.Count, StringFormat='Staged ({0})'}" />
+          <ItemsControl ItemsSource="{Binding Staged}" ItemTemplate="{StaticResource FileChangeRow}" />
         </StackPanel>
 
-        <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
-          <TextBlock Classes="gitSection" Text="{Binding Unstaged.Count, StringFormat='Unstaged ({0})'}" />
-          <ItemsControl ItemsSource="{Binding Unstaged}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="vm:GitFileChangeViewModel">
-                <Grid ColumnDefinitions="56,6,*" Margin="2,1" ToolTip.Tip="{Binding Path}">
-                  <TextBlock Grid.Column="0" Text="{Binding StateText}" FontSize="11"
-                             Foreground="{DynamicResource AlcolerTextSecondary}" />
-                  <TextBlock Grid.Column="2" Text="{Binding Path}" FontSize="12"
-                             TextTrimming="CharacterEllipsis"
-                             Foreground="{DynamicResource AlcolerTextPrimary}" />
-                </Grid>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
+        <StackPanel Spacing="2">
+          <TextBlock Classes="gitSection" Margin="8,0,8,4"
+                     Text="{Binding Unstaged.Count, StringFormat='Changes ({0})'}" />
+          <ItemsControl ItemsSource="{Binding Unstaged}" ItemTemplate="{StaticResource FileChangeRow}" />
         </StackPanel>
 
-        <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
-          <TextBlock Classes="gitSection" Text="{Binding Untracked.Count, StringFormat='Untracked ({0})'}" />
-          <ItemsControl ItemsSource="{Binding Untracked}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="vm:GitFileChangeViewModel">
-                <Grid ColumnDefinitions="56,6,*" Margin="2,1" ToolTip.Tip="{Binding Path}">
-                  <TextBlock Grid.Column="0" Text="{Binding StateText}" FontSize="11"
-                             Foreground="{DynamicResource AlcolerTextSecondary}" />
-                  <TextBlock Grid.Column="2" Text="{Binding Path}" FontSize="12"
-                             TextTrimming="CharacterEllipsis"
-                             Foreground="{DynamicResource AlcolerTextPrimary}" />
-                </Grid>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
+        <StackPanel Spacing="2">
+          <TextBlock Classes="gitSection" Margin="8,0,8,4"
+                     Text="{Binding Untracked.Count, StringFormat='Untracked ({0})'}" />
+          <ItemsControl ItemsSource="{Binding Untracked}" ItemTemplate="{StaticResource FileChangeRow}" />
         </StackPanel>
 
-        <StackPanel Spacing="{DynamicResource AlcolerSpacingSmall}">
-          <TextBlock Classes="gitSection" Text="{Binding RecentCommits.Count, StringFormat='Recent commits ({0})'}" />
+        <StackPanel Spacing="4">
+          <TextBlock Classes="gitSection" Margin="8,0,8,0"
+                     Text="{Binding RecentCommits.Count, StringFormat='Recent commits ({0})'}" />
           <ItemsControl ItemsSource="{Binding RecentCommits}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:GitCommitViewModel">
-                <StackPanel Margin="2,4" Spacing="1">
+                <StackPanel Margin="8,3" Spacing="2">
                   <Grid ColumnDefinitions="Auto,*,Auto">
                     <TextBlock Grid.Column="0" Text="{Binding ShaShort}" FontSize="11"
                                FontFamily="Consolas,Courier New"
-                               Foreground="{DynamicResource AlcolerAccent}" />
+                               Foreground="{DynamicResource AlcolerInfo}" />
                     <TextBlock Grid.Column="1" Text="{Binding Author}" FontSize="11"
                                Margin="8,0,4,0" TextTrimming="CharacterEllipsis"
-                               Foreground="{DynamicResource AlcolerTextSecondary}" />
+                               Foreground="{DynamicResource AlcolerTextTertiary}" />
                     <TextBlock Grid.Column="2" Text="{Binding WhenText}" FontSize="11"
-                               Foreground="{DynamicResource AlcolerTextSecondary}" />
+                               Foreground="{DynamicResource AlcolerTextTertiary}" />
                   </Grid>
                   <TextBlock Text="{Binding Message}" FontSize="12" TextTrimming="CharacterEllipsis"
                              ToolTip.Tip="{Binding Message}"

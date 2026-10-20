@@ -5,109 +5,188 @@
         xmlns:vm="using:Alcoler.Workbench.ViewModel"
         xmlns:views="using:Alcoler.Workbench.Views"
         Title="Alcoler"
-        Width="1440" Height="900" MinWidth="1100" MinHeight="640"
+        Width="1440" Height="820" MinWidth="980" MinHeight="620"
+        WindowStartupLocation="CenterScreen"
         Background="{DynamicResource AlcolerBackground}">
 
-  <Grid ColumnDefinitions="260,4,*,4,300">
+  <Window.Styles>
+    <Style Selector="Button.paneTab">
+      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+      <Setter Property="Padding" Value="12,4" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+    </Style>
+    <Style Selector="Button.paneTab:pointerover">
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+    <Style Selector="Button.paneTab.active">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="FontWeight" Value="Medium" />
+    </Style>
+    <Style Selector="Button.paneTab.active /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+  </Window.Styles>
+
+  <Grid x:Name="ShellGrid">
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="264" />
+      <ColumnDefinition Width="4" />
+      <ColumnDefinition Width="*" />
+      <ColumnDefinition Width="Auto" />
+      <ColumnDefinition Width="0" />
+    </Grid.ColumnDefinitions>
+
     <views:SidebarView Grid.Column="0" />
-    <GridSplitter Grid.Column="1" ResizeDirection="Columns"
-                  Background="{DynamicResource AlcolerBorder}" />
-    <Grid Grid.Column="2" RowDefinitions="Auto,*,4,Auto">
-      <StackPanel Grid.Row="0">
-        <Border IsVisible="{Binding Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                Background="{DynamicResource AlcolerError}">
-          <Grid ColumnDefinitions="*,Auto" Margin="14,6,8,6">
+    <GridSplitter Grid.Column="1" ResizeDirection="Columns" />
+
+    <Border Grid.Column="2" Margin="0,8,8,8"
+            Background="{DynamicResource AlcolerPanel}"
+            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+            CornerRadius="{DynamicResource AlcolerRadiusXLarge}" ClipToBounds="True">
+      <Grid x:Name="MainCard">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="48" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="0" />
+          <RowDefinition Height="0" />
+        </Grid.RowDefinitions>
+        <Border Grid.Row="0" Margin="12,10,12,0" Padding="10,7"
+                CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+                Background="{DynamicResource AlcolerCard}"
+                BorderBrush="{DynamicResource AlcolerError}" BorderThickness="1"
+                IsVisible="{Binding Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
             <TextBlock Grid.Column="0" Text="{Binding Banner}" FontSize="12" TextWrapping="Wrap"
-                       VerticalAlignment="Center"
-                       Foreground="{DynamicResource AlcolerAccentText}" />
-            <Button Grid.Column="1" Classes="subtleAction" Content="Dismiss"
-                    Foreground="{DynamicResource AlcolerAccentText}"
-                    Click="OnDismissWorkbenchBannerClick" />
+                       VerticalAlignment="Center" Foreground="{DynamicResource AlcolerError}" />
+            <Button Grid.Column="1" Classes="icon tiny" Click="OnDismissWorkbenchBannerClick"
+                    ToolTip.Tip="Dismiss">
+              <Path Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+            </Button>
           </Grid>
         </Border>
-        <Border Background="{DynamicResource AlcolerSurface}"
-                BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1"
-                Padding="14,8">
-          <Grid DataContext="{Binding Active}" x:DataType="vm:ConversationViewModel"
-                ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto,Auto"
-                ColumnSpacing="10">
-            <TextBlock Grid.Column="0" Text="{Binding Title}" FontWeight="SemiBold" FontSize="14"
-                       TextTrimming="CharacterEllipsis" MaxWidth="360" VerticalAlignment="Center"
-                       Foreground="{DynamicResource AlcolerTextPrimary}" />
-            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-              <Ellipse Width="8" Height="8"
-                       Fill="{Binding PhaseText, Converter={StaticResource AlcolerPhaseBrush}}" />
-              <TextBlock x:Name="PART_PhaseText" Text="{Binding PhaseText}" FontSize="12"
-                         VerticalAlignment="Center"
-                         Foreground="{DynamicResource AlcolerTextSecondary}" />
+
+        <Border Grid.Row="1" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1">
+          <Grid ColumnDefinitions="*,Auto" Margin="16,0,8,0">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+              <TextBlock Text="{Binding Active.HeaderTitle}" FontSize="14" FontWeight="Medium"
+                         TextTrimming="CharacterEllipsis" MaxWidth="460" VerticalAlignment="Center"
+                         Foreground="{DynamicResource AlcolerTextPrimary}"
+                         IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNotNull}}" />
+              <TextBlock Text="Alcoler" FontSize="14" FontWeight="Medium" VerticalAlignment="Center"
+                         Foreground="{DynamicResource AlcolerTextPrimary}"
+                         IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNull}}" />
+              <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
+                          IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNotNull}}">
+                <Ellipse Width="6" Height="6"
+                         Fill="{Binding Active.PhaseText, Converter={StaticResource AlcolerPhaseBrush}}" />
+                <TextBlock x:Name="PART_PhaseText" Text="{Binding Active.PhaseText}" FontSize="12"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource AlcolerTextSecondary}" />
+                <Border x:Name="PART_QueueBadge" CornerRadius="{DynamicResource AlcolerRadiusFull}"
+                        Padding="7,1" Background="{DynamicResource AlcolerSurfaceHigh}"
+                        VerticalAlignment="Center"
+                        IsVisible="{Binding Active.HasQueuedInput}" ToolTip.Tip="Queued inputs">
+                  <TextBlock Text="{Binding Active.Queue.Count}" FontSize="11"
+                             Foreground="{DynamicResource AlcolerTextSecondary}" />
+                </Border>
+              </StackPanel>
             </StackPanel>
-            <TextBlock Grid.Column="2" Text="{Binding ModelText}" FontSize="12"
-                       VerticalAlignment="Center"
-                       Foreground="{DynamicResource AlcolerTextSecondary}" />
-            <Border Grid.Column="4" x:Name="PART_ContextMeterTrack" Width="84" Height="4"
-                    CornerRadius="{DynamicResource AlcolerRadiusSmall}"
-                    Background="{DynamicResource AlcolerSurfaceHigh}" ClipToBounds="True"
-                    VerticalAlignment="Center" ToolTip.Tip="{Binding ContextUsageText}">
-              <Border x:Name="PART_ContextMeterFill" Height="4"
-                      CornerRadius="{DynamicResource AlcolerRadiusSmall}"
-                      HorizontalAlignment="Left" VerticalAlignment="Center"
-                      Width="{Binding ContextUsagePercent, Converter={StaticResource AlcolerPercentToWidth}, ConverterParameter=84}"
-                      Background="{Binding ContextUsagePercent, Converter={StaticResource AlcolerContextUsageBrush}}" />
-            </Border>
-            <Border Grid.Column="5" x:Name="PART_QueueBadge" CornerRadius="8" Padding="8,2"
-                    Background="{DynamicResource AlcolerSurfaceHigh}"
-                    VerticalAlignment="Center"
-                    IsVisible="{Binding HasQueuedInput}" ToolTip.Tip="Queued inputs">
-              <TextBlock Text="{Binding Queue.Count}" FontSize="11"
-                         Foreground="{DynamicResource AlcolerTextSecondary}" />
-            </Border>
-            <Button Grid.Column="6" Classes="subtleAction" Content="Refresh"
-                    Click="OnRefreshClick" VerticalAlignment="Center" />
-            <Button Grid.Column="7" Classes="subtleAction" Content="Settings"
-                    Click="OnSettingsClick" VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+              <Button Classes="icon" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions">
+                <Path Classes="icon" Data="{StaticResource AlcolerIconRefresh}" />
+              </Button>
+              <Button Classes="icon" Command="{Binding ToggleTerminalCommand}"
+                      Classes.active="{Binding IsTerminalVisible}" ToolTip.Tip="Toggle terminal">
+                <Path Classes="icon" Data="{StaticResource AlcolerIconTerminal}" />
+              </Button>
+              <Button Classes="icon" Command="{Binding ToggleSidePaneCommand}"
+                      Classes.active="{Binding IsSidePaneVisible}" ToolTip.Tip="Toggle side panel">
+                <Path Classes="icon" Data="{StaticResource AlcolerIconPanel}" />
+              </Button>
+            </StackPanel>
           </Grid>
         </Border>
-        <Border IsVisible="{Binding Active.Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                Background="{DynamicResource AlcolerError}">
-          <Grid ColumnDefinitions="*,Auto" Margin="14,6,8,6">
-            <TextBlock Grid.Column="0" Text="{Binding Active.Banner}" FontSize="12" TextWrapping="Wrap"
-                       VerticalAlignment="Center"
-                       Foreground="{DynamicResource AlcolerAccentText}" />
-            <Button Grid.Column="1" Classes="subtleAction" Content="Dismiss"
-                    Foreground="{DynamicResource AlcolerAccentText}"
-                    Click="OnDismissConversationBannerClick" />
-          </Grid>
-        </Border>
-      </StackPanel>
-      <Grid Grid.Row="1" RowDefinitions="*,Auto,Auto">
-        <views:TimelineView Grid.Row="0" DataContext="{Binding Active}" />
-        <views:InteractionAreaView Grid.Row="1" DataContext="{Binding Active}" />
-        <views:ComposerView Grid.Row="2" DataContext="{Binding Active}" />
-      </Grid>
-      <GridSplitter Grid.Row="2" ResizeDirection="Rows" Background="{DynamicResource AlcolerBorder}" />
-      <Border Grid.Row="3" Height="220" MinHeight="120" MaxHeight="520"
-              Background="{DynamicResource AlcolerSurface}"
-              BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,1,0,0">
-        <Grid RowDefinitions="Auto,*">
-          <Border Grid.Row="0" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1"
-                  Padding="10,4">
-            <TextBlock Text="Terminal" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
-          </Border>
-          <views:TerminalView Grid.Row="1" DataContext="{Binding Terminal}" />
+
+        <Grid Grid.Row="2" RowDefinitions="*,Auto,Auto"
+              IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNotNull}}">
+          <views:TimelineView Grid.Row="0" DataContext="{Binding Active}" />
+          <views:InteractionAreaView Grid.Row="1" DataContext="{Binding Active}" />
+          <views:ComposerView Grid.Row="2" DataContext="{Binding Active}" />
         </Grid>
-      </Border>
-    </Grid>
-    <GridSplitter Grid.Column="3" ResizeDirection="Columns" Background="{DynamicResource AlcolerBorder}" />
-    <Border Grid.Column="4" Background="{DynamicResource AlcolerSurface}"
-            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1,0,0,0">
-      <TabControl Background="Transparent" Padding="0">
-        <TabItem Header="Git">
-          <views:GitPaneView DataContext="{Binding GitPane}" />
-        </TabItem>
-        <TabItem Header="Browser">
-          <views:BrowserPaneView DataContext="{Binding BrowserPane}" />
-        </TabItem>
-      </TabControl>
+
+        <StackPanel Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10"
+                    IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNull}}">
+          <Border Width="44" Height="44" CornerRadius="{DynamicResource AlcolerRadiusXLarge}"
+                  Background="{DynamicResource AlcolerBrand}" HorizontalAlignment="Center">
+            <TextBlock Text="A" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center"
+                       VerticalAlignment="Center" Foreground="{DynamicResource AlcolerBrandText}" />
+          </Border>
+          <TextBlock Text="Alcoler" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" />
+          <TextBlock Text="Select a session or start a new one from the sidebar."
+                     FontSize="13" HorizontalAlignment="Center"
+                     Foreground="{DynamicResource AlcolerTextSecondary}" />
+        </StackPanel>
+
+        <GridSplitter Grid.Row="3" ResizeDirection="Rows"
+                      Background="{DynamicResource AlcolerBorder}"
+                      IsVisible="{Binding IsTerminalVisible}"
+                      DragCompleted="OnTerminalSplitterDragCompleted" />
+        <Border Grid.Row="4"
+                Background="{DynamicResource AlcolerTerminalBackground}"
+                BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,1,0,0"
+                IsVisible="{Binding IsTerminalVisible}">
+          <views:TerminalView DataContext="{Binding Terminal}" />
+        </Border>
+      </Grid>
+    </Border>
+
+    <GridSplitter Grid.Column="3" ResizeDirection="Columns" Width="4"
+                  Background="{DynamicResource AlcolerBorder}"
+                  IsVisible="{Binding IsSidePaneVisible}"
+                  DragCompleted="OnSidePaneSplitterDragCompleted" />
+    <Border Grid.Column="4" Margin="0,8,8,8"
+            Background="{DynamicResource AlcolerPanel}"
+            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+            CornerRadius="{DynamicResource AlcolerRadiusXLarge}" ClipToBounds="True"
+            IsVisible="{Binding IsSidePaneVisible}">
+      <Grid RowDefinitions="48,*">
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="10,0,8,0">
+          <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+            <Button Classes="paneTab" Classes.active="{Binding IsGitPaneSelected}"
+                    Command="{Binding ShowGitPaneCommand}" Content="Git" />
+            <Button Classes="paneTab" Classes.active="{Binding IsBrowserPaneSelected}"
+                    Command="{Binding ShowBrowserPaneCommand}" Content="Browser" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="icon tiny" Command="{Binding CloseSidePaneCommand}"
+                  ToolTip.Tip="Close panel">
+            <Path Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+          </Button>
+        </Grid>
+        <Grid Grid.Row="1">
+          <Grid IsVisible="{Binding IsGitPaneSelected}">
+            <Grid IsVisible="{Binding GitPane, Converter={x:Static ObjectConverters.IsNotNull}}">
+              <views:GitPaneView DataContext="{Binding GitPane}" />
+            </Grid>
+            <TextBlock Text="Select a session to view Git status." FontSize="12"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="{DynamicResource AlcolerTextSecondary}"
+                       IsVisible="{Binding GitPane, Converter={x:Static ObjectConverters.IsNull}}" />
+          </Grid>
+          <Grid IsVisible="{Binding IsBrowserPaneSelected}">
+            <Grid IsVisible="{Binding BrowserPane, Converter={x:Static ObjectConverters.IsNotNull}}">
+              <views:BrowserPaneView DataContext="{Binding BrowserPane}" />
+            </Grid>
+            <TextBlock Text="Select a session to view the browser." FontSize="12"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="{DynamicResource AlcolerTextSecondary}"
+                       IsVisible="{Binding BrowserPane, Converter={x:Static ObjectConverters.IsNull}}" />
+          </Grid>
+        </Grid>
+      </Grid>
     </Border>
   </Grid>
 </Window>

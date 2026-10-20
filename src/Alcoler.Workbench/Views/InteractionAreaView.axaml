@@ -7,123 +7,143 @@
              x:DataType="vm:ConversationViewModel">
   <UserControl.Styles>
     <Style Selector="Border.card">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurface}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerCard}" />
       <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="8" />
-      <Setter Property="Padding" Value="12" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusXLarge}" />
+      <Setter Property="Padding" Value="14" />
     </Style>
     <Style Selector="Border.badge">
-      <Setter Property="Padding" Value="8,1" />
-      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="7,1" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusFull}" />
       <Setter Property="VerticalAlignment" Value="Center" />
-    </Style>
-    <Style Selector="Button.danger">
-      <Setter Property="Background" Value="{DynamicResource AlcolerError}" />
-      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
     <Style Selector="TextBlock.mono">
       <Setter Property="FontFamily" Value="Consolas,Courier New,monospace" />
       <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
   </UserControl.Styles>
 
-  <StackPanel Spacing="6">
-    <Border x:Name="BannerStrip"
-            IsVisible="False"
-            Background="{DynamicResource AlcolerError}"
-            CornerRadius="6"
-            Padding="8,4">
-      <DockPanel>
-        <Button DockPanel.Dock="Right" Content="x" Click="OnDismissBanner" FontSize="11" Padding="6,0" VerticalAlignment="Center" />
-        <TextBlock Text="{Binding Banner}" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource AlcolerTextPrimary}" VerticalAlignment="Center" />
-      </DockPanel>
-    </Border>
+  <Grid Margin="20,0,20,0" MaxWidth="896" HorizontalAlignment="Stretch">
+    <StackPanel Spacing="8">
+      <Border x:Name="BannerStrip"
+              IsVisible="False"
+              Background="{DynamicResource AlcolerCard}"
+              BorderBrush="{DynamicResource AlcolerError}"
+              BorderThickness="1"
+              CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+              Padding="12,8">
+        <DockPanel>
+          <Button DockPanel.Dock="Right" Classes="icon tiny" Click="OnDismissBanner" ToolTip.Tip="Dismiss">
+            <Path Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+          </Button>
+          <TextBlock Text="{Binding Banner}" TextWrapping="Wrap" FontSize="12"
+                     Foreground="{DynamicResource AlcolerError}" VerticalAlignment="Center" />
+        </DockPanel>
+      </Border>
 
-    <ContentControl x:Name="InteractionHost" Content="{Binding PendingInteraction}" IsVisible="{Binding HasPendingInteraction}">
-      <ContentControl.ContentTemplate>
-        <DataTemplate x:DataType="vm:PendingInteractionViewModel">
-          <StackPanel Spacing="6">
-            <Border x:Name="PermissionCard" Classes="card" IsVisible="{Binding IsPermission}" KeyDown="OnPermissionCardKeyDown">
-              <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Grid.Column="0" Spacing="4" Margin="0,0,12,0">
-                  <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock Text="Permission required" FontWeight="SemiBold" />
-                    <TextBlock Text="{Binding ToolName}" FontWeight="SemiBold" Foreground="{DynamicResource AlcolerAccent}" />
-                    <Border Classes="badge" Background="{Binding RiskLevel, Converter={x:Static converters:ComposerConverters.RiskLevelBrush}}">
-                      <TextBlock Text="{Binding RiskLevel}" FontSize="11" Foreground="{DynamicResource AlcolerTextPrimary}" />
+      <ContentControl x:Name="InteractionHost" Content="{Binding PendingInteraction}" IsVisible="{Binding HasPendingInteraction}">
+        <ContentControl.ContentTemplate>
+          <DataTemplate x:DataType="vm:PendingInteractionViewModel">
+            <StackPanel Spacing="8">
+              <Border x:Name="PermissionCard" Classes="card" IsVisible="{Binding IsPermission}" KeyDown="OnPermissionCardKeyDown">
+                <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
+                  <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                    <Border Grid.Column="0" Width="28" Height="28"
+                            CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+                            Background="{DynamicResource AlcolerSurfaceHigh}">
+                      <Path Classes="icon" Data="{StaticResource AlcolerIconWrench}" HorizontalAlignment="Center"
+                            Stroke="{DynamicResource AlcolerTextSecondary}" />
                     </Border>
-                  </StackPanel>
-                  <TextBlock Text="{Binding Reason}" Opacity="0.65" TextWrapping="Wrap" FontSize="12" />
-                  <Expander Header="Input">
-                    <TextBlock Classes="mono" Text="{Binding InputJson}" TextWrapping="Wrap" Opacity="0.8" />
-                  </Expander>
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Bottom">
-                  <Button x:Name="DenyButton" Content="Deny" Classes="danger" MinWidth="64" Click="OnDenyClick" />
-                  <Button x:Name="AllowButton" Content="Allow" MinWidth="64" Click="OnAllowClick" />
-                </StackPanel>
-              </Grid>
-            </Border>
+                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                      <TextBlock Text="Permission required" FontSize="13" FontWeight="Medium" />
+                      <TextBlock Text="{Binding ToolName}" FontSize="12"
+                                 Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    </StackPanel>
+                    <Border Grid.Column="2" Classes="badge"
+                            Background="{Binding RiskLevel, Converter={x:Static converters:ComposerConverters.RiskLevelBrush}}">
+                      <TextBlock Text="{Binding RiskLevel}" FontSize="11" FontWeight="Medium"
+                                 Foreground="{DynamicResource AlcolerBrandText}" />
+                    </Border>
+                  </Grid>
 
-            <Border x:Name="QuestionCard" Classes="card" IsVisible="{Binding !IsPermission}">
-              <StackPanel Spacing="8">
-                <TextBlock Text="{Binding Prompt}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                <ItemsControl ItemsSource="{Binding Questions}">
-                  <ItemsControl.Template>
-                    <ControlTemplate>
-                      <ItemsPresenter />
-                    </ControlTemplate>
-                  </ItemsControl.Template>
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="events:InteractionQuestion">
-                      <StackPanel Spacing="4" Margin="0,2">
-                        <TextBlock Text="{Binding Header}" FontWeight="SemiBold" FontSize="12" />
-                        <TextBlock Text="{Binding Text}" Opacity="0.7" TextWrapping="Wrap" FontSize="12" />
-                        <!-- Reflection bindings: option scope needs the owning question, which compiled casts cannot express. -->
-                        <ItemsControl ItemsSource="{Binding Options}" x:CompileBindings="False">
-                          <ItemsControl.Template>
-                            <ControlTemplate>
-                              <ItemsPresenter />
-                            </ControlTemplate>
-                          </ItemsControl.Template>
-                          <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                              <StackPanel Spacing="2">
-                                <RadioButton Content="{Binding Label}"
-                                             Tag="{Binding}"
-                                             GroupName="{Binding $parent[ItemsControl].DataContext.Header}"
-                                             IsVisible="{Binding $parent[ItemsControl].DataContext.MultiSelect, Converter={x:Static converters:ComposerConverters.Not}}"
-                                             Click="OnOptionClick" />
-                                <CheckBox Content="{Binding Label}"
-                                          Tag="{Binding}"
-                                          IsVisible="{Binding $parent[ItemsControl].DataContext.MultiSelect}"
-                                          Click="OnOptionClick" />
-                              </StackPanel>
-                            </DataTemplate>
-                          </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                      </StackPanel>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-                <Button x:Name="SubmitAnswersButton"
-                        Content="Submit"
-                        MinWidth="64"
-                        HorizontalAlignment="Right"
-                        Click="OnSubmitAnswersClick">
-                  <Button.IsEnabled>
-                    <MultiBinding Converter="{x:Static converters:ComposerConverters.CountSatisfied}">
-                      <Binding Path="SelectedAnswers.Count" />
-                      <Binding Path="Questions.Count" />
-                    </MultiBinding>
-                  </Button.IsEnabled>
-                </Button>
-              </StackPanel>
-            </Border>
-          </StackPanel>
-        </DataTemplate>
-      </ContentControl.ContentTemplate>
-    </ContentControl>
-  </StackPanel>
+                  <StackPanel Grid.Row="1" Spacing="8">
+                    <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <Expander Header="Details" FontSize="12">
+                      <TextBlock Classes="mono" Text="{Binding InputJson}" TextWrapping="Wrap"
+                                 Margin="0,4,0,0" />
+                    </Expander>
+                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                      <Button x:Name="DenyButton" Content="Deny" Classes="outline" MinWidth="72" Click="OnDenyClick" />
+                      <Button x:Name="AllowButton" Content="Allow" Classes="primary" MinWidth="72" Click="OnAllowClick" />
+                    </StackPanel>
+                  </StackPanel>
+                </Grid>
+              </Border>
+
+              <Border x:Name="QuestionCard" Classes="card" IsVisible="{Binding !IsPermission}">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="{Binding Prompt}" FontSize="13" FontWeight="Medium" TextWrapping="Wrap" />
+                  <ItemsControl ItemsSource="{Binding Questions}">
+                    <ItemsControl.Template>
+                      <ControlTemplate>
+                        <ItemsPresenter />
+                      </ControlTemplate>
+                    </ItemsControl.Template>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="events:InteractionQuestion">
+                        <StackPanel Spacing="6" Margin="0,2">
+                          <TextBlock Text="{Binding Header}" FontSize="12" FontWeight="Medium" />
+                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="12"
+                                     Foreground="{DynamicResource AlcolerTextSecondary}" />
+                          <!-- Reflection bindings: option scope needs the owning question, which compiled casts cannot express. -->
+                          <ItemsControl ItemsSource="{Binding Options}" x:CompileBindings="False">
+                            <ItemsControl.Template>
+                              <ControlTemplate>
+                                <ItemsPresenter />
+                              </ControlTemplate>
+                            </ItemsControl.Template>
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <StackPanel Spacing="4" Margin="0,2">
+                                  <RadioButton Content="{Binding Label}"
+                                               Tag="{Binding}"
+                                               GroupName="{Binding $parent[ItemsControl].DataContext.Header}"
+                                               IsVisible="{Binding $parent[ItemsControl].DataContext.MultiSelect, Converter={x:Static converters:ComposerConverters.Not}}"
+                                               Click="OnOptionClick" />
+                                  <CheckBox Content="{Binding Label}"
+                                            Tag="{Binding}"
+                                            IsVisible="{Binding $parent[ItemsControl].DataContext.MultiSelect}"
+                                            Click="OnOptionClick" />
+                                </StackPanel>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </StackPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <Button x:Name="SubmitAnswersButton"
+                          Content="Submit"
+                          Classes="primary"
+                          MinWidth="72"
+                          HorizontalAlignment="Right"
+                          Click="OnSubmitAnswersClick">
+                    <Button.IsEnabled>
+                      <MultiBinding Converter="{x:Static converters:ComposerConverters.CountSatisfied}">
+                        <Binding Path="SelectedAnswers.Count" />
+                        <Binding Path="Questions.Count" />
+                      </MultiBinding>
+                    </Button.IsEnabled>
+                  </Button>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+        </ContentControl.ContentTemplate>
+      </ContentControl>
+    </StackPanel>
+  </Grid>
 </UserControl>

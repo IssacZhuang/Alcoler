@@ -1,6 +1,6 @@
+using Alcoler.Workbench.Ui;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using Avalonia.Markup.Xaml;
 
 namespace Alcoler.Workbench.Views;
 
@@ -10,8 +10,10 @@ public partial class NewSessionDialog : Window
 {
     public NewSessionDialog()
     {
-        InitializeComponent();
+        // The generated InitializeComponent(bool) overload wires x:Name fields; a manual parameterless overload would shadow it.
+        InitializeComponent(true);
         WorkspaceBox.Text = string.Empty;
+        WindowChrome.Attach(this);
     }
 
     private NewSessionDialog(string defaultWorkspaceRoot) : this()
@@ -37,6 +39,4 @@ public partial class NewSessionDialog : Window
     }
 
     private void OnCancelClick(object? sender, RoutedEventArgs e) => Close(null);
-
-    private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
 }

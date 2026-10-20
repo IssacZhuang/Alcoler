@@ -30,7 +30,7 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
     private bool _isActive;
 }
 
-public sealed class SessionGroupViewModel
+public sealed partial class SessionGroupViewModel : ObservableObject
 {
     public SessionGroupViewModel(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
@@ -47,6 +47,9 @@ public sealed class SessionGroupViewModel
     }
 
     public ObservableCollection<SessionSummaryViewModel> Sessions { get; } = [];
+
+    [ObservableProperty]
+    private bool _isExpanded = true;
 }
 
 public static class RelativeTime
