@@ -76,6 +76,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly Queue<SendTextCommand> _inputQueue = new();
     private TokenUsage? _lastProviderUsage;
     private int _usageAnchorIndex = -1;
+    private ContextUsageState? _contextUsage;
+    private string? _contextModelId;
     private DateTimeOffset _lastActivityUtc;
     private int _consecutiveCompactFailures;
     private int _consecutiveRapidRefills;
@@ -157,6 +159,14 @@ public sealed class SessionRuntime : IAsyncDisposable
                     return CommandAck.AcceptedAt(setMode.CommandId, Revision);
 
                 case SwitchModelCommand switchModel:
+                    try
+                    {
+                        _deps.ResolveModel(switchModel.Selection).ValidateOptions(switchModel.Selection.Options ?? new ModelCallOptions());
+                    }
+                    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+                    {
+                        return CommandAck.Rejected(switchModel.CommandId, Revision, ex.Message);
+                    }
                     _record = _record with { ModelSelection = switchModel.Selection, UpdatedAt = _deps.Clock.GetUtcNow() };
                     await PersistRecordAsync(ct).ConfigureAwait(false);
                     await EmitModelChangedAsync(switchModel.Selection).ConfigureAwait(false);
@@ -259,6 +269,11 @@ public sealed class SessionRuntime : IAsyncDisposable
         var turnId = StrongId.NewTurnId();
         try
         {
+            var selection = command.ModelSelection ?? _record.ModelSelection ?? _deps.Options.DefaultModel
+                ?? throw new InvalidOperationException("No model configured for session.");
+            var model = _deps.ResolveModel(selection);
+            var options = selection.Options ?? new ModelCallOptions();
+            model.ValidateOptions(options);
             await EmitAsync(new TurnStartedEvent(turnId, command.CommandId), persist: true).ConfigureAwait(false);
 
             var userMessage = new ConversationMessage(
@@ -268,16 +283,13 @@ public sealed class SessionRuntime : IAsyncDisposable
                 _deps.Clock.GetUtcNow());
             await CommitMessageAsync(userMessage).ConfigureAwait(false);
 
-            var model = _deps.ResolveModel(command.ModelSelection ?? _record.ModelSelection ?? _deps.Options.DefaultModel
-                ?? throw new InvalidOperationException("No model configured for session."));
-
             var outcome = TurnOutcome.Completed;
             var reactiveCompactRetries = 0;
             while (true)
             {
                 turnCt.ThrowIfCancellationRequested();
 
-                var step = await RunModelStepAsync(turnId, model, turnCt).ConfigureAwait(false);
+                var step = await RunModelStepAsync(turnId, model, options, turnCt).ConfigureAwait(false);
                 if (step == ModelStepOutcome.Finished)
                 {
                     break;
@@ -286,7 +298,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 if (step == ModelStepOutcome.ContextOverflow && reactiveCompactRetries < ReactiveCompactMaxRetries)
                 {
                     reactiveCompactRetries++;
-                    var compacted = await ExecuteCompactionAsync(CompactTrigger.Reactive, null, turnCt).ConfigureAwait(false);
+                    var compacted = await ExecuteCompactionAsync(CompactTrigger.Reactive, null, turnCt, model, options).ConfigureAwait(false);
                     if (!compacted)
                     {
                         outcome = TurnOutcome.Failed;
@@ -374,12 +386,19 @@ public sealed class SessionRuntime : IAsyncDisposable
         _turnTask = RunTurnAsync(command, _turnCts.Token);
     }
 
-    private async Task<ModelStepOutcome> RunModelStepAsync(TurnId turnId, IChatModel model, CancellationToken turnCt)
+    private async Task<ModelStepOutcome> RunModelStepAsync(TurnId turnId, IChatModel model, ModelCallOptions options, CancellationToken turnCt)
     {
         var history = _history.Snapshot();
         var contextWindow = model.Descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens;
         var threshold = CompactPolicy.AutoCompactThreshold(contextWindow);
-        var (effectiveTokens, tokenSource) = TokenEstimator.EstimateCurrentInputTokens(history, _usageAnchorIndex, _lastProviderUsage);
+        if (_contextModelId != model.Descriptor.FullId)
+        {
+            _lastProviderUsage = null;
+            _usageAnchorIndex = -1;
+            _contextModelId = model.Descriptor.FullId;
+        }
+        var initialRequest = AssembleContext(history, options);
+        var (effectiveTokens, _) = EstimateContextTokens(initialRequest, history);
 
         var now = _deps.Clock.GetUtcNow();
         var micro = MicroCompactor.Apply(history, _lastActivityUtc, now, threshold);
@@ -387,7 +406,9 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             _history.ReplaceAll(micro.Messages);
             history = micro.Messages;
-            effectiveTokens = TokenEstimator.EstimateTokens(string.Concat(history.SelectMany(m => m.Parts.OfType<TextPart>().Select(p => p.Text))));
+            _lastProviderUsage = null;
+            _usageAnchorIndex = -1;
+            effectiveTokens = TokenEstimator.EstimateRequestTokens(AssembleContext(history, initialRequest.Request.Options).Request);
             await EmitAsync(new MicrocompactAppliedEvent(micro.ClearedParts, micro.EstimatedTokensSaved), persist: true).ConfigureAwait(false);
         }
 
@@ -408,20 +429,21 @@ public sealed class SessionRuntime : IAsyncDisposable
                     _consecutiveRapidRefills = 0;
                 }
             }
-            await ExecuteCompactionAsync(CompactTrigger.Auto, null, turnCt).ConfigureAwait(false);
+            await ExecuteCompactionAsync(CompactTrigger.Auto, null, turnCt, model, options).ConfigureAwait(false);
             history = _history.Snapshot();
         }
 
         _turnMachine.TryTransition(TurnPhase.AwaitingModel);
-        var request = ContextBuilder.Assemble(new ContextAssemblyInput(
-            CliPrefix: "Alcoler",
-            SystemStable: _deps.Options.SystemPromptStable,
-            SystemDynamic: BuildDynamicSystemPrompt(),
-            AgentInstructions: _deps.Options.AgentInstructions,
-            SkillsListing: _deps.Options.SkillsListing,
-            History: history,
-            Tools: _deps.Tools.VisibleContracts,
-            Options: _record.ModelSelection?.Options ?? new ModelCallOptions()));
+        var request = AssembleContext(history, initialRequest.Request.Options);
+        var (requestTokens, source) = EstimateContextTokens(request, history);
+        if (model.Descriptor.Properties.ContextWindowTokens is { } configuredContext &&
+            (options.MaxOutputTokens ?? model.Descriptor.Properties.DefaultMaxOutputTokens) is { } requestedMax)
+        {
+            var availableOutput = Math.Max(1, configuredContext - requestTokens - 1000);
+            request = request with { Request = request.Request with { Options = options with { MaxOutputTokens = Math.Min(requestedMax, availableOutput) } } };
+        }
+        await PublishContextUsageAsync(request, requestTokens, contextWindow, source).ConfigureAwait(false);
+        var requestAnchorIndex = history.Count - 1;
 
         await EmitAsync(new ModelRequestStartedEvent(turnId, 1), persist: false).ConfigureAwait(false);
 
@@ -453,8 +475,11 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (usage is not null)
         {
             _lastProviderUsage = usage;
-            _usageAnchorIndex = _history.Count;
+            _usageAnchorIndex = requestAnchorIndex;
             await EmitAsync(new ModelRequestCompletedEvent(turnId, usage), persist: false).ConfigureAwait(false);
+            await PublishContextUsageAsync(request, usage.ContextUsageTokens ?? usage.InputTokens ?? requestTokens,
+                contextWindow, usage.ContextUsageTokens is not null || usage.InputTokens is not null
+                    ? TokenEstimator.ProviderUsageSource : source, usage).ConfigureAwait(false);
         }
 
         var assistant = accumulator.BuildAssistantMessage(_deps.Clock.GetUtcNow());
@@ -543,13 +568,16 @@ public sealed class SessionRuntime : IAsyncDisposable
         return results;
     }
 
-    private async Task<bool> ExecuteCompactionAsync(CompactTrigger trigger, string? instructions, CancellationToken ct)
+    private async Task<bool> ExecuteCompactionAsync(CompactTrigger trigger, string? instructions, CancellationToken ct,
+        IChatModel? frozenModel = null, ModelCallOptions? frozenOptions = null)
     {
         var history = _history.Snapshot();
-        var model = _deps.ResolveModel(_record.ModelSelection ?? _deps.Options.DefaultModel
+        var selection = _record.ModelSelection ?? _deps.Options.DefaultModel;
+        var model = frozenModel ?? _deps.ResolveModel(selection
             ?? throw new InvalidOperationException("No model configured."));
+        var options = frozenOptions ?? selection?.Options ?? new ModelCallOptions();
         var contextWindow = model.Descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens;
-        var (effectiveTokens, _) = TokenEstimator.EstimateCurrentInputTokens(history, _usageAnchorIndex, _lastProviderUsage);
+        var (effectiveTokens, _) = EstimateContextTokens(AssembleContext(history, options), history);
 
         var plan = CompactionPlanner.PlanCompaction(new CompactionPlanInput(
             Messages: history,
@@ -562,13 +590,20 @@ public sealed class SessionRuntime : IAsyncDisposable
             AnchorIndex: _usageAnchorIndex,
             ManualInstructions: instructions));
 
+        var summaryLimit = Math.Min(CompactPolicy.SummaryMaxOutputTokens,
+            Math.Min(options.MaxOutputTokens ?? int.MaxValue, model.Descriptor.Properties.DefaultMaxOutputTokens ?? int.MaxValue));
+        summaryLimit = Math.Min(summaryLimit, Math.Max(1, contextWindow - TokenEstimator.EstimateRequestTokens(plan.SummaryModelRequest) - 1000));
+        var summaryRequest = plan.SummaryModelRequest with
+        {
+            Options = options with { MaxOutputTokens = summaryLimit },
+        };
         var summaryText = new System.Text.StringBuilder();
         var failed = false;
         try
         {
             await foreach (var streamEvent in ModelStreamRunner.RunAsync(
                                model,
-                               plan.SummaryModelRequest,
+                               summaryRequest,
                                new ModelRunnerOptions { MaxAttempts = 3 },
                                ct).WithCancellation(ct).ConfigureAwait(false))
             {
@@ -612,7 +647,13 @@ public sealed class SessionRuntime : IAsyncDisposable
         _history.ReplaceAll(postCompact.Messages);
         _history.ClearRecentReads();
         await _deps.Store.ReplaceMessagesAsync(_record.Id, postCompact.Messages, ct).ConfigureAwait(false);
+        _lastProviderUsage = null;
+        _usageAnchorIndex = -1;
+        _contextUsage = null;
         await EmitAsync(new CompactBoundaryAppliedEvent(postCompact.Boundary), persist: true).ConfigureAwait(false);
+        var compactedContext = AssembleContext(postCompact.Messages, options);
+        await PublishContextUsageAsync(compactedContext, TokenEstimator.EstimateRequestTokens(compactedContext.Request),
+            contextWindow, TokenEstimator.EstimateSource).ConfigureAwait(false);
         return true;
     }
 
@@ -636,6 +677,37 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             await CommitMessageAsync(partial).ConfigureAwait(false);
         }
+    }
+
+    private AssembledContext AssembleContext(IReadOnlyList<ConversationMessage> history, ModelCallOptions options) =>
+        ContextBuilder.Assemble(new ContextAssemblyInput(
+            CliPrefix: "Alcoler",
+            SystemStable: _deps.Options.SystemPromptStable,
+            SystemDynamic: BuildDynamicSystemPrompt(),
+            AgentInstructions: _deps.Options.AgentInstructions,
+            SkillsListing: _deps.Options.SkillsListing,
+            History: history,
+            Tools: _deps.Tools.VisibleContracts,
+            Options: options));
+
+    private (int Tokens, string Source) EstimateContextTokens(AssembledContext context, IReadOnlyList<ConversationMessage> history) =>
+        _lastProviderUsage?.ContextUsageTokens is not null || _lastProviderUsage?.InputTokens is not null
+            ? TokenEstimator.EstimateCurrentInputTokens(history, _usageAnchorIndex, _lastProviderUsage)
+            : (TokenEstimator.EstimateRequestTokens(context.Request), TokenEstimator.EstimateSource);
+
+    private async ValueTask PublishContextUsageAsync(
+        AssembledContext context, int used, int max, string source, TokenUsage? usage = null)
+    {
+        var cacheRead = _contextUsage?.CacheReadTokens ?? 0;
+        var cacheInput = _contextUsage?.CacheInputTokens ?? 0;
+        if ((usage?.ContextUsageTokens ?? usage?.InputTokens) is int inputTokens && inputTokens > 0)
+        {
+            cacheInput += inputTokens;
+            cacheRead += Math.Clamp(usage?.CacheReadTokens ?? 0, 0, inputTokens);
+        }
+        _contextUsage = new ContextUsageState(Math.Max(0, used), max, source, context.Breakdown,
+            cacheRead, cacheInput, usage ?? _contextUsage?.LastUsage);
+        await EmitAsync(new ContextUsageUpdatedEvent(_contextUsage), persist: true).ConfigureAwait(false);
     }
 
     private string BuildDynamicSystemPrompt() =>
@@ -666,6 +738,8 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private async Task ReplayHistoryAsync(bool persistStartEvents)
     {
+        var durable = await _deps.Store.LoadDurableEventsAsync(_record.Id, CancellationToken.None).ConfigureAwait(false);
+        _events.AdvanceSequenceTo(durable.Count > 0 ? durable.Max(evt => evt.Sequence) : 0);
         var started = new SessionStartedEvent(_record.WorkspaceRoot, _record.Title, _record.PermissionMode, _record.ModelSelection);
         if (persistStartEvents)
         {
@@ -701,7 +775,23 @@ public sealed class SessionRuntime : IAsyncDisposable
             EmitForReplay(committed);
         }
         _history.AppendRange(messages.Select(m => m.Message).ToList());
-        _usageAnchorIndex = _history.Count;
+        _usageAnchorIndex = -1;
+        if (messages.Count > 0)
+        {
+            _contextUsage = durable.Select(evt => evt.Event).OfType<ContextUsageUpdatedEvent>().LastOrDefault()?.Usage;
+            var resumedSelection = _record.ModelSelection ?? _deps.Options.DefaultModel;
+            if (resumedSelection is not null)
+            {
+                var descriptor = _deps.ResolveModel(resumedSelection).Descriptor;
+                _contextModelId = descriptor.FullId;
+                var resumed = AssembleContext(_history.Snapshot(), resumedSelection.Options ?? new ModelCallOptions());
+                _contextUsage = new ContextUsageState(TokenEstimator.EstimateRequestTokens(resumed.Request),
+                    descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens,
+                    TokenEstimator.EstimateSource, resumed.Breakdown,
+                    _contextUsage?.CacheReadTokens ?? 0, _contextUsage?.CacheInputTokens ?? 0);
+                EmitForReplay(new ContextUsageUpdatedEvent(_contextUsage));
+            }
+        }
     }
 
     private void EmitForReplay(SessionEvent sessionEvent) => _events.Append(sessionEvent);

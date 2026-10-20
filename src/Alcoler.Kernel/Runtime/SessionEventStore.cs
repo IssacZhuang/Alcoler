@@ -37,6 +37,16 @@ public sealed class SessionEventStore
 
     public long LastSequence { get { lock (_sync) return _nextSequence - 1; } }
 
+    public void AdvanceSequenceTo(long lastSequence)
+    {
+        lock (_sync)
+        {
+            if (_events.Count > 0 || _subscribers.Count > 0)
+                throw new InvalidOperationException("Sequence must be restored before replay or subscription.");
+            _nextSequence = Math.Max(_nextSequence, checked(lastSequence + 1));
+        }
+    }
+
     public SequencedEvent Append(SessionEvent sessionEvent)
     {
         ChannelWriter<SequencedEvent>[] writers;

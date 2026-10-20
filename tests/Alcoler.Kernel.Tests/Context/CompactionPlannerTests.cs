@@ -77,7 +77,10 @@ public class CompactionPlannerTests
 
         var plan = CompactionPlanner.PlanCompaction(input);
 
-        Assert.Equal(120_000 + TokenEstimator.EstimateHistoryTokens(history.Skip(3).ToList()), plan.PreCompactTokens);
+        var tail = ContextBuilder.Assemble(new ContextAssemblyInput("", "", "", null, null,
+            history.Skip(3).ToList(), [], new ModelCallOptions()));
+        var tailRequest = tail.Request with { Messages = tail.Request.Messages.Skip(tail.PrefixMessageCount).ToArray() };
+        Assert.Equal(120_000 + TokenEstimator.EstimateRequestTokens(tailRequest), plan.PreCompactTokens);
     }
 
     [Fact]

@@ -74,7 +74,7 @@ public class ConversationViewModelTests
 
         Assert.True(viewModel.Composer.IsTurnActive);
         Assert.False(viewModel.Composer.CanSend);
-        Assert.Equal(50, viewModel.ContextUsagePercent);
+        Assert.Equal(.5, viewModel.ContextUsage!.Fraction);
         Assert.True(viewModel.HasPendingInteraction);
         Assert.Equal("WriteFile", viewModel.PendingInteraction!.ToolName);
         store.Dispose();
@@ -208,6 +208,78 @@ public class ConversationViewModelTests
         Assert.Equal("high", command.Selection.Options?.ReasoningLevel);
         Assert.Equal("claude-x", command.Selection.ModelId);
         store.Dispose();
+    }
+
+    [Fact]
+    public async Task ThoughtLevelChange_PreservesOtherCallOptionsAndUsesConfiguredLevels()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var selection = new Alcoler.Contracts.Models.ModelSelection("test", "model",
+                new Alcoler.Contracts.Models.ModelCallOptions(ReasoningLevel: "low", MaxOutputTokens: 4096));
+            var state = TestSnapshots.State(modelSelection: selection);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            viewModel.ConfigureModel(new ModelChoice("test", "model", "Model",
+                new Alcoler.Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"])));
+            Assert.Equal(new[] { "low", "high" }, viewModel.ThoughtLevels);
+            Assert.Empty(runtime.Submitted);
+
+            viewModel.ThoughtLevel = "high";
+            var changed = Assert.IsType<SwitchModelCommand>(Assert.Single(runtime.Submitted));
+            Assert.Equal(4096, changed.Selection.Options!.MaxOutputTokens);
+            Assert.Equal("high", changed.Selection.Options.ReasoningLevel);
+
+            await viewModel.SwitchModelAsync(viewModel.ApplyThoughtLevel(selection));
+            Assert.Equal(4096, viewModel.CurrentSelection!.Options!.MaxOutputTokens);
+        }
+    }
+
+    [Fact]
+    public void ApplyThoughtLevel_PreservesConfiguredLiteralOffInConversationAndDraft()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var choice = new ModelChoice("test", "model", "Model",
+                new Alcoler.Contracts.Models.ModelProperties(ReasoningLevels: ["off", "high"],
+                    ReasoningMapping: "{'reasoning_effort':value}"));
+            viewModel.ConfigureModel(choice);
+            var draft = new DraftConversationViewModel("C:/workspace", choice, _ => Task.CompletedTask);
+            var selection = choice.Selection with { Options = new Alcoler.Contracts.Models.ModelCallOptions(MaxOutputTokens: 2048) };
+            foreach (var host in new IComposerHost[] { viewModel, draft })
+            {
+                host.ThoughtLevel = "off";
+                var applied = host.ApplyThoughtLevel(selection);
+                Assert.Equal("off", applied.Options!.ReasoningLevel);
+                Assert.Equal(2048, applied.Options.MaxOutputTokens);
+                host.ConfigureModel(choice with { Properties = new Alcoler.Contracts.Models.ModelProperties() });
+                Assert.Null(host.ApplyThoughtLevel(selection).Options!.ReasoningLevel);
+            }
+        }
+    }
+
+    [Fact]
+    public void RestoredComposer_SurvivesStaleStatePatchWithoutCommands()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var restored = new Alcoler.Contracts.Models.ModelSelection("other", "model",
+                new Alcoler.Contracts.Models.ModelCallOptions(ReasoningLevel: "high", MaxOutputTokens: 2048));
+            viewModel.RestoreComposerState("keep me", PermissionMode.Plan, restored);
+            var stale = TestSnapshots.State();
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, stale, [new StatePatched(stale)], Reset: true));
+
+            Assert.Equal("keep me", viewModel.Composer.Draft);
+            Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+            Assert.Equal(restored, viewModel.CurrentSelection);
+            Assert.Equal("high", viewModel.ThoughtLevel);
+            Assert.Empty(runtime.Submitted);
+        }
     }
 
     [Fact]

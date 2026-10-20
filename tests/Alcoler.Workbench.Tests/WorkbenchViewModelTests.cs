@@ -25,6 +25,33 @@ public sealed class WorkbenchViewModelTests : IDisposable
     private string DatabasePath => Path.Combine(_root, "sessions.sqlite");
 
     [Fact]
+    public async Task Draft_FirstSubmitPersistsAndOpensOneConversation()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, Reply("Started from a draft."));
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        var draft = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
+        draft.Composer.Draft = "Begin this conversation.";
+        Assert.Empty(await runtime.ListSessionsAsync(null, 200, CancellationToken.None));
+        Assert.Null(workbench.Active);
+
+        await draft.SendAsync();
+
+        var persisted = Assert.Single(await runtime.ListSessionsAsync(null, 200, CancellationToken.None));
+        var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
+        Assert.Equal(persisted.Id, conversation.SessionId);
+        Assert.Same(draft.Composer, conversation.Composer);
+        Assert.Empty(conversation.Composer.Draft);
+        await WaitUntilAsync(() => conversation.Items.OfType<AssistantMessageItemViewModel>()
+            .Any(item => item.MarkdownText == "Started from a draft." && !item.IsStreaming), scheduler);
+        Assert.Equal("Begin this conversation.", Assert.Single(conversation.Items.OfType<UserMessageItemViewModel>()).Text);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
     public async Task OpenSession_AfterRuntimeRestart_ResumesPersistedTimelineAndAcceptsAnotherTurn()
     {
         const string title = "Persisted session";

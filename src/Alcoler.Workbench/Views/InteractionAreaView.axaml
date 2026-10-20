@@ -3,6 +3,7 @@
              xmlns:converters="using:Alcoler.Workbench.Converters"
              xmlns:events="using:Alcoler.Contracts.Events"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.InteractionAreaView"
              x:DataType="vm:ConversationViewModel"
              Background="{DynamicResource AlcolerBackground}">
@@ -37,7 +38,7 @@
               Padding="12,8">
         <DockPanel>
           <Button DockPanel.Dock="Right" Classes="icon tiny" Click="OnDismissBanner" ToolTip.Tip="Dismiss">
-            <Path Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+            <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
           </Button>
           <TextBlock Text="{Binding Banner}" TextWrapping="Wrap" FontSize="12"
                      Foreground="{DynamicResource AlcolerError}" VerticalAlignment="Center" />
@@ -52,7 +53,7 @@
                 <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
                   <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
                     <Border Grid.Column="0" Width="20" Height="20" VerticalAlignment="Center">
-                      <Path Classes="icon" Data="{StaticResource AlcolerIconWrench}" HorizontalAlignment="Center"
+                      <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconWrench}" HorizontalAlignment="Center"
                             Stroke="{DynamicResource AlcolerTextSecondary}" />
                     </Border>
                     <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">

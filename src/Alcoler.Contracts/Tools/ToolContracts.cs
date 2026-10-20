@@ -35,6 +35,12 @@ public sealed record ToolMetadata(
     int? DefaultTimeoutMs = null,
     int? MaxTimeoutMs = null);
 
-public sealed record ToolContract(string Name, string Description, JsonElement InputSchema);
+public enum ToolSource
+{
+    System,
+    Mcp,
+}
+
+public sealed record ToolContract(string Name, string Description, JsonElement InputSchema, ToolSource Source = ToolSource.System);
 
 public sealed record ToolInputIssue(string Code, string Message);

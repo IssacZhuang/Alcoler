@@ -84,7 +84,7 @@ public class OpenAiCompatibleChatModelTests
         Assert.Equal(10, usage.InputTokens);
         Assert.Equal(5, usage.OutputTokens);
         Assert.Equal(4, usage.CacheReadTokens);
-        Assert.Equal(14, usage.ContextUsageTokens);
+        Assert.Equal(10, usage.ContextUsageTokens);
     }
 
     [Fact]
@@ -190,6 +190,21 @@ public class OpenAiCompatibleChatModelTests
         var finish = Assert.IsType<ModelStreamFinished>(events.Last());
         Assert.Equal(ModelFinishReason.Stop, finish.FinishReason);
         Assert.Equal(2, finish.Usage!.InputTokens);
+    }
+
+    [Fact]
+    public async Task FirstToolChunkWithArguments_EmitsStartBeforeDelta()
+    {
+        var handler = new RecordingHandler((_, _) => SseResponse("""
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+            data: [DONE]
+
+            """));
+        var events = await CollectAsync(CreateModel(handler));
+        Assert.IsType<ModelToolInputStarted>(events[0]);
+        Assert.Equal("{}", Assert.IsType<ModelToolInputDelta>(events[1]).DeltaJson);
+        Assert.Single(events.OfType<ModelToolCallReady>());
     }
 
     [Fact]

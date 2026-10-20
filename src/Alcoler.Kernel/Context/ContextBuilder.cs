@@ -1,6 +1,7 @@
 using System.Text;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Context;
@@ -14,9 +15,13 @@ public sealed record ContextAssemblyInput(
     IReadOnlyList<ConversationMessage> History,
     IReadOnlyList<ToolContract> Tools,
     ModelCallOptions Options,
-    string AgentInstructionsPath = "AGENTS.md");
+    string AgentInstructionsPath = "AGENTS.md",
+    string? ToolPrompt = null);
 
-public sealed record AssembledContext(ModelRequest Request, int PrefixMessageCount);
+public sealed record AssembledContext(
+    ModelRequest Request,
+    int PrefixMessageCount,
+    IReadOnlyList<ContextUsageCategory> Breakdown);
 
 public static class ContextBuilder
 {
@@ -35,11 +40,28 @@ public static class ContextBuilder
             new(MessageRole.System, [new InputTextBlock(input.SystemDynamic)], ephemeral),
         };
 
+        var breakdown = new List<ContextUsageCategory>();
+        AddCategory(ContextUsageSources.SystemPrompt,
+            (long)input.CliPrefix.Length + input.SystemStable.Length + input.SystemDynamic.Length);
         var prefixCount = 3;
         if (BuildAgentAndSkillsText(input) is { } meta)
         {
             messages.Add(new ModelInputMessage(MessageRole.User, [new InputTextBlock(meta)], ephemeral));
-            prefixCount = 4;
+            var skillsChars = input.SkillsListing?.Length ?? 0;
+            AddCategory(ContextUsageSources.Skills, skillsChars);
+            AddCategory(ContextUsageSources.MetaUserContext, meta.Length - skillsChars);
+            prefixCount++;
+        }
+        if (!string.IsNullOrEmpty(input.ToolPrompt))
+        {
+            messages.Add(new ModelInputMessage(MessageRole.System, [new InputTextBlock(input.ToolPrompt)], ephemeral));
+            AddCategory(ContextUsageSources.ToolPrompt, input.ToolPrompt.Length);
+            prefixCount++;
+        }
+        foreach (var tools in input.Tools.GroupBy(tool => tool.Source))
+        {
+            AddCategory(tools.Key == ToolSource.Mcp ? ContextUsageSources.McpToolSchemas : ContextUsageSources.SystemToolSchemas,
+                tools.Sum(tool => (long)TokenEstimator.SerializeTool(tool).Length));
         }
 
         ModelInputMessage? last = null;
@@ -54,7 +76,15 @@ public static class ContextBuilder
         if (last is not null)
             messages[^1] = last with { CacheControl = new CacheControl() };
 
-        return new AssembledContext(new ModelRequest(messages, input.Tools, input.Options), prefixCount);
+        AddCategory(ContextUsageSources.Messages,
+            messages.Skip(prefixCount).Sum(message => (long)TokenEstimator.SerializeMessage(message).Length));
+        return new AssembledContext(new ModelRequest(messages, input.Tools, input.Options), prefixCount, breakdown);
+
+        void AddCategory(string source, long characters)
+        {
+            if (characters > 0)
+                breakdown.Add(new ContextUsageCategory(source, characters));
+        }
     }
 
     private static string? BuildAgentAndSkillsText(ContextAssemblyInput input)
@@ -82,7 +112,7 @@ public static class ContextBuilder
         return sb.ToString();
     }
 
-    private static ModelInputMessage? Project(ConversationMessage message)
+    internal static ModelInputMessage? Project(ConversationMessage message)
     {
         var blocks = new List<ModelContentBlock>();
         foreach (var part in message.Parts)

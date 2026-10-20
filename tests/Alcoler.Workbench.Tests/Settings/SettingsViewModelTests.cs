@@ -387,7 +387,8 @@ public class SettingsViewModelTests
             var provider = Assert.IsType<ProviderViewModel>(viewModel.SelectedProvider);
             provider.AddModelCommand.Execute(null);
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-            Assert.Contains(dialog.GetVisualDescendants().OfType<TextBox>(), box => box.Watermark == "Model ID");
+            Assert.DoesNotContain(dialog.GetVisualDescendants().OfType<TextBox>(), box => box.Watermark == "Model ID");
+            Assert.Contains(dialog.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == provider.Models[0].ContextBadge);
             provider.Models[0].RemoveCommand.Execute(null);
             Assert.Empty(provider.Models);
             provider.RemoveProviderCommand.Execute(null);

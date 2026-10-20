@@ -144,7 +144,7 @@ public sealed class AgentRuntime : IAgentRuntime
         return _modelCache.GetOrAdd((selection.ProviderId, selection.ModelId), static (key, state) =>
         {
             var (self, sel) = state;
-            var provider = self._options.Providers.FirstOrDefault(p => string.Equals(p.Kind, sel.ProviderId, StringComparison.OrdinalIgnoreCase))
+            var provider = self._options.Providers.FirstOrDefault(p => string.Equals(p.Id, sel.ProviderId, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException($"No provider registered for '{sel.ProviderId}'.");
             return provider.BindAsync(sel, CancellationToken.None).AsTask().GetAwaiter().GetResult();
         }, (this, selection));

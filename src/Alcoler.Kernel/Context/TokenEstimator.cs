@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Context;
 
@@ -70,9 +71,36 @@ public static class TokenEstimator
 
         var tail = 0;
         for (var i = anchorIndex + 1; i < history.Count; i++)
-            tail += EstimateMessageTokens(history[i]);
+            if (ContextBuilder.Project(history[i]) is { } projected)
+                tail += EstimateTokens(SerializeMessage(projected));
         return (anchor.Value + tail, ProviderUsageSource);
     }
+
+    public static int EstimateRequestTokens(ModelRequest request)
+    {
+        var total = request.Messages.Sum(message => (long)EstimateTokens(SerializeMessage(message)));
+        total += request.Tools.Sum(tool => (long)EstimateTokens(SerializeTool(tool)));
+        return (int)Math.Min(int.MaxValue, total);
+    }
+
+    internal static string SerializeTool(ToolContract tool) => JsonSerializer.Serialize(new
+    {
+        name = tool.Name,
+        description = tool.Description,
+        inputSchema = tool.InputSchema.ValueKind == JsonValueKind.Undefined ? (JsonElement?)null : tool.InputSchema,
+    });
+
+    internal static string SerializeMessage(ModelInputMessage message) => JsonSerializer.Serialize(new
+    {
+        role = message.Role.ToString().ToLowerInvariant(),
+        content = message.Content.Select(block => block switch
+        {
+            InputTextBlock text => (object)new { type = "text", text = text.Text },
+            InputToolCallBlock call => new { type = "tool_call", id = call.Id.Value, name = call.Name, input = call.Input },
+            InputToolResultBlock result => new { type = "tool_result", id = result.Id.Value, content = result.Content, isError = result.IsError },
+            _ => throw new InvalidOperationException($"Unhandled model content block {block.GetType().Name}."),
+        }),
+    });
 
     internal static string RawJson(JsonElement element) =>
         element.ValueKind == JsonValueKind.Undefined ? string.Empty : element.GetRawText();

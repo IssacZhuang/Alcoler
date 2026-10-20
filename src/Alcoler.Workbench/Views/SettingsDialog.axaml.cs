@@ -2,6 +2,8 @@ using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Input;
+using Avalonia.VisualTree;
 
 namespace Alcoler.Workbench.Views;
 
@@ -22,6 +24,7 @@ public partial class SettingsDialog : Window
         DataContext = _viewModel;
         ProvidersTab.IsChecked = true;
         Closing += (_, e) => e.Cancel = _isSaving;
+        Closed += (_, _) => _viewModel.Dispose();
         WindowChrome.Attach(this);
     }
 
@@ -69,6 +72,77 @@ public partial class SettingsDialog : Window
         if (!_isSaving)
         {
             Close(null);
+        }
+    }
+
+    private void OnProviderAdded(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.AddProviderCommand.Execute(null);
+        AddProviderButton.Flyout?.Hide();
+    }
+
+    private void OnAddTemplateClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ProviderTemplate template })
+        {
+            _viewModel.AddProviderFromTemplate(template);
+            AddProviderButton.Flyout?.Hide();
+        }
+    }
+
+    private async void OnAddModelClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ProviderViewModel provider })
+            await ModelConfigurationDialog.ShowAsync(this, provider);
+    }
+
+    private async void OnEditModelClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ModelViewModel { Provider: { } provider } model })
+            await ModelConfigurationDialog.ShowAsync(this, provider, model);
+    }
+
+    private async void OnGetApiKeyClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ProviderViewModel { ApiKeyManagementUri: { } uri } })
+        {
+            try { await Launcher.LaunchUriAsync(uri); }
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+            {
+                _viewModel.Error = $"Could not open API key management: {ex.Message}";
+            }
+        }
+    }
+
+    private void OnRenameProviderClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ProviderViewModel provider }) return;
+        provider.RenameCommand.Execute(null);
+        foreach (var button in this.GetVisualDescendants().OfType<Button>().Where(button => ReferenceEquals(button.DataContext, provider)))
+            button.Flyout?.Hide();
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            var input = this.GetVisualDescendants().OfType<TextBox>()
+                .FirstOrDefault(box => ReferenceEquals(box.DataContext, provider) && box.Watermark == "Provider name");
+            if (input is not null)
+            {
+                input.Focus();
+                input.SelectAll();
+            }
+        });
+    }
+
+    private void OnProviderNameLostFocus(object? sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox { DataContext: ProviderViewModel provider }) provider.FinishRenameCommand.Execute(null);
+    }
+
+    private void OnProviderNameKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Enter or Key.Escape && sender is TextBox { DataContext: ProviderViewModel provider })
+        {
+            provider.FinishRenameCommand.Execute(null);
+            e.Handled = true;
         }
     }
 

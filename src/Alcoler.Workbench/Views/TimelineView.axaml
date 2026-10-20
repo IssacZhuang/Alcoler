@@ -4,6 +4,7 @@
              xmlns:md="https://github.com/whistyun/Markdown.Avalonia.Tight"
              xmlns:ct="using:ColorTextBlock.Avalonia"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.TimelineView"
              x:DataType="vm:ConversationViewModel"
              Background="{DynamicResource AlcolerBackground}">
@@ -68,13 +69,13 @@
     <Style Selector="Button.toolRow:pointerover /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="Transparent" />
     </Style>
-    <Style Selector="Button.toolRow Path.disclosure">
+    <Style Selector="Button.toolRow controls|Icon.disclosure">
       <Setter Property="Opacity" Value="0" />
     </Style>
-    <Style Selector="Button.toolRow:pointerover Path.disclosure">
+    <Style Selector="Button.toolRow:pointerover controls|Icon.disclosure">
       <Setter Property="Opacity" Value="1" />
     </Style>
-    <Style Selector="Button.toolRow:focus-visible Path.disclosure">
+    <Style Selector="Button.toolRow:focus-visible controls|Icon.disclosure">
       <Setter Property="Opacity" Value="1" />
     </Style>
     <Style Selector="Expander.thinkingBlock">
@@ -88,9 +89,9 @@
             <ToggleButton x:Name="ThinkingToggle" Background="Transparent" BorderThickness="0" Padding="0,3"
                           HorizontalContentAlignment="Left" IsChecked="{TemplateBinding IsExpanded, Mode=TwoWay}">
               <StackPanel Orientation="Horizontal" Spacing="8">
-                <Path Classes="icon small" Data="M12 3a4 4 0 0 0-7 3 4 4 0 0 0-2 7 4 4 0 0 0 5 6c1 3 4 2 4 0V3M12 3a4 4 0 0 1 7 3 4 4 0 0 1 2 7 4 4 0 0 1-5 6c-1 3-4 2-4 0" />
+                <controls:Icon Classes="icon small" Data="M12 3a4 4 0 0 0-7 3 4 4 0 0 0-2 7 4 4 0 0 0 5 6c1 3 4 2 4 0V3M12 3a4 4 0 0 1 7 3 4 4 0 0 1 2 7 4 4 0 0 1-5 6c-1 3-4 2-4 0" />
                 <ContentPresenter Content="{TemplateBinding Header}" />
-                <Path Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" />
+                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" />
               </StackPanel>
             </ToggleButton>
             <ContentPresenter Content="{TemplateBinding Content}" IsVisible="{TemplateBinding IsExpanded}" />
@@ -162,7 +163,7 @@
               <StackPanel Margin="0,2" MinWidth="0">
                 <Button Classes="toolRow" Click="OnToolRowClick" ToolTip.Tip="{Binding ToolName}">
                   <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="8" MinWidth="0">
-                    <Path Grid.Column="0" Classes="icon" Data="{StaticResource AlcolerIconWrench}"
+                    <controls:Icon Grid.Column="0" Classes="icon" Data="{StaticResource AlcolerIconWrench}"
                           Stroke="{DynamicResource AlcolerTextSecondary}" />
                     <TextBlock Grid.Column="1" Text="{Binding ToolName}" FontSize="13" VerticalAlignment="Center"
                                Foreground="{DynamicResource AlcolerTextSecondary}" />
@@ -172,9 +173,9 @@
                                Foreground="{Binding Status, Converter={x:Static conv:TimelineConverters.StatusBrush}}" />
                     <TextBlock Grid.Column="4" Text="{Binding DurationText}" FontSize="11" VerticalAlignment="Center"
                                Classes="caption" IsVisible="{Binding DurationText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                    <Path Grid.Column="5" Classes="icon small disclosure" Data="{StaticResource AlcolerIconChevronRight}"
+                    <controls:Icon Grid.Column="5" Classes="icon small disclosure" Data="{StaticResource AlcolerIconChevronRight}"
                           IsVisible="{Binding !IsExpanded}" Stroke="{DynamicResource AlcolerTextSecondary}" />
-                    <Path Grid.Column="5" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}"
+                    <controls:Icon Grid.Column="5" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}"
                           IsVisible="{Binding IsExpanded}" Stroke="{DynamicResource AlcolerTextSecondary}" />
                   </Grid>
                 </Button>

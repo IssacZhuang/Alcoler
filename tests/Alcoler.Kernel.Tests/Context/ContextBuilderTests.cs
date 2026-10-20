@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Context;
 using Xunit;
@@ -180,6 +181,57 @@ public class ContextBuilderTests
         Assert.Equal(5, assembled.Request.Messages.Count);
         Assert.NotNull(assembled.Request.Messages[^1].CacheControl);
         Assert.Equal("visible", Assert.IsType<InputTextBlock>(assembled.Request.Messages[^1].Content[0]).Text);
+    }
+
+    [Fact]
+    public void Assemble_BreakdownMeasuresInjectedSectionsWithoutDoubleCounting()
+    {
+        var input = Input([TestMessages.UserText("hello")]);
+        var assembled = ContextBuilder.Assemble(input);
+        var categories = assembled.Breakdown.ToDictionary(item => item.Source, item => item.Characters);
+        var meta = Assert.IsType<InputTextBlock>(assembled.Request.Messages[3].Content[0]).Text;
+
+        Assert.Equal(input.CliPrefix.Length + input.SystemStable.Length + input.SystemDynamic.Length,
+            categories[ContextUsageSources.SystemPrompt]);
+        Assert.Equal(input.SkillsListing!.Length, categories[ContextUsageSources.Skills]);
+        Assert.Equal(meta.Length - input.SkillsListing.Length, categories[ContextUsageSources.MetaUserContext]);
+        Assert.True(categories[ContextUsageSources.Messages] > "hello".Length);
+        Assert.DoesNotContain(ContextUsageSources.ToolPrompt, categories.Keys);
+        Assert.DoesNotContain(ContextUsageSources.McpToolSchemas, categories.Keys);
+    }
+
+    [Fact]
+    public void Assemble_UsesExplicitToolProvenanceRatherThanToolNames()
+    {
+        var schema = TestJson.Element(new { type = "object" });
+        var assembled = ContextBuilder.Assemble(Input() with
+        {
+            Tools = [new ToolContract("mcp_fake", "same", schema), new ToolContract("ordinary", "remote", schema, ToolSource.Mcp)],
+            ToolPrompt = "tool instructions",
+        });
+        var categories = assembled.Breakdown.ToDictionary(item => item.Source, item => item.Characters);
+
+        Assert.True(categories[ContextUsageSources.SystemToolSchemas] > 0);
+        Assert.True(categories[ContextUsageSources.McpToolSchemas] > 0);
+        Assert.Equal("tool instructions".Length, categories[ContextUsageSources.ToolPrompt]);
+        Assert.Equal(5, assembled.PrefixMessageCount);
+    }
+
+    [Fact]
+    public void Assemble_HiddenAndReasoningPartsDoNotAffectRequestAccounting()
+    {
+        var visible = TestMessages.AssistantText("answer");
+        var hidden = visible with
+        {
+            Parts = [.. visible.Parts,
+                new ReasoningPart(StrongId.NewPartId(), new string('r', 10_000)),
+                new AttachmentPart(StrongId.NewPartId(), AttachmentKind.SystemReminder, "not sent", ProviderVisible: false)],
+        };
+        var first = ContextBuilder.Assemble(Input([visible]));
+        var second = ContextBuilder.Assemble(Input([hidden]));
+
+        Assert.Equal(first.Breakdown, second.Breakdown);
+        Assert.Equal(TokenEstimator.EstimateRequestTokens(first.Request), TokenEstimator.EstimateRequestTokens(second.Request));
     }
 
     [Fact]

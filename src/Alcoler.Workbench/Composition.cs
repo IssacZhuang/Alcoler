@@ -77,9 +77,7 @@ public static class Composition
             Providers = BuildProviders(config),
             Tools = tools,
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
-            DefaultModel = config.DefaultModel is { } d
-                ? new ModelSelection(d.ProviderId, d.ModelId)
-                : null,
+            DefaultModel = WorkbenchModelCatalog.DefaultSelection(config),
         });
         return runtime;
     }
@@ -111,25 +109,32 @@ public static class Composition
         }
     }
 
-    private static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config) =>
-        [.. config.Providers.Select(BuildProvider)];
+    internal static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config) =>
+        [.. config.Providers.Where(provider => provider.Enabled).Select(BuildProvider)];
 
     private static IModelProvider BuildProvider(WorkbenchProviderConfig provider) =>
-        provider.Kind switch
+        provider.Kind.ToLowerInvariant() switch
         {
             "anthropic" => new AnthropicModelProvider(
                 provider.ApiKey ?? string.Empty,
                 string.IsNullOrWhiteSpace(provider.BaseUrl) ? "https://api.anthropic.com" : provider.BaseUrl,
-                modelProperties: ToProperties(provider.Models)),
+                modelProperties: ToProperties(provider),
+                providerId: provider.EffectiveId),
             "openai-compatible" => new OpenAiCompatibleModelProvider(
                 provider.BaseUrl,
                 provider.ApiKey ?? string.Empty,
-                modelProperties: ToProperties(provider.Models)),
+                modelProperties: ToProperties(provider),
+                providerId: provider.EffectiveId),
+            "openai-responses" => new OpenAiResponsesModelProvider(
+                provider.BaseUrl,
+                provider.ApiKey ?? string.Empty,
+                modelProperties: ToProperties(provider),
+                providerId: provider.EffectiveId),
             _ => throw new InvalidOperationException($"Unknown provider kind '{provider.Kind}'."),
         };
 
-    private static IReadOnlyDictionary<string, ModelProperties> ToProperties(IReadOnlyList<WorkbenchModelConfig> models) =>
-        models
-            .Where(m => m.ContextWindowTokens is not null)
-            .ToDictionary(m => m.ModelId, m => new ModelProperties(m.ContextWindowTokens));
+    private static IReadOnlyDictionary<string, ModelProperties> ToProperties(WorkbenchProviderConfig provider) =>
+        provider.Models
+            .Where(model => model.Enabled)
+            .ToDictionary(model => model.ModelId, model => WorkbenchModelCatalog.Resolve(provider, model));
 }

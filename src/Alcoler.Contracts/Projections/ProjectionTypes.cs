@@ -21,6 +21,28 @@ public enum TurnPhase
     Error,
 }
 
+public static class ContextUsageSources
+{
+    public const string SystemToolSchemas = "system_tool_schemas";
+    public const string McpToolSchemas = "mcp_tool_schemas";
+    public const string SystemPrompt = "system_prompt";
+    public const string Skills = "skills";
+    public const string MetaUserContext = "meta_user_context";
+    public const string ToolPrompt = "tool_prompt";
+    public const string Messages = "messages";
+}
+
+public sealed record ContextUsageCategory(string Source, long Characters);
+
+public sealed record ContextUsageState(
+    int UsedTokens,
+    int MaxTokens,
+    string TokenSource,
+    IReadOnlyList<ContextUsageCategory> Breakdown,
+    long CacheReadTokens = 0,
+    long CacheInputTokens = 0,
+    TokenUsage? LastUsage = null);
+
 public sealed record ConversationState(
     string Title,
     PermissionMode Mode,
@@ -32,7 +54,8 @@ public sealed record ConversationState(
     string TokenSource,
     IReadOnlyList<QueuedInput> Queue,
     PermissionRequest? PendingPermission,
-    InteractionRequest? PendingInteraction)
+    InteractionRequest? PendingInteraction,
+    ContextUsageState? ContextUsage = null)
 {
     public static ConversationState Initial(string title, PermissionMode mode, ModelSelection? modelSelection, int contextWindowTokens) =>
         new(title, mode, modelSelection, contextWindowTokens, TurnPhase.Idle, null, null, "estimate", [], null, null);

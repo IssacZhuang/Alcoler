@@ -3,8 +3,9 @@
              xmlns:converters="using:Alcoler.Workbench.Converters"
              xmlns:events="using:Alcoler.Contracts.Events"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.ComposerView"
-             x:DataType="vm:ConversationViewModel"
+             x:DataType="vm:IComposerHost"
              Background="{DynamicResource AlcolerBackground}">
   <UserControl.Styles>
     <Style Selector="Border.composerShell:pointerover">
@@ -32,7 +33,7 @@
     <Style Selector="Button.modePicker.fullAccess TextBlock">
       <Setter Property="Foreground" Value="{DynamicResource AlcolerWarning}" />
     </Style>
-    <Style Selector="Button.modePicker.fullAccess Path">
+    <Style Selector="Button.modePicker.fullAccess controls|Icon.icon">
       <Setter Property="Stroke" Value="{DynamicResource AlcolerWarning}" />
     </Style>
     <Style Selector="ComboBox.toolbarPicker">
@@ -88,9 +89,9 @@
             <Button x:Name="ModeSelector" Classes="modePicker" Classes.fullAccess="{Binding Composer.IsFullAccess}"
                     ToolTip.Tip="Permissions for the next message" VerticalAlignment="Center">
               <StackPanel Orientation="Horizontal" Spacing="4">
-                <Path Classes="icon" Data="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z M9 12l2 2 4-4" />
+                <controls:Icon Classes="icon" Data="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z M9 12l2 2 4-4" />
                 <TextBlock Classes="modeLabel" Text="{Binding Composer.ModeLabel}" FontSize="13" VerticalAlignment="Center" />
-                <Path Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
+                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
               </StackPanel>
               <Button.Flyout>
                 <Flyout Placement="TopEdgeAlignedLeft">
@@ -120,31 +121,20 @@
               </ComboBox.ItemTemplate>
             </ComboBox>
 
-            <Button x:Name="ContextButton" Grid.Column="2" Classes="toolbarAction" Width="56" Click="OnCompactClick"
-                    ToolTip.Tip="{Binding ContextUsageText}" IsEnabled="{Binding !Composer.IsTurnActive}">
-                <StackPanel Spacing="4" VerticalAlignment="Center">
-                  <Path Classes="icon small" Data="{StaticResource AlcolerIconArchive}" HorizontalAlignment="Center" />
-                  <Border x:Name="PART_ContextMeterTrack" Width="56" Height="2" CornerRadius="1"
-                          Background="{DynamicResource AlcolerSurfaceHigh}" ClipToBounds="True">
-                    <Border x:Name="PART_ContextMeterFill" Height="2" CornerRadius="1" HorizontalAlignment="Left"
-                            Width="{Binding ContextUsagePercent, Converter={StaticResource AlcolerPercentToWidth}, ConverterParameter=56}"
-                            Background="{Binding ContextUsagePercent, Converter={StaticResource AlcolerContextUsageBrush}}" />
-                  </Border>
-                  <TextBlock x:Name="PART_ContextUsageText" Text="{Binding ContextUsageText}" IsVisible="False" />
-                </StackPanel>
-            </Button>
+            <controls:ContextUsageView x:Name="ContextUsageHost" Grid.Column="2" DataContext="{Binding ContextUsage}"
+                                       VerticalAlignment="Center" />
             <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
               <ComboBox x:Name="ThoughtLevelSelector" Classes="ghost toolbarPicker" MinWidth="66" MaxWidth="90"
-                        ToolTip.Tip="Reasoning effort" ItemsSource="{Binding ThoughtLevels}"
+                        ToolTip.Tip="Reasoning effort" ItemsSource="{Binding ThoughtLevels}" IsVisible="{Binding !!ThoughtLevels.Count}"
                         SelectedItem="{Binding ThoughtLevel, Mode=TwoWay}" />
               <Button x:Name="StopButton" Classes="icon toolbarAction"
                       IsVisible="{Binding Composer.ShowStop}" Click="OnStopClick" ToolTip.Tip="Stop">
-                <Path Classes="icon small" Data="{StaticResource AlcolerIconSquare}"
+                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSquare}"
                       Stroke="{DynamicResource AlcolerTextPrimary}" Fill="{DynamicResource AlcolerTextPrimary}" />
               </Button>
               <Button x:Name="SendButton" Classes="primary icon toolbarAction"
                       IsVisible="{Binding !Composer.ShowStop}" IsEnabled="{Binding Composer.CanSend}" Click="OnSendClick" ToolTip.Tip="{Binding Composer.SendHint}">
-                <Path Classes="icon" Data="{StaticResource AlcolerIconArrowUp}" />
+                <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconArrowUp}" />
               </Button>
             </StackPanel>
           </Grid>

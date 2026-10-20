@@ -17,6 +17,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Alcoler.Workbench.Tests" />
+    <EmbeddedResource Include="Models\ModelDefaults.json" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Alcoler.Contracts\Alcoler.Contracts.csproj" />

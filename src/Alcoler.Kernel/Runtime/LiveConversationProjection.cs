@@ -85,7 +85,7 @@ public sealed class LiveConversationProjection : IConversationProjection
         {
             return null;
         }
-        Interlocked.Increment(ref _lastSequence);
+        Interlocked.Exchange(ref _lastSequence, sequenced.Sequence);
         return _builder.Apply(sequenced);
     }
 }

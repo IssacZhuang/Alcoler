@@ -24,7 +24,8 @@ public sealed class McpTool : ITool
         Contract = new ToolContract(
             $"{connection.ServerName}_{_remoteName}",
             definition.Description ?? string.Empty,
-            definition.InputSchema is { ValueKind: JsonValueKind.Object } schema ? schema : PermissiveSchema);
+            definition.InputSchema is { ValueKind: JsonValueKind.Object } schema ? schema : PermissiveSchema,
+            ToolSource.Mcp);
         Metadata = BuildMetadata(definition.Annotations, (int)_callTimeout.TotalMilliseconds);
     }
 

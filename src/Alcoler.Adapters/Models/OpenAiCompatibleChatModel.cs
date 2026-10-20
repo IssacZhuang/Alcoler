@@ -26,21 +26,33 @@ public sealed record OpenAiCompatibleModelOptions(
     public string ChatCompletionsUrl => $"{BaseUrl.TrimEnd('/')}/chat/completions";
 }
 
-public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompatibleModelOptions options, ModelProperties? properties = null) : IChatModel
+public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompatibleModelOptions options, ModelProperties? properties = null, string? providerId = null) : IChatModel
 {
     private const int DefaultMaxTokens = 32768;
+    private readonly ModelProperties _requestProperties = properties ?? new ModelProperties();
 
     public ModelDescriptor Descriptor { get; } = new(
-        "openai-compatible",
+        providerId ?? "openai-compatible",
         options.Model,
         options.Model,
         properties ?? new ModelProperties(ContextWindowTokens: 128_000, DefaultMaxOutputTokens: DefaultMaxTokens));
+
+    public void ValidateOptions(ModelCallOptions callOptions) => ModelRequestOptions.Validate(_requestProperties, callOptions, DefaultMaxTokens);
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
         ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        using var httpRequest = BuildRequest(request);
+        HttpRequestMessage? built = null;
+        ModelFailure? validationFailure = null;
+        try { built = BuildRequest(request); }
+        catch (ArgumentException ex) { validationFailure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message); }
+        if (validationFailure is not null)
+        {
+            yield return new ModelStreamFailed(validationFailure);
+            yield break;
+        }
+        using var httpRequest = built!;
         HttpResponseMessage? response = null;
         ModelFailure? sendFailure = null;
         try
@@ -103,11 +115,9 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
 
     private HttpRequestMessage BuildRequest(ModelRequest request)
     {
-        var (conversation, systemBlocks) = ModelRequestSystemBlocks.Extract(request.Messages);
-        var messages = new List<object>(systemBlocks.Count + conversation.Count);
-        foreach (var block in systemBlocks)
-            messages.Add(new Dictionary<string, object?> { ["role"] = "system", ["content"] = block });
-        foreach (var input in conversation)
+        ModelRequestOptions.ValidateRequest(request, Descriptor.Properties);
+        var messages = new List<object>();
+        foreach (var input in ModelRequestSystemBlocks.Normalize(request.Messages, Descriptor.Properties.SupportsMidConversationSystem))
             messages.AddRange(ToProviderMessages(input));
 
         var payload = new Dictionary<string, object?>
@@ -117,10 +127,6 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
             ["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true },
             ["messages"] = messages,
         };
-        var maxOutputTokens = request.Options.MaxOutputTokens
-            ?? Descriptor.Properties.DefaultMaxOutputTokens
-            ?? DefaultMaxTokens;
-        payload[options.UseLegacyMaxTokens ? "max_tokens" : "max_completion_tokens"] = maxOutputTokens;
         if (request.Tools.Count > 0)
             payload["tools"] = request.Tools.Select(t => new Dictionary<string, object?>
             {
@@ -129,14 +135,15 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                 {
                     ["name"] = t.Name,
                     ["description"] = t.Description,
-                    ["parameters"] = t.InputSchema,
+                    ["parameters"] = ModelRequestOptions.ToolSchema(t.InputSchema, Descriptor.Properties),
                 },
             }).ToList();
 
         var message = new HttpRequestMessage(HttpMethod.Post, options.ChatCompletionsUrl)
         {
             Content = new StringContent(
-                JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+                ModelRequestOptions.Encode(payload, _requestProperties, request.Options,
+                    options.UseLegacyMaxTokens ? "max_tokens" : "max_completion_tokens", DefaultMaxTokens), Encoding.UTF8, "application/json"),
         };
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
@@ -187,7 +194,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         {
             yield return new Dictionary<string, object?>
             {
-                ["role"] = "user",
+                ["role"] = message.Role == MessageRole.System ? "system" : "user",
                 ["content"] = textBlocks.Count == 1
                     ? textBlocks[0].Text
                     : textBlocks.Select(t => new Dictionary<string, object?>
@@ -333,20 +340,21 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                             tool.Name = nameElement.GetString();
                         if (function.TryGetProperty("arguments", out var argumentsElement) &&
                             argumentsElement.ValueKind == JsonValueKind.String)
-                        {
-                            var fragment = argumentsElement.GetString() ?? "";
-                            if (fragment.Length > 0)
-                            {
-                                tool.Arguments.Append(fragment);
-                                if (tool.Id is { } toolId)
-                                    yield return new ModelToolInputDelta(toolId, fragment);
-                            }
-                        }
+                            tool.Arguments.Append(argumentsElement.GetString() ?? "");
                     }
-                    if (tool.Id is not null && tool.Name is not null && !tool.Started)
+                    if (tool.Id is not null && tool.Name is not null)
                     {
-                        tool.Started = true;
-                        yield return new ModelToolInputStarted(tool.Id.Value, tool.Name);
+                        if (!tool.Started)
+                        {
+                            tool.Started = true;
+                            yield return new ModelToolInputStarted(tool.Id.Value, tool.Name);
+                        }
+                        if (tool.Arguments.Length > tool.EmittedCharacters)
+                        {
+                            var fragment = tool.Arguments.ToString(tool.EmittedCharacters, tool.Arguments.Length - tool.EmittedCharacters);
+                            tool.EmittedCharacters = tool.Arguments.Length;
+                            yield return new ModelToolInputDelta(tool.Id.Value, fragment);
+                        }
                     }
                 }
             }
@@ -365,7 +373,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
             return new TokenUsage(
                 InputTokens: promptTokens,
                 OutputTokens: completionTokens,
-                ContextUsageTokens: promptTokens + cachedTokens,
+                ContextUsageTokens: promptTokens,
                 CacheReadTokens: cachedTokens);
         }
 
@@ -400,6 +408,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         public string? Name { get; set; }
         public StringBuilder Arguments { get; } = new();
         public bool Started { get; set; }
+        public int EmittedCharacters { get; set; }
         public bool Closed { get; set; }
     }
 }

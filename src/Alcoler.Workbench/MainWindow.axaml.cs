@@ -5,6 +5,8 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 
 namespace Alcoler.Workbench;
@@ -43,6 +45,7 @@ public partial class MainWindow : Window
             _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         }
         ApplyPaneVisibility();
+        ApplyConversationLayout();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -52,7 +55,23 @@ public partial class MainWindow : Window
         {
             ApplyPaneVisibility();
         }
+        if (e.PropertyName is nameof(WorkbenchViewModel.IsDraft) or nameof(WorkbenchViewModel.Draft))
+        {
+            ApplyConversationLayout();
+        }
     }
+
+    private void ApplyConversationLayout()
+    {
+        var isDraft = _viewModel?.IsDraft != false;
+        ConversationArea.RowDefinitions[2].Height = isDraft ? GridLength.Star : new GridLength(0);
+        if (isDraft)
+        {
+            Dispatcher.UIThread.Post(() => MainComposer.FocusInput(), DispatcherPriority.Input);
+        }
+    }
+
+    internal void FocusComposer() => MainComposer.FocusInput();
 
     private void ApplyPaneVisibility()
     {
@@ -121,7 +140,58 @@ public partial class MainWindow : Window
     private void OnMaximizeClick(object? sender, RoutedEventArgs e) => ToggleMaximize();
     private void OnCloseClick(object? sender, RoutedEventArgs e) => Close();
     private void ToggleMaximize() => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-    private async void OnNewSessionClick(object? sender, RoutedEventArgs e) => await Sidebar.ShowNewSessionAsync();
+    private void OnWorkspaceClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: SessionGroupViewModel group })
+        {
+            WorkspaceChooser.Flyout?.Hide();
+            _viewModel?.ShowNewTask(group.WorkspaceRoot);
+            MainComposer.FocusInput();
+        }
+    }
+
+    private async void OnOpenFolderClick(object? sender, RoutedEventArgs e)
+    {
+        WorkspaceChooser.Flyout?.Hide();
+        if (_viewModel is null || !StorageProvider.CanPickFolder)
+        {
+            return;
+        }
+        try
+        {
+            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Open workspace folder",
+                AllowMultiple = false,
+            });
+            if (folders.Count > 0 && folders[0].TryGetLocalPath() is { } path)
+            {
+                _viewModel.ShowNewTask(path);
+            }
+            MainComposer.FocusInput();
+        }
+        catch (Exception exception)
+        {
+            _viewModel.Banner = $"Could not open the folder picker. {exception.Message}";
+        }
+    }
+
+    private void OnOutsideProjectClick(object? sender, RoutedEventArgs e)
+    {
+        WorkspaceChooser.Flyout?.Hide();
+        try
+        {
+            _viewModel?.WorkOutsideProject();
+            MainComposer.FocusInput();
+        }
+        catch (Exception exception)
+        {
+            if (_viewModel is not null)
+            {
+                _viewModel.Banner = $"Could not open the default workspace. {exception.Message}";
+            }
+        }
+    }
 
     private async void OnShellKeyDown(object? sender, KeyEventArgs e)
     {

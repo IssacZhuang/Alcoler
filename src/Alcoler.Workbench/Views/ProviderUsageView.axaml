@@ -1,0 +1,68 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:controls="using:Alcoler.Workbench.Controls"
+             x:Class="Alcoler.Workbench.Views.ProviderUsageView"
+             x:DataType="vm:ProviderUsageViewModel">
+  <StackPanel x:Name="PART_UsageSection" Spacing="8" IsVisible="{Binding IsVisible}">
+    <Grid ColumnDefinitions="*,Auto,28" ColumnSpacing="6" MinHeight="28">
+      <TextBlock Text="Usage" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
+                 VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+      <TextBlock Grid.Column="1" x:Name="PART_UsageLoading" Text="Loading..."
+                 IsVisible="{Binding IsLoading}" VerticalAlignment="Center"
+                 FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
+      <Button Grid.Column="2" x:Name="PART_UsageRefresh" Classes="icon" Width="28" Height="28"
+              MinWidth="28" MinHeight="28" Padding="0" Command="{Binding RefreshCommand}"
+              ToolTip.Tip="Refresh usage" AutomationProperties.Name="Refresh usage">
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+      </Button>
+    </Grid>
+
+    <Border IsVisible="{Binding HasError}" Padding="8" CornerRadius="{DynamicResource AlcolerRadius}"
+            Background="{DynamicResource AlcolerSurface}" BorderBrush="{DynamicResource AlcolerBorder}"
+            BorderThickness="1">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+        <TextBlock x:Name="PART_UsageError" Text="{Binding ErrorMessage}" TextWrapping="Wrap"
+                   FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
+                   Foreground="{DynamicResource AlcolerTextSecondary}" />
+        <Button Grid.Column="1" x:Name="PART_UsageRetry" Classes="ghost" Content="Retry"
+                Height="28" MinHeight="28" Padding="8,0" Command="{Binding RefreshCommand}" />
+      </Grid>
+    </Border>
+
+    <TextBlock Text="No usage data available." IsVisible="{Binding IsEmpty}"
+               FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
+
+    <StackPanel x:Name="PART_UsageBalance" Spacing="4" IsVisible="{Binding ShowBalance}">
+      <TextBlock Text="{Binding BalanceText}" FontSize="{DynamicResource AlcolerFontLarge}"
+                 FontWeight="SemiBold" FontFamily="Consolas,Courier New,monospace"
+                 Foreground="{DynamicResource AlcolerTextPrimary}" />
+      <TextBlock Text="{Binding BalanceDetail}" IsVisible="{Binding HasBalanceDetail}" TextWrapping="Wrap"
+                 FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
+    </StackPanel>
+
+    <ItemsControl x:Name="PART_UsageQuota" ItemsSource="{Binding QuotaTiers}" IsVisible="{Binding ShowQuota}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <UniformGrid Columns="{Binding QuotaColumns}" />
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate x:DataType="vm:ProviderUsageTierViewModel">
+          <StackPanel Spacing="5" Margin="0,0,8,0" ToolTip.Tip="Remaining quota">
+            <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"
+                       FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
+            <TextBlock Text="{Binding PercentageText}" FontFamily="Consolas,Courier New,monospace"
+                       FontSize="{DynamicResource AlcolerFontLarge}" FontWeight="SemiBold"
+                       Foreground="{DynamicResource AlcolerTextPrimary}" />
+            <ProgressBar Minimum="0" Maximum="100" Value="{Binding MeterValue}" IsVisible="{Binding HasPercentage}"
+                         Height="6" MinHeight="6" Foreground="{Binding MeterBrush}"
+                         Background="{DynamicResource AlcolerSurfaceHigh}" />
+            <TextBlock Text="{Binding ResetText}" IsVisible="{Binding HasReset}" ToolTip.Tip="{Binding ResetToolTip}"
+                       FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
+          </StackPanel>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+  </StackPanel>
+</UserControl>

@@ -245,6 +245,19 @@ public class AnthropicChatModelTests
     }
 
     [Fact]
+    public async Task ProviderErrorEvent_ProducesOnlyOneTerminalFailure()
+    {
+        var handler = new RecordingHandler((_, _) => SegmentedStream.ToResponse("""
+            data: {"type":"error","error":{"type":"invalid_request_error","message":"invalid thinking options"}}
+
+            """));
+        var events = await CollectAsync(CreateModel(handler), BasicRequest());
+        var failure = Assert.IsType<ModelStreamFailed>(Assert.Single(events)).Failure;
+        Assert.Equal(ModelFailureKind.InvalidRequest, failure.Kind);
+        Assert.False(failure.IsRetryable);
+    }
+
+    [Fact]
     public async Task InvalidToolJson_BecomesEmptyObjectInput()
     {
         var sse = string.Join("\n",

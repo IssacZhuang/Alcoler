@@ -86,7 +86,8 @@ public class SubagentEndToEndTests
     private static async Task WaitForPhaseAsync(IConversationProjection projection, TurnPhase phase)
     {
         var deadline = Task.Delay(TimeSpan.FromSeconds(30));
-        while (projection.Snapshot().State.Phase != phase)
+        while (projection.Snapshot() is var snapshot &&
+               (snapshot.State.Phase != phase || !snapshot.Rows.OfType<UserMessageRow>().Any()))
         {
             if (deadline.IsCompleted)
             {

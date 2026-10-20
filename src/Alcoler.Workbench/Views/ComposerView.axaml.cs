@@ -10,14 +10,20 @@ namespace Alcoler.Workbench.Views;
 
 public partial class ComposerView : UserControl
 {
-    private ConversationViewModel? _observed;
+    private IComposerHost? _observed;
     private WorkbenchViewModel? _workbench;
+    private Window? _owner;
+    private readonly ProviderUsageViewModel _providerUsage = new();
+    private readonly ProviderUsageView _providerUsageView;
     private bool _synchronizingModel;
 
     public ComposerView()
     {
         // The generated InitializeComponent(bool) overload wires x:Name fields; a manual parameterless overload would shadow it.
         InitializeComponent(true);
+        _providerUsageView = new ProviderUsageView { DataContext = _providerUsage };
+        ContextUsageHost.QuotaContent = _providerUsageView;
+        ContextUsageHost.PopoverOpened += (_, _) => _ = _providerUsage.RefreshAsync();
         // Tunneling is required to observe plain Enter before the TextBox consumes it as a newline.
         InputBox.AddHandler(KeyDownEvent, OnInputKeyDown, RoutingStrategies.Tunnel);
         DataContextChanged += (_, _) => ObserveConversation();
@@ -28,11 +34,21 @@ public partial class ComposerView : UserControl
     {
         base.OnAttachedToVisualTree(e);
         ObserveConversation();
-        if (e.Root is Window { DataContext: WorkbenchViewModel workbench })
+        if (e.Root is Window owner)
         {
-            _workbench = workbench;
-            ModelSelector.ItemsSource = workbench.ModelChoices;
-            SynchronizeModel();
+            if (_owner != owner)
+            {
+                if (_owner is not null)
+                    _owner.Closed -= OnOwnerClosed;
+                _owner = owner;
+                owner.Closed += OnOwnerClosed;
+            }
+            if (owner.DataContext is WorkbenchViewModel workbench)
+            {
+                _workbench = workbench;
+                ModelSelector.ItemsSource = workbench.ModelChoices;
+                SynchronizeModel();
+            }
         }
     }
 
@@ -49,6 +65,14 @@ public partial class ComposerView : UserControl
             _workbench = null;
         }
         base.OnDetachedFromVisualTree(e);
+    }
+
+    private void OnOwnerClosed(object? sender, EventArgs e)
+    {
+        _providerUsage.Dispose();
+        if (_owner is not null)
+            _owner.Closed -= OnOwnerClosed;
+        _owner = null;
     }
 
     private void ObserveConversation()
@@ -89,16 +113,23 @@ public partial class ComposerView : UserControl
         _synchronizingModel = true;
         try
         {
-            ModelSelector.SelectedItem = _workbench?.ModelChoices.FirstOrDefault(choice =>
+            var choice = _workbench?.ModelChoices.FirstOrDefault(choice =>
                 $"{choice.ProviderId}/{choice.ModelId}" == ViewModel?.ModelText);
+            ModelSelector.SelectedItem = choice;
+            if (choice is not null)
+                ViewModel?.ConfigureModel(choice);
         }
         finally
         {
             _synchronizingModel = false;
         }
+        var provider = ModelSelector.SelectedItem is ModelChoice selected ? _workbench?.FindProvider(selected.ProviderId) : null;
+        _providerUsage.Configure(provider?.EffectiveId, provider?.BaseUrl, provider?.ApiKey);
     }
 
-    private ConversationViewModel? ViewModel => DataContext as ConversationViewModel;
+    private IComposerHost? ViewModel => DataContext as IComposerHost;
+
+    public void FocusInput() => InputBox.Focus();
 
     private void OnInputKeyDown(object? sender, KeyEventArgs e)
     {
@@ -124,6 +155,7 @@ public partial class ComposerView : UserControl
         if (!_synchronizingModel && e.AddedItems.OfType<ModelChoice>().FirstOrDefault() is { } choice
             && ViewModel is { } viewModel)
         {
+            viewModel.ConfigureModel(choice, useDefaultReasoning: true);
             _ = viewModel.SwitchModelAsync(viewModel.ApplyThoughtLevel(choice.Selection));
         }
     }

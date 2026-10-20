@@ -164,39 +164,38 @@ public class ShellSmokeTests
         window.Show();
         Dispatcher.UIThread.RunJobs();
 
-        var fill = window.GetVisualDescendants().OfType<Border>()
-            .Single(b => b.Name == "PART_ContextMeterFill");
+        var context = window.GetVisualDescendants().OfType<Workbench.Controls.ContextUsageView>().Single();
+        var fill = context.FindControl<Workbench.Controls.Icon>("ContextRingFill")!;
         var phase = window.GetVisualDescendants().OfType<TextBlock>()
             .Single(t => t.Name == "PART_PhaseText");
 
-        Assert.Equal(0d, fill.Width);
+        Assert.False(context.IsVisible);
 
         var low = TestSnapshots.State(TurnPhase.Streaming, contextUsageTokens: 60_000);
         viewModel.Active!.ApplyUpdate(new ProjectionUpdate(2, low, [new StatePatched(low)], Reset: false));
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("Streaming", phase.Text);
-        Assert.Equal(16.8d, fill.Width, 3);
-        var lowBrush = Assert.IsType<SolidColorBrush>(fill.Background);
-        Assert.Equal(Color.Parse("#FF46BF72"), lowBrush.Color);
+        Assert.True(context.IsVisible);
+        Assert.Equal(.3, Assert.IsType<ContextUsageViewModel>(context.DataContext).Fraction);
+        Assert.Equal(14, fill.Width);
+        var lowBrush = Assert.IsType<SolidColorBrush>(fill.Stroke);
 
         var mid = TestSnapshots.State(TurnPhase.ExecutingTools, contextUsageTokens: 120_000);
         viewModel.Active!.ApplyUpdate(new ProjectionUpdate(3, mid, [new StatePatched(mid)], Reset: false));
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("ExecutingTools", phase.Text);
-        Assert.Equal(33.6d, fill.Width, 3);
-        var midBrush = Assert.IsType<SolidColorBrush>(fill.Background);
-        Assert.Equal(Color.Parse("#FFFF8A30"), midBrush.Color);
+        Assert.Equal(.6, Assert.IsType<ContextUsageViewModel>(context.DataContext).Fraction);
+        Assert.Equal(lowBrush.Color, Assert.IsType<SolidColorBrush>(fill.Stroke).Color);
 
         var hot = TestSnapshots.State(TurnPhase.Error, contextUsageTokens: 180_000);
         viewModel.Active!.ApplyUpdate(new ProjectionUpdate(4, hot, [new StatePatched(hot)], Reset: false));
         Dispatcher.UIThread.RunJobs();
 
         Assert.Equal("Error", phase.Text);
-        Assert.Equal(50.4d, fill.Width, 3);
-        var hotBrush = Assert.IsType<SolidColorBrush>(fill.Background);
-        Assert.Equal(Color.Parse("#FFFF5C5C"), hotBrush.Color);
+        Assert.Equal(.9, Assert.IsType<ContextUsageViewModel>(context.DataContext).Fraction);
+        Assert.Equal(lowBrush.Color, Assert.IsType<SolidColorBrush>(fill.Stroke).Color);
 
         window.Close();
         viewModel.Dispose();

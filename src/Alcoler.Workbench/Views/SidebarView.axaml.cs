@@ -16,18 +16,24 @@ public partial class SidebarView : UserControl
 
     private async void OnNewSessionClick(object? sender, RoutedEventArgs e) => await ShowNewSessionAsync();
 
-    public async Task ShowNewSessionAsync()
+    public Task ShowNewSessionAsync()
     {
-        if (DataContext is not WorkbenchViewModel viewModel
-            || TopLevel.GetTopLevel(this) is not Window owner)
+        if (DataContext is WorkbenchViewModel viewModel)
         {
-            return;
+            viewModel.ShowNewTask();
+            (TopLevel.GetTopLevel(this) as MainWindow)?.FocusComposer();
         }
-        var defaultRoot = viewModel.Sidebar.Groups.FirstOrDefault()?.WorkspaceRoot ?? string.Empty;
-        var request = await NewSessionDialog.ShowAsync(owner, defaultRoot);
-        if (request is { } created)
+        return Task.CompletedTask;
+    }
+
+    private void OnProjectNewTaskClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: SessionGroupViewModel group }
+            && DataContext is WorkbenchViewModel viewModel)
         {
-            await viewModel.NewSessionAsync(created.WorkspaceRoot, created.Title);
+            viewModel.ShowNewTask(group.WorkspaceRoot);
+            (TopLevel.GetTopLevel(this) as MainWindow)?.FocusComposer();
+            e.Handled = true;
         }
     }
 
@@ -44,6 +50,7 @@ public partial class SidebarView : UserControl
     {
         if (sender is Control { DataContext: SessionGroupViewModel group })
         {
+            (DataContext as WorkbenchViewModel)?.FocusWorkspace(group.WorkspaceRoot);
             group.IsExpanded = !group.IsExpanded;
         }
     }

@@ -1,63 +1,103 @@
 using System.Collections.ObjectModel;
-using System.Globalization;
 using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
 namespace Alcoler.Workbench.ViewModel;
 
-public sealed partial class ModelViewModel : ObservableObject
-{
-    private readonly Action<ModelViewModel> _removeFromParent;
-
-    [ObservableProperty]
-    private string _modelId = string.Empty;
-
-    [ObservableProperty]
-    private string _contextWindowTokens = string.Empty;
-
-    /// <summary>Not editable in the dialog; carried through so saving does not erase it.</summary>
-    public string? DisplayName { get; set; }
-
-    public ModelViewModel(Action<ModelViewModel> removeFromParent) => _removeFromParent = removeFromParent;
-
-    [RelayCommand]
-    private void Remove() => _removeFromParent(this);
-}
+public sealed record ProviderApiFormat(string Kind, string Label);
 
 public sealed partial class ProviderViewModel : ObservableObject
 {
     private readonly Action<ProviderViewModel> _removeFromParent;
 
-    [ObservableProperty]
-    private string _kind = string.Empty;
+    [ObservableProperty] private string _kind = string.Empty;
+    [ObservableProperty] private string _baseUrl = string.Empty;
+    [ObservableProperty] private string _apiKey = string.Empty;
+    [ObservableProperty] private string? _id;
+    [ObservableProperty] private string? _name;
+    [ObservableProperty] private bool _enabled = true;
+    [ObservableProperty] private string? _apiKeyManagementUrl;
+    [ObservableProperty] private bool _isApiKeyVisible;
+    [ObservableProperty] private bool _isRenaming;
 
-    [ObservableProperty]
-    private string _baseUrl = string.Empty;
-
-    [ObservableProperty]
-    private string _apiKey = string.Empty;
-
-    [ObservableProperty]
-    private bool _isApiKeyVisible;
-
-    public string Label => string.IsNullOrWhiteSpace(Kind) ? "New provider" : Kind;
-
+    public ProviderUsageViewModel Usage { get; } = new();
+    public string? TemplateId { get; set; }
+    public string EffectiveId => string.IsNullOrWhiteSpace(Id) ? Kind : Id;
+    public string Label => !string.IsNullOrWhiteSpace(Name) ? Name : string.IsNullOrWhiteSpace(Kind) ? "New provider" : Kind;
+    public string StatusLabel => Enabled ? "Enabled" : "Disabled";
     public char ApiKeyPasswordChar => IsApiKeyVisible ? '\0' : '*';
+    public string ApiKeyVisibilityLabel => IsApiKeyVisible ? "Hide API key" : "Show API key";
+    public bool HasApiKeyManagementUrl => ApiKeyManagementUri is not null;
+    public Uri? ApiKeyManagementUri => Uri.TryCreate(ApiKeyManagementUrl, UriKind.Absolute, out var uri)
+        && uri.Scheme == Uri.UriSchemeHttps
+        && string.IsNullOrEmpty(uri.UserInfo) ? uri : null;
+    public IReadOnlyList<ProviderApiFormat> ApiFormats => SettingsViewModel.ApiFormats;
+    public ProviderApiFormat? SelectedApiFormat
+    {
+        get => ApiFormats.FirstOrDefault(format => format.Kind == Kind);
+        set { if (value is not null) Kind = value.Kind; }
+    }
 
     public ObservableCollection<ModelViewModel> Models { get; } = [];
 
     public ProviderViewModel(Action<ProviderViewModel> removeFromParent) => _removeFromParent = removeFromParent;
 
-    partial void OnKindChanged(string value) => OnPropertyChanged(nameof(Label));
+    partial void OnKindChanging(string value)
+    {
+        if (string.IsNullOrWhiteSpace(Id) && !string.IsNullOrWhiteSpace(Kind)) Id = Kind;
+    }
 
-    partial void OnIsApiKeyVisibleChanged(bool value) => OnPropertyChanged(nameof(ApiKeyPasswordChar));
+    partial void OnKindChanged(string value)
+    {
+        OnPropertyChanged(nameof(Label));
+        OnPropertyChanged(nameof(EffectiveId));
+        OnPropertyChanged(nameof(SelectedApiFormat));
+        foreach (var model in Models) model.RefreshEffectiveProperties();
+        ConfigureUsage();
+    }
 
+    partial void OnBaseUrlChanged(string value)
+    {
+        ConfigureUsage();
+        foreach (var model in Models) model.RefreshEffectiveProperties();
+    }
+    partial void OnApiKeyChanged(string value) => ConfigureUsage();
+    partial void OnIdChanged(string? value)
+    {
+        OnPropertyChanged(nameof(EffectiveId));
+        ConfigureUsage();
+    }
+    private void ConfigureUsage() => Usage.Configure(EffectiveId, BaseUrl, ApiKey);
+    partial void OnNameChanged(string? value) => OnPropertyChanged(nameof(Label));
+    partial void OnEnabledChanged(bool value) => OnPropertyChanged(nameof(StatusLabel));
+    partial void OnApiKeyManagementUrlChanged(string? value) => OnPropertyChanged(nameof(HasApiKeyManagementUrl));
+    partial void OnIsApiKeyVisibleChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ApiKeyPasswordChar));
+        OnPropertyChanged(nameof(ApiKeyVisibilityLabel));
+    }
+
+    public WorkbenchProviderConfig ToConfig() => new(
+        Kind.Trim(), BaseUrl.Trim(), string.IsNullOrWhiteSpace(ApiKey) ? null : ApiKey.Trim(),
+        Models.Select(model => model.ToConfig()).ToList(), Id, Name, Enabled, ApiKeyManagementUrl, TemplateId);
+
+    internal WorkbenchProviderConfig ModelProviderConfig() => new(Kind.Trim(), BaseUrl.Trim(), null, [], Id, Name, Enabled, TemplateId: TemplateId);
+
+    public ModelConfigurationViewModel CreateModelEditor(ModelViewModel? model = null) => new(this, model);
+
+    public ModelViewModel CreateModel(WorkbenchModelConfig config) => new(model => Models.Remove(model), ModelProviderConfig, config) { Provider = this };
+
+    [RelayCommand] private void RemoveProvider() => _removeFromParent(this);
+    [RelayCommand] private void AddModel() => Models.Add(CreateModel(new WorkbenchModelConfig(string.Empty)));
+    [RelayCommand] private void ToggleApiKeyVisibility() => IsApiKeyVisible = !IsApiKeyVisible;
+    [RelayCommand] private void Rename() => IsRenaming = true;
     [RelayCommand]
-    private void RemoveProvider() => _removeFromParent(this);
-
-    [RelayCommand]
-    private void AddModel() => Models.Add(new ModelViewModel(model => Models.Remove(model)));
+    private void FinishRename()
+    {
+        Name = string.IsNullOrWhiteSpace(Name) ? null : Name.Trim();
+        IsRenaming = false;
+    }
 }
 
 public sealed partial class McpServerViewModel : ObservableObject
@@ -82,12 +122,20 @@ public sealed partial class McpServerViewModel : ObservableObject
     private void RemoveServer() => _removeFromParent(this);
 }
 
-public sealed partial class SettingsViewModel : ObservableObject
+public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     private const string Dark = "dark";
     private const string Light = "light";
 
-    public static readonly IReadOnlyList<string> ProviderKinds = ["anthropic", "openai-compatible"];
+    public static readonly IReadOnlyList<string> ProviderKinds = ["anthropic", "openai-compatible", "openai-responses"];
+    public static readonly IReadOnlyList<ProviderApiFormat> ApiFormats =
+    [
+        new("anthropic", "Anthropic Messages (/v1/messages)"),
+        new("openai-compatible", "OpenAI Chat Completions (/chat/completions)"),
+        new("openai-responses", "OpenAI Responses (/responses)"),
+    ];
+
+    public IReadOnlyList<ProviderTemplate> ProviderTemplates => WorkbenchModelCatalog.Templates;
 
     private readonly WorkbenchDefaultModelConfig? _defaultModel;
 
@@ -102,15 +150,15 @@ public sealed partial class SettingsViewModel : ObservableObject
                 Kind = provider.Kind,
                 BaseUrl = provider.BaseUrl,
                 ApiKey = provider.ApiKey ?? string.Empty,
+                Id = provider.Id,
+                Name = provider.Name,
+                Enabled = provider.Enabled,
+                ApiKeyManagementUrl = provider.ApiKeyManagementUrl,
+                TemplateId = provider.TemplateId,
             };
             foreach (var model in provider.Models ?? [])
             {
-                providerItem.Models.Add(new ModelViewModel(model => providerItem.Models.Remove(model))
-                {
-                    ModelId = model.ModelId,
-                    ContextWindowTokens = model.ContextWindowTokens?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
-                    DisplayName = model.DisplayName,
-                });
+                providerItem.Models.Add(providerItem.CreateModel(model));
             }
             Providers.Add(providerItem);
         }
@@ -147,9 +195,21 @@ public sealed partial class SettingsViewModel : ObservableObject
     partial void OnErrorChanged(string? value) => OnPropertyChanged(nameof(HasError));
 
     [RelayCommand]
-    private void AddProvider()
+    private void AddProvider() => AddProviderFromTemplate(null);
+
+    public void AddProviderFromTemplate(ProviderTemplate? template)
     {
-        var provider = new ProviderViewModel(RemoveProviderItem);
+        var provider = new ProviderViewModel(RemoveProviderItem)
+        {
+            Id = "provider-" + Guid.NewGuid().ToString("N"),
+            Kind = template?.Kind ?? string.Empty,
+            Name = template?.Name,
+            BaseUrl = template?.BaseUrl ?? string.Empty,
+            ApiKeyManagementUrl = template?.ApiKeyManagementUrl,
+            TemplateId = template?.Id,
+        };
+        foreach (var modelId in template?.ModelIds ?? [])
+            provider.Models.Add(provider.CreateModel(new WorkbenchModelConfig(modelId)));
         Providers.Add(provider);
         SelectedProvider = provider;
     }
@@ -161,14 +221,17 @@ public sealed partial class SettingsViewModel : ObservableObject
     {
         var index = Providers.IndexOf(provider);
         var wasSelected = SelectedProvider == provider;
-        if (!Providers.Remove(provider) || !wasSelected)
-        {
-            return;
-        }
-        SelectedProvider = Providers.Count == 0 ? null : Providers[Math.Min(index, Providers.Count - 1)];
+        if (!Providers.Remove(provider)) return;
+        provider.Usage.Dispose();
+        if (wasSelected) SelectedProvider = Providers.Count == 0 ? null : Providers[Math.Min(index, Providers.Count - 1)];
     }
 
     private void RemoveServerItem(McpServerViewModel server) => McpServers.Remove(server);
+
+    public void Dispose()
+    {
+        foreach (var provider in Providers) provider.Usage.Dispose();
+    }
 
     public async Task<WorkbenchConfig?> SaveAsync(string? path = null)
     {
@@ -196,25 +259,22 @@ public sealed partial class SettingsViewModel : ObservableObject
     private List<string> Validate()
     {
         var errors = new List<string>();
+        var providerIds = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < Providers.Count; i++)
         {
             var provider = Providers[i];
             if (!ProviderKinds.Contains(provider.Kind.Trim(), StringComparer.OrdinalIgnoreCase))
-            {
                 errors.Add($"Provider {i + 1}: kind must be one of {string.Join(", ", ProviderKinds)}.");
-            }
+            if (!providerIds.Add(provider.EffectiveId.Trim()))
+                errors.Add($"Provider {i + 1}: duplicate provider ID '{provider.EffectiveId}'.");
+            var modelIds = new HashSet<string>(StringComparer.Ordinal);
             for (var j = 0; j < provider.Models.Count; j++)
             {
                 var model = provider.Models[j];
-                if (string.IsNullOrWhiteSpace(model.ModelId))
-                {
-                    errors.Add($"Provider {i + 1} model {j + 1}: model id is required.");
-                }
-                var tokens = model.ContextWindowTokens.Trim();
-                if (tokens.Length > 0 && !IsPositiveInt(tokens))
-                {
-                    errors.Add($"Provider {i + 1} model {j + 1}: context window must be a positive integer.");
-                }
+                if (!modelIds.Add(model.ModelId.Trim()))
+                    errors.Add($"Provider {i + 1}: duplicate model ID '{model.ModelId.Trim()}'.");
+                errors.AddRange(ModelConfigurationValidation.Validate(model, provider.ToConfig())
+                    .Select(error => $"Provider {i + 1} model {j + 1}: {error}"));
             }
         }
         return errors;
@@ -226,16 +286,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         McpServers.Select(ToMcpServerConfig).ToList(),
         Theme);
 
-    private static WorkbenchProviderConfig ToProviderConfig(ProviderViewModel provider) => new(
-        provider.Kind.Trim(),
-        provider.BaseUrl.Trim(),
-        NullIfWhiteSpace(provider.ApiKey),
-        provider.Models.Select(model => new WorkbenchModelConfig(
-            model.ModelId.Trim(),
-            int.TryParse(model.ContextWindowTokens.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var tokens)
-                ? tokens
-                : null,
-            model.DisplayName)).ToList());
+    private static WorkbenchProviderConfig ToProviderConfig(ProviderViewModel provider) => provider.ToConfig();
 
     private static WorkbenchMcpServerConfig ToMcpServerConfig(McpServerViewModel server)
     {
@@ -246,15 +297,6 @@ public sealed partial class SettingsViewModel : ObservableObject
             server.Command.Trim(),
             args.Count == 0 ? null : args,
             env is { Count: 0 } ? null : env);
-    }
-
-    private static bool IsPositiveInt(string text) =>
-        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > 0;
-
-    private static string? NullIfWhiteSpace(string? text)
-    {
-        var trimmed = text?.Trim();
-        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
     }
 
     private static string JoinArgs(IReadOnlyList<string>? args) =>

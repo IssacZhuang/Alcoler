@@ -114,7 +114,10 @@ public class TokenEstimatorTests
         var (tokens, source) = TokenEstimator.EstimateCurrentInputTokens(history, anchorIndex: 1, usage);
 
         Assert.Equal("provider_usage", source);
-        Assert.Equal(1_000 + TokenEstimator.EstimateTokens("three") + TokenEstimator.EstimateTokens("four"), tokens);
+        var tail = new ModelRequest(
+            [new ModelInputMessage(MessageRole.Assistant, [new InputTextBlock("three")]),
+                new ModelInputMessage(MessageRole.User, [new InputTextBlock("four")])], [], new ModelCallOptions());
+        Assert.Equal(1_000 + TokenEstimator.EstimateRequestTokens(tail), tokens);
     }
 
     [Fact]

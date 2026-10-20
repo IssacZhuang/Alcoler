@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.SidebarView"
              x:DataType="vm:WorkbenchViewModel">
   <UserControl.Styles>
@@ -40,13 +41,13 @@
       </StackPanel>
       <Button Grid.Column="1" Classes="icon tiny" Command="{Binding ToggleSidebarCommand}"
               ToolTip.Tip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar">
-        <Path Classes="icon small" Data="{StaticResource AlcolerIconPanel}" />
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPanel}" />
       </Button>
     </Grid>
     <StackPanel DockPanel.Dock="Top" Margin="8,8,8,12" Spacing="2">
       <Button x:Name="PART_NewSession" Classes="sidebarAction" Click="OnNewSessionClick" AutomationProperties.Name="New task">
         <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
-          <Path Classes="icon" Data="{StaticResource AlcolerIconCirclePlus}" />
+          <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconCirclePlus}" />
           <TextBlock Grid.Column="1" Text="New task" FontSize="13" VerticalAlignment="Center" />
           <TextBlock Grid.Column="2" Text="Ctrl+N" FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
@@ -55,13 +56,13 @@
     <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="16,0,10,4">
       <TextBlock Text="Projects" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
       <Button Grid.Column="1" Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions" AutomationProperties.Name="Refresh projects">
-        <Path Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
       </Button>
     </Grid>
     <Border DockPanel.Dock="Bottom" Padding="8,8,8,12">
       <Button x:Name="PART_Settings" Classes="sidebarAction" Click="OnSettingsClick" AutomationProperties.Name="Settings">
         <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
-          <Path Classes="icon small" Data="{StaticResource AlcolerIconSettings}" />
+          <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSettings}" />
           <TextBlock Grid.Column="1" Text="Preferences" FontSize="12" VerticalAlignment="Center" />
           <TextBlock Grid.Column="2" Text="Ctrl+," FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
@@ -78,17 +79,23 @@
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="vm:SessionGroupViewModel">
               <StackPanel Margin="0,4,0,12">
-                <Button Classes="groupHeader" Click="OnGroupClick" ToolTip.Tip="{Binding WorkspaceRoot}">
-                  <Grid ColumnDefinitions="14,*,12" ColumnSpacing="8">
-                    <Path Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
-                    <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}" FontSize="13" TextTrimming="CharacterEllipsis"
-                               VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
-                    <Path Grid.Column="2" Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}"
-                          IsVisible="{Binding !IsExpanded}" Stroke="{DynamicResource AlcolerTextTertiary}" />
-                    <Path Grid.Column="2" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}"
-                          IsVisible="{Binding IsExpanded}" Stroke="{DynamicResource AlcolerTextTertiary}" />
-                  </Grid>
-                </Button>
+                <Grid ColumnDefinitions="*,Auto">
+                  <Button Classes="groupHeader" Click="OnGroupClick" ToolTip.Tip="{Binding WorkspaceRoot}">
+                    <Grid ColumnDefinitions="14,*,12" ColumnSpacing="8">
+                      <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
+                      <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}" FontSize="13" TextTrimming="CharacterEllipsis"
+                                 VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                      <controls:Icon Grid.Column="2" Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}"
+                            IsVisible="{Binding !IsExpanded}" Stroke="{DynamicResource AlcolerTextTertiary}" />
+                      <controls:Icon Grid.Column="2" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}"
+                            IsVisible="{Binding IsExpanded}" Stroke="{DynamicResource AlcolerTextTertiary}" />
+                    </Grid>
+                  </Button>
+                  <Button Grid.Column="1" Classes="icon tiny projectNewTask" Click="OnProjectNewTaskClick"
+                          ToolTip.Tip="New task in this project" AutomationProperties.Name="New task in project">
+                    <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconCirclePlus}" />
+                  </Button>
+                </Grid>
                 <ItemsControl ItemsSource="{Binding Sessions}" Margin="0,2,0,0" IsVisible="{Binding IsExpanded}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:SessionSummaryViewModel">

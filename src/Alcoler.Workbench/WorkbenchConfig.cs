@@ -2,13 +2,41 @@ using System.Text.Json;
 
 namespace Alcoler.Workbench;
 
-public sealed record WorkbenchModelConfig(string ModelId, int? ContextWindowTokens = null, string? DisplayName = null);
+public sealed record WorkbenchModelConfig(
+    string ModelId,
+    int? ContextWindowTokens = null,
+    string? DisplayName = null,
+    bool Enabled = true,
+    bool SmartConfiguration = true,
+    int? MaxOutputTokens = null,
+    bool? SupportsImage = null,
+    bool? SupportsVideo = null,
+    bool? SupportsAudio = null,
+    bool? SupportsPdf = null,
+    bool? SupportsJsonSchemaOutput = null,
+    bool? SupportsNativeWebSearch = null,
+    bool? SupportsMidConversationSystem = null,
+    IReadOnlyList<string>? ReasoningLevels = null,
+    string? ReasoningMapping = null,
+    string? MaxOutputTokensMapping = null);
 
 public sealed record WorkbenchProviderConfig(
     string Kind,
     string BaseUrl,
     string? ApiKey,
-    IReadOnlyList<WorkbenchModelConfig> Models);
+    IReadOnlyList<WorkbenchModelConfig> Models,
+    string? Id = null,
+    string? Name = null,
+    bool Enabled = true,
+    string? ApiKeyManagementUrl = null,
+    string? TemplateId = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string EffectiveId => string.IsNullOrWhiteSpace(Id) ? Kind : Id;
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Label => string.IsNullOrWhiteSpace(Name) ? Kind : Name;
+}
 
 public sealed record WorkbenchDefaultModelConfig(string ProviderId, string ModelId);
 

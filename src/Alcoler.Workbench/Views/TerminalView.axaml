@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:v="using:Alcoler.Workbench.Views"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.TerminalView"
              x:DataType="vm:TerminalPaneViewModel">
   <DockPanel Background="{DynamicResource AlcolerTerminalBackground}">
@@ -13,7 +14,7 @@
               CornerRadius="{DynamicResource AlcolerRadius}" Padding="8,0"
               HorizontalAlignment="Left" MaxWidth="260" ToolTip.Tip="{Binding StartedFrom}">
         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="6">
-          <Path Classes="icon small" Data="{StaticResource AlcolerIconTerminal}" />
+          <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconTerminal}" />
           <TextBlock Grid.Column="1" Text="{Binding WorkspaceName}" FontSize="{DynamicResource AlcolerFontSmall}"
                      Foreground="{DynamicResource AlcolerTextPrimary}" TextTrimming="CharacterEllipsis"
                      VerticalAlignment="Center" />
@@ -23,7 +24,7 @@
       </Border>
       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
         <Button x:Name="PART_TerminalClear" Classes="icon" Click="OnClearClick" ToolTip.Tip="Clear terminal output">
-          <Path Classes="icon small" Data="{StaticResource AlcolerIconArchive}" />
+          <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconArchive}" />
         </Button>
         <Button x:Name="PART_TerminalStart" Content="Start" Classes="ghost"
                 FontSize="{DynamicResource AlcolerFontSmall}" Height="28" Padding="8,0"
@@ -31,7 +32,7 @@
                 ToolTip.Tip="Start a shell in the workspace" />
         <Button x:Name="StopButton" Classes="icon" IsVisible="{Binding IsConnected}"
                 Click="OnStopClick" ToolTip.Tip="Terminate the shell">
-          <Path Classes="icon small" Data="{StaticResource AlcolerIconSquare}" />
+          <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSquare}" />
         </Button>
       </StackPanel>
     </Grid>

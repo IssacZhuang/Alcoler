@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.BrowserPaneView"
              x:DataType="vm:BrowserPaneViewModel">
   <DockPanel Background="{DynamicResource AlcolerBackground}">
@@ -8,7 +9,7 @@
           ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
       <Button x:Name="PART_BrowserRefresh" Classes="icon" Command="{Binding RefreshCommand}"
               ToolTip.Tip="Refresh browser status and screenshot" VerticalAlignment="Center">
-        <Path Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
       </Button>
       <TextBox Grid.Column="1" x:Name="PART_BrowserAddress" Text="{Binding Address, Mode=TwoWay}"
                Watermark="Enter a URL" IsEnabled="{Binding CanInteract}" KeyDown="OnAddressKeyDown"
@@ -47,7 +48,7 @@
                IsVisible="{Binding HasScreenshot}" />
         <StackPanel Spacing="10" Margin="24" HorizontalAlignment="Center" VerticalAlignment="Center"
                     IsVisible="{Binding !HasScreenshot}">
-          <Path Classes="icon" Data="{StaticResource AlcolerIconGlobe}" Width="48" Height="48"
+          <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconGlobe}" Width="48" Height="48"
                 HorizontalAlignment="Center" Stroke="{DynamicResource AlcolerTextTertiary}" />
           <TextBlock Text="Browser" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
                      HorizontalAlignment="Center" Foreground="{DynamicResource AlcolerTextPrimary}" />

@@ -40,6 +40,39 @@ public static class ModelRequestSystemBlocks
         return (conversation ?? (IReadOnlyList<ModelInputMessage>)[], systemBlocks ?? (IReadOnlyList<string>)[]);
     }
 
+    internal static IReadOnlyList<ModelInputMessage> Normalize(IReadOnlyList<ModelInputMessage> messages, bool preserveMidSystem)
+    {
+        var result = new List<ModelInputMessage>(messages.Count);
+        var leading = true;
+        foreach (var message in messages)
+        {
+            if (message.Role == MessageRole.System || IsSystemBlockMessage(message, out _))
+            {
+                var blocks = message.Role == MessageRole.System
+                    ? message.Content.OfType<InputTextBlock>().Select(b => b.Text)
+                    : message.Content.OfType<InputTextBlock>().Select(b => b.Text[BlockPrefix.Length..]);
+                result.Add(message with
+                {
+                    Role = leading || preserveMidSystem ? MessageRole.System : MessageRole.User,
+                    Content = blocks.Select(b => (ModelContentBlock)new InputTextBlock(b)).ToArray(),
+                });
+            }
+            else
+            {
+                leading = false;
+                result.Add(message);
+            }
+        }
+        return result;
+    }
+
+    internal static (IReadOnlyList<ModelInputMessage> Conversation, IReadOnlyList<string> SystemBlocks) ExtractLeading(IReadOnlyList<ModelInputMessage> messages)
+    {
+        var normalized = Normalize(messages, preserveMidSystem: false);
+        var count = normalized.TakeWhile(m => m.Role == MessageRole.System).Count();
+        return (normalized.Skip(count).ToArray(), normalized.Take(count).SelectMany(m => m.Content.OfType<InputTextBlock>().Select(b => b.Text)).ToArray());
+    }
+
     private static bool IsSystemBlockMessage(ModelInputMessage message, out IReadOnlyList<string> blocks)
     {
         blocks = [];

@@ -10,7 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Alcoler.Workbench.ViewModel;
 
-public sealed partial class ConversationViewModel : ObservableObject, IDisposable
+public sealed partial class ConversationViewModel : ObservableObject, IComposerHost, IDisposable
 {
     private static readonly TurnPhase[] BusyPhases =
     [
@@ -27,17 +27,25 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
     private readonly ProjectionStore _store;
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
 
-    public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store)
+    public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store, ComposerViewModel? composer = null)
     {
         _runtime = runtime;
         _store = store;
+        Composer = composer ?? new ComposerViewModel();
         SessionId = store.SessionId;
         _store.Updated += ApplyUpdate;
+        ApplyUpdate(new ProjectionUpdate(0, store.State, [], Reset: true, ResetRows: store.Rows));
     }
 
     public SessionId SessionId { get; }
 
-    public ComposerViewModel Composer { get; } = new();
+    public ComposerViewModel Composer { get; }
+
+    public ModelSelection? CurrentSelection => _currentSelection;
+
+    private bool _restoredComposer;
+    private long _restoredRevision;
+    private ModelChoice? _configuredModel;
 
     public ObservableCollection<TimelineItemViewModel> Items { get; } = [];
 
@@ -70,13 +78,11 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
 
     private bool _applyingState;
 
-    public IReadOnlyList<string> ThoughtLevels { get; } = ["off", "low", "medium", "high"];
+    [ObservableProperty]
+    private IReadOnlyList<string> _thoughtLevels = [];
 
     [ObservableProperty]
-    private int _contextUsagePercent;
-
-    [ObservableProperty]
-    private string _contextUsageText = string.Empty;
+    private ContextUsageViewModel? _contextUsage;
 
     [ObservableProperty]
     private IReadOnlyList<QueuedInput> _queue = [];
@@ -173,24 +179,29 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
 
     private void ApplyState(ConversationState state)
     {
+        if (_restoredComposer && _store.Revision > _restoredRevision)
+            _restoredComposer = false;
         _applyingState = true;
         try
         {
-            _currentSelection = state.ModelSelection;
-            ThoughtLevel = state.ModelSelection?.Options?.ReasoningLevel ?? "off";
+            if (!_restoredComposer)
+            {
+                _currentSelection = state.ModelSelection;
+                ThoughtLevel = state.ModelSelection?.Options?.ReasoningLevel ?? "off";
+            }
         }
         finally
         {
             _applyingState = false;
         }
         Title = state.Title;
-        if (Composer.Mode == Mode)
+        if (!_restoredComposer && Composer.Mode == Mode)
         {
             Composer.Mode = state.Mode;
         }
         Mode = state.Mode;
         Composer.SessionMode = state.Mode;
-        ModelText = state.ModelSelection is { } selection
+        ModelText = _currentSelection is { } selection
             ? $"{selection.ProviderId}/{selection.ModelId}"
             : "default model";
         PhaseText = state.Phase.ToString();
@@ -198,18 +209,10 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
         Queue = state.Queue;
         OnPropertyChanged(nameof(HasQueuedInput));
 
-        if (state.ContextUsageTokens is { } used && state.ContextWindowTokens > 0)
-        {
-            ContextUsagePercent = Math.Clamp((int)(100L * used / state.ContextWindowTokens), 0, 100);
-            var windowK = state.ContextWindowTokens / 1000;
-            var usedK = used / 1000;
-            ContextUsageText = $"{usedK}/{windowK}k ({state.TokenSource})";
-        }
-        else
-        {
-            ContextUsagePercent = 0;
-            ContextUsageText = string.Empty;
-        }
+        var context = state.ContextUsage ?? (state.ContextUsageTokens is { } used
+            ? new ContextUsageState(used, state.ContextWindowTokens, state.TokenSource, []) : null);
+        if (ContextUsage?.Usage != context)
+            ContextUsage = context is { UsedTokens: > 0, MaxTokens: > 0 } ? new ContextUsageViewModel(context) : null;
 
         var pending = state.PendingPermission is { } permission
             ? PendingInteractionViewModel.FromPermission(permission)
@@ -235,8 +238,10 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
         try
         {
             // Queued input must not mutate the active turn's permission policy.
+            var restoredSelection = _restoredComposer ? _currentSelection : null;
+            _restoredComposer = false;
             var ack = await SubmitAsync(new SendTextCommand(
-                StrongId.NewCommandId(), SessionId, _store.Revision, text, Mode: mode));
+                StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: restoredSelection, Mode: mode));
             if (ack.Accepted)
             {
                 Composer.ClearIfSendable(text);
@@ -258,22 +263,73 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
     public async Task CompactAsync() =>
         await SubmitAsync(new CompactCommand(StrongId.NewCommandId(), SessionId, _store.Revision));
 
-    public ModelSelection ApplyThoughtLevel(ModelSelection selection) =>
-        ThoughtLevel is "off" or ""
-            ? selection
-            : selection with { Options = new ModelCallOptions(ReasoningLevel: ThoughtLevel) };
+    public void RestoreComposerState(string draft, PermissionMode mode, ModelSelection? selection)
+    {
+        _restoredComposer = true;
+        _restoredRevision = _store.Revision;
+        Composer.Draft = draft;
+        Composer.Mode = mode;
+        _applyingState = true;
+        try
+        {
+            _currentSelection = selection;
+            ThoughtLevel = selection?.Options?.ReasoningLevel ?? "off";
+            ModelText = selection is null ? "default model" : $"{selection.ProviderId}/{selection.ModelId}";
+        }
+        finally
+        {
+            _applyingState = false;
+        }
+    }
+
+    public void ConfigureModel(ModelChoice choice, bool useDefaultReasoning = false)
+    {
+        _configuredModel = choice;
+        _applyingState = true;
+        try
+        {
+            ThoughtLevels = choice.Properties?.ReasoningLevels ?? [];
+            if (useDefaultReasoning || !ThoughtLevels.Contains(ThoughtLevel))
+                ThoughtLevel = (useDefaultReasoning ? ThoughtLevels.LastOrDefault() : ThoughtLevels.FirstOrDefault()) ?? "off";
+        }
+        finally
+        {
+            _applyingState = false;
+        }
+    }
+
+    public ModelSelection ApplyThoughtLevel(ModelSelection selection) => selection with
+    {
+        Options = (selection.Options ?? new ModelCallOptions()) with
+        {
+            ReasoningLevel = ThoughtLevel == "" || ThoughtLevel == "off" && !ThoughtLevels.Contains("off") ? null : ThoughtLevel,
+        },
+    };
 
     partial void OnThoughtLevelChanged(string value)
     {
-        if (_applyingState || _currentSelection is not { } selection)
+        if (_applyingState || _currentSelection is not { } selection
+            || (_configuredModel is not null && !ThoughtLevels.Contains(value)))
         {
             return;
         }
-        _ = SwitchModelAsync(ApplyThoughtLevel(selection with { Options = null }));
+        _ = SwitchModelAsync(ApplyThoughtLevel(selection));
     }
 
-    public async Task SwitchModelAsync(ModelSelection selection) =>
-        await SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), SessionId, _store.Revision, selection));
+    public async Task SwitchModelAsync(ModelSelection selection)
+    {
+        _restoredComposer = false;
+        var ack = await SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), SessionId, _store.Revision, selection));
+        if (ack.Accepted)
+        {
+            _currentSelection = selection;
+            ModelText = $"{selection.ProviderId}/{selection.ModelId}";
+        }
+        else
+        {
+            Banner = ack.RejectionReason ?? "Model selection was rejected";
+        }
+    }
 
     public async Task ResolvePermissionAsync(PermissionDecision decision)
     {

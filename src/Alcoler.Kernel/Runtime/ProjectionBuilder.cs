@@ -63,6 +63,8 @@ public sealed class ProjectionBuilder
                         ModelSelection = model.Selection,
                         ContextWindowTokens = model.ContextWindowTokens,
                         ContextUsageTokens = null,
+                        ContextUsage = null,
+                        TokenSource = "estimate",
                     };
                     stateChanged = true;
                     break;
@@ -79,7 +81,7 @@ public sealed class ProjectionBuilder
                         ActiveTurn = null,
                         PendingPermission = null,
                         PendingInteraction = null,
-                        ContextUsageTokens = turnCompleted.FinalUsage?.ContextUsageTokens ?? _state.ContextUsageTokens,
+                        ContextUsageTokens = _state.ContextUsageTokens ?? turnCompleted.FinalUsage?.ContextUsageTokens ?? turnCompleted.FinalUsage?.InputTokens,
                     };
                     _streamingText.Clear();
                     stateChanged = true;
@@ -126,22 +128,22 @@ public sealed class ProjectionBuilder
                     break;
 
                 case ToolCallResultEvent toolResult:
-                {
-                    var existing = _rowIndex.TryGetValue(toolResult.ToolCallId.Value, out var index)
-                        ? _rows[index] as ToolCallRow
-                        : null;
-                    Upsert(new ToolCallRow(
-                        toolResult.ToolCallId.Value,
-                        toolResult.ToolCallId,
-                        toolResult.ToolName,
-                        existing?.Input ?? JsonSerializer.SerializeToElement(new { }),
-                        toolResult.Result.IsError ? ToolCallStatus.Failed : ToolCallStatus.Succeeded,
-                        toolResult.Result.Content,
-                        toolResult.Result.IsError,
-                        toolResult.Duration,
-                        existing?.StartedAt ?? sequenced.OccurredAt), ops);
-                    break;
-                }
+                    {
+                        var existing = _rowIndex.TryGetValue(toolResult.ToolCallId.Value, out var index)
+                            ? _rows[index] as ToolCallRow
+                            : null;
+                        Upsert(new ToolCallRow(
+                            toolResult.ToolCallId.Value,
+                            toolResult.ToolCallId,
+                            toolResult.ToolName,
+                            existing?.Input ?? JsonSerializer.SerializeToElement(new { }),
+                            toolResult.Result.IsError ? ToolCallStatus.Failed : ToolCallStatus.Succeeded,
+                            toolResult.Result.Content,
+                            toolResult.Result.IsError,
+                            toolResult.Duration,
+                            existing?.StartedAt ?? sequenced.OccurredAt), ops);
+                        break;
+                    }
 
                 case PermissionRequestedEvent permission:
                     _state = _state with { Phase = TurnPhase.AwaitingPermission, PendingPermission = permission.Request };
@@ -164,6 +166,13 @@ public sealed class ProjectionBuilder
                     break;
 
                 case CompactBoundaryAppliedEvent boundary:
+                    _state = _state with
+                    {
+                        ContextUsageTokens = boundary.Boundary.PostCompactTokens,
+                        TokenSource = "estimate",
+                        ContextUsage = null,
+                    };
+                    stateChanged = true;
                     Append(new SystemNoticeRow(
                         $"compact:{boundary.Boundary.BoundaryId}",
                         "compact",
@@ -201,6 +210,17 @@ public sealed class ProjectionBuilder
                     stateChanged = true;
                     break;
 
+                case ContextUsageUpdatedEvent context:
+                    _state = _state with
+                    {
+                        ContextUsage = context.Usage,
+                        ContextUsageTokens = context.Usage.UsedTokens,
+                        ContextWindowTokens = context.Usage.MaxTokens,
+                        TokenSource = context.Usage.TokenSource,
+                    };
+                    stateChanged = true;
+                    break;
+
                 case ModelRequestStartedEvent:
                     _state = _state with { Phase = TurnPhase.AwaitingModel };
                     stateChanged = true;
@@ -217,24 +237,24 @@ public sealed class ProjectionBuilder
                     break;
 
                 case ModelStreamingTextEvent streaming:
-                {
-                    _state = _state with { Phase = TurnPhase.Streaming };
-                    var rowId = $"stream:{streaming.TurnId.Value}";
-                    if (!_streamingText.TryGetValue(rowId, out var accumulated))
                     {
-                        accumulated = string.Empty;
+                        _state = _state with { Phase = TurnPhase.Streaming };
+                        var rowId = $"stream:{streaming.TurnId.Value}";
+                        if (!_streamingText.TryGetValue(rowId, out var accumulated))
+                        {
+                            accumulated = string.Empty;
+                        }
+                        accumulated += streaming.Delta;
+                        _streamingText[rowId] = accumulated;
+                        Upsert(new AssistantMessageRow(
+                            rowId,
+                            Id: default,
+                            [new TextPart(default, accumulated)],
+                            IsStreaming: true,
+                            At: sequenced.OccurredAt), ops);
+                        stateChanged = true;
+                        break;
                     }
-                    accumulated += streaming.Delta;
-                    _streamingText[rowId] = accumulated;
-                    Upsert(new AssistantMessageRow(
-                        rowId,
-                        Id: default,
-                        [new TextPart(default, accumulated)],
-                        IsStreaming: true,
-                        At: sequenced.OccurredAt), ops);
-                    stateChanged = true;
-                    break;
-                }
 
                 case ModelRetryScheduledEvent:
                 case ModelRequestFailedEvent:

@@ -8,8 +8,11 @@ using Alcoler.Workbench.Stores;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Alcoler.Workbench.Views;
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -180,7 +183,7 @@ public class ComposerAndInteractionSmokeTests
     [AvaloniaFact]
     public async Task Composer_UsesCompactReferenceDimensions()
     {
-        using var harness = Show<ComposerView>();
+        using var harness = Show<ComposerView>(StateWith() with { ContextUsageTokens = 100_000 });
         await PumpAsync();
 
         var shell = FindNamed<Border>(harness.View, "ComposerShell");
@@ -189,9 +192,173 @@ public class ComposerAndInteractionSmokeTests
         Assert.Equal(28, FindNamed<Grid>(harness.View, "ComposerToolbar").Height);
         Assert.Equal(28, FindNamed<Button>(harness.View, "SendButton").Width);
         Assert.Equal(160, FindNamed<TextBox>(harness.View, "InputBox").MaxHeight);
-        Assert.Equal(56, FindNamed<Border>(harness.View, "PART_ContextMeterTrack").Width);
-        Assert.Contains(FindNamed<Border>(harness.View, "PART_ContextMeterFill"),
-            FindNamed<Button>(harness.View, "ContextButton").GetVisualDescendants());
+        var ring = FindNamed<Workbench.Controls.Icon>(harness.View, "ContextRingFill");
+        Assert.Equal(14, ring.Width);
+        Assert.Equal(14, ring.Height);
+        Assert.Equal(4, ring.StrokeThickness);
+        Assert.Equal(.7, ring.Opacity);
+        Assert.Equal(.25, FindNamed<Workbench.Controls.Icon>(harness.View, "ContextRingTrack").Opacity);
+        Assert.Equal(28, FindNamed<Button>(harness.View, "ContextTrigger").Width);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_ReasoningPicker_TracksConfiguredModelLevels()
+    {
+        using var harness = Show<ComposerView>();
+        await PumpAsync();
+        var picker = FindNamed<ComboBox>(harness.View, "ThoughtLevelSelector");
+        Assert.False(picker.IsVisible);
+        harness.ViewModel.ConfigureModel(new ModelChoice("test", "reasoning", "Reasoning",
+            new Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"])));
+        await PumpAsync();
+        Assert.True(picker.IsVisible);
+        Assert.Equal(new[] { "low", "high" }, picker.Items.Cast<string>());
+        harness.ViewModel.ConfigureModel(new ModelChoice("test", "plain", "Plain", new Contracts.Models.ModelProperties()));
+        await PumpAsync();
+        Assert.False(picker.IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_ExplicitModelChoice_UsesHighestReasoningWithoutChangingHydrationDefaults()
+    {
+        foreach (var draftHost in new[] { false, true })
+        foreach (var previousLevel in new[] { "off", "low" })
+        {
+            using var harness = Show<ComposerView>();
+            IComposerHost host;
+            if (draftHost)
+            {
+                host = new DraftConversationViewModel(Environment.CurrentDirectory, null, _ => Task.CompletedTask)
+                {
+                    ThoughtLevel = previousLevel,
+                };
+                harness.View.DataContext = host;
+            }
+            else
+            {
+                host = harness.ViewModel;
+                harness.ViewModel.RestoreComposerState("", PermissionMode.Build,
+                    new Contracts.Models.ModelSelection("old", "old-model",
+                        new Contracts.Models.ModelCallOptions(ReasoningLevel: previousLevel)));
+            }
+            var choice = new ModelChoice("test", "reasoning", "Reasoning",
+                new Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"]));
+            host.ConfigureModel(choice);
+            Assert.Equal("low", host.ThoughtLevel);
+            Assert.Empty(harness.Runtime.Submitted);
+            var picker = FindNamed<ComboBox>(harness.View, "ModelSelector");
+            picker.ItemsSource = new[] { choice };
+
+            picker.SelectedItem = choice;
+            await PumpAsync();
+
+            Assert.Equal("high", host.ThoughtLevel);
+            if (draftHost)
+                Assert.Equal("high", ((DraftConversationViewModel)host).Selection!.Options!.ReasoningLevel);
+            else
+            {
+                var command = Assert.IsType<Contracts.Commands.SwitchModelCommand>(Assert.Single(harness.Runtime.Submitted));
+                Assert.Equal("reasoning", command.Selection.ModelId);
+                Assert.Equal("high", command.Selection.Options!.ReasoningLevel);
+            }
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_ContextPopover_IsInformationalAndHostsQuota()
+    {
+        using var harness = Show<ComposerView>();
+        var state = StateWith() with
+        {
+            ContextUsageTokens = 100_000,
+            ContextUsage = new ContextUsageState(100_000, 200_000, "provider_usage",
+                [new ContextUsageCategory(ContextUsageSources.Messages, 900), new(ContextUsageSources.SystemPrompt, 100)],
+                CacheReadTokens: 800, CacheInputTokens: 1000),
+        };
+        harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+        await PumpAsync();
+        var usage = FindNamed<Workbench.Controls.ContextUsageView>(harness.View, "ContextUsageHost");
+        var quota = new TextBlock { Text = "Quota extension" };
+        usage.QuotaContent = quota;
+        var opened = 0;
+        usage.PopoverOpened += (_, _) => opened++;
+        var trigger = FindNamed<Button>(harness.View, "ContextTrigger");
+        trigger.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await PumpAsync();
+
+        var popup = usage.FindControl<Avalonia.Controls.Primitives.Popup>("ContextPopup")!;
+        Assert.True(popup.IsOpen);
+        Assert.Equal(1, opened);
+        var bridge = Assert.IsType<Border>(popup.Child);
+        Assert.Equal(new Avalonia.Thickness(0, 0, 0, 2), bridge.Padding);
+        Assert.Equal(0, Assert.IsAssignableFrom<Avalonia.Media.ISolidColorBrush>(bridge.Background).Color.A);
+        var panel = Assert.IsType<Border>(bridge.Child);
+        Assert.Equal(320, panel.Width);
+        Assert.Equal(new Avalonia.Thickness(12), panel.Padding);
+        Assert.Equal(new Avalonia.CornerRadius(12), panel.CornerRadius);
+        Assert.Equal(0, popup.VerticalOffset);
+        Assert.Equal(8, panel.GetVisualDescendants().OfType<Workbench.Controls.ContextUsageProgress>().Single().Height);
+        Assert.Same(quota, panel.GetVisualDescendants().OfType<ContentControl>().Single(control => control.Name == "QuotaHost").Content);
+        Assert.Contains(panel.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Cache hit rate");
+        Assert.Empty(panel.GetVisualDescendants().OfType<Button>());
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_ContextPopover_RealPointerHoverKeepsTriggerAndPanelInteractive()
+    {
+        using var harness = Show<ComposerView>(StateWith() with { ContextUsageTokens = 100_000 });
+        harness.Window.Width = 800;
+        harness.Window.Height = 600;
+        await PumpAsync();
+        var usage = FindNamed<Workbench.Controls.ContextUsageView>(harness.View, "ContextUsageHost");
+        var trigger = FindNamed<Button>(harness.View, "ContextTrigger");
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        var popup = usage.FindControl<Avalonia.Controls.Primitives.Popup>("ContextPopup")!;
+        input.Focus();
+        var outside = new Avalonia.Point(1, 1);
+
+        foreach (var overlay in new[] { false, true })
+        {
+            popup.ShouldUseOverlayLayer = overlay;
+            harness.Window.MouseMove(outside);
+            await PumpAsync();
+            var triggerPoint = trigger.TranslatePoint(new Avalonia.Point(14, 14), harness.Window)!.Value;
+            harness.Window.MouseMove(triggerPoint);
+            await PumpAsync();
+            harness.Window.MouseMove(triggerPoint + new Avalonia.Vector(1, 0));
+            await PumpAsync();
+
+            Assert.True(trigger.IsPointerOver);
+            Assert.True(popup.IsOpen);
+            Assert.False(popup.IsLightDismissEnabled);
+            Assert.False(trigger.IsFocused);
+            Assert.True(input.IsFocused);
+
+            var bridge = Assert.IsType<Border>(popup.Child);
+            var popupTopLevel = TopLevel.GetTopLevel(bridge)!;
+            var bridgePoint = bridge.TranslatePoint(new Avalonia.Point(bridge.Bounds.Width - 14, bridge.Bounds.Height - 1), popupTopLevel)!.Value;
+            popupTopLevel.MouseMove(bridgePoint);
+            await PumpAsync();
+            Assert.True(bridge.IsPointerOver);
+            Assert.True(popup.IsOpen);
+
+            popupTopLevel.MouseMove(new Avalonia.Point(-10, -10));
+            harness.Window.MouseMove(outside);
+            await PumpAsync();
+            Assert.False(popup.IsOpen);
+
+            harness.Window.MouseMove(triggerPoint);
+            await PumpAsync();
+            Assert.True(popup.IsOpen);
+            harness.Window.KeyPressQwerty(PhysicalKey.Escape, RawInputModifiers.None);
+            harness.Window.KeyReleaseQwerty(PhysicalKey.Escape, RawInputModifiers.None);
+            await PumpAsync();
+            Assert.False(popup.IsOpen);
+            Assert.True(input.IsFocused);
+        }
+        Assert.Empty(harness.Runtime.Submitted);
     }
 
     [AvaloniaFact]

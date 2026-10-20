@@ -4,6 +4,7 @@ using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Contracts.Events;
@@ -30,6 +31,7 @@ namespace Alcoler.Contracts.Events;
 [JsonDerivedType(typeof(InputDequeuedEvent), "input_dequeued")]
 [JsonDerivedType(typeof(InputDiscardedEvent), "input_discarded")]
 [JsonDerivedType(typeof(StreamRecoveryEvent), "stream_recovery")]
+[JsonDerivedType(typeof(ContextUsageUpdatedEvent), "context_usage_updated")]
 [JsonDerivedType(typeof(ModelRequestStartedEvent), "model_request_started")]
 [JsonDerivedType(typeof(ModelRequestCompletedEvent), "model_request_completed")]
 [JsonDerivedType(typeof(ModelRequestFailedEvent), "model_request_failed")]
@@ -127,6 +129,8 @@ public enum StreamRecoveryPhase
 }
 
 public sealed record StreamRecoveryEvent(StreamRecoveryPhase Phase, int RetryAttempt) : SessionEvent;
+
+public sealed record ContextUsageUpdatedEvent(ContextUsageState Usage) : SessionEvent;
 
 public sealed record ModelRequestStartedEvent(TurnId TurnId, int Attempt) : SessionEvent;
 
