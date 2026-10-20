@@ -32,7 +32,7 @@ internal static class ModelRequestOptions
         var max = EffectiveMax(properties, options, fallback);
         if (properties.MaxOutputTokensMapping is null)
             payload[nativeMaxKey] = max;
-        var body = JsonSerializer.SerializeToNode(payload)!.AsObject();
+        var body = ToNode(payload)!.AsObject();
         if (properties.ReasoningMapping is { } reasoning && options.ReasoningLevel is { } level)
             ModelOptionMapping.MergePatch(body, ModelOptionMapping.Evaluate(reasoning, level, max));
         if (properties.MaxOutputTokensMapping is { } output)
@@ -40,6 +40,23 @@ internal static class ModelRequestOptions
         CapOutputLimits(body, max);
         return body.ToJsonString();
     }
+
+    private static JsonNode? ToNode(object? value) => value switch
+    {
+        null => null,
+        JsonNode node => node,
+        JsonElement { ValueKind: JsonValueKind.Undefined } => null,
+        JsonElement element => JsonNode.Parse(element.GetRawText()),
+        string text => JsonValue.Create(text),
+        bool flag => JsonValue.Create(flag),
+        int number => JsonValue.Create(number),
+        long number => JsonValue.Create(number),
+        double number => JsonValue.Create(number),
+        decimal number => JsonValue.Create(number),
+        IDictionary<string, object?> map => new JsonObject(map.Select(pair => KeyValuePair.Create(pair.Key, ToNode(pair.Value)))),
+        IEnumerable<object?> values => new JsonArray(values.Select(ToNode).ToArray()),
+        _ => throw new NotSupportedException($"Unsupported request payload value {value.GetType().Name}."),
+    };
 
     private static void CapOutputLimits(JsonObject body, int max)
     {
@@ -101,7 +118,8 @@ internal static class ModelRequestOptions
             definitions[name] = target;
         }
         if (obj["$defs"] is null) obj["$defs"] = definitions;
-        return JsonSerializer.SerializeToElement(root);
+        using var document = JsonDocument.Parse(root.ToJsonString());
+        return document.RootElement.Clone();
 
         void Collect(JsonNode? node)
         {

@@ -77,7 +77,8 @@ public partial class SidebarView : UserControl
     }
 
     private static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
-        JsonSerializer.Serialize(before with { Theme = "dark" }) != JsonSerializer.Serialize(after with { Theme = "dark" });
+        JsonSerializer.Serialize(before with { Theme = "dark" }, WorkbenchConfig.JsonOptions)
+        != JsonSerializer.Serialize(after with { Theme = "dark" }, WorkbenchConfig.JsonOptions);
 
     private async void OnRefreshClick(object? sender, RoutedEventArgs e)
     {

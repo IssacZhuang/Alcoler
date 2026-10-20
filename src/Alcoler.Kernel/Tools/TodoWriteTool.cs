@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Workspace;
 
@@ -85,21 +86,21 @@ public sealed class TodoWriteTool : ITool
     }
 
     internal static string SerializeWriteResult(IReadOnlyList<TodoItem> oldTodos, IReadOnlyList<TodoItem> todos) =>
-        JsonSerializer.Serialize(new
+        new JsonObject
         {
-            oldTodos = ToDto(oldTodos),
-            todos = ToDto(todos),
-            summary = new
+            ["oldTodos"] = ToDtoNode(oldTodos),
+            ["todos"] = ToDtoNode(todos),
+            ["summary"] = new JsonObject
             {
-                total = todos.Count,
-                pending = Count(todos, TodoItemStatus.Pending),
-                inProgress = Count(todos, TodoItemStatus.InProgress),
-                completed = Count(todos, TodoItemStatus.Completed),
+                ["total"] = todos.Count,
+                ["pending"] = Count(todos, TodoItemStatus.Pending),
+                ["inProgress"] = Count(todos, TodoItemStatus.InProgress),
+                ["completed"] = Count(todos, TodoItemStatus.Completed),
             },
-        }, ResultJsonOptions);
+        }.ToJsonString(ResultJsonOptions);
 
     internal static string SerializeReadResult(IReadOnlyList<TodoItem> todos) =>
-        JsonSerializer.Serialize(new { todos = ToDto(todos) }, ResultJsonOptions);
+        new JsonObject { ["todos"] = ToDtoNode(todos) }.ToJsonString(ResultJsonOptions);
 
     internal static bool TryNormalize(
         JsonElement input,
@@ -213,13 +214,13 @@ public sealed class TodoWriteTool : ITool
         _ => "medium",
     };
 
-    private static object[] ToDto(IReadOnlyList<TodoItem> items) =>
-        items.Select(static item => new
+    private static JsonArray ToDtoNode(IReadOnlyList<TodoItem> items) =>
+        new(items.Select(static item => (JsonNode?)new JsonObject
         {
-            content = item.Content,
-            status = StatusName(item.Status),
-            priority = PriorityName(item.Priority),
-        }).ToArray();
+            ["content"] = item.Content,
+            ["status"] = StatusName(item.Status),
+            ["priority"] = PriorityName(item.Priority),
+        }).ToArray());
 
     private static int Count(IReadOnlyList<TodoItem> items, TodoItemStatus status)
     {

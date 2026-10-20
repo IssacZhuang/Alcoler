@@ -382,18 +382,21 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         public string? Signature { get; set; }
     }
 
+    private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
+
     private static JsonElement ParseInput(StringBuilder json)
     {
         var text = json.ToString();
         if (string.IsNullOrWhiteSpace(text))
-            return JsonSerializer.SerializeToElement(new Dictionary<string, object?>());
+            return EmptyObject;
         try
         {
-            return JsonSerializer.Deserialize<JsonElement>(text);
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.Clone();
         }
         catch (JsonException)
         {
-            return JsonSerializer.SerializeToElement(new Dictionary<string, object?>());
+            return EmptyObject;
         }
     }
 }

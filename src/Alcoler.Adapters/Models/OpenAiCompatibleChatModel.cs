@@ -400,18 +400,21 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                 CacheReadTokens: cachedTokens);
         }
 
+        private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
+
         private static JsonElement ParseArguments(StringBuilder arguments)
         {
             var text = arguments.ToString();
             if (string.IsNullOrWhiteSpace(text))
-                return JsonSerializer.SerializeToElement(new Dictionary<string, object?>());
+                return EmptyObject;
             try
             {
-                return JsonSerializer.Deserialize<JsonElement>(text);
+                using var document = JsonDocument.Parse(text);
+                return document.RootElement.Clone();
             }
             catch (JsonException)
             {
-                return JsonSerializer.SerializeToElement(new Dictionary<string, object?>());
+                return EmptyObject;
             }
         }
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Permissions;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -9,7 +10,11 @@ namespace Alcoler.Workbench.ViewModel;
 
 public sealed partial class PendingInteractionViewModel : ObservableObject
 {
-    private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        TypeInfoResolver = JsonElementContext.Default,
+    };
     private IReadOnlyList<QuestionDraftViewModel> _drafts = [];
 
     private PendingInteractionViewModel(InteractionId interactionId)
@@ -266,3 +271,7 @@ public sealed partial class QuestionOptionViewModel : ObservableObject
     [ObservableProperty]
     private bool _isActive;
 }
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
+[JsonSerializable(typeof(JsonElement))]
+internal sealed partial class JsonElementContext : JsonSerializerContext;

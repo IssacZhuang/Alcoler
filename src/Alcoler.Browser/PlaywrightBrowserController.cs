@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Alcoler.Contracts.Browser;
 using Alcoler.Contracts.Identifiers;
 using Microsoft.Extensions.Logging;
@@ -32,6 +33,14 @@ public sealed class PlaywrightBrowserController : IBrowserController
     private IPlaywright? _playwright;
     private IBrowserContext? _context;
     private bool _disposed;
+
+    static PlaywrightBrowserController()
+    {
+        // Native AOT publishes carry no Microsoft.Playwright.dll beside the executable, which is
+        // how Playwright locates its node driver by default.
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+            Environment.SetEnvironmentVariable("PLAYWRIGHT_DRIVER_SEARCH_PATH", AppContext.BaseDirectory);
+    }
 
     public PlaywrightBrowserController(ILogger<PlaywrightBrowserController>? logger = null)
         : this(

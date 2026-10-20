@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Models;
@@ -83,26 +84,78 @@ public static class TokenEstimator
         return (int)Math.Min(int.MaxValue, total);
     }
 
-    internal static string SerializeTool(ToolContract tool) => JsonSerializer.Serialize(new
+    internal static string SerializeTool(ToolContract tool)
     {
-        name = tool.Name,
-        description = tool.Description,
-        inputSchema = tool.InputSchema.ValueKind == JsonValueKind.Undefined ? (JsonElement?)null : tool.InputSchema,
-    });
-
-    internal static string SerializeMessage(ModelInputMessage message) => JsonSerializer.Serialize(new
-    {
-        role = message.Role.ToString().ToLowerInvariant(),
-        content = message.Content.Select(block => block switch
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
         {
-            InputTextBlock text => (object)new { type = "text", text = text.Text },
-            InputReasoningBlock reasoning => new { type = "reasoning", text = reasoning.Text },
-            InputImageBlock image => new { type = "image", mimeType = image.MimeType, data = image.Base64Data },
-            InputToolCallBlock call => new { type = "tool_call", id = call.Id.Value, name = call.Name, input = call.Input },
-            InputToolResultBlock result => new { type = "tool_result", id = result.Id.Value, content = result.Content, isError = result.IsError },
-            _ => throw new InvalidOperationException($"Unhandled model content block {block.GetType().Name}."),
-        }),
-    });
+            writer.WriteStartObject();
+            writer.WriteString("name", tool.Name);
+            writer.WriteString("description", tool.Description);
+            if (tool.InputSchema.ValueKind == JsonValueKind.Undefined)
+            {
+                writer.WriteNull("inputSchema");
+            }
+            else
+            {
+                writer.WritePropertyName("inputSchema");
+                tool.InputSchema.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    internal static string SerializeMessage(ModelInputMessage message)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("role", message.Role.ToString().ToLowerInvariant());
+            writer.WritePropertyName("content");
+            writer.WriteStartArray();
+            foreach (var block in message.Content)
+            {
+                writer.WriteStartObject();
+                switch (block)
+                {
+                    case InputTextBlock text:
+                        writer.WriteString("type", "text");
+                        writer.WriteString("text", text.Text);
+                        break;
+                    case InputReasoningBlock reasoning:
+                        writer.WriteString("type", "reasoning");
+                        writer.WriteString("text", reasoning.Text);
+                        break;
+                    case InputImageBlock image:
+                        writer.WriteString("type", "image");
+                        writer.WriteString("mimeType", image.MimeType);
+                        writer.WriteString("data", image.Base64Data);
+                        break;
+                    case InputToolCallBlock call:
+                        writer.WriteString("type", "tool_call");
+                        writer.WriteString("id", call.Id.Value);
+                        writer.WriteString("name", call.Name);
+                        writer.WritePropertyName("input");
+                        call.Input.WriteTo(writer);
+                        break;
+                    case InputToolResultBlock result:
+                        writer.WriteString("type", "tool_result");
+                        writer.WriteString("id", result.Id.Value);
+                        writer.WriteString("content", result.Content);
+                        writer.WriteBoolean("isError", result.IsError);
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Unhandled model content block {block.GetType().Name}.");
+                }
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
 
     internal static string RawJson(JsonElement element) =>
         element.ValueKind == JsonValueKind.Undefined ? string.Empty : element.GetRawText();

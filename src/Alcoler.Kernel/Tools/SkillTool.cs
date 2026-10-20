@@ -88,7 +88,8 @@ public sealed class SkillTool : ITool
             rewritten[property.Name] = JsonNode.Parse(property.Value.GetRawText());
         }
         rewritten["skill"] = name.GetString();
-        return ValueTask.FromResult(JsonSerializer.SerializeToElement(rewritten));
+        using var document = JsonDocument.Parse(rewritten.ToJsonString());
+        return ValueTask.FromResult(document.RootElement.Clone());
     }
 
     public ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)

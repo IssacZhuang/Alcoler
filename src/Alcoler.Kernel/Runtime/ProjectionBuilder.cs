@@ -15,6 +15,7 @@ public sealed class ProjectionBuilder
     private readonly Dictionary<string, string> _streamingText = [];
     private ConversationState _state = ConversationState.Initial(string.Empty, PermissionMode.Build, null, 200_000);
     private readonly Queue<string> _queue = [];
+    private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
     public ConversationState State { get { lock (_sync) return _state; } }
 
@@ -136,7 +137,7 @@ public sealed class ProjectionBuilder
                             toolResult.ToolCallId.Value,
                             toolResult.ToolCallId,
                             toolResult.ToolName,
-                            existing?.Input ?? JsonSerializer.SerializeToElement(new { }),
+                            existing?.Input ?? EmptyObject,
                             toolResult.Result.IsError ? ToolCallStatus.Failed : ToolCallStatus.Succeeded,
                             toolResult.Result.Content,
                             toolResult.Result.IsError,
@@ -296,7 +297,7 @@ public sealed class ProjectionBuilder
                 toolResult.ToolCallId.Value,
                 toolResult.ToolCallId,
                 existing?.ToolName ?? "tool",
-                existing?.Input ?? JsonSerializer.SerializeToElement(new { }),
+                existing?.Input ?? EmptyObject,
                 toolResult.IsError ? ToolCallStatus.Failed : ToolCallStatus.Succeeded,
                 toolResult.Content,
                 toolResult.IsError,

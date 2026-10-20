@@ -55,7 +55,9 @@ public sealed class ToolCallAnomalyTracker
         ]);
 
     internal static string BuildSignature(string toolName, JsonElement input) =>
-        $"{JsonSerializer.Serialize(toolName)}:{CanonicalJson(input)}";
+        $"{Quote(toolName)}:{CanonicalJson(input)}";
+
+    private static string Quote(string value) => $"\"{JsonEncodedText.Encode(value)}\"";
 
     // Key-sorted JSON so property order in the model's input never masks a repeat.
     private static string CanonicalJson(JsonElement element)
@@ -77,7 +79,7 @@ public sealed class ToolCallAnomalyTracker
                     if (!first)
                         builder.Append(',');
                     first = false;
-                    builder.Append(JsonSerializer.Serialize(property.Name)).Append(':');
+                    builder.Append(Quote(property.Name)).Append(':');
                     AppendCanonical(property.Value, builder);
                 }
                 builder.Append('}');
@@ -93,7 +95,7 @@ public sealed class ToolCallAnomalyTracker
                 builder.Append(']');
                 break;
             default:
-                builder.Append(JsonSerializer.Serialize(element));
+                builder.Append(element.GetRawText());
                 break;
         }
     }

@@ -107,9 +107,15 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     [ObservableProperty]
     private bool _isExpanded;
 
+    private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        TypeInfoResolver = JsonElementContext.Default,
+    };
+
     public void UpdateFrom(ToolCallRow row)
     {
-        InputJson = JsonSerializer.Serialize(row.Input, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true });
+        InputJson = JsonSerializer.Serialize(row.Input, IndentedJson);
         Status = row.Status;
         StatusText = row.Status.ToString().ToLowerInvariant();
         Summary = GetSummary(row.Input);
@@ -199,8 +205,6 @@ public sealed partial class SystemNoticeItemViewModel : TimelineItemViewModel
 
 public static class TimelineItemFactory
 {
-    private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web) { WriteIndented = true };
-
     public static TimelineItemViewModel? Create(ConversationRow row) => row switch
     {
         UserMessageRow user => new UserMessageItemViewModel(user.RowId, user.Text),

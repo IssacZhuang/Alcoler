@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Alcoler.Contracts.Permissions;
 
 namespace Alcoler.Workbench;
@@ -110,8 +111,15 @@ public sealed record WorkbenchConfig(
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        TypeInfoResolver = WorkbenchConfigJsonContext.Default,
+    };
 }
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(WorkbenchConfig))]
+internal sealed partial class WorkbenchConfigJsonContext : JsonSerializerContext;
 
 public static class WorkbenchDataPaths
 {
