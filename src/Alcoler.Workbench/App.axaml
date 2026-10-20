@@ -170,6 +170,7 @@
         </Style>
         <Style Selector="TextBox.bare:pointerover /template/ Border#PART_BorderElement">
             <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTransparent}" />
+            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
         </Style>
         <Style Selector="TextBox.bare:focus /template/ Border#PART_BorderElement">
             <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTransparent}" />

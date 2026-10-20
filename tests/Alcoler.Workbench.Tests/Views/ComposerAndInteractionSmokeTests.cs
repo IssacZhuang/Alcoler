@@ -14,6 +14,9 @@ using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
+using Avalonia.Rendering.Composition;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Assert = Xunit.Assert;
@@ -199,6 +202,73 @@ public class ComposerAndInteractionSmokeTests
         Assert.Equal(.7, ring.Opacity);
         Assert.Equal(.25, FindNamed<Workbench.Controls.Icon>(harness.View, "ContextRingTrack").Opacity);
         Assert.Equal(28, FindNamed<Button>(harness.View, "ContextTrigger").Width);
+    }
+
+    [AvaloniaTheory]
+    [Xunit.InlineData(false)]
+    [Xunit.InlineData(true)]
+    public async Task Composer_InputBackgroundStaysTransparentDuringHoverAndFocus(bool light)
+    {
+        using var harness = Show<ComposerView>();
+        var theme = light ? ThemeVariant.Light : ThemeVariant.Dark;
+        harness.Window.RequestedThemeVariant = theme;
+        harness.Window.Width = 800;
+        harness.Window.Height = 600;
+        await PumpAsync();
+        harness.Window.UpdateLayout();
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        var shell = FindNamed<Border>(harness.View, "ComposerShell");
+        var mode = FindNamed<Button>(harness.View, "ModeSelector");
+        var template = Assert.Single(input.GetVisualDescendants().OfType<Border>(),
+            border => border.Name == "PART_BorderElement");
+        var expectedBackground = Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerInput")).Color;
+        var outside = new Point(1, 1);
+        var inside = input.TranslatePoint(new Point(input.Bounds.Width / 2, input.Bounds.Height / 2), harness.Window)!.Value;
+        var rendered = ElementComposition.GetElementVisual(harness.Window)!.Compositor.RequestCompositionBatchCommitAsync().Rendered;
+        Dispatcher.UIThread.RunJobs();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        await rendered.WaitAsync(TimeSpan.FromSeconds(5));
+        input.Focus();
+        await PumpAsync();
+        var expectedFocusedBorder = Assert.IsAssignableFrom<ISolidColorBrush>(shell.BorderBrush).Color;
+
+        void AssertBackground()
+        {
+            Assert.Equal(0, Assert.IsAssignableFrom<ISolidColorBrush>(template.Background).Color.A);
+            Assert.Equal(expectedBackground, Assert.IsAssignableFrom<ISolidColorBrush>(shell.Background).Color);
+        }
+
+        mode.Focus();
+        harness.Window.MouseMove(outside);
+        await PumpAsync();
+        Assert.False(input.IsFocused);
+        Assert.False(input.IsPointerOver);
+        AssertBackground();
+
+        harness.Window.MouseMove(inside);
+        await PumpAsync();
+        Assert.True(input.IsPointerOver);
+        Assert.False(input.IsFocused);
+        AssertBackground();
+
+        harness.Window.MouseDown(inside, MouseButton.Left);
+        harness.Window.MouseUp(inside, MouseButton.Left);
+        await PumpAsync();
+        Assert.True(input.IsFocused);
+        AssertBackground();
+        Assert.Equal(expectedFocusedBorder, Assert.IsAssignableFrom<ISolidColorBrush>(shell.BorderBrush).Color);
+
+        harness.Window.KeyTextInput("Hover-safe input");
+        await PumpAsync();
+        Assert.Equal("Hover-safe input", harness.ViewModel.Composer.Draft);
+        AssertBackground();
+
+        harness.Window.MouseMove(outside);
+        await PumpAsync();
+        Assert.False(input.IsPointerOver);
+        Assert.True(input.IsFocused);
+        AssertBackground();
+        Assert.Empty(harness.Runtime.Submitted);
     }
 
     [AvaloniaTheory]
