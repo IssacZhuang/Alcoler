@@ -165,6 +165,15 @@ public class ModelStreamRunnerTests
     }
 
     [Fact]
+    public void Defaults_IdleTimeoutIsTenMinutesWithGrowthPerRetry()
+    {
+        var options = new ModelRunnerOptions();
+
+        Assert.Equal(TimeSpan.FromSeconds(600), options.IdleTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.IdleTimeoutGrowthPerRetry);
+    }
+
+    [Fact]
     public async Task IdleTimeout_DiscardsHangingAttemptAndRetries()
     {
         var model = new HangingThenGoodModel();

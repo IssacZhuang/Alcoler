@@ -47,26 +47,72 @@ public class GlobToolTests
     }
 
     [Fact]
-    public async Task Results_AreSorted_AndCappedAt500()
+    public async Task Results_AreSortedByModificationTime_NewestFirst()
     {
         using var workspace = new TempWorkspace();
-        var names = Enumerable.Range(0, 505).Select(i => $"f{i:D4}.tmp").ToArray();
-        CreateFiles(workspace.Root, names);
+        var older = Path.Combine(workspace.Root, "older.tmp");
+        var newer = Path.Combine(workspace.Root, "newer.tmp");
+        File.WriteAllText(older, "x");
+        File.WriteAllText(newer, "x");
+        File.SetLastWriteTimeUtc(older, new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        File.SetLastWriteTimeUtc(newer, new DateTime(2024, 1, 2, 0, 0, 0, DateTimeKind.Utc));
         var tool = new GlobTool();
 
         var result = await tool.ExecuteAsync(
             workspace.ContextFor("""{"pattern": "*.tmp"}"""),
             CancellationToken.None);
 
-        var lines = result.SingleText().Split('\n');
-        Assert.Equal(501, lines.Length);
-        Assert.Contains("capped at 500", lines[^1]);
-        var paths = lines[..500];
-        Assert.Equal(paths.OrderBy(static p => p, StringComparer.Ordinal), paths);
+        Assert.False(result.IsError);
+        Assert.Equal("newer.tmp\nolder.tmp", result.SingleText());
     }
 
     [Fact]
-    public async Task NoMatches_ReportsEmptyResult()
+    public async Task EqualMtimes_FallBackToPathOrder()
+    {
+        using var workspace = new TempWorkspace();
+        var sameTime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var first = Path.Combine(workspace.Root, "a.tmp");
+        var second = Path.Combine(workspace.Root, "b.tmp");
+        File.WriteAllText(first, "x");
+        File.WriteAllText(second, "x");
+        File.SetLastWriteTimeUtc(first, sameTime);
+        File.SetLastWriteTimeUtc(second, sameTime);
+        var tool = new GlobTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"pattern": "*.tmp"}"""),
+            CancellationToken.None);
+
+        Assert.Equal("a.tmp\nb.tmp", result.SingleText());
+    }
+
+    [Fact]
+    public async Task Results_AreCappedAt100_WithTruncationNotice()
+    {
+        using var workspace = new TempWorkspace();
+        var baseTime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        for (var i = 0; i < 105; i++)
+        {
+            var path = Path.Combine(workspace.Root, $"f{i:D4}.tmp");
+            File.WriteAllText(path, "x");
+            File.SetLastWriteTimeUtc(path, baseTime.AddMinutes(-i));
+        }
+        var tool = new GlobTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"pattern": "*.tmp"}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var lines = result.SingleText().Split('\n');
+        Assert.Equal(101, lines.Length);
+        Assert.Equal("f0000.tmp", lines[0]);
+        Assert.Equal("f0099.tmp", lines[99]);
+        Assert.Equal("(Results are truncated. Consider using a more specific path or pattern.)", lines[^1]);
+    }
+
+    [Fact]
+    public async Task NoMatches_ReportsNoFilesFound()
     {
         using var workspace = new TempWorkspace();
         var tool = new GlobTool();
@@ -76,7 +122,22 @@ public class GlobToolTests
             CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Contains("no files matched", result.SingleText());
+        Assert.Equal("No files found", result.SingleText());
+    }
+
+    [Fact]
+    public async Task VersionControlDirectories_AreSkipped()
+    {
+        using var workspace = new TempWorkspace();
+        CreateFiles(workspace.Root, [".git/inner.tmp", "keep.tmp"]);
+        var tool = new GlobTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"pattern": "**/*.tmp"}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal("keep.tmp", result.SingleText());
     }
 
     private static void CreateFiles(string root, IEnumerable<string> relativePaths)

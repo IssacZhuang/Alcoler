@@ -129,7 +129,9 @@ public class SubagentToolTests
         var result = await tool.ExecuteAsync(context, CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Equal("Subagent started: watch logs", result.SingleText());
+        Assert.Equal(
+            $"Subagent started: watch logs\nagentId: {handle.Id.Value} (use SendMessage with to: '{handle.Id.Value}' to continue this agent)",
+            result.SingleText());
         Assert.Equal("watch", result.DisplaySummary);
         Assert.Empty(port.RunRequests);
 

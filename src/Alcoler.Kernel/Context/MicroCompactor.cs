@@ -12,9 +12,10 @@ public static class MicroCompactor
 {
     public const string ClearedContentText = "[Old tool result content cleared]";
 
+    // Only tool names that exist (or are about to exist) in the registry; unmatched names are never hit.
     private static readonly HashSet<string> EligibleToolNames =
     [
-        "ReadFile", "Bash", "Grep", "Glob", "WebFetch", "WebSearch", "EditFile", "WriteFile", "ApplyPatch",
+        "ReadFile", "WriteFile", "EditFile", "Bash", "Grep", "Glob", "WebFetch", "WebSearch", "TaskOutput",
     ];
 
     public static MicrocompactResult Apply(

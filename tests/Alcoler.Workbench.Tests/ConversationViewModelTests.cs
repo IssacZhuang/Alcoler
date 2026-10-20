@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.Text.Json;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
@@ -27,6 +28,15 @@ public class ConversationViewModelTests
         var viewModel = new ConversationViewModel(runtime, store);
         return (viewModel, runtime, store);
     }
+
+    private static ToolCallRow ToolRow(string rowId) => new(
+        rowId, StrongId.NewToolCallId(), "Bash", JsonSerializer.SerializeToElement(new { command = "pwd" }),
+        ToolCallStatus.Running, null, false, null, DateTimeOffset.UtcNow);
+
+    private static void ApplyRows(ConversationViewModel viewModel, long sequence, bool reset, params ConversationRow[] rows) =>
+        viewModel.ApplyUpdate(new ProjectionUpdate(sequence, TestSnapshots.State(),
+            reset ? [] : rows.Select(row => (RowOp)new RowUpserted(row)).ToArray(),
+            Reset: reset, ResetRows: reset ? rows : null));
 
     private static ConversationState StateWithPermission(PermissionRequest permission, TurnPhase phase = TurnPhase.AwaitingPermission) =>
         new("Test session", PermissionMode.Build, null, 200_000, phase, null,
@@ -63,6 +73,249 @@ public class ConversationViewModelTests
         Assert.Equal("world", assistant.MarkdownText);
         Assert.False(assistant.IsStreaming);
         store.Dispose();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ApplyRows_UpdatesContentWithoutLosingExpansionOrIdentity(bool reset)
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var assistantRow = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), "answer"), new ReasoningPart(StrongId.NewPartId(), "reasoning")],
+                true, DateTimeOffset.UtcNow);
+            var toolRow = ToolRow("t1");
+            ApplyRows(viewModel, 1, true, assistantRow, toolRow);
+            var assistant = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[0]);
+            var tool = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[1]);
+            Assert.False(assistant.IsReasoningExpanded);
+            Assert.False(tool.IsExpanded);
+            assistant.IsReasoningExpanded = true;
+            tool.IsExpanded = true;
+            List<NotifyCollectionChangedAction> changes = [];
+            viewModel.Items.CollectionChanged += (_, args) => changes.Add(args.Action);
+
+            ApplyRows(viewModel, 2, reset, assistantRow with
+            {
+                Parts = [new TextPart(StrongId.NewPartId(), "updated answer"), new ReasoningPart(StrongId.NewPartId(), "updated reasoning")],
+                IsStreaming = false,
+            }, toolRow with
+            {
+                Input = JsonSerializer.SerializeToElement(new { command = "git status" }),
+                Status = ToolCallStatus.Succeeded,
+                Output = [new ToolResultText("updated output")],
+            });
+
+            Assert.Same(assistant, viewModel.Items[0]);
+            Assert.Same(tool, viewModel.Items[1]);
+            Assert.True(assistant.IsReasoningExpanded);
+            Assert.True(tool.IsExpanded);
+            Assert.Equal("updated answer", assistant.MarkdownText);
+            Assert.Equal("updated reasoning", Assert.Single(assistant.ReasoningBlocks));
+            Assert.False(assistant.IsStreaming);
+            Assert.Equal("git status", tool.Summary);
+            Assert.Equal("updated output", tool.OutputText);
+            Assert.Equal(ToolCallStatus.Succeeded, tool.Status);
+            Assert.Empty(changes);
+        }
+    }
+
+    [Fact]
+    public void Reset_ReconcilesRemovedReorderedNewAndChangedRowsWithoutClearing()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var userRow = new UserMessageRow("u1", "hello", DateTimeOffset.UtcNow);
+            var assistantRow = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new ReasoningPart(StrongId.NewPartId(), "reasoning")], true, DateTimeOffset.UtcNow);
+            var toolRow = ToolRow("t1");
+            var removedRow = ToolRow("removed");
+            var noticeRow = new SystemNoticeRow("n1", "compact", "context compacted");
+            var changedUserRow = userRow with { RowId = "changed-user" };
+            var changedNoticeRow = noticeRow with { RowId = "changed-notice" };
+            var changedTypeRow = ToolRow("changed-type");
+            ApplyRows(viewModel, 1, true, userRow, assistantRow, toolRow, removedRow, noticeRow,
+                changedUserRow, changedNoticeRow, changedTypeRow);
+            var original = viewModel.Items.ToDictionary(item => item.RowId);
+            var assistant = Assert.IsType<AssistantMessageItemViewModel>(original["a1"]);
+            var tool = Assert.IsType<ToolCallItemViewModel>(original["t1"]);
+            assistant.IsReasoningExpanded = true;
+            tool.IsExpanded = true;
+            Assert.IsType<ToolCallItemViewModel>(original["removed"]).IsExpanded = true;
+            Assert.IsType<ToolCallItemViewModel>(original["changed-type"]).IsExpanded = true;
+            List<NotifyCollectionChangedAction> changes = [];
+            viewModel.Items.CollectionChanged += (_, args) => changes.Add(args.Action);
+            var newToolRow = ToolRow("new-tool");
+
+            ApplyRows(viewModel, 2, true, noticeRow with { }, toolRow with { Status = ToolCallStatus.Succeeded },
+                newToolRow, userRow with { At = userRow.At.AddMinutes(1) }, assistantRow with { IsStreaming = false },
+                changedUserRow with { Text = "edited" }, changedNoticeRow with { Kind = "turn_error", Text = "failed" },
+                assistantRow with { RowId = "changed-type", Id = StrongId.NewMessageId() });
+
+            Assert.Equal(new[] { "n1", "t1", "new-tool", "u1", "a1", "changed-user", "changed-notice", "changed-type" },
+                viewModel.Items.Select(item => item.RowId));
+            Assert.Same(original["n1"], viewModel.Items[0]);
+            Assert.Same(tool, viewModel.Items[1]);
+            Assert.False(Assert.IsType<ToolCallItemViewModel>(viewModel.Items[2]).IsExpanded);
+            Assert.Same(original["u1"], viewModel.Items[3]);
+            Assert.Same(assistant, viewModel.Items[4]);
+            Assert.True(tool.IsExpanded);
+            Assert.True(assistant.IsReasoningExpanded);
+            Assert.Equal(ToolCallStatus.Succeeded, tool.Status);
+            Assert.False(assistant.IsStreaming);
+            Assert.NotSame(original["changed-user"], viewModel.Items[5]);
+            Assert.Equal("edited", Assert.IsType<UserMessageItemViewModel>(viewModel.Items[5]).Text);
+            Assert.NotSame(original["changed-notice"], viewModel.Items[6]);
+            var changedNotice = Assert.IsType<SystemNoticeItemViewModel>(viewModel.Items[6]);
+            Assert.Equal("turn_error", changedNotice.Kind);
+            Assert.Equal("failed", changedNotice.Text);
+            Assert.NotSame(original["changed-type"], viewModel.Items[7]);
+            Assert.False(Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[7]).IsReasoningExpanded);
+            Assert.DoesNotContain(viewModel.Items, item => item.RowId == "removed");
+            Assert.DoesNotContain(NotifyCollectionChangedAction.Reset, changes);
+            Assert.Contains(NotifyCollectionChangedAction.Remove, changes);
+            Assert.Contains(NotifyCollectionChangedAction.Move, changes);
+            Assert.Contains(NotifyCollectionChangedAction.Add, changes);
+
+            ApplyRows(viewModel, 3, false, toolRow with { Output = [new ToolResultText("after reset")] }, removedRow);
+
+            Assert.Equal(9, viewModel.Items.Count);
+            Assert.Same(tool, viewModel.Items[1]);
+            Assert.True(tool.IsExpanded);
+            Assert.Equal("after reset", tool.OutputText);
+            var reinserted = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[^1]);
+            Assert.Equal("removed", reinserted.RowId);
+            Assert.NotSame(original["removed"], reinserted);
+            Assert.False(reinserted.IsExpanded);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, "assistant-id")]
+    [InlineData(true, "assistant-id")]
+    [InlineData(false, "tool-id")]
+    [InlineData(true, "tool-id")]
+    [InlineData(false, "tool-name")]
+    [InlineData(true, "tool-name")]
+    [InlineData(false, "row-type")]
+    [InlineData(true, "row-type")]
+    [InlineData(false, "user-text")]
+    [InlineData(true, "user-text")]
+    [InlineData(false, "notice-kind")]
+    [InlineData(true, "notice-kind")]
+    [InlineData(false, "notice-text")]
+    [InlineData(true, "notice-text")]
+    public void ApplyRows_ReplacesIncompatibleRowsWithoutLeakingExpansion(bool reset, string change)
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var assistantRow = new AssistantMessageRow("row", StrongId.NewMessageId(),
+                [new ReasoningPart(StrongId.NewPartId(), "reasoning")], false, DateTimeOffset.UtcNow);
+            var toolRow = ToolRow("row");
+            var userRow = new UserMessageRow("row", "before", DateTimeOffset.UtcNow);
+            var noticeRow = new SystemNoticeRow("row", "compact", "before");
+            ConversationRow initial = change switch
+            {
+                "assistant-id" or "row-type" => assistantRow,
+                "user-text" => userRow,
+                "notice-kind" or "notice-text" => noticeRow,
+                _ => toolRow,
+            };
+            ConversationRow replacement = change switch
+            {
+                "assistant-id" => assistantRow with { Id = StrongId.NewMessageId() },
+                "tool-id" => toolRow with { Id = StrongId.NewToolCallId() },
+                "tool-name" => toolRow with { ToolName = "ReadFile" },
+                "row-type" => toolRow,
+                "user-text" => userRow with { Text = "after" },
+                "notice-kind" => noticeRow with { Kind = "turn_error" },
+                "notice-text" => noticeRow with { Text = "after" },
+                _ => throw new ArgumentOutOfRangeException(nameof(change)),
+            };
+            ApplyRows(viewModel, 1, true, initial);
+            var original = Assert.Single(viewModel.Items);
+            if (original is AssistantMessageItemViewModel originalAssistant)
+                originalAssistant.IsReasoningExpanded = true;
+            if (original is ToolCallItemViewModel originalTool)
+                originalTool.IsExpanded = true;
+
+            ApplyRows(viewModel, 2, reset, replacement);
+
+            var replaced = Assert.Single(viewModel.Items);
+            Assert.NotSame(original, replaced);
+            Assert.Equal("row", replaced.RowId);
+            switch (replacement)
+            {
+                case AssistantMessageRow assistant:
+                    var item = Assert.IsType<AssistantMessageItemViewModel>(replaced);
+                    Assert.Equal(assistant.Id, item.Id);
+                    Assert.False(item.IsReasoningExpanded);
+                    break;
+                case ToolCallRow tool:
+                    var toolItem = Assert.IsType<ToolCallItemViewModel>(replaced);
+                    Assert.Equal(tool.Id, toolItem.Id);
+                    Assert.Equal(tool.ToolName, toolItem.ToolName);
+                    Assert.False(toolItem.IsExpanded);
+                    break;
+                case UserMessageRow user:
+                    Assert.Equal(user.Text, Assert.IsType<UserMessageItemViewModel>(replaced).Text);
+                    break;
+                case SystemNoticeRow notice:
+                    var noticeItem = Assert.IsType<SystemNoticeItemViewModel>(replaced);
+                    Assert.Equal(notice.Kind, noticeItem.Kind);
+                    Assert.Equal(notice.Text, noticeItem.Text);
+                    break;
+            }
+
+            ApplyRows(viewModel, 3, false, replacement);
+
+            Assert.Same(replaced, Assert.Single(viewModel.Items));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Reset_EmptySnapshotForgetsExpansionBeforeRowsReturn(bool omitRows)
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var assistantRow = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new ReasoningPart(StrongId.NewPartId(), "reasoning")], false, DateTimeOffset.UtcNow);
+            var toolRow = ToolRow("t1");
+            ApplyRows(viewModel, 1, true, assistantRow, toolRow);
+            var assistant = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[0]);
+            var tool = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[1]);
+            assistant.IsReasoningExpanded = true;
+            tool.IsExpanded = true;
+            List<NotifyCollectionChangedAction> changes = [];
+            viewModel.Items.CollectionChanged += (_, args) => changes.Add(args.Action);
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(), [], Reset: true,
+                ResetRows: omitRows ? null : []));
+
+            Assert.Empty(viewModel.Items);
+            Assert.Equal(new[] { NotifyCollectionChangedAction.Remove, NotifyCollectionChangedAction.Remove }, changes);
+
+            ApplyRows(viewModel, 3, true, assistantRow, toolRow);
+
+            Assert.Equal(2, viewModel.Items.Count);
+            var restoredAssistant = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[0]);
+            var restoredTool = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[1]);
+            Assert.NotSame(assistant, restoredAssistant);
+            Assert.NotSame(tool, restoredTool);
+            Assert.False(restoredAssistant.IsReasoningExpanded);
+            Assert.False(restoredTool.IsExpanded);
+        }
     }
 
     [Fact]

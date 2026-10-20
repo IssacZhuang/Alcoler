@@ -1,26 +1,49 @@
+using System.Globalization;
 using System.Text.Json;
-using System.Text;
 using Alcoler.Contracts.Tools;
-using Alcoler.Kernel.Tools;
+using Alcoler.Kernel.Context;
 
 namespace Alcoler.Adapters.Tools;
 
 public sealed class ReadFileTool : ITool
 {
-    private const string TruncationNote =
-        "[File content truncated at the 75,000 character limit; continue reading with an offset and limit to see the remaining lines]";
+    private const int DefaultMaxLines = 2_000;
+    private const int MaxFileSizeBytes = 256 * 1024;
+    private const int MaxOutputTokens = 25_000;
+    // 85% of the output budget, matching the reference partial-view shrink target.
+    private static readonly int PartialViewTokenTarget = (int)Math.Floor(MaxOutputTokens * 0.85);
+
+    private const string FileUnchangedStub =
+        "Wasted call \u2014 file unchanged since your last ReadFile. Refer to that earlier tool_result instead.";
+    private const string EmptyFileReminder =
+        "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>";
+
+    private static readonly HashSet<string> UnsupportedBinaryExtensions = new(StringComparer.Ordinal)
+    {
+        ".7z", ".a", ".bin", ".bz2", ".class", ".dll", ".dmg", ".dylib", ".exe",
+        ".gz", ".jar", ".o", ".pyc", ".rar", ".so", ".tar", ".tgz", ".wasm", ".zip",
+    };
 
     public ToolContract Contract { get; } = new(
         "ReadFile",
-        "Reads a UTF-8 text file from the workspace and returns cat -n style numbered lines. Use offset (1-based line number) and limit to page through large files.",
+        """
+        Reads a file from the local filesystem.
+
+        - `file_path` may be relative to the workspace root or absolute inside it.
+        - Reads up to 2000 lines by default.
+        - You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
+        - Results are returned using cat -n format, with line numbers starting at 1
+        - Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content.
+        - Do NOT re-read a file you just edited to verify — EditFile/WriteFile would have errored if the change failed, and the harness tracks file state for you.
+        """,
         ToolInput.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
             "file_path": { "type": "string", "description": "File path, relative to the workspace root or absolute inside it." },
-            "offset": { "type": "integer", "minimum": 1, "description": "1-based line number to start reading from." },
-            "limit": { "type": "integer", "minimum": 1, "description": "Maximum number of lines to return." }
+            "offset": { "type": "integer", "minimum": 1, "description": "The 1-based line number to start reading from. Only provide if the file is too large to read at once" },
+            "limit": { "type": "integer", "minimum": 1, "description": "The number of lines to read. Only provide if the file is too large to read at once." }
           },
           "required": ["file_path"],
           "additionalProperties": false
@@ -56,36 +79,151 @@ public sealed class ReadFileTool : ITool
             return ToolExecutionResult.Text(ex.Message, isError: true);
         }
 
-        if (!File.Exists(path))
+        if (BinaryExtension(path) is { } binaryExtension)
             return ToolExecutionResult.Text(
-                $"File does not exist: {path}. Provide a file_path relative to the workspace root, or absolute inside it.",
+                $"This tool cannot read binary files. The file appears to be a binary {binaryExtension} file. Please use appropriate tools for binary file analysis.",
                 isError: true);
 
-        var offset = ToolInput.IntOrNull(context.Input, "offset") ?? 1;
-        var limit = ToolInput.IntOrNull(context.Input, "limit");
+        if (!File.Exists(path))
+            return ToolExecutionResult.Text(
+                MissingFileSuggestions.CreateMissingFileMessage(path, CurrentDirectory(context)),
+                isError: true);
 
-        var lines = new List<string>();
-        using (var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096))
+        var info = new FileInfo(path);
+        if (context.FileReads?.Find(path) is { CompleteView: true } snapshot
+            && snapshot.MatchesCurrent(info.Length, info.LastWriteTimeUtc))
+            return ToolExecutionResult.Text(FileUnchangedStub);
+
+        var startLine = Math.Max(ToolInput.IntOrNull(context.Input, "offset") ?? 1, 1);
+        var explicitLimit = ToolInput.IntOrNull(context.Input, "limit");
+        var limit = explicitLimit ?? DefaultMaxLines;
+
+        if (explicitLimit is null && info.Length > MaxFileSizeBytes)
+            return ToolExecutionResult.Text(
+                $"File content ({FormatFileSize(info.Length)}) exceeds maximum allowed size ({FormatFileSize(MaxFileSizeBytes)}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+                isError: true);
+
+        var content = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        var lines = content.Length == 0 ? [] : EditMatchers.NormalizeLineEndings(content).Split('\n');
+        var selectedEnd = (int)Math.Min((long)startLine - 1 + limit, lines.Length);
+        var selected = startLine - 1 < lines.Length ? lines[(startLine - 1)..selectedEnd] : [];
+
+        if (selected.Length == 0)
         {
-            string? line;
-            var lineNumber = 0;
-            while ((line = await reader.ReadLineAsync(cancellationToken)) is not null)
-            {
-                lineNumber++;
-                if (lineNumber < offset)
-                    continue;
-                if (limit is { } maxLines && lines.Count >= maxLines)
-                    break;
-                lines.Add($"{lineNumber,6}\t{line}");
-            }
+            var warning = lines.Length == 0
+                ? EmptyFileReminder
+                : $"<system-reminder>Warning: the file exists but is shorter than the provided offset ({startLine}). The file has {lines.Length} lines.</system-reminder>";
+            context.FileReads?.RecordRead(path, completeView: lines.Length == 0);
+            return ToolExecutionResult.Text(warning);
         }
 
-        if (lines.Count == 0)
-            return ToolExecutionResult.Text("(the requested offset/limit range is outside the file)");
+        var tokenCount = TokenEstimator.EstimateTokens(string.Join("\n", selected));
+        if (tokenCount > MaxOutputTokens)
+        {
+            // The token-cap partial view is reserved for initial whole-file reads; explicit
+            // ranges must error so the model narrows its own request.
+            if (startLine > 1 || explicitLimit is not null)
+                return ToolExecutionResult.Text(
+                    $"File content ({tokenCount} tokens) exceeds maximum allowed tokens ({MaxOutputTokens}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+                    isError: true);
+            return RenderPartialView(context, path, lines, selected, tokenCount);
+        }
 
-        var text = string.Join("\n", lines);
-        if (text.Length > ToolResultLimits.ReadToolMaxChars)
-            text = text[..ToolResultLimits.ReadToolMaxChars] + "\n" + TruncationNote;
-        return ToolExecutionResult.Text(text);
+        context.FileReads?.RecordRead(path, completeView: startLine == 1 && selectedEnd >= lines.Length);
+        return ToolExecutionResult.Text(AddLineNumbers(selected, startLine));
     }
+
+    private ToolExecutionResult RenderPartialView(
+        ToolExecutionContext context,
+        string path,
+        string[] lines,
+        string[] selected,
+        int tokenCount)
+    {
+        string notice;
+        string numbered;
+        if (LargestPrefixWithinTokenBudget(selected) is > 0 and var lineCount)
+        {
+            notice = $"The file is too large to display in full ({tokenCount} estimated tokens, limit {MaxOutputTokens}). "
+                + $"Showing a partial view of lines 1-{lineCount} of {lines.Length}. "
+                + $"Use ReadFile with offset {lineCount + 1} and limit {DefaultMaxLines} to continue, or use a search tool to find a specific section.";
+            numbered = AddLineNumbers(selected[..lineCount], 1);
+        }
+        else
+        {
+            var content = string.Join("\n", selected);
+            var charCount = LargestCharPrefixWithinTokenBudget(content);
+            if (charCount <= 0)
+                return ToolExecutionResult.Text(
+                    $"File content ({tokenCount} tokens) exceeds maximum allowed tokens ({MaxOutputTokens}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+                    isError: true);
+            notice = $"The file is too large to display in full ({tokenCount} estimated tokens, limit {MaxOutputTokens}). "
+                + "Showing a partial view of the first line because the first line alone exceeds the token budget. "
+                + "Use ReadFile with a smaller range or use a search tool to find a specific section.";
+            numbered = AddLineNumbers([content[..charCount]], 1);
+        }
+
+        context.FileReads?.RecordRead(path, completeView: false);
+        return ToolExecutionResult.Text($"<system-reminder>{notice}</system-reminder>\n\n{numbered}");
+    }
+
+    private static string CurrentDirectory(ToolExecutionContext context) =>
+        context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
+
+    private static string? BinaryExtension(string path)
+    {
+        var name = Path.GetFileName(path);
+        var dotIndex = name.LastIndexOf('.');
+        if (dotIndex <= 0)
+            return null;
+        var extension = name[dotIndex..].ToLowerInvariant();
+        return UnsupportedBinaryExtensions.Contains(extension) ? extension : null;
+    }
+
+    private static string AddLineNumbers(string[] lines, int startLine) =>
+        string.Join("\n", lines.Select((line, index) => $"{startLine + index,6}\t{line}"));
+
+    private static int LargestPrefixWithinTokenBudget(string[] lines)
+    {
+        var low = 0;
+        var high = lines.Length;
+        while (low < high)
+        {
+            var mid = (int)Math.Ceiling((low + (double)high) / 2);
+            if (TokenEstimator.EstimateTokens(string.Join("\n", lines, 0, mid)) <= PartialViewTokenTarget)
+                low = mid;
+            else
+                high = mid - 1;
+        }
+        return low;
+    }
+
+    private static int LargestCharPrefixWithinTokenBudget(string content)
+    {
+        var low = 0;
+        var high = content.Length;
+        while (low < high)
+        {
+            var mid = (int)Math.Ceiling((low + (double)high) / 2);
+            if (TokenEstimator.EstimateTokens(content[..mid]) <= PartialViewTokenTarget)
+                low = mid;
+            else
+                high = mid - 1;
+        }
+        return low;
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024)
+            return $"{bytes}B";
+        if (bytes < 1024 * 1024)
+            return $"{FormatUnit(bytes / 1024.0)}KB";
+        return $"{FormatUnit(bytes / (1024.0 * 1024))}MB";
+    }
+
+    private static string FormatUnit(double value) =>
+        value == Math.Floor(value)
+            ? ((long)value).ToString(CultureInfo.InvariantCulture)
+            : value.ToString("0.#", CultureInfo.InvariantCulture);
 }

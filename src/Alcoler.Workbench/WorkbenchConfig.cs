@@ -50,7 +50,8 @@ public sealed record WorkbenchConfig(
     IReadOnlyList<WorkbenchProviderConfig> Providers,
     WorkbenchDefaultModelConfig? DefaultModel = null,
     IReadOnlyList<WorkbenchMcpServerConfig>? McpServers = null,
-    string Theme = "dark")
+    string Theme = "dark",
+    string? BraveApiKey = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

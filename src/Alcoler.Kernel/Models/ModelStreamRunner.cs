@@ -9,7 +9,8 @@ public sealed record ModelRunnerOptions
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromSeconds(2);
     public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(60);
     public double JitterFactor { get; init; } = 0.2;
-    public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromSeconds(120);
+    // Mirrors ZCode DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS; grows by IdleTimeoutGrowthPerRetry per retry.
+    public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromSeconds(600);
     public TimeSpan IdleTimeoutGrowthPerRetry { get; init; } = TimeSpan.FromSeconds(30);
     public Func<int, TimeSpan, ValueTask>? RetryDelayObserver { get; init; }
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;

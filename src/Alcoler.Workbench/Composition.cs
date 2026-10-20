@@ -22,13 +22,28 @@ public static class Composition
             ? new McpServerManager([.. servers.Select(s => new McpServerConfig(s.Name, s.Command, s.Args, s.Env))])
             : null;
         var browser = new PlaywrightBrowserController();
-        var extraTools = new List<ITool> { new BrowserTool(browser) };
+        var webFetch = new WebFetchTool();
+        WebSearchTool? webSearch = null;
+        var extraTools = new List<ITool> { new BrowserTool(browser), webFetch };
+        var braveKey = config.BraveApiKey ?? Environment.GetEnvironmentVariable("ALCOLER_BRAVE_API_KEY");
+        if (!string.IsNullOrWhiteSpace(braveKey))
+        {
+            webSearch = new WebSearchTool(braveKey);
+            extraTools.Add(webSearch);
+        }
         var runtime = await BuildRuntimeAsync(config, ct, mcp, extraTools);
         var workbench = new WorkbenchViewModel(
             runtime,
             AvaloniaUiScheduler.Instance,
             config,
-            CombineDisposables(mcp, new AsyncActionDisposable(browser.Dispose)),
+            CombineDisposables(
+                mcp,
+                new AsyncActionDisposable(() =>
+                {
+                    browser.Dispose();
+                    webFetch.Dispose();
+                    webSearch?.Dispose();
+                })),
             browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance, path =>
             {
                 using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -52,14 +67,22 @@ public static class Composition
         var artifacts = new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath);
 
         var todoStore = new InMemoryTodoStore();
+        var messenger = new SubagentMessenger();
         AgentRuntime? runtime = null;
         var tools = new List<ITool>(DefaultToolSet.Create())
         {
             new TodoWriteTool(todoStore),
             new TodoReadTool(todoStore),
             new ExitPlanModeTool(),
-            SubagentWiring.CreateTool(() =>
-                runtime ?? throw new InvalidOperationException("runtime is not initialized")),
+            new AskUserQuestionTool(),
+            new SkillTool(),
+            new TaskOutputTool(),
+            new TaskStopTool(),
+            new ReadSessionContextTool(store),
+            new SendMessageTool(messenger),
+            SubagentWiring.CreateTool(
+                () => runtime ?? throw new InvalidOperationException("runtime is not initialized"),
+                messenger),
         };
         if (mcp is not null)
         {
@@ -78,6 +101,7 @@ public static class Composition
             Tools = tools,
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
             DefaultModel = WorkbenchModelCatalog.DefaultSelection(config),
+            TodoStore = todoStore,
         });
         return runtime;
     }

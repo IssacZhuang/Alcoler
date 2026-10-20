@@ -35,13 +35,14 @@ public sealed class TestHarness : IAsyncDisposable
         return new TestHarness(root, databasePath, scripted);
     }
 
-    public AgentRuntime BuildRuntime()
+    public AgentRuntime BuildRuntime(params ITool[] extraTools)
     {
         var store = new SqliteSessionStore(DatabasePath);
         store.InitializeAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
         var artifacts = new FileArtifactStore(Path.Combine(Root, "artifacts"));
         AgentRuntime? runtime = null;
         var todoStore = new InMemoryTodoStore();
+        var messenger = new SubagentMessenger();
         var tools = new List<ITool>
         {
             new ReadFileTool(),
@@ -53,8 +54,17 @@ public sealed class TestHarness : IAsyncDisposable
             new TodoWriteTool(todoStore),
             new TodoReadTool(todoStore),
             new ExitPlanModeTool(),
-            SubagentWiring.CreateTool(() => runtime ?? throw new InvalidOperationException("runtime is not initialized")),
+            new AskUserQuestionTool(),
+            new SkillTool(),
+            new TaskOutputTool(),
+            new TaskStopTool(),
+            new ReadSessionContextTool(store),
+            new SendMessageTool(messenger),
+            SubagentWiring.CreateTool(
+                () => runtime ?? throw new InvalidOperationException("runtime is not initialized"),
+                messenger),
         };
+        tools.AddRange(extraTools);
         runtime = new AgentRuntime(new AgentRuntimeOptions
         {
             Store = store,
@@ -63,6 +73,7 @@ public sealed class TestHarness : IAsyncDisposable
             Tools = tools,
             WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
             DefaultModel = new ModelSelection("scripted", "test-model"),
+            TodoStore = todoStore,
         });
         return runtime;
     }

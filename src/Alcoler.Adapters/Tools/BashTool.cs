@@ -1,17 +1,23 @@
-using System.Text.Json;
-using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Tools;
 
 namespace Alcoler.Adapters.Tools;
 
-public sealed class BashTool : ITool
+/// <summary>
+/// Shell execution with ZCode-compatible semantics: persistent session cwd, semantic
+/// exit-code interpretation, oversized-output persistence, read-state invalidation hints,
+/// and foreground-to-background conversion on timeout. The tool manages its own timeout
+/// (Metadata.DefaultTimeoutMs stays null) because conversion must not be cut short.
+/// </summary>
+public sealed class BashTool : ITool, IToolInputPolicy
 {
-    internal const int DefaultTimeoutMs = 30_000;
+    internal const int DefaultTimeoutMs = 120_000;
     internal const int MaxTimeoutMs = 600_000;
 
     private readonly ShellSpec _shell;
+    private readonly bool _isPosixShell;
 
     public BashTool() : this(ShellResolver.Resolve())
     {
@@ -20,24 +26,57 @@ public sealed class BashTool : ITool
     internal BashTool(ShellSpec shell)
     {
         _shell = shell;
+        var shellName = Path.GetFileNameWithoutExtension(shell.FileName);
+        _isPosixShell = shellName is "bash" or "sh" or "zsh" or "dash";
     }
 
     public ToolContract Contract { get; } = new(
         "Bash",
-        "Runs a shell command in the workspace directory and returns the combined stdout/stderr output with the exit code. Commands have a 30s default timeout (max 600s, configurable via timeout_ms); the whole process tree is killed on timeout.",
-        ToolInput.ParseSchema("""
+        $"""
+        Executes a bash command and returns its output.
+
+        - Working directory persists between calls, but prefer absolute paths — `cd` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.
+        - IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.
+        - `timeout_ms` is in milliseconds: default {DefaultTimeoutMs}, max {MaxTimeoutMs}.
+        - `run_in_background` runs the command detached: it keeps running across turns and re-invokes you when it exits. No `&` needed.
+
+        # Git
+        - Interactive flags (`-i`, e.g. `git rebase -i`, `git add -i`) are not supported in this environment.
+        - Use the `gh` CLI for GitHub operations (PRs, issues, API).
+        - Commit or push only when the user asks.
+        """,
+        ToolInput.ParseSchema($$"""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "command": { "type": "string", "minLength": 1, "description": "Shell command line to execute." },
-            "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000, "description": "Execution timeout in milliseconds; defaults to 30000, capped at 600000." },
-            "description": { "type": "string", "description": "Short user-facing description of what the command does." }
+            "command": { "type": "string", "minLength": 1, "description": "The command to execute" },
+            "timeout_ms": { "type": "integer", "minimum": 1, "maximum": {{MaxTimeoutMs}}, "description": "Optional timeout in milliseconds (max {{MaxTimeoutMs}})" },
+            "description": { "type": "string", "description": "{{DescriptionFieldPromptJson}}" },
+            "run_in_background": { "type": "boolean", "description": "Set to true to run this command in the background. Use ReadFile to read the output later." }
           },
           "required": ["command"],
           "additionalProperties": false
         }
         """));
+
+    private const string DescriptionFieldPrompt =
+        """
+        Clear, concise description of what this command does in active voice. Never use words like "complex" or "risk" in the description - just describe what it does.
+
+        For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words):
+        - ls → "List files in current directory"
+        - git status → "Show working tree status"
+        - npm install → "Install package dependencies"
+
+        For commands that are harder to parse at a glance (piped commands, obscure flags, etc.), add enough context to clarify what it does:
+        - find . -name "*.tmp" -exec rm {} \; → "Find and delete all .tmp files recursively"
+        - git reset --hard origin/main → "Discard all local changes and match remote main"
+        - curl -s url | jq '.data[]' → "Fetch JSON from URL and extract data array elements"
+        """;
+
+    private static readonly string DescriptionFieldPromptJson =
+        JsonEncodedText.Encode(DescriptionFieldPrompt).ToString();
 
     public ToolMetadata Metadata { get; } = new(
         ReadOnly: false,
@@ -46,10 +85,13 @@ public sealed class BashTool : ITool
         RequiresUserInteraction: false,
         SideEffectScope: SideEffectScope.System,
         RiskLevel: RiskLevel.Medium,
-        NeedsApproval: false,
+        NeedsApproval: true,
         AllowedInPlanMode: false,
         DefaultTimeoutMs: null,
         MaxTimeoutMs: MaxTimeoutMs);
+
+    public bool IsReadOnlyInput(JsonElement input) =>
+        ToolInput.StringOrNull(input, "command") is { } command && BashSemantics.IsReadOnlyCommand(command);
 
     public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
         ValueTask.FromResult<ToolInputIssue?>(null);
@@ -60,79 +102,264 @@ public sealed class BashTool : ITool
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
         var command = ToolInput.String(context.Input, "command");
-        var timeoutMs = Math.Clamp(ToolInput.IntOrNull(context.Input, "timeout_ms") ?? DefaultTimeoutMs, 1, MaxTimeoutMs);
+        if (command.Trim().Length == 0)
+            return ToolExecutionResult.Text(string.Empty);
 
-        var startInfo = new ProcessStartInfo(_shell.FileName)
-        {
-            WorkingDirectory = context.WorkspaceRoot,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add(_shell.Arguments);
-        startInfo.ArgumentList.Add(command);
+        var timeoutMs = Math.Clamp(
+            ToolInput.IntOrNull(context.Input, "timeout_ms") ?? DefaultTimeoutMs,
+            1,
+            MaxTimeoutMs);
+        var description = ToolInput.StringOrNull(context.Input, "description");
+        var runInBackground = ToolInput.BoolOrDefault(context.Input, "run_in_background", false);
+        var workingDirectory = context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
 
-        using var process = new Process { StartInfo = startInfo };
-        var output = new StringBuilder();
-        var outputLock = new object();
-        process.OutputDataReceived += (_, e) => AppendLine(output, outputLock, e.Data);
-        process.ErrorDataReceived += (_, e) => AppendLine(output, outputLock, e.Data);
+        if (runInBackground)
+            return StartExplicitBackground(context, command, description, workingDirectory);
 
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        var trackedReads = context.FileReads?.TrackedReads() ?? [];
+        using var session = BashProcessSession.Start(
+            _shell,
+            command,
+            workingDirectory,
+            captureCwd: _isPosixShell,
+            outputFilePath: null);
 
+        var exitCode = 0;
         var timedOut = false;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeoutMs);
         try
         {
-            await process.WaitForExitAsync(timeoutCts.Token);
+            exitCode = await session.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            if (IsAutoBackgroundEligible(command) && context.BackgroundJobs is { } jobs)
+            {
+                var outputPath = CreateBackgroundOutputPath(context);
+                session.OpenOutputFile(outputPath);
+                var info = jobs.Start(
+                    description ?? command,
+                    outputPath,
+                    cancellationToken => RunBackgroundAsync(session, cancellationToken));
+                session.TransferOwnership();
+                return ToolExecutionResult.Text(BashModelContent.FormatAutoBackgrounded(
+                    info.Id.Value,
+                    outputPath,
+                    timeoutMs));
+            }
+
             timedOut = true;
+            session.KillTree();
             try
             {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-            }
-            try
-            {
-                await process.WaitForExitAsync(CancellationToken.None);
+                await session.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             }
             catch (InvalidOperationException)
             {
             }
         }
-        process.WaitForExit();
 
         if (cancellationToken.IsCancellationRequested)
             throw new OperationCanceledException(cancellationToken);
 
-        string text;
-        lock (outputLock)
-        {
-            text = output.ToString();
-        }
-        if (timedOut)
-            text += $"\n[command timed out after {timeoutMs / 1000.0:0.##}s; the process tree was killed]";
-        text += $"\nExit code: {process.ExitCode}";
+        return await CompleteForegroundAsync(context, session, command, workingDirectory, trackedReads, exitCode, timedOut)
+            .ConfigureAwait(false);
+    }
 
-        var result = ToolExecutionResult.Text(text.TrimStart('\n'), isError: process.ExitCode != 0);
+    private ToolExecutionResult StartExplicitBackground(
+        ToolExecutionContext context,
+        string command,
+        string? description,
+        string workingDirectory)
+    {
+        if (context.BackgroundJobs is not { } jobs)
+            return ToolExecutionResult.Text(
+                "Background job service is not configured for Bash tool",
+                isError: true);
+
+        var outputPath = CreateBackgroundOutputPath(context);
+        var session = BashProcessSession.Start(_shell, command, workingDirectory, captureCwd: false, outputPath);
+        BackgroundJobInfo info;
+        try
+        {
+            info = jobs.Start(
+                description ?? command,
+                outputPath,
+                cancellationToken => RunBackgroundAsync(session, cancellationToken));
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
+
+        session.TransferOwnership();
+        return ToolExecutionResult.Text(BashModelContent.FormatBackgroundStart(info.Id.Value, outputPath));
+    }
+
+    private static async Task<BackgroundJobResult> RunBackgroundAsync(
+        BashProcessSession session,
+        CancellationToken cancellationToken)
+    {
+        var exitCode = await session.RunToCompletionAsync(cancellationToken).ConfigureAwait(false);
+        return new BackgroundJobResult(exitCode);
+    }
+
+    private async ValueTask<ToolExecutionResult> CompleteForegroundAsync(
+        ToolExecutionContext context,
+        BashProcessSession session,
+        string command,
+        string workingDirectory,
+        IReadOnlyList<(string Path, FileReadSnapshot Snapshot)> trackedReads,
+        int exitCode,
+        bool timedOut)
+    {
+        var stdout = session.SnapshotStdout();
+        var stderr = session.SnapshotStderr();
+
+        var stderrSuffix = DecideCwd(context, session, exitCode, timedOut);
+        var stderrWithSuffix = BashModelContent.AppendCwdStderrSuffix(stderr, stderrSuffix);
+
+        var semantic = timedOut ? null : BashSemantics.SemanticNonErrorExit(command, exitCode);
+        var providerError = !timedOut && exitCode != 0 && !BashSemantics.IsSemanticNonError(semantic);
+        var modelStdout = BashModelContent.FormatStdout(stdout);
+        var modelStderr = BashModelContent.FormatStderr(stderrWithSuffix, interrupted: timedOut);
+
+        var parts = new List<string>();
+        if (providerError)
+            parts.Add($"Exit code {exitCode}");
+        if (modelStdout.Length > 0)
+            parts.Add(modelStdout);
+        if (modelStderr.Length > 0)
+            parts.Add(modelStderr);
+        // A semantic non-error exit (grep miss, diff, test) reads as its message when the
+        // command itself produced nothing to show.
+        if (parts.Count == 0 && semantic is not null)
+            parts.Add(semantic);
+        if (!timedOut && exitCode == 0)
+        {
+            var changedPaths = DetectChangedReads(trackedReads);
+            if (changedPaths.Count > 0)
+                parts.Add(BashModelContent.FormatStaleReadHint(changedPaths, workingDirectory));
+        }
+
+        var content = string.Join("\n", parts);
+        var observedBytes = Encoding.UTF8.GetByteCount(stdout) + Encoding.UTF8.GetByteCount(stderr);
+        if (observedBytes > BashModelContent.MaxInlineOutputBytes)
+        {
+            var artifact = await context.Workspace.SaveArtifactAsync(
+                context.SessionId,
+                $"bash-output-{Guid.NewGuid():N}.txt",
+                "text/plain",
+                Encoding.UTF8.GetBytes(content),
+                cancellationToken: default).ConfigureAwait(false);
+            content = BashModelContent.FormatPersistedOutputEnvelope(content, observedBytes, artifact.Uri);
+        }
+
+        var result = ToolExecutionResult.Text(content, isError: providerError);
         return ToolResultBudget.ApplyBudget(result, ToolResultLimits.DefaultMaxInlineChars);
     }
 
-    private static void AppendLine(StringBuilder builder, object lockObject, string? data)
+    private string? DecideCwd(
+        ToolExecutionContext context,
+        BashProcessSession session,
+        int exitCode,
+        bool timedOut)
     {
-        if (data is null)
-            return;
-        lock (lockObject)
+        if (timedOut || exitCode != 0 || !_isPosixShell || context.Shell is null)
+            return null;
+        if (!session.TryExtractCapturedCwd(out var captured))
+            return null;
+
+        var windowsCwd = ResolveCapturedPath(captured);
+        if (windowsCwd is not null && IsInsideOrSamePath(windowsCwd, context.WorkspaceRoot))
         {
-            builder.AppendLine(data);
+            context.Shell.SetCurrentDirectory(windowsCwd);
+            return null;
         }
+
+        // Leaving the workspace resets the session cwd; the reset itself is announced on
+        // stderr so the model does not assume the new directory stuck.
+        context.Shell.SetCurrentDirectory(context.WorkspaceRoot);
+        return $"Shell cwd was reset to {context.WorkspaceRoot}";
+    }
+
+    // cygpath already yields a drive-letter path on git-bash; drive-style drives only exist
+    // on Windows, and non-Windows shells report the native path directly.
+    internal static string? ResolveCapturedPath(string captured)
+    {
+        if (!OperatingSystem.IsWindows())
+            return captured;
+        if (captured.Length >= 3
+            && char.IsAsciiLetter(captured[0])
+            && captured[1] == ':'
+            && (captured[2] == '\\' || captured[2] == '/'))
+            return captured;
+        return TryPosixToWindowsPath(captured);
+    }
+
+    internal static bool IsAutoBackgroundEligible(string command)
+    {
+        var trimmed = command.Trim();
+        if (trimmed.Length == 0)
+            return false;
+        var firstToken = trimmed.Split(' ', '\t', '\n')[0];
+        return firstToken != "sleep";
+    }
+
+    internal static string? TryPosixToWindowsPath(string posixPath)
+    {
+        if (posixPath.Length < 2 || posixPath[0] != '/')
+            return null;
+        if (!char.IsAsciiLetter(posixPath[1]))
+            return null;
+        var drive = char.ToUpperInvariant(posixPath[1]);
+        if (posixPath.Length == 2)
+            return $"{drive}:\\";
+        if (posixPath[2] != '/')
+            return null;
+        return $"{drive}:\\" + posixPath[3..].Replace('/', '\\');
+    }
+
+    internal static bool IsInsideOrSamePath(string candidate, string root)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
+        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        return string.Equals(full, normalizedRoot, comparison)
+            || full.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison);
+    }
+
+    internal static List<string> DetectChangedReads(
+        IReadOnlyList<(string Path, FileReadSnapshot Snapshot)> trackedReads)
+    {
+        var changed = new List<string>();
+        foreach (var (path, snapshot) in trackedReads)
+        {
+            try
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists || snapshot.MatchesCurrent(info.Length, info.LastWriteTimeUtc))
+                    continue;
+                changed.Add(path);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return changed;
+    }
+
+    private static string CreateBackgroundOutputPath(ToolExecutionContext context)
+    {
+        var directory = Path.Combine(context.WorkspaceRoot, ".alcoler", "background", context.SessionId.Value);
+        return Path.Combine(directory, $"bash-{Guid.NewGuid():N}.log");
     }
 }

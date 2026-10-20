@@ -13,6 +13,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Shapes;
+using Avalonia.Controls.Templates;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
@@ -220,6 +221,79 @@ public class TimelineSmokeTests
             Assert.False(reasoning.IsEffectivelyVisible);
             Assert.True(collapsedChevron.IsEffectivelyVisible);
             Assert.False(expandedChevron.IsEffectivelyVisible);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Disclosures_RetainManualStateAcrossStreamingResetsAndVirtualization()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 800);
+        try
+        {
+            var reasoning = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new ReasoningPart(StrongId.NewPartId(), "Inspect the project before the next operation.")],
+                false, DateTimeOffset.UtcNow);
+            var tool = new ToolCallRow("t1", StrongId.NewToolCallId(), "Bash",
+                JsonSerializer.SerializeToElement(new { command = "ls" }), ToolCallStatus.Succeeded,
+                [new ToolResultText("file.txt")], false, TimeSpan.FromMilliseconds(420), DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(reasoning), new RowAppended(tool)], Reset: false));
+            Pump();
+            var reasoningItem = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[0]);
+            var toolItem = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[1]);
+            var expander = Assert.Single(view.GetVisualDescendants().OfType<Expander>());
+            await ClickAsync(window, expander.GetVisualDescendants().OfType<ToggleButton>().Single());
+            await ClickAsync(window, ToolHeader(view, toolItem));
+            Assert.True(reasoningItem.IsReasoningExpanded);
+            Assert.True(toolItem.IsExpanded);
+
+            var updated = reasoning with
+            {
+                Parts = [.. reasoning.Parts, new TextPart(StrongId.NewPartId(), "Streaming commentary")],
+                IsStreaming = true,
+            };
+            var filler = Enumerable.Range(0, 40).Select(index => (ConversationRow)new ToolCallRow($"f{index}",
+                StrongId.NewToolCallId(), "ReadFile", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
+                ToolCallStatus.Succeeded, null, false, TimeSpan.Zero, DateTimeOffset.UtcNow)).ToArray();
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming), [], Reset: true,
+                ResetRows: [updated, tool, .. filler]));
+            Pump();
+            Assert.Same(reasoningItem, viewModel.Items[0]);
+            Assert.Same(toolItem, viewModel.Items[1]);
+            Assert.True(reasoningItem.IsReasoningExpanded);
+            Assert.True(toolItem.IsExpanded);
+            await RenderAsync(window);
+            view.Scroller.ScrollToEnd();
+            await RenderAsync(window);
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            items.ScrollIntoView(0);
+            view.Scroller.ScrollToHome();
+            await RenderAsync(window);
+
+            var restored = Assert.Single(view.GetVisualDescendants().OfType<Expander>(),
+                control => ReferenceEquals(control.DataContext, reasoningItem));
+            Assert.True(restored.IsExpanded);
+            Assert.Contains(restored.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                text => text.IsEffectivelyVisible && text.Text == reasoningItem.ReasoningBlocks.Single());
+            Assert.Contains(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                text => text.IsEffectivelyVisible && text.Text == "file.txt");
+            AssertHeaderDuration(ToolHeader(view, toolItem), "420ms");
+
+            await ClickAsync(window, restored.GetVisualDescendants().OfType<ToggleButton>().Single());
+            await ClickAsync(window, ToolHeader(view, toolItem));
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(), [], Reset: true,
+                ResetRows: [updated with { IsStreaming = false }, tool, .. filler]));
+            Pump();
+            Assert.False(reasoningItem.IsReasoningExpanded);
+            Assert.False(toolItem.IsExpanded);
         }
         finally
         {
@@ -602,7 +676,7 @@ public class TimelineSmokeTests
             ], Reset: false));
             Pump();
 
-            Assert.Equal(1, view.AutoScrollCount);
+            Assert.True(view.AutoScrollCount == 1, DescribeTimeline(view));
             Assert.Equal(0, scroller.Offset.Y);
         }
         finally
@@ -691,6 +765,262 @@ public class TimelineSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task ScrollExtent_MixedToolHistoryRetainsMeasuredAnswerHeightWhileReadingEarlierRows()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 600);
+        try
+        {
+            var tools = Enumerable.Range(0, 100).Select(index => (ConversationRow)new ToolCallRow($"t{index}",
+                StrongId.NewToolCallId(), "ReadFile", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
+                ToolCallStatus.Succeeded, null, false, TimeSpan.FromMilliseconds(3), DateTimeOffset.UtcNow)).ToArray();
+            var text = string.Join("\n\n", Enumerable.Range(0, 60).Select(index =>
+                $"Long answer paragraph {index}. The measured height of this streaming message must remain known while reading earlier operations."));
+            var assistant = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), text)], true, DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming), [], Reset: true,
+                ResetRows: [.. tools, assistant]));
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            items.ScrollIntoView(viewModel.Items.Count - 1);
+            await RenderAsync(window);
+            view.Scroller.ScrollToEnd();
+            await RenderAsync(window);
+            var measuredExtent = view.Scroller.Extent.Height;
+            Assert.True(measuredExtent > 4000);
+            view.Scroller.ScrollToHome();
+            await RenderAsync(window);
+            Assert.InRange(view.Scroller.Extent.Height, measuredExtent - 64, measuredExtent + 64);
+            var offset = view.Scroller.Offset;
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(assistant with { Parts = [new TextPart(StrongId.NewPartId(), text + "\n\n" + text)] })], Reset: false));
+            await RenderAsync(window);
+            Assert.True(view.Scroller.Extent.Height > measuredExtent + 1000);
+            Assert.Equal(offset, view.Scroller.Offset);
+            var streamingExtent = view.Scroller.Extent;
+            var offscreenTool = (ToolCallRow)tools[70];
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(offscreenTool with { Duration = TimeSpan.FromSeconds(5) })], Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(streamingExtent, view.Scroller.Extent);
+            Assert.Equal(offset, view.Scroller.Offset);
+            Assert.True(view.GetVisualDescendants().OfType<Button>().Count(button => button.Classes.Contains("toolRow")) < tools.Length,
+                DescribeTimeline(view));
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task ConversationPanel_PreloadedItemsKeepStreamingHeightAndReleaseReplacedPanel()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var tools = Enumerable.Range(0, 100).Select(index => (ConversationRow)new ToolCallRow($"t{index}",
+            StrongId.NewToolCallId(), "ReadFile", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
+            ToolCallStatus.Succeeded, null, false, TimeSpan.FromMilliseconds(3), DateTimeOffset.UtcNow)).ToArray();
+        var text = string.Join("\n\n", Enumerable.Repeat("Preloaded streaming answer remains measured outside the viewport.", 60));
+        var assistant = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+            [new TextPart(StrongId.NewPartId(), text)], true, DateTimeOffset.UtcNow);
+        viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming), [], Reset: true,
+            ResetRows: [.. tools, assistant]));
+        var window = Host(view, 900, 600);
+        try
+        {
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            items.ScrollIntoView(viewModel.Items.Count - 1);
+            await RenderAsync(window);
+            view.Scroller.ScrollToHome();
+            await RenderAsync(window);
+            var extent = view.Scroller.Extent.Height;
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(assistant with { Parts = [new TextPart(StrongId.NewPartId(), text + "\n\n" + text)] })], Reset: false));
+            await RenderAsync(window);
+            Assert.True(view.Scroller.Extent.Height > extent + 1000);
+            Assert.Equal(0, view.Scroller.Offset.Y);
+            var rowIndices = panel.Children.Select(child => viewModel.Items.IndexOf((TimelineItemViewModel)child.DataContext!)).ToArray();
+            Assert.Equal(rowIndices.Order(), rowIndices);
+            var oldContainers = panel.Children.ToArray();
+            items.ItemsPanel = new FuncTemplate<Panel?>(() => new ConversationPanel());
+            await RenderAsync(window);
+            var replacement = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            Assert.NotSame(panel, replacement);
+            Assert.Empty(panel.Children);
+            foreach (var container in oldContainers)
+                Assert.DoesNotContain(container, items.GetLogicalChildren());
+            Assert.NotEmpty(replacement.Children);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task AutoScroll_SmallUpwardWheelIntentCancelsPendingFollow()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 600);
+        try
+        {
+            var text = string.Join("\n\n", Enumerable.Repeat("A long answer keeps streaming while the reader scrolls upward.", 40));
+            var row = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), text)], true, DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowAppended(row)], Reset: false));
+            await RenderAsync(window);
+            var point = new Point(400, 300);
+            window.MouseMove(point);
+            window.MouseWheel(point, new Vector(0, 0.25));
+            await RenderAsync(window);
+            var readingOffset = view.Scroller.Offset;
+            Assert.InRange(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - readingOffset.Y, 1, 48);
+            var nested = view.GetVisualDescendants().OfType<ScrollViewer>().First(scroll => !ReferenceEquals(scroll, view.Scroller));
+            nested.RaiseEvent(new ScrollChangedEventArgs(default, new Vector(0, 10), default));
+            await RenderAsync(window);
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(row with { Parts = [new TextPart(StrongId.NewPartId(), text + "\n\n" + text)] })], Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(readingOffset, view.Scroller.Offset);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task AutoScroll_CompletionHeightShrinkDoesNotDisableFollowingForNextTurn()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 600);
+        try
+        {
+            var text = string.Join("\n\n", Enumerable.Repeat("Streaming answer with enough content to fill the timeline.", 60));
+            var row = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), text)], true, DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowAppended(row)], Reset: false));
+            await RenderAsync(window);
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(),
+                [new RowUpserted(row with { IsStreaming = false })], Reset: false));
+            await RenderAsync(window);
+            var count = view.AutoScrollCount;
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(),
+                [new RowAppended(new UserMessageRow("u2", text, DateTimeOffset.UtcNow))], Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(count + 1, view.AutoScrollCount);
+            Assert.InRange(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y, 0, 1);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task ScrollBar_DragOwnsPositionDuringStreamingAndResumesFollowingAtBottom()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 600);
+        try
+        {
+            var layout = Assert.Single(view.GetVisualDescendants().OfType<ConversationLayout>());
+            var initialWidth = layout.Bounds.Width;
+            var text = string.Join("\n\n", Enumerable.Range(0, 60).Select(index =>
+                $"Paragraph {index}. Streaming output must not take control of a scrollbar while the reader is dragging it."));
+            var assistant = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), text)], true, DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowAppended(assistant)], Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(initialWidth, layout.Bounds.Width);
+            var bar = Assert.Single(view.Scroller.GetVisualDescendants().OfType<ScrollBar>(),
+                control => control.Orientation == Orientation.Vertical && ReferenceEquals(control.TemplatedParent, view.Scroller));
+            var thumb = Assert.Single(bar.GetVisualDescendants().OfType<Thumb>());
+            var track = Assert.Single(bar.GetVisualDescendants().OfType<Track>());
+            Assert.Equal(14, bar.Bounds.Width);
+            Assert.Equal(32, thumb.MinHeight);
+            Assert.True(thumb.Bounds.Height >= 32);
+            Assert.Equal(bar.Bounds.Height, track.Bounds.Height);
+            var surface = Assert.Single(thumb.GetVisualDescendants().OfType<Border>(),
+                border => border.Name == "ThumbSurface");
+            Assert.Equal(8, surface.Bounds.Width);
+            await RenderAsync(window);
+            var origin = thumb.TranslatePoint(new Point(thumb.Bounds.Width / 2, thumb.Bounds.Height / 2), window)!.Value;
+            var hit = Assert.IsAssignableFrom<Visual>(window.InputHitTest(origin));
+            Assert.True(ReferenceEquals(hit, thumb) || hit.GetVisualAncestors().Contains(thumb),
+                $"Expected scrollbar thumb at {origin}, hit {hit.GetType().Name}; thumb {thumb.Bounds}, scrollbar {bar.Bounds}");
+            window.MouseMove(origin);
+            window.MouseDown(origin, MouseButton.Left);
+            Pump();
+            Assert.Contains(":pressed", thumb.Classes);
+            window.MouseMove(origin + new Vector(1, 0), RawInputModifiers.LeftMouseButton);
+            await RenderAsync(window);
+            window.MouseMove(origin, RawInputModifiers.LeftMouseButton);
+            await RenderAsync(window);
+            var pressedOffset = view.Scroller.Offset;
+            var scrollCount = view.AutoScrollCount;
+
+            var updated = assistant with { Parts = [new TextPart(StrongId.NewPartId(), text + "\n\n" + text)] };
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(updated)], Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(pressedOffset, view.Scroller.Offset);
+            Assert.True(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y > 48);
+            Assert.Equal(scrollCount, view.AutoScrollCount);
+            window.MouseMove(origin - new Vector(0, 80), RawInputModifiers.LeftMouseButton);
+            await RenderAsync(window);
+            Assert.True(view.Scroller.Offset.Y < pressedOffset.Y);
+            var draggedOffset = view.Scroller.Offset;
+            window.MouseUp(origin - new Vector(0, 80), MouseButton.Left);
+            Pump();
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(updated with { Parts = [new TextPart(StrongId.NewPartId(), text + "\n\n" + text + "\n\nMore output.")] })],
+                Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(draggedOffset, view.Scroller.Offset);
+
+            var trackBottom = track.TranslatePoint(new Point(track.Bounds.Width / 2, track.Bounds.Height - 1), window)!.Value;
+            var currentThumb = thumb.TranslatePoint(new Point(thumb.Bounds.Width / 2, thumb.Bounds.Height / 2), window)!.Value;
+            window.MouseMove(currentThumb);
+            window.MouseDown(currentThumb, MouseButton.Left);
+            window.MouseMove(trackBottom, RawInputModifiers.LeftMouseButton);
+            window.MouseUp(trackBottom, MouseButton.Left);
+            await RenderAsync(window);
+            Assert.InRange(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y, 0, 1);
+            viewModel.ApplyUpdate(new ProjectionUpdate(4, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(updated with { Parts = [new TextPart(StrongId.NewPartId(), text + "\n\n" + text + "\n\n" + text)] })],
+                Reset: false));
+            await RenderAsync(window);
+            Assert.InRange(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y, 0, 1);
+            Assert.Equal(14, bar.Bounds.Width);
+            Assert.Equal(8, surface.Bounds.Width);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
     public void WorkingIndicator_FollowsTurnActivity()
     {
         EnsureFluentTheme();
@@ -765,11 +1095,11 @@ public class TimelineSmokeTests
 
     private static string DescribeTimeline(TimelineView view)
     {
-        var panel = Assert.Single(view.GetVisualDescendants().OfType<VirtualizingStackPanel>());
+        var panel = Assert.Single(view.GetVisualDescendants().OfType<VirtualizingPanel>());
         var rows = string.Join(", ", panel.Children.Select(control =>
             $"{(control.DataContext as TimelineItemViewModel)?.RowId}:{control.Bounds}"));
         return $"offset {view.Scroller.Offset}, extent {view.Scroller.Extent}, viewport {view.Scroller.Viewport}, " +
-            $"realized {panel.FirstRealizedIndex}-{panel.LastRealizedIndex}, rows [{rows}]";
+            $"realized {panel.Children.Count}, rows [{rows}]";
     }
 
     private async Task RenderAsync(Window window)

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Workspace;
 
 namespace Alcoler.Contracts.Tools;
@@ -27,7 +28,13 @@ public sealed record ToolExecutionContext(
     JsonElement Input,
     IToolWorkspace Workspace,
     TimeProvider Clock,
-    ISessionCommands? Commands = null);
+    ISessionCommands? Commands = null,
+    IFileReadState? FileReads = null,
+    IShellSessionState? Shell = null,
+    IBackgroundJobService? BackgroundJobs = null,
+    IAuxModelClient? AuxModel = null,
+    ISkillContentProvider? Skills = null,
+    IUserInteractionPort? Interactions = null);
 
 public sealed record ToolExecutionResult(
     IReadOnlyList<ToolResultBlock> Content,
@@ -49,4 +56,14 @@ public interface ITool
     ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken);
 
     ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Lets a tool downgrade the permission flow for specific inputs (e.g. Bash commands
+/// classified as read-only), mirroring per-call permission semantics instead of
+/// forcing one verdict for every call of the tool.
+/// </summary>
+public interface IToolInputPolicy
+{
+    bool IsReadOnlyInput(JsonElement input);
 }

@@ -18,7 +18,7 @@ public sealed record AnthropicModelOptions(
     string ApiKey,
     string BaseUrl = "https://api.anthropic.com")
 {
-    public string MessagesUrl => $"{BaseUrl.TrimEnd('/')}/v1/messages";
+    public string MessagesUrl => $"{AnthropicEndpoint.NormalizeBaseUrl(BaseUrl)}/messages";
 }
 
 public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOptions options, ModelProperties? properties = null, string? providerId = null) : IChatModel
@@ -136,7 +136,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
             Content = new StringContent(
                 ModelRequestOptions.Encode(payload, _requestProperties, request.Options, "max_tokens", DefaultMaxTokens), Encoding.UTF8, "application/json"),
         };
-        message.Headers.Add("x-api-key", options.ApiKey);
+        AnthropicEndpoint.AddAuthHeaders(message, options.ApiKey);
         message.Headers.Add("anthropic-version", AnthropicVersion);
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         return message;

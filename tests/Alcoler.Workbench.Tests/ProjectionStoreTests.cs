@@ -71,6 +71,35 @@ public class ProjectionStoreTests
     }
 
     [Fact]
+    public async Task EmptyDeltas_AdvanceSequenceWithoutResettingOrPublishingRows()
+    {
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State()));
+        using (store)
+        {
+            var resets = 0;
+            var visible = new TaskCompletionSource<ProjectionUpdate>(TaskCreationOptions.RunContinuationsAsynchronously);
+            store.Updated += update =>
+            {
+                if (update.Reset)
+                    Interlocked.Increment(ref resets);
+                else
+                    visible.TrySetResult(update);
+            };
+            store.Start();
+            await WaitUntil(() => Volatile.Read(ref resets) == 1);
+            projection.Emit(new ConversationDelta(2, []));
+            projection.Emit(new ConversationDelta(3, []));
+            projection.Emit(new ConversationDelta(4, [new RowAppended(UserRow("u1", "visible after hidden events"))]));
+            var update = await visible.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(4, update.Sequence);
+            Assert.Single(update.Ops);
+            Assert.Equal(1, Volatile.Read(ref resets));
+            Assert.Equal(1, projection.SubscribeCount);
+            Assert.Equal("u1", Assert.Single(store.Rows).RowId);
+        }
+    }
+
+    [Fact]
     public async Task SequenceGap_TriggersResubscribeAndWholesaleReset()
     {
         var (store, projection) = Create(Snapshot(1, TestSnapshots.State(), UserRow("u1", "hello")));

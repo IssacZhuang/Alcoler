@@ -64,7 +64,7 @@ public sealed class LiveConversationProjection : IConversationProjection
         {
             await foreach (var sequenced in _subscriber.Reader.ReadAllAsync())
             {
-                if (ApplyToBuilder(sequenced) is { } ops && ops.Count > 0)
+                if (ApplyToBuilder(sequenced) is { } ops)
                 {
                     await _deltas.Writer.WriteAsync(new ConversationDelta(sequenced.Sequence, ops));
                 }

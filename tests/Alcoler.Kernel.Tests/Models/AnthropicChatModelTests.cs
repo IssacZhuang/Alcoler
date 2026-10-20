@@ -29,6 +29,13 @@ public class AnthropicChatModelTests
         [],
         new ModelCallOptions());
 
+    private const string TerminalSse = """
+        data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}
+
+        data: {"type":"message_stop"}
+
+        """;
+
     [Fact]
     public async Task HappyPath_MapsTextToolUseAndUsage()
     {
@@ -128,6 +135,45 @@ public class AnthropicChatModelTests
         Assert.Equal("sig-abc", ended.ProviderSignature);
         var finish = Assert.IsType<ModelStreamFinished>(events.Last());
         Assert.Equal(ModelFinishReason.Stop, finish.FinishReason);
+    }
+
+    [Theory]
+    [InlineData("https://api.anthropic.com", "https://api.anthropic.com/v1/messages")]
+    [InlineData("https://api.anthropic.com/v1/", "https://api.anthropic.com/v1/messages")]
+    [InlineData("https://proxy.example/anthropic", "https://proxy.example/anthropic/v1/messages")]
+    [InlineData("https://unit.test/V1", "https://unit.test/V1/messages")]
+    public async Task MessagesUrl_AppendsV1ExactlyOncePerBaseURLShape(string baseUrl, string expectedUrl)
+    {
+        var handler = new RecordingHandler((_, _) => SegmentedStream.ToResponse(TerminalSse));
+        var model = new AnthropicChatModel(
+            new HttpClient(handler), new AnthropicModelOptions("claude-sonnet-4", "test-key", baseUrl));
+
+        await CollectAsync(model, BasicRequest());
+
+        Assert.Equal(new Uri(expectedUrl), Assert.Single(handler.Requests).RequestUri);
+    }
+
+    [Fact]
+    public async Task Request_SendsBothAnthropicAuthHeaderSchemes()
+    {
+        var handler = new RecordingHandler((_, _) => SegmentedStream.ToResponse(TerminalSse));
+        var model = CreateModel(handler);
+
+        await CollectAsync(model, BasicRequest());
+
+        var sent = Assert.Single(handler.Requests);
+        Assert.Equal("test-key", Assert.Single(sent.Headers.GetValues("x-api-key")));
+        Assert.Equal("Bearer test-key", Assert.Single(sent.Headers.GetValues("Authorization")));
+    }
+
+    [Theory]
+    [InlineData("", "https://api.anthropic.com/v1")]
+    [InlineData("   https://relay.test/anthropic/   ", "https://relay.test/anthropic/v1")]
+    [InlineData("relay.local/anthropic", "relay.local/anthropic/v1")]
+    [InlineData("relay.local/v1/", "relay.local/v1")]
+    public void NormalizeBaseUrl_TrimsAndFallsBackForNonAbsoluteRoots(string baseUrl, string expected)
+    {
+        Assert.Equal(expected, AnthropicEndpoint.NormalizeBaseUrl(baseUrl));
     }
 
     [Fact]

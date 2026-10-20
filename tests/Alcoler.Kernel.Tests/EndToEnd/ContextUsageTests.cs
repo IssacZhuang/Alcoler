@@ -1,5 +1,6 @@
 using Alcoler.Adapters.Models;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
@@ -107,6 +108,53 @@ public class ContextUsageTests
             new TurnCompletedEvent(StrongId.NewTurnId(), TurnOutcome.Completed, new TokenUsage(ContextUsageTokens: 9000))));
         Assert.Equal(1234, builder.State.ContextUsageTokens);
         Assert.Equal(context, builder.State.ContextUsage);
+    }
+
+    [Fact]
+    public async Task Projection_HiddenStreamingEventsPreserveDeltaSequenceAndVisibleChanges()
+    {
+        var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
+        var turnId = StrongId.NewTurnId();
+        store.Append(new TurnStartedEvent(turnId, StrongId.NewCommandId()));
+        using var projection = new LiveConversationProjection(store, 0, () => 0);
+        var initial = projection.Snapshot();
+        SessionEvent[] events =
+        [
+            new ModelStreamingReasoningEvent(turnId, "Thinking"),
+            new ModelStreamingToolInputEvent(turnId, new ToolCallId("call-1"), "{}"),
+            new ModelStreamingTextEvent(turnId, "Hello"),
+            new ModelStreamingReasoningEvent(turnId, "Still thinking"),
+            new ModelStreamingTextEvent(turnId, " world"),
+        ];
+        foreach (var sessionEvent in events)
+            store.Append(sessionEvent);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var deltas = projection.Deltas(timeout.Token).GetAsyncEnumerator();
+        var received = new List<ConversationDelta>();
+        for (var i = 0; i < events.Length; i++)
+        {
+            Assert.True(await deltas.MoveNextAsync());
+            var delta = deltas.Current;
+            Assert.Equal(initial.Sequence + i + 1, delta.Sequence);
+            received.Add(delta);
+        }
+
+        Assert.Empty(received[0].Ops);
+        Assert.Empty(received[1].Ops);
+        Assert.Empty(received[3].Ops);
+        var first = Assert.IsType<AssistantMessageRow>(Assert.Single(received[2].Ops.OfType<RowAppended>()).Row);
+        Assert.True(first.IsStreaming);
+        Assert.Equal("Hello", Assert.IsType<TextPart>(Assert.Single(first.Parts)).Text);
+        var updated = Assert.IsType<AssistantMessageRow>(Assert.Single(received[4].Ops.OfType<RowUpserted>()).Row);
+        Assert.Equal(first.RowId, updated.RowId);
+        Assert.True(updated.IsStreaming);
+        Assert.Equal("Hello world", Assert.IsType<TextPart>(Assert.Single(updated.Parts)).Text);
+        Assert.Equal(TurnPhase.Streaming, Assert.Single(received[4].Ops.OfType<StatePatched>()).State.Phase);
+        var snapshot = projection.Snapshot();
+        Assert.Equal(store.LastSequence, snapshot.Sequence);
+        Assert.Equal(updated, Assert.Single(snapshot.Rows));
+        Assert.Equal(TurnPhase.Streaming, snapshot.State.Phase);
     }
 
     private static async Task SendAndWaitAsync(AgentRuntime runtime, IConversationProjection projection, SessionId id, string text, int expectedReplies)

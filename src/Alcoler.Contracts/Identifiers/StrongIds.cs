@@ -45,6 +45,11 @@ public readonly record struct SubagentId(string Value) : IStrongId
     public override string ToString() => Value;
 }
 
+public readonly record struct BackgroundJobId(string Value) : IStrongId
+{
+    public override string ToString() => Value;
+}
+
 public static class StrongId
 {
     public static SessionId NewSessionId() => new($"sess_{Guid.NewGuid():N}");
@@ -55,4 +60,5 @@ public static class StrongId
     public static InteractionId NewInteractionId() => new($"ia_{Guid.NewGuid():N}");
     public static ToolCallId NewToolCallId() => new($"call_{Guid.NewGuid():N}");
     public static SubagentId NewSubagentId() => new($"sub_{Guid.NewGuid():N}");
+    public static BackgroundJobId NewBackgroundJobId() => new($"bg_{Guid.NewGuid():N}");
 }

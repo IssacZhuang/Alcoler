@@ -9,8 +9,52 @@
              Background="{DynamicResource AlcolerBackground}">
   <UserControl.Resources>
     <views:ConversationIconConverter x:Key="ConversationIcon" />
+    <ControlTheme x:Key="ConversationScrollThumb" TargetType="Thumb">
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="Transparent">
+            <Border x:Name="ThumbSurface" Margin="3,0" CornerRadius="999"
+                    Background="{DynamicResource AlcolerTextTertiary}" Opacity="0.55" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+      <Style Selector="^:pointerover /template/ Border#ThumbSurface">
+        <Setter Property="Opacity" Value="0.8" />
+      </Style>
+      <Style Selector="^:pressed /template/ Border#ThumbSurface">
+        <Setter Property="Opacity" Value="1" />
+      </Style>
+    </ControlTheme>
+    <ControlTheme x:Key="ConversationScrollPage" TargetType="RepeatButton">
+      <Setter Property="Template">
+        <ControlTemplate><Border Background="Transparent" /></ControlTemplate>
+      </Setter>
+    </ControlTheme>
+    <ControlTheme x:Key="ConversationScrollBar" TargetType="ScrollBar">
+      <Setter Property="Width" Value="14" />
+      <Setter Property="MinWidth" Value="14" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True"
+                 Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+                 Value="{TemplateBinding Value, Mode=TwoWay}" ViewportSize="{TemplateBinding ViewportSize}">
+            <Track.DecreaseButton>
+              <RepeatButton Name="PART_PageUpButton" Focusable="False" Theme="{StaticResource ConversationScrollPage}" />
+            </Track.DecreaseButton>
+            <Track.IncreaseButton>
+              <RepeatButton Name="PART_PageDownButton" Focusable="False" Theme="{StaticResource ConversationScrollPage}" />
+            </Track.IncreaseButton>
+            <controls:ConversationScrollThumb MinHeight="32" Theme="{StaticResource ConversationScrollThumb}" />
+          </Track>
+        </ControlTemplate>
+      </Setter>
+    </ControlTheme>
   </UserControl.Resources>
   <UserControl.Styles>
+    <Style Selector="ScrollViewer#TimelineScroll /template/ ScrollBar#PART_VerticalScrollBar">
+      <Setter Property="Theme" Value="{StaticResource ConversationScrollBar}" />
+    </Style>
     <Style Selector="Border.workingDot">
       <Setter Property="Width" Value="6" />
       <Setter Property="Height" Value="6" />
@@ -168,12 +212,13 @@
   </UserControl.Styles>
 
   <Grid>
-    <ScrollViewer x:Name="TimelineScroll" HorizontalScrollBarVisibility="Disabled">
+    <ScrollViewer x:Name="TimelineScroll" HorizontalScrollBarVisibility="Disabled"
+                  VerticalScrollBarVisibility="Visible" AllowAutoHide="False">
       <controls:ConversationLayout x:Name="TimelineLayout" Padding="16,56,16,20" UseResponsiveHorizontalPadding="True">
         <StackPanel MinWidth="0" HorizontalAlignment="Stretch">
           <ItemsControl x:Name="TimelineItems" ItemsSource="{Binding Items}" Background="Transparent">
             <ItemsControl.ItemsPanel>
-              <ItemsPanelTemplate><VirtualizingStackPanel /></ItemsPanelTemplate>
+              <ItemsPanelTemplate><controls:ConversationPanel /></ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
             <ItemsControl.DataTemplates>
               <DataTemplate x:DataType="vm:UserMessageItemViewModel">
@@ -189,7 +234,7 @@
                 <StackPanel Classes="assistantRow"
                             Classes.hasText="{Binding MarkdownText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
                             Spacing="12" MinWidth="0" HorizontalAlignment="Stretch">
-                  <Expander Classes="thinkingBlock" IsExpanded="False" HorizontalAlignment="Stretch"
+                  <Expander Classes="thinkingBlock" IsExpanded="{Binding IsReasoningExpanded, Mode=TwoWay}" HorizontalAlignment="Stretch"
                             IsVisible="{Binding ReasoningBlocks, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
                     <Expander.Header>
                       <TextBlock Text="Thinking" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource AlcolerTextTertiary}" />

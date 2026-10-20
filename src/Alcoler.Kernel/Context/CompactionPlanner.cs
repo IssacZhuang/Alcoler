@@ -40,16 +40,9 @@ public static class CompactionPlanner
     public static CompactionPlan PlanCompaction(CompactionPlanInput input)
     {
         var selection = CompactionSelector.SelectForCompaction(input.Messages, input.Trigger);
-        var prompt = SummarizationPrompt.BuildSummaryUserPrompt(selection.ToSummarize, input.ManualInstructions);
 
         // Summaries never carry tools, so Tools is always empty regardless of CompactToolKeepMaxCount.
-        var request = new ModelRequest(
-        [
-            new ModelInputMessage(MessageRole.System, [new InputTextBlock(SummarySystemInstruction)]),
-            new ModelInputMessage(MessageRole.User, [new InputTextBlock(prompt)]),
-        ],
-            Tools: [],
-            Options: new ModelCallOptions(MaxOutputTokens: CompactPolicy.SummaryMaxOutputTokens));
+        var request = BuildSummaryRequest(selection, input.ManualInstructions);
 
         var preCompactTokens = input.EffectiveTokens > 0
             ? input.EffectiveTokens
@@ -62,6 +55,19 @@ public static class CompactionPlanner
             request,
             input.Messages.Take(selection.ContextPrefixCount).ToList());
     }
+
+    public static ModelRequest BuildSummaryRequest(CompactionSelection selection, string? manualInstructions) =>
+        new(
+        [
+            new ModelInputMessage(MessageRole.System, [new InputTextBlock(SummarySystemInstruction)]),
+            new ModelInputMessage(MessageRole.User, [new InputTextBlock(SummarizationPrompt.BuildSummaryUserPrompt(selection.ToSummarize, manualInstructions))]),
+        ],
+            Tools: [],
+            Options: new ModelCallOptions(MaxOutputTokens: CompactPolicy.SummaryMaxOutputTokens));
+
+    public const string CompactContinuationHeader =
+        "This session is being continued from a previous conversation that ran out of context. " +
+        "The summary below covers the earlier portion of the conversation.";
 
     public static ConversationMessage CreateCompactSummaryMessage(string summaryText) =>
         new(
@@ -104,13 +110,17 @@ public static class CompactionPlanner
         IReadOnlyList<ConversationMessage> recentlyReadFilesAttachments)
     {
         var summaryMessage = compactSummaryMessage;
-        if (plan.Selection.TruncationMarker is { } marker)
+        // Mirrors ZCode compact prompt framing: the header explains what the summary is, the
+        // marker (when groups were dropped for size) and verbatim-preserved note follow it.
+        var summaryContent = plan.Selection.TruncationMarker is { } marker
+            ? $"{CompactContinuationHeader}\n\n{marker}\n\n{summaryText}"
+            : $"{CompactContinuationHeader}\n\n{summaryText}";
+        if (preservedTail.Count > 0)
+            summaryContent += "\n\nRecent messages are preserved verbatim.";
+        summaryMessage = summaryMessage with
         {
-            summaryMessage = compactSummaryMessage with
-            {
-                Parts = [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.CompactSummary, $"{marker}\n\n{summaryText}", ProviderVisible: true)],
-            };
-        }
+            Parts = [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.CompactSummary, summaryContent, ProviderVisible: true)],
+        };
 
         var messages = new List<ConversationMessage>();
         messages.AddRange(plan.ContextPrefixMessages);

@@ -146,7 +146,9 @@ public class CompactionPlannerTests
         Assert.Equal(history[0].Id, result.Messages[0].Id);
         var summary = Assert.IsType<AttachmentPart>(result.Messages[1].Parts[0]);
         Assert.Equal(AttachmentKind.CompactSummary, summary.Kind);
-        Assert.Equal("SUMMARY", summary.Content);
+        Assert.Equal(
+            $"{CompactionPlanner.CompactContinuationHeader}\n\nSUMMARY\n\nRecent messages are preserved verbatim.",
+            summary.Content);
         Assert.True(result.Messages[2].Parts.Cast<AttachmentPart>().All(p => p.Kind == AttachmentKind.ResumeReferencedContext));
         Assert.Equal(plan.Selection.PreservedTail[0].Id, result.Messages[3].Id);
         Assert.Equal(plan.Selection.PreservedTail[^1].Id, result.Messages[^1].Id);
@@ -165,8 +167,9 @@ public class CompactionPlannerTests
             retryPlan, "SUMMARY", CompactionPlanner.CreateCompactSummaryMessage("SUMMARY"), retryPlan.Selection.PreservedTail, []);
 
         var summary = Assert.IsType<AttachmentPart>(result.Messages[1].Parts[0]);
-        Assert.StartsWith(CompactionSelector.TruncationMarkerText, summary.Content);
-        Assert.EndsWith("SUMMARY", summary.Content);
+        Assert.StartsWith(CompactionPlanner.CompactContinuationHeader, summary.Content);
+        Assert.Contains($"\n\n{CompactionSelector.TruncationMarkerText}\n\n", summary.Content);
+        Assert.EndsWith("SUMMARY\n\nRecent messages are preserved verbatim.", summary.Content);
     }
 
     [Fact]

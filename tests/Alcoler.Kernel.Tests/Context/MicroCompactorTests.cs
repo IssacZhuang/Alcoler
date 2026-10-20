@@ -100,15 +100,36 @@ public class MicroCompactorTests
     {
         var history = new List<ConversationMessage>();
         history.AddRange(TestMessages.Round("TodoWrite", new string('x', 600)).Messages);
+        history.AddRange(TestMessages.Round("ApplyPatch", new string('x', 600)).Messages);
         history.AddRange(TestMessages.Rounds(count: 1, "ReadFile", 1_000));
         history.AddRange(TestMessages.Rounds(count: 5, "Grep", 600));
 
         var result = MicroCompactor.Apply(history, Now.AddMinutes(-90), Now, autoCompactThresholdTokens: 166_000);
 
         var clearedPart = Assert.Single(result.ClearedParts);
-        var todoResult = Assert.IsType<ToolResultPart>(result.Messages[1].Parts[0]);
-        Assert.NotEqual(clearedPart, todoResult.Id);
-        Assert.Equal(new string('x', 600), Assert.IsType<ToolResultText>(todoResult.Content[0]).Text);
+        var remainingResults = result.Messages
+            .SelectMany(m => m.Parts)
+            .OfType<ToolResultPart>()
+            .ToList();
+        Assert.Equal(clearedPart, remainingResults.Single(p => p.Id == clearedPart).Id);
+        Assert.All(
+            remainingResults.Where(p => p.Id != clearedPart),
+            p =>
+            {
+                var text = Assert.IsType<ToolResultText>(Assert.Single(p.Content)).Text;
+                Assert.DoesNotContain(MicroCompactor.ClearedContentText, text);
+            });
+    }
+
+    [Fact]
+    public void TaskOutputResults_AreCleared()
+    {
+        var history = new List<ConversationMessage>();
+        history.AddRange(TestMessages.Rounds(count: 8, "TaskOutput", 600));
+
+        var result = MicroCompactor.Apply(history, Now.AddMinutes(-90), Now, autoCompactThresholdTokens: 166_000);
+
+        Assert.Equal(3, result.ClearedParts.Count);
     }
 
     [Fact]

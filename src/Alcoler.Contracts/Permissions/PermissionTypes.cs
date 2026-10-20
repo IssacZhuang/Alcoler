@@ -62,7 +62,8 @@ public sealed record PermissionCheckRequest(
     string ToolName,
     JsonElement Input,
     ToolMetadata Tool,
-    PermissionMode Mode);
+    PermissionMode Mode,
+    bool TreatAsReadOnly = false);
 
 public interface IPermissionGate
 {

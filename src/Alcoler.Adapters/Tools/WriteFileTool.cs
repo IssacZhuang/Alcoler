@@ -5,16 +5,22 @@ namespace Alcoler.Adapters.Tools;
 
 public sealed class WriteFileTool : ITool
 {
+    private const string StorageSuffix = " (file state is current in your context \u2014 no need to Read it back)";
+
     public ToolContract Contract { get; } = new(
         "WriteFile",
-        "Writes text content to a file inside the workspace, creating parent directories as needed. Overwrites the file when it already exists.",
+        """
+        Writes a file to the local filesystem, overwriting if one exists.
+
+        When to use: creating a new file, or fully replacing one you've already ReadFile. Overwriting an existing file you haven't ReadFile will fail. For partial changes, use EditFile instead.
+        """,
         ToolInput.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
             "file_path": { "type": "string", "description": "File path, relative to the workspace root or absolute inside it." },
-            "content": { "type": "string", "description": "Full file content to write." }
+            "content": { "type": "string", "description": "The content to write to the file" }
           },
           "required": ["file_path", "content"],
           "additionalProperties": false
@@ -52,12 +58,22 @@ public sealed class WriteFileTool : ITool
             return ToolExecutionResult.Text(ex.Message, isError: true);
         }
 
+        var exists = File.Exists(path);
+        if (exists)
+        {
+            var failure = FileReadGuards.ReadStateFailure(path, context);
+            if (failure is not null)
+                return failure;
+        }
+
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
-        await File.WriteAllTextAsync(path, content, cancellationToken);
+        await File.WriteAllTextAsync(path, content, cancellationToken).ConfigureAwait(false);
+        context.FileReads?.RecordWrite(path);
 
-        var lineCount = content.Length == 0 ? 0 : content.Split('\n').Length;
-        return ToolExecutionResult.Text($"File written: {path} ({lineCount} lines)");
+        return ToolExecutionResult.Text(exists
+            ? $"The file {rawPath} has been updated successfully.{StorageSuffix}"
+            : $"File created successfully at: {rawPath}{StorageSuffix}");
     }
 }

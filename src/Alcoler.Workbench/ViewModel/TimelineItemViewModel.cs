@@ -35,6 +35,9 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
     [ObservableProperty]
     private bool _isStreaming;
 
+    [ObservableProperty]
+    private bool _isReasoningExpanded;
+
     public void UpdateFrom(AssistantMessageRow row)
     {
         var text = string.Join("\n\n", row.Parts.OfType<TextPart>().Select(p => p.Text));

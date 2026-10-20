@@ -91,7 +91,8 @@ public sealed class ToolCallExecutor
                     tool.Contract.Name,
                     input,
                     tool.Metadata,
-                    _modeResolver(context)),
+                    _modeResolver(context),
+                    TreatAsReadOnly: tool is IToolInputPolicy policy && policy.IsReadOnlyInput(input)),
                 cancellationToken).ConfigureAwait(false);
 
             if (decision.Outcome == PermissionOutcome.Denied)

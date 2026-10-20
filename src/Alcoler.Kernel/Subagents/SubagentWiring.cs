@@ -19,13 +19,15 @@ namespace Alcoler.Kernel.Subagents;
 public static class SubagentWiring
 {
     /// <param name="runtime">Lazy because the tool is registered on the runtime it resolves.</param>
-    public static SubagentTool CreateTool(Func<AgentRuntime> runtime) =>
-        new(new SubagentService((request, ct) => CreateChildAsync(runtime(), request, ct)));
+    /// <param name="messenger">When set, background children register here so SendMessage can reach them.</param>
+    public static SubagentTool CreateTool(Func<AgentRuntime> runtime, SubagentMessenger? messenger = null) =>
+        new(new SubagentService((request, ct) => CreateChildAsync(runtime(), request, ct, messenger)));
 
     private static async ValueTask<SubagentChildSession> CreateChildAsync(
         AgentRuntime runtime,
         SubagentRequest request,
-        CancellationToken ct)
+        CancellationToken ct,
+        SubagentMessenger? messenger = null)
     {
         var options = runtime.Options;
         var parentRuntime = runtime.GetSession(request.ParentSessionId);
@@ -73,6 +75,10 @@ public static class SubagentWiring
             null,
             options.Clock.GetUtcNow(),
             null);
+        if (request.Background && messenger is not null)
+        {
+            messenger.Register(request.ParentSessionId, new SubagentChannel(state.Id, handle.Id, description, childRuntime));
+        }
         if (parentRuntime is not null)
         {
             await parentRuntime.EmitSubagentStateAsync(state, started: true);

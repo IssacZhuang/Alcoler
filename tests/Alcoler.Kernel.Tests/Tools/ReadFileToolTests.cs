@@ -1,6 +1,6 @@
-using Xunit;
 using Alcoler.Adapters.Tools;
 using Alcoler.Kernel.Tools;
+using Xunit;
 
 namespace Alcoler.Kernel.Tests.Tools;
 
@@ -42,37 +42,260 @@ public class ReadFileToolTests
     }
 
     [Fact]
-    public async Task MissingFile_ReturnsErrorWithConstraintMessage()
+    public async Task DefaultLimit_CapsAtTwoThousandLines()
     {
         using var workspace = new TempWorkspace();
+        var content = string.Join("\n", Enumerable.Range(1, 2_500).Select(i => $"line {i}"));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "big-count.txt"), content);
         var tool = new ReadFileTool();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"file_path": "missing.txt"}"""),
+            workspace.ContextFor("""{"file_path": "big-count.txt"}"""),
             CancellationToken.None);
 
-        Assert.True(result.IsError);
-        Assert.Contains("does not exist", result.SingleText());
+        var text = result.SingleText();
+        Assert.Contains("  2000\tline 2000", text);
+        Assert.DoesNotContain("line 2001", text);
     }
 
     [Fact]
-    public async Task OversizedContent_TruncatedWithHintToUseOffsetAndLimit()
+    public async Task MissingFile_ReturnsCwdNoteWithLevenshteinSuggestion()
     {
         using var workspace = new TempWorkspace();
-        var bigLine = new string('x', 100);
-        var content = string.Join("\n", Enumerable.Range(0, 1000).Select(_ => bigLine));
-        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "big.txt"), content);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "notes.txt"), "content");
         var tool = new ReadFileTool();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"file_path": "big.txt"}"""),
+            workspace.ContextFor("""{"file_path": "note.txt"}"""),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal(
+            $"File does not exist. Note: your current working directory is {workspace.Root}. Did you mean notes.txt?",
+            result.SingleText());
+    }
+
+    [Fact]
+    public async Task MissingFile_SameStemSibling_PreferedOverLevenshtein()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "notes.txt"), "content");
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "notes.md"}"""),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.EndsWith(" Did you mean notes.txt?", result.SingleText());
+    }
+
+    [Fact]
+    public async Task BinaryExtension_ReturnsVerbatimError()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "app.zip"), "pk");
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "app.zip"}"""),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "This tool cannot read binary files. The file appears to be a binary .zip file. Please use appropriate tools for binary file analysis.",
+            result.SingleText());
+    }
+
+    [Fact]
+    public async Task EmptyFile_ReturnsEmptyContentsReminder()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "empty.txt"), "");
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "empty.txt"}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(
+            "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>",
+            result.SingleText());
+    }
+
+    [Fact]
+    public async Task OffsetBeyondEnd_ReturnsShorterThanOffsetReminder()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "a.txt"), "a\nb\nc");
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "a.txt", "offset": 7}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(
+            "<system-reminder>Warning: the file exists but is shorter than the provided offset (7). The file has 3 lines.</system-reminder>",
+            result.SingleText());
+    }
+
+    [Fact]
+    public async Task OversizedFile_WithoutLimit_ReturnsTooLargeError()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "huge.txt"), new string('x', 300_000));
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "huge.txt"}"""),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "File content (293KB) exceeds maximum allowed size (256KB). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+            result.SingleText());
+    }
+
+    [Fact]
+    public async Task OversizedFile_WithExplicitLimit_BypassesSizeCap()
+    {
+        using var workspace = new TempWorkspace();
+        var content = string.Join("\n", Enumerable.Repeat("aaaaa", 60_000));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "huge.txt"), content);
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "huge.txt", "limit": 10}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("    10\taaaaa", result.SingleText());
+    }
+
+    [Fact]
+    public async Task TokenCap_WholeFileRead_ReturnsPartialViewWithContinueHint()
+    {
+        using var workspace = new TempWorkspace();
+        var content = string.Join("\n", Enumerable.Repeat(new string('x', 500), 250));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "tokens.txt"), content);
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "tokens.txt"}"""),
             CancellationToken.None);
 
         Assert.False(result.IsError);
         var text = result.SingleText();
-        Assert.Contains("truncated", text);
-        Assert.Contains("offset", text);
-        Assert.True(text.Length <= ToolResultLimits.ReadToolMaxChars + 200);
+        Assert.StartsWith(
+            "<system-reminder>The file is too large to display in full (41750 estimated tokens, limit 25000). "
+            + "Showing a partial view of lines 1-127 of 250. "
+            + "Use ReadFile with offset 128 and limit 2000 to continue, or use a search tool to find a specific section.</system-reminder>\n\n",
+            text);
+        Assert.Contains("   127\t", text);
+        Assert.DoesNotContain("   128\t", text);
+    }
+
+    [Fact]
+    public async Task TokenCap_ContinuationFromHint_ReturnsRemainingLines()
+    {
+        using var workspace = new TempWorkspace();
+        var content = string.Join("\n", Enumerable.Repeat(new string('x', 500), 250));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "tokens.txt"), content);
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "tokens.txt", "offset": 128}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var text = result.SingleText();
+        Assert.DoesNotContain("system-reminder", text);
+        Assert.Contains("   128\t", text);
+        Assert.Contains("   250\t", text);
+    }
+
+    [Fact]
+    public async Task TokenCap_ExplicitRangeOverBudget_ReturnsError()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "one-line.txt"), new string('y', 100_000));
+        var tool = new ReadFileTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "one-line.txt", "offset": 1, "limit": 1}"""),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal(
+            "File content (33334 tokens) exceeds maximum allowed tokens (25000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+            result.SingleText());
+    }
+
+    [Fact]
+    public async Task RepeatedReadOfUnchangedFile_ReturnsWastedCallStub()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "a.txt");
+        await File.WriteAllTextAsync(path, "alpha\nbeta");
+        var reads = new FileReadState();
+        var tool = new ReadFileTool();
+
+        var first = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "a.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+        var second = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "a.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+
+        Assert.False(first.IsError);
+        Assert.False(second.IsError);
+        Assert.Equal(
+            "Wasted call \u2014 file unchanged since your last ReadFile. Refer to that earlier tool_result instead.",
+            second.SingleText());
+    }
+
+    [Fact]
+    public async Task ExternallyModifiedFile_RereadReturnsFreshContent()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "a.txt");
+        await File.WriteAllTextAsync(path, "alpha");
+        var reads = new FileReadState();
+        var tool = new ReadFileTool();
+
+        await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "a.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+        await File.WriteAllTextAsync(path, "alpha\nbeta\ngamma");
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "a.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("gamma", result.SingleText());
+    }
+
+    [Fact]
+    public async Task PartialView_DoesNotStubSubsequentRead()
+    {
+        using var workspace = new TempWorkspace();
+        var content = string.Join("\n", Enumerable.Repeat(new string('x', 500), 250));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "tokens.txt"), content);
+        var reads = new FileReadState();
+        var tool = new ReadFileTool();
+
+        var first = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "tokens.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+        var second = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "tokens.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+
+        Assert.Contains("partial view", first.SingleText());
+        Assert.Contains("partial view", second.SingleText());
     }
 
     [Fact]

@@ -7,6 +7,7 @@ using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
+using Alcoler.Contracts.Workspace;
 using Alcoler.Kernel.Skills;
 using Alcoler.Kernel.Tools;
 using Microsoft.Extensions.Logging;
@@ -33,6 +34,8 @@ public sealed class AgentRuntimeOptions
     public string? AgentInstructions { get; init; }
 
     public string? SkillsListing { get; init; }
+
+    public ITodoStore? TodoStore { get; init; }
 
     public TimeProvider Clock { get; init; } = TimeProvider.System;
 
@@ -126,7 +129,8 @@ public sealed class AgentRuntime : IAgentRuntime
                 AgentInstructions = _options.AgentInstructions,
                 SkillsListing = SkillsCatalog.RenderListing(new SkillsCatalog().Load(record.WorkspaceRoot)),
                 DefaultModel = _options.DefaultModel,
-            }),
+            },
+            _options.TodoStore),
             CancellationToken.None,
             persistStartEvents: isNewSession).ConfigureAwait(false);
         _sessions[runtime.SessionId] = runtime;

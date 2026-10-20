@@ -51,6 +51,9 @@ public sealed class SkillsCatalog
         return builder.ToString();
     }
 
+    public static string StripFrontMatterForTool(string text) =>
+        StripFrontMatter(text, out _);
+
     private static IReadOnlyList<SkillInfo> LoadFrom(string root, SkillSource source)
     {
         if (!Directory.Exists(root))

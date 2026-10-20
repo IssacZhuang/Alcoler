@@ -89,7 +89,9 @@ public sealed class SubagentTool : ITool
         }
 
         var handle = await _port.StartBackgroundAsync(request, _onBackgroundCompleted, cancellationToken).ConfigureAwait(false);
-        return ToolExecutionResult.Text($"Subagent started: {handle.Description}", displaySummary: description);
+        return ToolExecutionResult.Text(
+            $"Subagent started: {handle.Description}\nagentId: {handle.Id.Value} (use SendMessage with to: '{handle.Id.Value}' to continue this agent)",
+            displaySummary: description);
     }
 
     private static ValueTask NoOpCompleted(SubagentResult result) => ValueTask.CompletedTask;

@@ -101,20 +101,9 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     {
         if (update.Reset)
         {
-            Items.Clear();
-            _itemsByRowId.Clear();
-            var appended = false;
-            foreach (var row in update.ResetRows ?? [])
-            {
-                if (TimelineItemFactory.Create(row) is { } item)
-                {
-                    _itemsByRowId[item.RowId] = item;
-                    Items.Add(item);
-                    appended = true;
-                }
-            }
+            ReconcileRows(update.ResetRows ?? []);
             ApplyState(update.State);
-            if (appended)
+            if (Items.Count > 0)
             {
                 TimelineAppended?.Invoke();
             }
@@ -136,6 +125,64 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
     }
 
+    private void ReconcileRows(IReadOnlyList<ConversationRow> rows)
+    {
+        List<TimelineItemViewModel> items = [];
+        foreach (var row in rows)
+        {
+            var existing = _itemsByRowId.GetValueOrDefault(row.RowId);
+            var item = existing is not null && TryUpdateItem(existing, row)
+                ? existing
+                : TimelineItemFactory.Create(row);
+            if (item is not null)
+            {
+                items.Add(item);
+            }
+        }
+
+        _itemsByRowId.Clear();
+        foreach (var item in items)
+        {
+            _itemsByRowId[item.RowId] = item;
+        }
+        for (var index = Items.Count - 1; index >= 0; index--)
+        {
+            var item = Items[index];
+            if (!ReferenceEquals(_itemsByRowId.GetValueOrDefault(item.RowId), item))
+            {
+                Items.RemoveAt(index);
+            }
+        }
+        for (var index = 0; index < items.Count; index++)
+        {
+            var item = items[index];
+            if (index < Items.Count && ReferenceEquals(Items[index], item))
+            {
+                continue;
+            }
+            var oldIndex = Items.IndexOf(item);
+            if (oldIndex >= 0)
+            {
+                Items.Move(oldIndex, index);
+            }
+            else
+            {
+                Items.Insert(index, item);
+            }
+        }
+    }
+
+    private static bool TryUpdateItem(TimelineItemViewModel item, ConversationRow row) => (item, row) switch
+    {
+        (AssistantMessageItemViewModel assistant, AssistantMessageRow assistantRow) when assistant.Id == assistantRow.Id =>
+            TimelineItemFactory.Update(item, row),
+        (ToolCallItemViewModel tool, ToolCallRow toolRow) when tool.Id == toolRow.Id && tool.ToolName == toolRow.ToolName =>
+            TimelineItemFactory.Update(item, row),
+        (UserMessageItemViewModel user, UserMessageRow userRow) => user.Text == userRow.Text,
+        (SystemNoticeItemViewModel notice, SystemNoticeRow noticeRow) => notice.Kind == noticeRow.Kind && notice.Text == noticeRow.Text,
+        _ => false,
+    };
+
     private bool ApplyOp(RowOp op)
     {
         switch (op)
@@ -147,7 +194,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
             case RowUpserted upserted:
                 var existing = _itemsByRowId.GetValueOrDefault(upserted.Row.RowId);
-                if (existing is not null && TimelineItemFactory.Update(existing, upserted.Row))
+                if (existing is not null && TryUpdateItem(existing, upserted.Row))
                 {
                     return false;
                 }

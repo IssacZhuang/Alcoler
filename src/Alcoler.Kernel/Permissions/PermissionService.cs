@@ -55,7 +55,7 @@ public sealed class PermissionService : IPermissionGate
     {
         var tool = request.Tool;
 
-        if (_mode == PermissionMode.Plan && !tool.AllowedInPlanMode)
+        if (_mode == PermissionMode.Plan && !tool.AllowedInPlanMode && !request.TreatAsReadOnly)
             return PermissionDecision.Deny;
 
         if (tool.RequiresUserInteraction)
@@ -133,6 +133,9 @@ public sealed class PermissionService : IPermissionGate
         ToolMetadata tool,
         CancellationToken cancellationToken)
     {
+        if (request.TreatAsReadOnly)
+            return PermissionDecision.Allow;
+
         if (tool.ReadOnly && tool.RiskLevel == RiskLevel.Low && tool.SideEffectScope != SideEffectScope.UserInteraction)
             return PermissionDecision.Allow;
 
