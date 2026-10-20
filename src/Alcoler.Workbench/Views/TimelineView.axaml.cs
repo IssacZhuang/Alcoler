@@ -94,6 +94,16 @@ public partial class TimelineView : UserControl
         TimelineScroll.ScrollToEnd();
     }
 
+    private void OnOpenToolOutputClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ToolCallItemViewModel item }
+            && TopLevel.GetTopLevel(this) is MainWindow { DataContext: WorkbenchViewModel workbench })
+        {
+            workbench.OpenTextDocument($"tool-output:{item.RowId}", $"{item.ToolName} output", item.OutputText);
+            e.Handled = true;
+        }
+    }
+
     private void OnToolRowClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: ToolCallItemViewModel item })

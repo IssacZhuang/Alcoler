@@ -85,10 +85,11 @@ public partial class MainWindow : Window
 
         var sidePaneOpen = _viewModel?.IsSidePaneVisible == true;
         var availableWidth = Math.Max(620, Bounds.Width - (sidebarOpen ? _sidebarWidth + 4 : 0) - 12);
-        var maxPaneWidth = Math.Max(280, availableWidth - 340);
-        SidePaneColumn.MinWidth = sidePaneOpen ? 280 : 0;
+        var maxPaneWidth = Math.Max(240, Math.Min(availableWidth * 0.65, availableWidth - 340));
+        SidePaneColumn.MinWidth = sidePaneOpen ? 240 : 0;
+        SidePaneColumn.MaxWidth = sidePaneOpen ? maxPaneWidth : double.PositiveInfinity;
         SidePaneColumn.Width = new GridLength(sidePaneOpen
-            ? Math.Clamp(_sidePaneWidth > 0 ? _sidePaneWidth : availableWidth * 0.45, 280, maxPaneWidth)
+            ? Math.Clamp(_sidePaneWidth > 0 ? _sidePaneWidth : availableWidth * 0.45, 240, maxPaneWidth)
             : 0);
 
         var terminalOpen = _viewModel?.IsTerminalVisible == true;
@@ -222,6 +223,10 @@ public partial class MainWindow : Window
                 break;
             case Key.J:
                 await _viewModel.ToggleTerminalCommand.ExecuteAsync(null);
+                e.Handled = true;
+                break;
+            case Key.W when _viewModel.Documents.IsVisible && _viewModel.Documents.ActiveDocument is { } document:
+                _viewModel.Documents.Close(document);
                 e.Handled = true;
                 break;
         }

@@ -11,16 +11,6 @@
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource AlcolerChrome}">
   <Window.Styles>
-    <Style Selector="Button.paneTab">
-      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
-      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
-      <Setter Property="Padding" Value="8,4" />
-      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
-    </Style>
-    <Style Selector="Button.paneTab.active">
-      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
-      <Setter Property="FontWeight" Value="Medium" />
-    </Style>
     <Style Selector="Button.windowClose:pointerover /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerError}" />
     </Style>
@@ -171,38 +161,7 @@
     <Border Grid.Column="4" Background="{DynamicResource AlcolerBackground}"
             BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
             CornerRadius="5" ClipToBounds="True" IsVisible="{Binding IsSidePaneVisible}">
-      <Grid RowDefinitions="48,*">
-        <Border Background="{DynamicResource AlcolerPanel}" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1">
-          <Grid ColumnDefinitions="*,Auto" Margin="8,0,6,0" PointerPressed="OnTitleBarPointerPressed">
-            <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
-              <Button Classes="paneTab" Classes.active="{Binding IsGitPaneSelected}" Command="{Binding ShowGitPaneCommand}" Content="Changes" />
-              <Button Classes="paneTab" Classes.active="{Binding IsBrowserPaneSelected}" Command="{Binding ShowBrowserPaneCommand}" Content="Browser" />
-            </StackPanel>
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-              <Button Classes="icon tiny" Command="{Binding CloseSidePaneCommand}" ToolTip.Tip="Close panel" AutomationProperties.Name="Close panel">
-                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
-              </Button>
-              <Border Width="92" />
-            </StackPanel>
-          </Grid>
-        </Border>
-        <Grid Grid.Row="1">
-          <Grid IsVisible="{Binding IsGitPaneSelected}">
-            <Grid IsVisible="{Binding GitPane, Converter={x:Static ObjectConverters.IsNotNull}}">
-              <views:GitPaneView DataContext="{Binding GitPane}" />
-            </Grid>
-            <TextBlock Text="Select a task to view changes." FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"
-                       Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding GitPane, Converter={x:Static ObjectConverters.IsNull}}" />
-          </Grid>
-          <Grid IsVisible="{Binding IsBrowserPaneSelected}">
-            <Grid IsVisible="{Binding BrowserPane, Converter={x:Static ObjectConverters.IsNotNull}}">
-              <views:BrowserPaneView DataContext="{Binding BrowserPane}" />
-            </Grid>
-            <TextBlock Text="Select a task to view the browser." FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"
-                       Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding BrowserPane, Converter={x:Static ObjectConverters.IsNull}}" />
-          </Grid>
-        </Grid>
-      </Grid>
+      <views:DocumentWorkspaceView x:Name="DocumentsView" />
     </Border>
     <StackPanel Grid.Column="0" Grid.ColumnSpan="5" Orientation="Horizontal" HorizontalAlignment="Right"
                 VerticalAlignment="Top" Margin="0,10,4,0" Spacing="2">

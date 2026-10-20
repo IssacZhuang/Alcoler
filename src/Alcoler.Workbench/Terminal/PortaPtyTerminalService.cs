@@ -13,6 +13,8 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
     public static int DefaultCols => 120;
     public static int DefaultRows => 30;
 
+    private readonly object _lifecycleGate = new();
+    private readonly Func<PtyOptions, CancellationToken, Task<IPtyConnection>> _spawnAsync;
     private IPtyConnection? _connection;
     private CancellationTokenSource? _readCancellation;
     private Task? _readLoop;
@@ -24,6 +26,15 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
     public event EventHandler<int>? Exited;
 
     private bool _exited;
+
+    public PortaPtyTerminalService() : this(PtyProvider.SpawnAsync)
+    {
+    }
+
+    internal PortaPtyTerminalService(Func<PtyOptions, CancellationToken, Task<IPtyConnection>> spawnAsync)
+    {
+        _spawnAsync = spawnAsync;
+    }
 
     public async Task StartAsync(string workingDirectory, int cols, int rows, CancellationToken cancellationToken)
     {
@@ -47,12 +58,29 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
             },
         };
 
-        var connection = await PtyProvider.SpawnAsync(options, cancellationToken);
-        _connection = connection;
-        _exited = false;
-        _readCancellation = new CancellationTokenSource();
-        connection.ProcessExited += OnProcessExited;
-        _readLoop = Task.Run(() => ReadLoopAsync(connection, _readCancellation.Token));
+        var connection = await _spawnAsync(options, cancellationToken);
+        lock (_lifecycleGate)
+        {
+            if (_disposed || cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    connection.Kill();
+                }
+                finally
+                {
+                    connection.Dispose();
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                ObjectDisposedException.ThrowIf(_disposed, this);
+            }
+            _connection = connection;
+            _exited = false;
+            _readCancellation = new CancellationTokenSource();
+            var readToken = _readCancellation.Token;
+            connection.ProcessExited += OnProcessExited;
+            _readLoop = Task.Run(() => ReadLoopAsync(connection, readToken));
+        }
     }
 
     public async Task WriteAsync(string text, CancellationToken cancellationToken)
@@ -89,22 +117,25 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_lifecycleGate)
         {
-            return;
+            if (_disposed)
+            {
+                return;
+            }
+            _disposed = true;
+            _readCancellation?.Cancel();
+            try
+            {
+                _connection?.Kill();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            DisposeConnection();
+            _readCancellation?.Dispose();
+            _readCancellation = null;
         }
-        _disposed = true;
-        _readCancellation?.Cancel();
-        try
-        {
-            _connection?.Kill();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        DisposeConnection();
-        _readCancellation?.Dispose();
-        _readCancellation = null;
     }
 
     private Stream? WriterStream => _connection?.WriterStream;

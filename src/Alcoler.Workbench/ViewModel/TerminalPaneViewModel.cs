@@ -31,6 +31,7 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
     private readonly IPtyTerminalService _service;
     private readonly IUiScheduler _scheduler;
     private readonly VtParser _parser = new();
+    private bool _disposed;
 
     public TerminalPaneViewModel(
         string startedFrom,
@@ -61,13 +62,25 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
 
     public async Task StartAsync()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (IsConnected)
         {
             return;
         }
         var cols = Buffer.Cols;
         var rows = Buffer.Rows;
-        await _service.StartAsync(StartedFrom, cols, rows, CancellationToken.None);
+        try
+        {
+            await _service.StartAsync(StartedFrom, cols, rows, CancellationToken.None);
+        }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            return;
+        }
+        if (_disposed)
+        {
+            return;
+        }
         IsConnected = true;
         if (cols != Buffer.Cols || rows != Buffer.Rows)
         {
@@ -184,6 +197,11 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
         _service.OutputReceived -= OnOutputReceived;
         _service.Exited -= OnExited;
         _service.Dispose();

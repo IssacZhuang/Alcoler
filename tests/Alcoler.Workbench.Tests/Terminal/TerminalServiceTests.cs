@@ -8,6 +8,7 @@ using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Porta.Pty;
 using Xunit;
 using Assert = Xunit.Assert;
 
@@ -86,6 +87,86 @@ public class TerminalServiceTests
         Assert.Single(service.Resizes);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Service_DisposedOrCanceledDuringSpawn_KillsAndDisposesLateConnection(bool cancel)
+    {
+        var spawn = new TaskCompletionSource<IPtyConnection>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var service = new PortaPtyTerminalService((_, _) => spawn.Task);
+        using var cancellation = new CancellationTokenSource();
+        var connection = new FakePtyConnection();
+        var start = service.StartAsync(Path.GetTempPath(), 80, 24, cancellation.Token);
+        Assert.False(start.IsCompleted);
+        if (cancel)
+        {
+            cancellation.Cancel();
+        }
+        else
+        {
+            service.Dispose();
+        }
+
+        spawn.SetResult(connection);
+
+        if (cancel)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => start);
+        }
+        Assert.False(service.IsRunning);
+        Assert.Equal(1, connection.KillCount);
+        Assert.Equal(1, connection.DisposeCount);
+        Assert.Equal(0, connection.SubscriberCount);
+        Assert.Equal(0, connection.ReaderAccessCount);
+        service.Dispose();
+        Assert.Equal(1, connection.DisposeCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ViewModel_DisposedDuringStart_DoesNotConnectOrResizeAfterCompletion(bool throwOnCompletion)
+    {
+        using var service = new FakePtyService
+        {
+            StartCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        var viewModel = new TerminalPaneViewModel(@"C:\ws\project", service, InlineUiScheduler.Instance);
+        var connectedChanges = 0;
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(TerminalPaneViewModel.IsConnected))
+            {
+                connectedChanges++;
+            }
+        };
+        var start = viewModel.StartAsync();
+        viewModel.Resize(80, 24);
+        viewModel.Dispose();
+        if (throwOnCompletion)
+        {
+            service.StartCompletion!.SetException(new ObjectDisposedException(nameof(FakePtyService)));
+        }
+        else
+        {
+            service.StartCompletion!.SetResult();
+        }
+
+        await start;
+
+        Assert.False(viewModel.IsConnected);
+        Assert.Equal(0, connectedChanges);
+        Assert.Empty(service.Resizes);
+        Assert.Equal(1, service.DisposeCount);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => viewModel.StartAsync());
+        viewModel.Dispose();
+        Assert.Equal(1, service.DisposeCount);
+    }
+
     [AvaloniaFact]
     public async Task TerminalView_FitsSurface_ForwardsInputAndToolbarActions_AndRebinds()
     {
@@ -153,6 +234,44 @@ public class TerminalServiceTests
         }
     }
 
+    private sealed class FakePtyConnection : IPtyConnection
+    {
+        public event EventHandler<PtyExitedEventArgs>? ProcessExited;
+
+        public int SubscriberCount => ProcessExited?.GetInvocationList().Length ?? 0;
+
+        public int KillCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
+
+        public int ReaderAccessCount { get; private set; }
+
+        public Stream ReaderStream
+        {
+            get
+            {
+                ReaderAccessCount++;
+                return Stream.Null;
+            }
+        }
+
+        public Stream WriterStream => Stream.Null;
+
+        public int Pid => 1;
+
+        public int ExitCode => 0;
+
+        public bool WaitForExit(int milliseconds) => true;
+
+        public void Kill() => KillCount++;
+
+        public void Resize(int cols, int rows)
+        {
+        }
+
+        public void Dispose() => DisposeCount++;
+    }
+
     private sealed class FakePtyService : IPtyTerminalService
     {
         public bool IsRunning { get; private set; }
@@ -168,6 +287,8 @@ public class TerminalServiceTests
         public List<string> Writes { get; } = [];
 
         public int StopCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
 
         public TaskCompletionSource? StartCompletion { get; init; }
 
@@ -199,9 +320,7 @@ public class TerminalServiceTests
 
         public void Emit(string output) => OutputReceived?.Invoke(this, output);
 
-        public void Dispose()
-        {
-        }
+        public void Dispose() => DisposeCount++;
     }
 
     private static async Task<bool> WaitForAsync(Func<bool> condition)

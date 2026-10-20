@@ -192,7 +192,11 @@
                       </Border>
                     </StackPanel>
                     <StackPanel Spacing="4" IsVisible="{Binding OutputText, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
-                      <TextBlock Classes="caption" Text="Output" />
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <TextBlock Classes="caption" Text="Output" VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Classes="ghost openToolOutput" Content="Open in side panel"
+                                Click="OnOpenToolOutputClick" Padding="6,2" FontSize="11" />
+                      </Grid>
                       <Border Classes="terminalPane"
                               IsVisible="{Binding ToolName, Converter={x:Static conv:TimelineConverters.TerminalTool}}">
                         <ScrollViewer MaxHeight="300" HorizontalScrollBarVisibility="Auto">

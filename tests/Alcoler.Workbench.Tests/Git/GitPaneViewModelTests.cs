@@ -313,11 +313,13 @@ public sealed class GitPaneViewModelTests
         Assert.Single(viewModel.Branches, b => b.IsCurrent);
         Assert.Single(viewModel.Untracked, f => f.Path == "scratch.txt");
         Assert.Single(viewModel.RecentCommits, c => c.Message == "initial commit");
-        var row = Assert.Single(window.GetVisualDescendants().OfType<Grid>(),
-            grid => grid.Classes.Contains("fileChangeRow"));
+        var row = Assert.Single(window.GetVisualDescendants().OfType<Button>(),
+            button => button.Classes.Contains("fileChangeRow"));
         Assert.Equal(32, row.Height);
         Assert.Contains(row.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "scratch.txt");
         Assert.Contains(row.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "A");
+        Assert.IsType<GitFileChangeViewModel>(row.DataContext);
+        Assert.DoesNotContain("branchItem", row.Classes);
         Assert.DoesNotContain(row.GetVisualDescendants().OfType<Button>(), _ => true);
 
         window.Close();

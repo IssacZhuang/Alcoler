@@ -6,8 +6,8 @@
              x:DataType="vm:GitPaneViewModel">
   <UserControl.Resources>
     <DataTemplate x:Key="FileChangeRow" x:DataType="vm:GitFileChangeViewModel">
-      <Grid Classes="fileChangeRow" ColumnDefinitions="16,Auto,*,20" ColumnSpacing="8"
-            Height="32" Margin="12,0" ToolTip.Tip="{Binding Path}">
+      <Button Classes="fileChangeRow" Click="OnFileClick" ToolTip.Tip="{Binding Path}">
+        <Grid ColumnDefinitions="16,Auto,*,20" ColumnSpacing="8">
         <controls:Icon Grid.Column="0" Classes="icon small" Data="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6" />
         <TextBlock Grid.Column="1" Text="{Binding FileName}" FontSize="{DynamicResource AlcolerFontSmall}"
                    MaxWidth="180" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
@@ -19,7 +19,8 @@
                    Classes.modified="{Binding IsModified}" Classes.deleted="{Binding IsDeleted}"
                    Classes.renamed="{Binding IsRenamed}" Text="{Binding StatusCode}"
                    ToolTip.Tip="{Binding StateText}" />
-      </Grid>
+        </Grid>
+      </Button>
     </DataTemplate>
   </UserControl.Resources>
 
@@ -60,7 +61,16 @@
     <Style Selector="TextBlock.gitStatus.renamed">
       <Setter Property="Foreground" Value="{DynamicResource AlcolerGitRenamed}" />
     </Style>
-    <Style Selector="Grid.fileChangeRow:pointerover">
+    <Style Selector="Button.fileChangeRow">
+      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+      <Setter Property="Padding" Value="12,0" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="Button.fileChangeRow:pointerover /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
     </Style>
   </UserControl.Styles>

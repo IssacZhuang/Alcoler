@@ -24,5 +24,16 @@ public partial class GitPaneView : UserControl
         }
     }
 
+    private void OnFileClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: GitFileChangeViewModel file }
+            && ViewModel is { } git
+            && TopLevel.GetTopLevel(this) is MainWindow { DataContext: WorkbenchViewModel workbench })
+        {
+            _ = workbench.OpenFileDocumentAsync(Path.Combine(git.FileRoot, file.Path));
+            e.Handled = true;
+        }
+    }
+
     private void OnDismissBannerClick(object? sender, RoutedEventArgs e) => ViewModel?.ClearBanner();
 }

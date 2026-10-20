@@ -68,6 +68,14 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
 
     public void Bind(SessionId? sessionId) => ActiveSessionId = sessionId;
 
+    public BrowserPaneViewModel CreateBoundView(SessionId? sessionId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var view = new BrowserPaneViewModel(_controller, _scheduler, _imageLoader);
+        view.Bind(sessionId);
+        return view;
+    }
+
     partial void OnScreenshotChanged(IImage? value) => OnPropertyChanged(nameof(HasScreenshot));
 
     partial void OnUrlChanged(string? value) => Address = value ?? string.Empty;

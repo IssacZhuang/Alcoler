@@ -17,12 +17,6 @@ public sealed record ModelChoice(string ProviderId, string ModelId, string Displ
     public ModelSelection Selection => new(ProviderId, ModelId);
 }
 
-public enum SidePaneKind
-{
-    Git,
-    Browser,
-}
-
 public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 {
     private readonly IAgentRuntime _runtime;
@@ -34,6 +28,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private readonly Dictionary<SessionId, string> _sessionRoots = [];
     private readonly Dictionary<string, DraftConversationViewModel> _drafts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<SessionId, SessionDraft> _sessionDrafts = [];
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DraftConversationViewModel, DraftDocumentOwner> _draftDocumentOwners = new();
     private string? _focusedWorkspaceRoot;
     private long _navigationVersion;
     private string? _paneRoot;
@@ -55,6 +50,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync);
         ModelChoices = BuildModelChoices(config);
         Draft = GetOrCreateDraft(Environment.CurrentDirectory);
+        Documents.PropertyChanged += OnDocumentsPropertyChanged;
+        BrowserPane?.Bind(null);
+        EnsureDocumentContext();
     }
 
     public SessionSidebarViewModel Sidebar { get; }
@@ -93,10 +91,15 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public BrowserPaneViewModel? BrowserPane { get; }
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsGitPaneSelected))]
-    [NotifyPropertyChangedFor(nameof(IsBrowserPaneSelected))]
-    private SidePaneKind _selectedSidePane = SidePaneKind.Git;
+    public DocumentWorkspaceViewModel Documents { get; } = new();
+
+    public string CurrentWorkspaceRoot => DocumentViewModel.NormalizeWorkspaceRoot(
+        Active is { } active && _sessionRoots.TryGetValue(active.SessionId, out var root)
+            ? root
+            : Draft?.WorkspaceRoot ?? _focusedWorkspaceRoot ?? Environment.CurrentDirectory);
+
+    public string CurrentDocumentOwnerId => Active?.SessionId.Value
+        ?? GetDraftDocumentOwnerId(Draft ?? GetOrCreateDraft(CurrentWorkspaceRoot));
 
     [ObservableProperty]
     private bool _isSidePaneVisible;
@@ -110,23 +113,78 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void ToggleSidebar() => IsSidebarVisible = !IsSidebarVisible;
 
-    public bool IsGitPaneSelected => SelectedSidePane == SidePaneKind.Git;
-
-    public bool IsBrowserPaneSelected => SelectedSidePane == SidePaneKind.Browser;
+    public DocumentViewModel OpenDocument(DocumentViewModel document)
+    {
+        EnsureDocumentContext();
+        return Documents.Open(document);
+    }
 
     [RelayCommand]
     private void ShowGitPane()
     {
-        SelectedSidePane = SidePaneKind.Git;
-        IsSidePaneVisible = true;
+        var root = CurrentWorkspaceRoot;
+        EnsurePanes(root);
+        var document = Documents.Items.FirstOrDefault(item => item.Id == "git" && item.OwnerId is null
+            && string.Equals(item.WorkspaceRoot, root, StringComparison.OrdinalIgnoreCase));
+        if (document is not null)
+        {
+            GitPane = (GitPaneViewModel)document.Content;
+            OpenDocument(document);
+            return;
+        }
+        OpenDocument(new DocumentViewModel("git", "git", "Review",
+            "M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6 M6 9v6 M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6 M18 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6 M18 9a9 9 0 0 1-9 9",
+            GitPane!, root, ownsContent: false));
+        _ = GitPane!.LoadAsync();
     }
 
     [RelayCommand]
     private void ShowBrowserPane()
     {
-        SelectedSidePane = SidePaneKind.Browser;
-        IsSidePaneVisible = true;
+        EnsureDocumentContext();
+        var existing = Documents.VisibleItems.FirstOrDefault(item => item.Id == "browser"
+            && item.OwnerId == CurrentDocumentOwnerId);
+        if (existing is not null)
+        {
+            Documents.Activate(existing);
+            return;
+        }
+        OpenDocument(new DocumentViewModel("browser", "browser", "Browser",
+            "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M3 12h18 M12 3a17 17 0 0 1 0 18 17 17 0 0 1 0-18",
+            (object?)BrowserPane?.CreateBoundView(Active?.SessionId)
+                ?? "Browser is not available in this workbench.", CurrentWorkspaceRoot, CurrentDocumentOwnerId));
     }
+
+    [RelayCommand]
+    private async Task OpenTerminalDocumentAsync()
+    {
+        var terminal = new TerminalPaneViewModel(CurrentWorkspaceRoot, scheduler: _scheduler);
+        OpenDocument(new DocumentViewModel($"terminal:{Guid.NewGuid():N}", "terminal", "Terminal",
+            "M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5", terminal, CurrentWorkspaceRoot, CurrentDocumentOwnerId));
+        try
+        {
+            await terminal.StartAsync();
+        }
+        catch (Exception exception)
+        {
+            Banner = $"Could not start terminal. {exception.Message}";
+        }
+    }
+
+    partial void OnIsSidePaneVisibleChanged(bool value) => Documents.IsVisible = value;
+
+    private void OnDocumentsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DocumentWorkspaceViewModel.IsVisible))
+        {
+            IsSidePaneVisible = Documents.IsVisible;
+        }
+    }
+
+    private void EnsureDocumentContext() => Documents.SetContext(CurrentWorkspaceRoot, CurrentDocumentOwnerId);
+
+    private string GetDraftDocumentOwnerId(DraftConversationViewModel draft) =>
+        _draftDocumentOwners.GetValue(draft, _ => new DraftDocumentOwner($"draft:{Guid.NewGuid():N}")).Id;
 
     [RelayCommand]
     private void ToggleSidePane() => IsSidePaneVisible = !IsSidePaneVisible;
@@ -166,6 +224,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         CloseActive();
         _hub.Dispose();
         Terminal?.Dispose();
+        Documents.PropertyChanged -= OnDocumentsPropertyChanged;
+        Documents.Dispose();
         BrowserPane?.Dispose();
         if (_ownedResource is not null)
         {
@@ -214,16 +274,19 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         Active = conversation;
         Sidebar.SetActive(sessionId);
         BrowserPane?.Bind(sessionId);
+        EnsureDocumentContext();
         if (_sessionRoots.TryGetValue(sessionId, out var root))
         {
             _focusedWorkspaceRoot = root;
             EnsurePanes(root);
+            EnsureDocumentContext();
         }
         await Sidebar.RefreshAsync();
         if (Active?.SessionId == sessionId && _sessionRoots.TryGetValue(sessionId, out root))
         {
             _focusedWorkspaceRoot = root;
             EnsurePanes(root);
+            EnsureDocumentContext();
         }
     }
 
@@ -239,7 +302,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         CloseActive();
         _focusedWorkspaceRoot = Path.GetFullPath(root);
         Draft = GetOrCreateDraft(_focusedWorkspaceRoot);
+        BrowserPane?.Bind(null);
         EnsurePanes(_focusedWorkspaceRoot);
+        EnsureDocumentContext();
     }
 
     public void FocusWorkspace(string workspaceRoot) => _focusedWorkspaceRoot = Path.GetFullPath(workspaceRoot);
@@ -297,6 +362,16 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             createdId = handle.Id;
             draft.CreatedSessionId = handle.Id;
             _sessionRoots[handle.Id] = handle.WorkspaceRoot;
+            var draftOwnerId = GetDraftDocumentOwnerId(draft);
+            var browserDocuments = Documents.Items.Where(document => document.OwnerId == draftOwnerId
+                && string.Equals(document.WorkspaceRoot,
+                    DocumentViewModel.NormalizeWorkspaceRoot(draft.WorkspaceRoot), StringComparison.OrdinalIgnoreCase)
+                && document.Content is BrowserPaneViewModel).ToArray();
+            Documents.TransferOwner(draft.WorkspaceRoot, draftOwnerId, handle.Id.Value);
+            foreach (var document in browserDocuments.Where(document => Documents.Items.Contains(document)))
+            {
+                ((BrowserPaneViewModel)document.Content).Bind(handle.Id);
+            }
             _sessionDrafts[handle.Id] = new SessionDraft(draft.Composer, draft.Selection, null);
             if (_drafts.GetValueOrDefault(draft.WorkspaceRoot) == draft)
             {
@@ -421,8 +496,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
         if (GitPane is null || !string.Equals(_paneRoot, root, StringComparison.OrdinalIgnoreCase))
         {
-            GitPane = new GitPaneViewModel(root, _gitService, _scheduler);
-            _ = GitPane.LoadAsync();
+            var normalizedRoot = DocumentViewModel.NormalizeWorkspaceRoot(root);
+            GitPane = Documents.Items.FirstOrDefault(document => document.Id == "git" && document.OwnerId is null
+                && string.Equals(document.WorkspaceRoot, normalizedRoot, StringComparison.OrdinalIgnoreCase))?.Content
+                as GitPaneViewModel ?? new GitPaneViewModel(root, _gitService, _scheduler);
         }
         _paneRoot = root;
     }
@@ -456,6 +533,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
         return choices;
     }
+
+    private sealed record DraftDocumentOwner(string Id);
 
     private sealed record SessionDraft(ComposerViewModel Composer, ModelSelection? Selection, string? Banner, string? UnsentText = null);
 }

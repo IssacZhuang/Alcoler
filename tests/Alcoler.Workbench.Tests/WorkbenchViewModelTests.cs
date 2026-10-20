@@ -192,14 +192,167 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public void DocumentLauncherAndGenericOpen_SynchronizeVisibilityWithoutImplicitGitOrBottomTerminal()
+    {
+        using var workbench = new WorkbenchViewModel(
+            new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
+
+        workbench.ToggleSidePaneCommand.Execute(null);
+
+        Assert.True(workbench.IsSidePaneVisible);
+        Assert.True(workbench.Documents.IsVisible);
+        Assert.Empty(workbench.Documents.Items);
+        Assert.False(workbench.Documents.HasDocuments);
+        Assert.Null(workbench.Terminal);
+        Assert.False(workbench.IsTerminalVisible);
+        var content = new object();
+        var document = new DocumentViewModel("extension", "extension.example", "Extension", "", content,
+            workbench.CurrentWorkspaceRoot, workbench.CurrentDocumentOwnerId);
+        Assert.Same(document, workbench.OpenDocument(document));
+        Assert.Same(content, workbench.Documents.ActiveDocument!.Content);
+        workbench.Documents.Collapse();
+        Assert.False(workbench.IsSidePaneVisible);
+        Assert.Same(document, Assert.Single(workbench.Documents.Items));
+        workbench.IsSidePaneVisible = true;
+        Assert.True(workbench.Documents.IsVisible);
+        workbench.CloseSidePaneCommand.Execute(null);
+        Assert.False(workbench.Documents.IsVisible);
+    }
+
+    [Fact]
+    public async Task ShowGitPane_OpensWorkspaceGlobalDocument_AndRetainsOldWorkspaceContent()
+    {
+        var firstRoot = Directory.CreateDirectory(Path.Combine(_root, "first")).FullName;
+        var secondRoot = Directory.CreateDirectory(Path.Combine(_root, "second")).FullName;
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(firstRoot);
+        var firstPane = workbench.GitPane;
+
+        workbench.ShowGitPaneCommand.Execute(null);
+
+        var first = Assert.Single(workbench.Documents.Items);
+        Assert.Equal("git", first.Kind);
+        Assert.Null(first.OwnerId);
+        Assert.False(first.OwnsContent);
+        Assert.Same(firstPane, first.Content);
+        Assert.True(workbench.IsSidePaneVisible);
+        workbench.ShowGitPaneCommand.Execute(null);
+        Assert.Same(first, Assert.Single(workbench.Documents.Items));
+        workbench.ShowNewTask(secondRoot);
+        Assert.Empty(workbench.Documents.VisibleItems);
+        workbench.ShowGitPaneCommand.Execute(null);
+        var second = workbench.Documents.ActiveDocument!;
+        Assert.NotSame(first.Content, second.Content);
+        Assert.Equal(firstRoot, first.WorkspaceRoot);
+        Assert.Same(firstPane, first.Content);
+        workbench.ShowNewTask(firstRoot);
+        Assert.Same(first, workbench.Documents.ActiveDocument);
+        Assert.Same(firstPane, workbench.GitPane);
+        await WaitUntilAsync(() => !((GitPaneViewModel)first.Content).IsLoading
+            && !((GitPaneViewModel)second.Content).IsLoading, scheduler);
+    }
+
+    [Fact]
+    public async Task BrowserDocuments_HaveIndependentSessionPresentations_AndCloseDoesNotDisposeController()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store);
+        var first = await runtime.CreateSessionAsync(new SessionOptions(_root), CancellationToken.None);
+        var second = await runtime.CreateSessionAsync(new SessionOptions(_root), CancellationToken.None);
+        using var controller = new TrackingBrowserController();
+        using var browser = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, _ => new TrackingImage());
+        using var workbench = new WorkbenchViewModel(
+            runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]), browserPane: browser);
+        await workbench.OpenSessionAsync(first.Id);
+
+        workbench.ShowBrowserPaneCommand.Execute(null);
+
+        var firstDocument = Assert.Single(workbench.Documents.Items);
+        var firstView = Assert.IsType<BrowserPaneViewModel>(firstDocument.Content);
+        var firstImage = Assert.IsType<TrackingImage>(firstView.Screenshot);
+        Assert.NotSame(browser, firstView);
+        Assert.Equal(first.Id, firstView.ActiveSessionId);
+        Assert.Equal(first.Id.Value, firstDocument.OwnerId);
+        workbench.ShowBrowserPaneCommand.Execute(null);
+        Assert.Same(firstDocument, Assert.Single(workbench.Documents.Items));
+        await workbench.OpenSessionAsync(second.Id);
+        Assert.Empty(workbench.Documents.VisibleItems);
+        Assert.Equal(first.Id, firstView.ActiveSessionId);
+        workbench.ShowBrowserPaneCommand.Execute(null);
+        var secondDocument = workbench.Documents.ActiveDocument!;
+        var secondView = Assert.IsType<BrowserPaneViewModel>(secondDocument.Content);
+        Assert.NotSame(firstView, secondView);
+        Assert.Equal(second.Id, secondView.ActiveSessionId);
+        Assert.Equal(3, controller.SubscriberCount);
+
+        workbench.Documents.Close(secondDocument);
+
+        Assert.Equal(2, controller.SubscriberCount);
+        Assert.Null(secondView.Screenshot);
+        Assert.Equal(0, controller.DisposeCount);
+        Assert.Equal(0, firstImage.DisposeCount);
+        await workbench.OpenSessionAsync(first.Id);
+        Assert.Same(firstDocument, workbench.Documents.ActiveDocument);
+        workbench.Documents.Close(firstDocument);
+        Assert.Equal(1, firstImage.DisposeCount);
+        Assert.Equal(1, controller.SubscriberCount);
+        Assert.Equal(0, controller.DisposeCount);
+    }
+
+    [Fact]
+    public async Task NewDraft_UnbindsLegacyBrowser_AndOpensUnboundPlaceholderPresentation()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store);
+        var session = await runtime.CreateSessionAsync(new SessionOptions(_root), CancellationToken.None);
+        using var controller = new TrackingBrowserController();
+        using var browser = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, _ => new TrackingImage());
+        using var workbench = new WorkbenchViewModel(
+            runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]), browserPane: browser);
+        await workbench.OpenSessionAsync(session.Id);
+        Assert.Equal(session.Id, browser.ActiveSessionId);
+        Assert.True(browser.HasScreenshot);
+
+        workbench.ShowNewTask(_root);
+        workbench.ShowBrowserPaneCommand.Execute(null);
+
+        var draftDocument = Assert.Single(workbench.Documents.VisibleItems);
+        var draftView = Assert.IsType<BrowserPaneViewModel>(draftDocument.Content);
+        Assert.Null(browser.ActiveSessionId);
+        Assert.False(browser.HasScreenshot);
+        Assert.Null(draftView.ActiveSessionId);
+        Assert.False(draftView.CanInteract);
+        Assert.False(draftView.HasScreenshot);
+        Assert.StartsWith("draft:", draftDocument.OwnerId);
+    }
+
+    [Fact]
+    public void ShowBrowserPane_WithoutControllerOpensGenericPlaceholderDocument()
+    {
+        using var workbench = new WorkbenchViewModel(
+            new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
+
+        workbench.ShowBrowserPaneCommand.Execute(null);
+
+        var document = Assert.Single(workbench.Documents.VisibleItems);
+        Assert.Equal("browser", document.Kind);
+        Assert.Equal(workbench.CurrentDocumentOwnerId, document.OwnerId);
+        Assert.Contains("not available", Assert.IsType<string>(document.Content));
+        Assert.True(workbench.IsSidePaneVisible);
+    }
+
+    [Fact]
     public void Dispose_DisposesBrowserPaneAndReleasesItsStatusSubscriptionAndScreenshot()
     {
         using var controller = new TrackingBrowserController();
         var image = new TrackingImage();
         using var browserPane = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, _ => image);
-        browserPane.Bind(StrongId.NewSessionId());
         using var workbench = new WorkbenchViewModel(
             new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]), browserPane: browserPane);
+        browserPane.Bind(StrongId.NewSessionId());
         Assert.Equal(1, controller.SubscriberCount);
         Assert.Same(image, browserPane.Screenshot);
 
@@ -288,6 +441,8 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
         public int SubscriberCount => StatusChanged?.GetInvocationList().Length ?? 0;
 
+        public int DisposeCount { get; private set; }
+
         public BrowserSessionStatus? GetStatus(SessionId sessionId) => new(
             BrowserSessionState.Launched, LatestScreenshotUri: "screenshot.png", UpdatedAt: DateTimeOffset.UtcNow);
 
@@ -298,9 +453,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
         public Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public void Dispose()
-        {
-        }
+        public void Dispose() => DisposeCount++;
     }
 
     private sealed class TrackingImage : IImage, IDisposable

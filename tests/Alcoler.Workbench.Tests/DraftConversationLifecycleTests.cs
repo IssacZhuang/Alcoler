@@ -174,6 +174,35 @@ public sealed class DraftConversationLifecycleTests
     }
 
     [Fact]
+    public async Task FirstSend_TransfersDraftDocumentsAndScopeState_WithoutSendingTwice()
+    {
+        var runtime = new DraftRuntime();
+        using var workbench = Create(runtime);
+        var draft = workbench.Draft!;
+        var oldOwner = workbench.CurrentDocumentOwnerId;
+        var content = new object();
+        var document = workbench.OpenDocument(new DocumentViewModel("custom", "extension.custom", "Custom", "",
+            content, workbench.CurrentWorkspaceRoot, oldOwner));
+        workbench.Documents.Collapse();
+        draft.Composer.Draft = "Send once with a document";
+
+        await draft.SendAsync();
+
+        Assert.Equal(runtime.LastSessionId.Value, document.OwnerId);
+        Assert.Equal(workbench.CurrentDocumentOwnerId, document.OwnerId);
+        Assert.Same(content, document.Content);
+        Assert.Same(document, workbench.Documents.ActiveDocument);
+        Assert.False(workbench.Documents.IsVisible);
+        Assert.Single(runtime.Created);
+        Assert.Single(runtime.Submitted);
+        workbench.ShowNewTask();
+        Assert.NotEqual(oldOwner, workbench.CurrentDocumentOwnerId);
+        Assert.Empty(workbench.Documents.VisibleItems);
+        await workbench.OpenSessionAsync(runtime.LastSessionId);
+        Assert.Same(document, workbench.Documents.ActiveDocument);
+    }
+
+    [Fact]
     public async Task CreateFailure_KeepsDraftWithoutSubmitting()
     {
         var runtime = new DraftRuntime { CreateFailure = new IOException("Storage unavailable") };

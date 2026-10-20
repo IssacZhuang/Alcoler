@@ -1,0 +1,53 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             x:Class="Alcoler.Workbench.Views.FileDocumentView"
+             x:DataType="vm:TextDocumentViewModel">
+  <UserControl.Styles>
+    <Style Selector="ToggleButton.documentWrap">
+      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+    </Style>
+    <Style Selector="ToggleButton.documentWrap:checked /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+    <Style Selector="ToggleButton.documentWrap:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+  </UserControl.Styles>
+  <DockPanel Background="{DynamicResource AlcolerBackground}">
+    <Border DockPanel.Dock="Top" Height="40" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1" Padding="12,0">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+        <TextBlock x:Name="PART_DocumentPath" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis"
+                   ToolTip.Tip="{Binding SourceLabel}" FontSize="{DynamicResource AlcolerFontSmall}"
+                   VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+        <ToggleButton Grid.Column="1" x:Name="PART_DocumentWrap" Classes="documentWrap" Content="Wrap"
+                      IsChecked="{Binding Wrap, Mode=TwoWay}" ToolTip.Tip="Wrap long lines (read-only preview)"
+                      Padding="8,3" Height="26" VerticalAlignment="Center" FontSize="{DynamicResource AlcolerFontSmall}" />
+        <Button Grid.Column="2" x:Name="PART_DocumentReload" Classes="ghost" Content="Reload"
+                Command="{Binding ReloadCommand}" IsVisible="{Binding CanReload}" Padding="8,3"
+                Height="26" VerticalAlignment="Center" FontSize="{DynamicResource AlcolerFontSmall}" />
+      </Grid>
+    </Border>
+    <TextBlock DockPanel.Dock="Bottom" Margin="12,4" Text="{Binding Language, StringFormat='Read-only · {0}'}"
+               FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" />
+    <TextBlock DockPanel.Dock="Top" Text="Loading file..." IsVisible="{Binding IsLoading}" Margin="12,8"
+               FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
+    <Border DockPanel.Dock="Top" Margin="12" Padding="10" BorderBrush="{DynamicResource AlcolerError}"
+            BorderThickness="1" CornerRadius="{DynamicResource AlcolerRadius}"
+            IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+      <SelectableTextBlock x:Name="PART_DocumentError" Text="{Binding Error}" TextWrapping="Wrap"
+                           FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerError}" />
+    </Border>
+    <ScrollViewer x:Name="PART_DocumentScroll" HorizontalScrollBarVisibility="{Binding HorizontalScrollMode}"
+                  VerticalScrollBarVisibility="Auto" Padding="12">
+      <SelectableTextBlock x:Name="PART_DocumentText" Text="{Binding Text}" TextWrapping="{Binding TextWrapping}"
+                           FontFamily="Consolas, JetBrains Mono, monospace" FontSize="12"
+                           Foreground="{DynamicResource AlcolerTextPrimary}" />
+    </ScrollViewer>
+  </DockPanel>
+</UserControl>

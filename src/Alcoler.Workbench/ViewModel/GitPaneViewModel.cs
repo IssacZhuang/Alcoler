@@ -113,6 +113,8 @@ public sealed partial class GitPaneViewModel : ObservableObject
         _scheduler = scheduler;
     }
 
+    public string FileRoot => _repositoryRoot ?? _workspaceRoot;
+
     public ObservableCollection<GitBranchViewModel> Branches { get; } = [];
 
     public ObservableCollection<GitFileChangeViewModel> Staged { get; } = [];

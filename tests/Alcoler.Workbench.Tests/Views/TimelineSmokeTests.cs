@@ -235,7 +235,7 @@ public class TimelineSmokeTests
             Assert.DoesNotContain(descendants,
                 d => d is SelectableTextBlock { Text: var t } && t == toolItem.InputJson);
 
-            var button = Assert.Single(descendants.OfType<Button>());
+            var button = Assert.Single(descendants.OfType<Button>(), control => control.Classes.Contains("toolRow"));
             Assert.Equal(0, button.BorderThickness.Left);
             Assert.Equal(new Thickness(0, 3), button.Padding);
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
