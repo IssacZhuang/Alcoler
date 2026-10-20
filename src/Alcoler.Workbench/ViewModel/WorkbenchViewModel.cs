@@ -81,6 +81,12 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _isTerminalVisible;
 
+    [ObservableProperty]
+    private bool _isSidebarVisible = true;
+
+    [RelayCommand]
+    private void ToggleSidebar() => IsSidebarVisible = !IsSidebarVisible;
+
     public bool IsGitPaneSelected => SelectedSidePane == SidePaneKind.Git;
 
     public bool IsBrowserPaneSelected => SelectedSidePane == SidePaneKind.Browser;
@@ -137,6 +143,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         CloseActive();
         _hub.Dispose();
         Terminal?.Dispose();
+        BrowserPane?.Dispose();
         if (_ownedResource is not null)
         {
             _ownedResource.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -148,6 +155,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         if (Active?.SessionId == sessionId)
         {
             return;
+        }
+        if (_runtime.TryObserve(sessionId) is null)
+        {
+            var handle = await _runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
+            _sessionRoots[sessionId] = handle.WorkspaceRoot;
         }
         CloseActive();
         var store = _hub.Acquire(sessionId);
@@ -208,8 +220,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     private void EnsurePanes(string root)
     {
-        if (Terminal is null)
+        if (Terminal is null || !string.Equals(_paneRoot, root, StringComparison.OrdinalIgnoreCase))
         {
+            Terminal?.Dispose();
             Terminal = new TerminalPaneViewModel(root, scheduler: _scheduler);
             _terminalAutoStarted = false;
             if (IsTerminalVisible)

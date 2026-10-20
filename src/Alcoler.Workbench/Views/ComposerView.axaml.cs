@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Alcoler.Workbench.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
@@ -9,21 +10,91 @@ namespace Alcoler.Workbench.Views;
 
 public partial class ComposerView : UserControl
 {
+    private ConversationViewModel? _observed;
+    private WorkbenchViewModel? _workbench;
+    private bool _synchronizingModel;
+
     public ComposerView()
     {
         // The generated InitializeComponent(bool) overload wires x:Name fields; a manual parameterless overload would shadow it.
         InitializeComponent(true);
         // Tunneling is required to observe plain Enter before the TextBox consumes it as a newline.
         InputBox.AddHandler(KeyDownEvent, OnInputKeyDown, RoutingStrategies.Tunnel);
+        DataContextChanged += (_, _) => ObserveConversation();
+        SizeChanged += (_, _) => Classes.Set("compact", Bounds.Width < 560);
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
-        // Compiled bindings cannot cast the window DataContext, so model choices are wired here.
+        ObserveConversation();
         if (e.Root is Window { DataContext: WorkbenchViewModel workbench })
         {
+            _workbench = workbench;
             ModelSelector.ItemsSource = workbench.ModelChoices;
+            SynchronizeModel();
+        }
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        if (_observed is not null)
+        {
+            _observed.PropertyChanged -= OnConversationPropertyChanged;
+            _observed.Composer.PropertyChanged -= OnComposerPropertyChanged;
+            _observed = null;
+        }
+        if (_workbench is not null)
+        {
+            _workbench = null;
+        }
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    private void ObserveConversation()
+    {
+        if (_observed is not null)
+        {
+            _observed.PropertyChanged -= OnConversationPropertyChanged;
+            _observed.Composer.PropertyChanged -= OnComposerPropertyChanged;
+        }
+        _observed = ViewModel;
+        if (_observed is not null)
+        {
+            _observed.PropertyChanged += OnConversationPropertyChanged;
+            _observed.Composer.PropertyChanged += OnComposerPropertyChanged;
+        }
+        SynchronizeModel();
+    }
+
+    private void OnConversationPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ConversationViewModel.ModelText))
+        {
+            SynchronizeModel();
+        }
+    }
+
+    private void OnComposerPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ComposerViewModel.Mode))
+        {
+            ModeSelector.Flyout?.Hide();
+            InputBox.Focus();
+        }
+    }
+
+    private void SynchronizeModel()
+    {
+        _synchronizingModel = true;
+        try
+        {
+            ModelSelector.SelectedItem = _workbench?.ModelChoices.FirstOrDefault(choice =>
+                $"{choice.ProviderId}/{choice.ModelId}" == ViewModel?.ModelText);
+        }
+        finally
+        {
+            _synchronizingModel = false;
         }
     }
 
@@ -50,7 +121,8 @@ public partial class ComposerView : UserControl
 
     private void OnModelSelected(object? sender, SelectionChangedEventArgs e)
     {
-        if (e.AddedItems.OfType<ModelChoice>().FirstOrDefault() is { } choice && ViewModel is { } viewModel)
+        if (!_synchronizingModel && e.AddedItems.OfType<ModelChoice>().FirstOrDefault() is { } choice
+            && ViewModel is { } viewModel)
         {
             _ = viewModel.SwitchModelAsync(viewModel.ApplyThoughtLevel(choice.Selection));
         }

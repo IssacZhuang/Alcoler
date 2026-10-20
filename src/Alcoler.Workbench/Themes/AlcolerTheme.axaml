@@ -4,7 +4,8 @@
   <ResourceDictionary.ThemeDictionaries>
     <ResourceDictionary x:Key="Dark">
       <Color x:Key="AlcolerBackgroundColor">#FF161616</Color>
-      <Color x:Key="AlcolerSidebarColor">#FF161616</Color>
+      <Color x:Key="AlcolerSidebarColor">#FF2B2B2B</Color>
+      <Color x:Key="AlcolerChromeColor">#FF2B2B2B</Color>
       <Color x:Key="AlcolerPanelColor">#FF202020</Color>
       <Color x:Key="AlcolerCardColor">#FF2B2B2B</Color>
       <Color x:Key="AlcolerPopoverColor">#FF2B2B2B</Color>
@@ -48,6 +49,7 @@
       <Color x:Key="AlcolerOverlayColor">#B3000000</Color>
       <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
       <SolidColorBrush x:Key="AlcolerSidebar" Color="{DynamicResource AlcolerSidebarColor}" />
+      <SolidColorBrush x:Key="AlcolerChrome" Color="{DynamicResource AlcolerChromeColor}" />
       <SolidColorBrush x:Key="AlcolerPanel" Color="{DynamicResource AlcolerPanelColor}" />
       <SolidColorBrush x:Key="AlcolerCard" Color="{DynamicResource AlcolerCardColor}" />
       <SolidColorBrush x:Key="AlcolerPopover" Color="{DynamicResource AlcolerPopoverColor}" />
@@ -92,7 +94,8 @@
     </ResourceDictionary>
     <ResourceDictionary x:Key="Light">
       <Color x:Key="AlcolerBackgroundColor">#FFF8F8F8</Color>
-      <Color x:Key="AlcolerSidebarColor">#FFF0F0F0</Color>
+      <Color x:Key="AlcolerSidebarColor">#FFECECEE</Color>
+      <Color x:Key="AlcolerChromeColor">#FFECECEE</Color>
       <Color x:Key="AlcolerPanelColor">#FFFFFFFF</Color>
       <Color x:Key="AlcolerCardColor">#FFFFFFFF</Color>
       <Color x:Key="AlcolerPopoverColor">#FFFFFFFF</Color>
@@ -136,6 +139,7 @@
       <Color x:Key="AlcolerOverlayColor">#66000000</Color>
       <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
       <SolidColorBrush x:Key="AlcolerSidebar" Color="{DynamicResource AlcolerSidebarColor}" />
+      <SolidColorBrush x:Key="AlcolerChrome" Color="{DynamicResource AlcolerChromeColor}" />
       <SolidColorBrush x:Key="AlcolerPanel" Color="{DynamicResource AlcolerPanelColor}" />
       <SolidColorBrush x:Key="AlcolerCard" Color="{DynamicResource AlcolerCardColor}" />
       <SolidColorBrush x:Key="AlcolerPopover" Color="{DynamicResource AlcolerPopoverColor}" />
@@ -216,6 +220,11 @@
   <StreamGeometry x:Key="AlcolerIconGitBranch">M6 3v12M15 6a3 3 0 1 0 6 0 3 3 0 1 0-6 0M3 18a3 3 0 1 0 6 0 3 3 0 1 0-6 0M18 9a9 9 0 0 1-9 9</StreamGeometry>
   <StreamGeometry x:Key="AlcolerIconGlobe">M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z</StreamGeometry>
   <StreamGeometry x:Key="AlcolerIconWrench">M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconSearch">M21 21l-4.34-4.34M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconCirclePlus">M12 8v8M8 12h8M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconMore">M5 12h.01M12 12h.01M19 12h.01</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconMinimize">M5 12h14</StreamGeometry>
+  <StreamGeometry x:Key="AlcolerIconMaximize">M5 5h14v14H5Z</StreamGeometry>
   <StreamGeometry x:Key="AlcolerIconArchive">M20 8H4M5 8V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4</StreamGeometry>
 
   <conv:PhaseBrushConverter x:Key="AlcolerPhaseBrush" />

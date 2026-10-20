@@ -16,19 +16,23 @@ using Assert = Xunit.Assert;
 
 namespace Alcoler.Workbench.Tests.Views;
 
-/// <summary>
-/// Headless app for the assembly: without it the framework boots an empty Application
-/// with no Fluent theme and no Alcoler tokens, which the shell views depend on.
-/// </summary>
+// Headless controls must use the production styles to exercise template overrides.
 public sealed class ShellTestApp : Avalonia.Application
 {
     public override void Initialize()
     {
         RequestedThemeVariant = ThemeVariant.Dark;
-        Styles.Add(new Avalonia.Themes.Fluent.FluentTheme());
-        var theme = (ResourceDictionary)Avalonia.Markup.Xaml.AvaloniaXamlLoader.Load(
-            new System.Uri("avares://Alcoler.Workbench/Themes/AlcolerTheme.axaml"));
-        Resources.MergedDictionaries.Add(theme);
+        var app = new App();
+        app.Initialize();
+        var resources = app.Resources;
+        app.Resources = new ResourceDictionary();
+        Resources = resources;
+        var styles = app.Styles.ToArray();
+        app.Styles.Clear();
+        foreach (var style in styles)
+        {
+            Styles.Add(style);
+        }
     }
 
     public static Avalonia.AppBuilder BuildAvaloniaApp() =>
@@ -197,6 +201,58 @@ public class ShellSmokeTests
         window.Close();
         viewModel.Dispose();
         store.Dispose();
+    }
+
+    [AvaloniaFact]
+    public void Shell_UsesCompactChromeAndPreservesSidebarToggleWidth()
+    {
+        using var viewModel = CreateWorkbench();
+        var window = new MainWindow(viewModel);
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+        var shell = window.FindControl<Grid>("ShellGrid")!;
+        var sidebar = window.FindControl<Workbench.Views.SidebarView>("Sidebar")!;
+        var width = shell.ColumnDefinitions[0].Width.Value;
+
+        Assert.Equal(SystemDecorations.None, window.SystemDecorations);
+        Assert.Equal(48, window.FindControl<Grid>("MainCard")!.RowDefinitions[1].Height.Value);
+        viewModel.ToggleSidebarCommand.Execute(null);
+        Assert.False(sidebar.IsVisible);
+        Assert.Equal(0, shell.ColumnDefinitions[0].Width.Value);
+        viewModel.ToggleSidebarCommand.Execute(null);
+        Assert.True(sidebar.IsVisible);
+        Assert.Equal(width, shell.ColumnDefinitions[0].Width.Value);
+        window.Close();
+    }
+
+    [AvaloniaFact]
+    public void PrimaryButton_ExplicitTextUsesContrastingThemeForeground()
+    {
+        var label = new TextBlock { Text = "Add provider" };
+        var button = new Button { Content = label };
+        button.Classes.Add("primary");
+        var window = new Window { Content = button };
+        window.Show();
+        foreach (var theme in new[] { ThemeVariant.Dark, ThemeVariant.Light })
+        {
+            window.RequestedThemeVariant = theme;
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(window.TryFindResource("AlcolerBrandText", theme, out var foreground));
+            Assert.Equal(Assert.IsType<SolidColorBrush>(foreground).Color,
+                Assert.IsType<SolidColorBrush>(label.Foreground).Color);
+        }
+        window.Close();
+    }
+
+    [AvaloniaFact]
+    public void Sidebar_RefreshPreservesCollapsedProjects()
+    {
+        var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask);
+        var session = new SessionSummaryViewModel(NewId(), "Session", @"C:\ws\alpha", DateTimeOffset.UtcNow);
+        sidebar.ApplySummaries([session]);
+        sidebar.Groups[0].IsExpanded = false;
+        sidebar.ApplySummaries([session]);
+        Assert.False(sidebar.Groups[0].IsExpanded);
     }
 
     internal static WorkbenchViewModel CreateWorkbench()

@@ -184,8 +184,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
             _applyingState = false;
         }
         Title = state.Title;
+        if (Composer.Mode == Mode)
+        {
+            Composer.Mode = state.Mode;
+        }
         Mode = state.Mode;
-        Composer.Mode = state.Mode;
+        Composer.SessionMode = state.Mode;
         ModelText = state.ModelSelection is { } selection
             ? $"{selection.ProviderId}/{selection.ModelId}"
             : "default model";
@@ -212,7 +216,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
             : state.PendingInteraction is { } interaction
                 ? PendingInteractionViewModel.FromInteraction(interaction)
                 : null;
-        if (!ReferenceEquals(PendingInteraction, pending))
+        if (PendingInteraction?.InteractionId != pending?.InteractionId)
         {
             PendingInteraction = pending;
             OnPropertyChanged(nameof(HasPendingInteraction));
@@ -226,15 +230,25 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
             return;
         }
         var text = Composer.Draft;
-        var ack = await SubmitAsync(new SendTextCommand(
-            StrongId.NewCommandId(), SessionId, _store.Revision, text, Mode: Composer.Mode));
-        if (ack.Accepted)
+        var mode = Composer.IsTurnActive ? (PermissionMode?)null : Composer.Mode;
+        Composer.IsSending = true;
+        try
         {
-            Composer.ClearIfSendable(text);
+            // Queued input must not mutate the active turn's permission policy.
+            var ack = await SubmitAsync(new SendTextCommand(
+                StrongId.NewCommandId(), SessionId, _store.Revision, text, Mode: mode));
+            if (ack.Accepted)
+            {
+                Composer.ClearIfSendable(text);
+            }
+            else
+            {
+                Banner = ack.RejectionReason ?? "Input was rejected";
+            }
         }
-        else
+        finally
         {
-            Banner = ack.RejectionReason ?? "input was rejected";
+            Composer.IsSending = false;
         }
     }
 
@@ -273,7 +287,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
 
     public async Task SubmitInteractionAnswersAsync()
     {
-        if (PendingInteraction is not { IsPermission: false } pending)
+        if (PendingInteraction is not { IsPermission: false, CanSubmit: true } pending)
         {
             return;
         }

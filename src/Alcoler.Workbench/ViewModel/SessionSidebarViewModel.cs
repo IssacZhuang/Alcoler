@@ -97,12 +97,16 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
 
     public void ApplySummaries(IReadOnlyList<SessionSummaryViewModel> summaries)
     {
+        var expansion = Groups.ToDictionary(g => g.WorkspaceRoot, g => g.IsExpanded, StringComparer.OrdinalIgnoreCase);
         Groups.Clear();
         foreach (var group in summaries
                      .GroupBy(s => s.WorkspaceRoot, StringComparer.OrdinalIgnoreCase)
                      .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
         {
-            var groupVm = new SessionGroupViewModel(group.Key);
+            var groupVm = new SessionGroupViewModel(group.Key)
+            {
+                IsExpanded = !expansion.TryGetValue(group.Key, out var expanded) || expanded,
+            };
             foreach (var session in group.OrderByDescending(s => s.UpdatedAt))
             {
                 session.IsActive = session.Id == ActiveSessionId;

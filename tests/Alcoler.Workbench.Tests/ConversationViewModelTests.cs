@@ -109,6 +109,72 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public async Task SendAsync_BusyWithDifferentDraftMode_DoesNotChangeActivePolicy()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var state = TestSnapshots.State(TurnPhase.Streaming);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            viewModel.Composer.Draft = "next turn";
+            viewModel.Composer.Mode = PermissionMode.Yolo;
+
+            await viewModel.SendAsync();
+
+            Assert.False(viewModel.Composer.CanSend);
+            Assert.Empty(runtime.Submitted);
+            Assert.Equal("next turn", viewModel.Composer.Draft);
+        }
+    }
+
+    [Fact]
+    public void StatePatch_PreservesDraftModeAndPendingAnswers()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var question = new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?",
+                [new Alcoler.Contracts.Events.InteractionOption("main")]);
+            var request = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Choose", [question]);
+            var state = TestSnapshots.State(TurnPhase.AwaitingInteraction) with { PendingInteraction = request };
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            viewModel.Composer.Mode = PermissionMode.Plan;
+            viewModel.SelectInteractionAnswer("Target", "main");
+            var pending = viewModel.PendingInteraction;
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, state, [new StatePatched(state)], Reset: false));
+
+            Assert.Same(pending, viewModel.PendingInteraction);
+            Assert.Equal("main", viewModel.PendingInteraction!.SelectedAnswers["Target"]);
+            Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+            Assert.True(viewModel.PendingInteraction.CanSubmit);
+        }
+    }
+
+    [Fact]
+    public async Task SubmitInteractionAnswers_Incomplete_DoesNotSubmit()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var question = new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?",
+                [new Alcoler.Contracts.Events.InteractionOption("main")]);
+            var state = TestSnapshots.State(TurnPhase.AwaitingInteraction) with
+            {
+                PendingInteraction = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Choose", [question]),
+            };
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+
+            await viewModel.SubmitInteractionAnswersAsync();
+
+            Assert.Empty(runtime.Submitted);
+        }
+    }
+
+    [Fact]
     public async Task ResolvePermission_SubmitsResolveCommandWithDecision()
     {
         var (viewModel, runtime, store) = Create();

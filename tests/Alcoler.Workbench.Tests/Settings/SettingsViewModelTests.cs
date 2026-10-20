@@ -3,6 +3,7 @@ using Alcoler.Workbench.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.VisualTree;
@@ -272,15 +273,263 @@ public class SettingsViewModelTests
         Assert.Equal(ThemeVariant.Dark, application.RequestedThemeVariant);
     }
 
+    [Fact]
+    public void Providers_SelectNewAndAdjacentItemsWithoutLosingDrafts()
+    {
+        var viewModel = new SettingsViewModel(SampleConfig());
+        var original = Assert.Single(viewModel.Providers);
+        Assert.Same(original, viewModel.SelectedProvider);
+
+        viewModel.AddProviderCommand.Execute(null);
+        var added = Assert.IsType<ProviderViewModel>(viewModel.SelectedProvider);
+        Assert.NotSame(original, added);
+        Assert.Equal("New provider", added.Label);
+        added.Kind = "openai-compatible";
+        added.BaseUrl = "https://example.com/v1";
+        Assert.Equal("openai-compatible", added.Label);
+
+        viewModel.SelectedProvider = original;
+        viewModel.SelectedProvider = added;
+        Assert.Equal("https://example.com/v1", added.BaseUrl);
+        added.RemoveProviderCommand.Execute(null);
+        Assert.Same(original, viewModel.SelectedProvider);
+        original.RemoveProviderCommand.Execute(null);
+        Assert.Empty(viewModel.Providers);
+        Assert.Null(viewModel.SelectedProvider);
+    }
+
+    [Fact]
+    public void Provider_ApiKeyVisibilityDoesNotChangeStoredValue()
+    {
+        var provider = new SettingsViewModel(SampleConfig()).Providers[0];
+        Assert.NotEqual('\0', provider.ApiKeyPasswordChar);
+        provider.IsApiKeyVisible = true;
+        Assert.Equal('\0', provider.ApiKeyPasswordChar);
+        Assert.Equal("sk-test", provider.ApiKey);
+        provider.IsApiKeyVisible = false;
+        Assert.NotEqual('\0', provider.ApiKeyPasswordChar);
+    }
+
+    [Fact]
+    public async Task SaveAsync_ReportsWriteFailureAndAllowsRetry()
+    {
+        var blockingFile = TempConfigPath();
+        var recoveryPath = TempConfigPath();
+        try
+        {
+            File.WriteAllText(blockingFile, "blocked");
+            var viewModel = new SettingsViewModel(SampleConfig());
+            Assert.Null(await viewModel.SaveAsync(Path.Combine(blockingFile, "config.json")));
+            Assert.True(viewModel.HasError);
+            Assert.Contains("Could not save settings", viewModel.Error);
+            Assert.NotNull(await viewModel.SaveAsync(recoveryPath));
+            Assert.False(viewModel.HasError);
+        }
+        finally
+        {
+            File.Delete(blockingFile);
+            File.Delete(recoveryPath);
+        }
+    }
+
     [AvaloniaFact]
-    public void SettingsDialog_ConstructsFromCurrentConfig()
+    public void SettingsDialog_SwitchesSupportedSectionsAndPreservesProviderDraft()
     {
         var dialog = new Workbench.Views.SettingsDialog(SampleConfig());
-        dialog.Show();
-        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        try
+        {
+            dialog.Show();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            var viewModel = Assert.IsType<SettingsViewModel>(dialog.DataContext);
+            var providerList = dialog.FindControl<ListBox>("ProviderList")!;
+            Assert.Same(viewModel.Providers[0], providerList.SelectedItem);
+            var baseUrl = dialog.GetVisualDescendants().OfType<TextBox>()
+                .Single(box => box.Watermark == "https://api.example.com");
+            Assert.Equal(36, baseUrl.MinHeight);
+            baseUrl.Text = "https://edited.example.com";
 
-        var providers = dialog.GetVisualDescendants().OfType<TextBox>().Count();
-        Assert.True(providers > 0);
-        dialog.Close();
+            dialog.FindControl<RadioButton>("McpTab")!.IsChecked = true;
+            Assert.True(dialog.FindControl<ScrollViewer>("McpPanel")!.IsVisible);
+            Assert.False(dialog.FindControl<Grid>("ProvidersPanel")!.IsVisible);
+            Assert.Equal("MCP servers", dialog.FindControl<TextBlock>("SectionTitle")!.Text);
+
+            dialog.FindControl<RadioButton>("AppearanceTab")!.IsChecked = true;
+            Assert.True(dialog.FindControl<ScrollViewer>("AppearancePanel")!.IsVisible);
+            Assert.False(dialog.FindControl<ScrollViewer>("McpPanel")!.IsVisible);
+            dialog.FindControl<ComboBox>("ThemePicker")!.SelectedItem = "light";
+            Assert.Equal("light", viewModel.Theme);
+
+            dialog.FindControl<RadioButton>("ProvidersTab")!.IsChecked = true;
+            Assert.True(dialog.FindControl<Grid>("ProvidersPanel")!.IsVisible);
+            Assert.Equal("https://edited.example.com", viewModel.Providers[0].BaseUrl);
+            Assert.Equal("https://edited.example.com", baseUrl.Text);
+        }
+        finally
+        {
+            dialog.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void SettingsDialog_ProviderCrudUpdatesDetailAndEmptyState()
+    {
+        var dialog = new Workbench.Views.SettingsDialog(new WorkbenchConfig([]));
+        try
+        {
+            dialog.Show();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            var viewModel = Assert.IsType<SettingsViewModel>(dialog.DataContext);
+            Assert.True(dialog.FindControl<StackPanel>("ProviderEmptyState")!.IsVisible);
+            viewModel.AddProviderCommand.Execute(null);
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.False(dialog.FindControl<StackPanel>("ProviderEmptyState")!.IsVisible);
+            Assert.Same(viewModel.SelectedProvider, dialog.FindControl<ListBox>("ProviderList")!.SelectedItem);
+            var provider = Assert.IsType<ProviderViewModel>(viewModel.SelectedProvider);
+            provider.AddModelCommand.Execute(null);
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Contains(dialog.GetVisualDescendants().OfType<TextBox>(), box => box.Watermark == "Model ID");
+            provider.Models[0].RemoveCommand.Execute(null);
+            Assert.Empty(provider.Models);
+            provider.RemoveProviderCommand.Execute(null);
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.True(dialog.FindControl<StackPanel>("ProviderEmptyState")!.IsVisible);
+        }
+        finally
+        {
+            dialog.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void SettingsDialog_InvalidSaveStaysOpenWithVisibleValidation()
+    {
+        var dialog = new Workbench.Views.SettingsDialog(SampleConfig());
+        try
+        {
+            dialog.Show();
+            var viewModel = Assert.IsType<SettingsViewModel>(dialog.DataContext);
+            viewModel.Providers[0].Kind = "unsupported";
+            dialog.FindControl<Button>("SaveButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.True(dialog.IsVisible);
+            Assert.True(dialog.FindControl<TextBlock>("SaveError")!.IsVisible);
+            Assert.Contains("kind", dialog.FindControl<TextBlock>("SaveError")!.Text);
+            Assert.True(dialog.FindControl<Button>("SaveButton")!.IsEnabled);
+            Assert.True(dialog.FindControl<Button>("CancelButton")!.IsEnabled);
+        }
+        finally
+        {
+            dialog.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task SettingsDialog_CloseCancelAndBackDiscardDrafts()
+    {
+        var owner = new Window();
+        owner.Show();
+        try
+        {
+            foreach (var buttonName in new[] { "CancelButton", "CloseButton", "BackButton" })
+            {
+                var config = SampleConfig();
+                var result = Workbench.Views.SettingsDialog.ShowAsync(owner, config);
+                var dialog = Assert.IsType<Workbench.Views.SettingsDialog>(Assert.Single(owner.OwnedWindows));
+                var viewModel = Assert.IsType<SettingsViewModel>(dialog.DataContext);
+                viewModel.Providers[0].ApiKey = "unsaved";
+                dialog.FindControl<Button>(buttonName)!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Null(await result);
+                Assert.Equal("sk-test", config.Providers[0].ApiKey);
+            }
+        }
+        finally
+        {
+            owner.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void Dialogs_UseDynamicThemeSurfaces()
+    {
+        foreach (var dialog in new Window[]
+                 {
+                     new Workbench.Views.SettingsDialog(SampleConfig()),
+                     new Workbench.Views.NewSessionDialog(),
+                 })
+        {
+            try
+            {
+                dialog.RequestedThemeVariant = ThemeVariant.Dark;
+                dialog.Show();
+                var dark = Assert.IsType<SolidColorBrush>(dialog.Background).Color;
+                dialog.RequestedThemeVariant = ThemeVariant.Light;
+                Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+                var light = Assert.IsType<SolidColorBrush>(dialog.Background).Color;
+                Assert.NotEqual(dark, light);
+            }
+            finally
+            {
+                dialog.Close();
+            }
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task NewSessionDialog_ValidatesWorkspaceAndReturnsTrimmedRequest()
+    {
+        var owner = new Window();
+        owner.Show();
+        try
+        {
+            var result = Workbench.Views.NewSessionDialog.ShowAsync(owner, "  ");
+            var dialog = Assert.IsType<Workbench.Views.NewSessionDialog>(Assert.Single(owner.OwnedWindows));
+            var workspace = dialog.FindControl<TextBox>("WorkspaceBox")!;
+            dialog.FindControl<Button>("CreateButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.False(result.IsCompleted);
+            Assert.True(dialog.FindControl<TextBlock>("WorkspaceError")!.IsVisible);
+
+            workspace.Text = "  C:\\workspace  ";
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.False(dialog.FindControl<TextBlock>("WorkspaceError")!.IsVisible);
+            dialog.FindControl<TextBox>("TitleBox")!.Text = "  Investigate issue  ";
+            dialog.FindControl<Button>("CreateButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var request = Assert.IsType<Workbench.Views.NewSessionRequest>(await result);
+            Assert.Equal("C:\\workspace", request.WorkspaceRoot);
+            Assert.Equal("Investigate issue", request.Title);
+        }
+        finally
+        {
+            owner.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task NewSessionDialog_PreservesDefaultWorkspaceAndOptionalTitle()
+    {
+        var owner = new Window();
+        owner.Show();
+        try
+        {
+            var result = Workbench.Views.NewSessionDialog.ShowAsync(owner, "C:\\workspace");
+            var dialog = Assert.IsType<Workbench.Views.NewSessionDialog>(Assert.Single(owner.OwnedWindows));
+            Assert.Equal("C:\\workspace", dialog.FindControl<TextBox>("WorkspaceBox")!.Text);
+            dialog.FindControl<TextBox>("TitleBox")!.Text = "  ";
+            dialog.FindControl<Button>("CreateButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var request = Assert.IsType<Workbench.Views.NewSessionRequest>(await result);
+            Assert.Equal("C:\\workspace", request.WorkspaceRoot);
+            Assert.Null(request.Title);
+
+            foreach (var buttonName in new[] { "CancelButton", "CloseButton" })
+            {
+                var canceled = Workbench.Views.NewSessionDialog.ShowAsync(owner, "C:\\workspace");
+                dialog = Assert.IsType<Workbench.Views.NewSessionDialog>(Assert.Single(owner.OwnedWindows));
+                dialog.FindControl<Button>(buttonName)!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Null(await canceled);
+            }
+        }
+        finally
+        {
+            owner.Close();
+        }
     }
 }

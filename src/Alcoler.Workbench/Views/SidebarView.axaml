@@ -6,124 +6,101 @@
   <UserControl.Styles>
     <Style Selector="Button.sessionItem">
       <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
-      <Setter Property="BorderThickness" Value="0" />
       <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
-      <Setter Property="Padding" Value="8,6" />
-      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="Padding" Value="8,4" />
+      <Setter Property="MinHeight" Value="28" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
     </Style>
-    <Style Selector="Button.sessionItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+    <Style Selector="Button.sessionItem.active /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
     </Style>
     <Style Selector="Button.groupHeader">
-      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
-      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusSmall}" />
-      <Setter Property="Padding" Value="6,4" />
+      <Setter Property="Padding" Value="8,5" />
+      <Setter Property="MinHeight" Value="28" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
     </Style>
-    <Style Selector="Button.groupHeader:pointerover">
-      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
-    </Style>
-    <Style Selector="Button.groupHeader:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
-    </Style>
-    <Style Selector="Button.newSession">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurface}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
-      <Setter Property="Padding" Value="10,7" />
+    <Style Selector="Button.sidebarAction">
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="Height" Value="32" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-    </Style>
-    <Style Selector="Button.newSession:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
     </Style>
   </UserControl.Styles>
-
   <DockPanel Background="{DynamicResource AlcolerSidebar}">
-    <Grid DockPanel.Dock="Top" Height="48" Margin="14,0,10,0" ColumnDefinitions="*,Auto">
+    <Grid DockPanel.Dock="Top" Height="40" Margin="12,0,8,0" ColumnDefinitions="*,Auto"
+          PointerPressed="OnTitleBarPointerPressed">
       <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-        <Border Width="22" Height="22" CornerRadius="{DynamicResource AlcolerRadius}"
-                Background="{DynamicResource AlcolerBrand}">
-          <TextBlock Text="A" FontSize="12" FontWeight="Bold" HorizontalAlignment="Center"
+        <Border Width="20" Height="20" CornerRadius="3" Background="{DynamicResource AlcolerBrand}">
+          <TextBlock Text="A" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center"
                      VerticalAlignment="Center" Foreground="{DynamicResource AlcolerBrandText}" />
         </Border>
-        <TextBlock Text="Alcoler" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+        <TextBlock Text="Alcoler" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
       </StackPanel>
+      <Button Grid.Column="1" Classes="icon tiny" Command="{Binding ToggleSidebarCommand}"
+              ToolTip.Tip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar">
+        <Path Classes="icon small" Data="{StaticResource AlcolerIconPanel}" />
+      </Button>
     </Grid>
-
-    <StackPanel DockPanel.Dock="Top" Margin="10,2,10,6" Spacing="6">
-      <Button Classes="newSession" Click="OnNewSessionClick" HorizontalAlignment="Stretch">
-        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-          <Path Grid.Column="0" Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
-          <TextBlock Grid.Column="1" Text="New session" FontSize="13" VerticalAlignment="Center" />
+    <StackPanel DockPanel.Dock="Top" Margin="8,8,8,12" Spacing="2">
+      <Button x:Name="PART_NewSession" Classes="sidebarAction" Click="OnNewSessionClick" AutomationProperties.Name="New task">
+        <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
+          <Path Classes="icon" Data="{StaticResource AlcolerIconCirclePlus}" />
+          <TextBlock Grid.Column="1" Text="New task" FontSize="13" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="2" Text="Ctrl+N" FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
       </Button>
-      <TextBlock Text="Loading sessions..." FontSize="11" Margin="6,2"
-                 Foreground="{DynamicResource AlcolerTextTertiary}"
-                 IsVisible="{Binding Sidebar.IsLoading}" />
     </StackPanel>
-
-    <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,1,0,0"
-            Padding="8,6">
-      <Button Classes="ghost" Click="OnSettingsClick" HorizontalAlignment="Stretch"
-              HorizontalContentAlignment="Stretch" Padding="8,6">
-        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-          <Path Grid.Column="0" Classes="icon small" Data="{StaticResource AlcolerIconSettings}" />
-          <TextBlock Grid.Column="1" Text="Settings" FontSize="12" VerticalAlignment="Center" />
+    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="16,0,10,4">
+      <TextBlock Text="Projects" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+      <Button Grid.Column="1" Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions" AutomationProperties.Name="Refresh projects">
+        <Path Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+      </Button>
+    </Grid>
+    <Border DockPanel.Dock="Bottom" Padding="8,8,8,12">
+      <Button x:Name="PART_Settings" Classes="sidebarAction" Click="OnSettingsClick" AutomationProperties.Name="Settings">
+        <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
+          <Path Classes="icon small" Data="{StaticResource AlcolerIconSettings}" />
+          <TextBlock Grid.Column="1" Text="Preferences" FontSize="12" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="2" Text="Ctrl+," FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
       </Button>
     </Border>
-
     <Grid>
-      <TextBlock x:Name="PART_SidebarEmpty" Text="No sessions yet"
-                 HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,20,0,0" FontSize="12"
-                 Foreground="{DynamicResource AlcolerTextTertiary}"
+      <TextBlock x:Name="PART_SidebarEmpty" Text="No sessions yet" HorizontalAlignment="Center" VerticalAlignment="Top"
+                 Margin="0,20,0,0" FontSize="12" Foreground="{DynamicResource AlcolerTextTertiary}"
                  IsVisible="{Binding Sidebar.Groups.Count, Converter={StaticResource AlcolerZeroToVisible}}" />
-      <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="6,0,4,8">
+      <TextBlock Text="Loading sessions..." FontSize="11" Margin="16,8" VerticalAlignment="Top"
+                 Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding Sidebar.IsLoading}" />
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="8,0,8,8">
         <ItemsControl ItemsSource="{Binding Sidebar.Groups}">
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="vm:SessionGroupViewModel">
-              <StackPanel Margin="0,6,0,2">
-                <Button Classes="groupHeader" Click="OnGroupClick">
-                  <Grid ColumnDefinitions="14,*,Auto,12" ColumnSpacing="6">
-                    <Path Grid.Column="0" Classes="icon small" Data="{StaticResource AlcolerIconFolder}"
-                          Stroke="{DynamicResource AlcolerTextTertiary}" />
-                    <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}" ToolTip.Tip="{Binding WorkspaceRoot}"
-                               FontSize="12" FontWeight="Medium" TextTrimming="CharacterEllipsis"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource AlcolerTextSecondary}" />
-                    <TextBlock Grid.Column="2" Text="{Binding Sessions.Count}" FontSize="11"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource AlcolerTextTertiary}" />
-                    <Path Grid.Column="3" Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}"
-                          IsVisible="{Binding !IsExpanded}"
-                          Stroke="{DynamicResource AlcolerTextTertiary}" />
-                    <Path Grid.Column="3" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}"
-                          IsVisible="{Binding IsExpanded}"
-                          Stroke="{DynamicResource AlcolerTextTertiary}" />
+              <StackPanel Margin="0,4,0,12">
+                <Button Classes="groupHeader" Click="OnGroupClick" ToolTip.Tip="{Binding WorkspaceRoot}">
+                  <Grid ColumnDefinitions="14,*,12" ColumnSpacing="8">
+                    <Path Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
+                    <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}" FontSize="13" TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <Path Grid.Column="2" Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}"
+                          IsVisible="{Binding !IsExpanded}" Stroke="{DynamicResource AlcolerTextTertiary}" />
+                    <Path Grid.Column="2" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}"
+                          IsVisible="{Binding IsExpanded}" Stroke="{DynamicResource AlcolerTextTertiary}" />
                   </Grid>
                 </Button>
-                <ItemsControl ItemsSource="{Binding Sessions}" Margin="0,2,0,0"
-                              IsVisible="{Binding IsExpanded}">
+                <ItemsControl ItemsSource="{Binding Sessions}" Margin="0,2,0,0" IsVisible="{Binding IsExpanded}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:SessionSummaryViewModel">
-                      <Button Classes="sessionItem" Click="OnSessionClick"
+                      <Button Classes="sessionItem" Classes.active="{Binding IsActive}" Click="OnSessionClick" ToolTip.Tip="{Binding DisplayTitle}"
                               Background="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerSelected|AlcolerTransparent}">
-                        <Grid ColumnDefinitions="2,8,*,Auto" Margin="0,1">
-                          <Border Grid.Column="0" x:Name="PART_ActiveIndicator" Width="2"
-                                  CornerRadius="1" Margin="0,2"
-                                  Background="{DynamicResource AlcolerTextPrimary}"
-                                  IsVisible="{Binding IsActive}" />
-                          <TextBlock Grid.Column="2" Classes="sessionTitle" Text="{Binding DisplayTitle}"
-                                     FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
-                                     Foreground="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerTextPrimary|AlcolerTextSecondary}" />
-                          <TextBlock Grid.Column="3" Classes="sessionTime" Text="{Binding UpdatedAtText}"
-                                     FontSize="11" Margin="8,0,2,0" VerticalAlignment="Center"
-                                     Foreground="{DynamicResource AlcolerTextTertiary}" />
+                        <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
+                          <Border x:Name="PART_ActiveIndicator" Width="4" Height="4" CornerRadius="2" HorizontalAlignment="Center"
+                                  Background="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding IsActive}" />
+                          <TextBlock Grid.Column="1" Classes="sessionTitle" Text="{Binding DisplayTitle}" FontSize="13"
+                                     TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                          <TextBlock Grid.Column="2" Classes="sessionTime" Text="{Binding UpdatedAtText}" FontSize="11"
+                                     VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
                         </Grid>
                       </Button>
                     </DataTemplate>

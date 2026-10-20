@@ -4,30 +4,67 @@
              xmlns:events="using:Alcoler.Contracts.Events"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
              x:Class="Alcoler.Workbench.Views.ComposerView"
-             x:DataType="vm:ConversationViewModel">
-  <Grid Margin="20,8,20,16" MaxWidth="896" HorizontalAlignment="Stretch">
+             x:DataType="vm:ConversationViewModel"
+             Background="{DynamicResource AlcolerBackground}">
+  <UserControl.Styles>
+    <Style Selector="Border.composerShell:pointerover">
+      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+    </Style>
+    <Style Selector="Border.composerShell:focus-within">
+      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTextSecondary}" />
+    </Style>
+    <Style Selector="Button.toolbarAction">
+      <Setter Property="Width" Value="28" />
+      <Setter Property="Height" Value="28" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.modePicker">
+      <Setter Property="Height" Value="28" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="8,0" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="Button.modePicker.fullAccess TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerWarning}" />
+    </Style>
+    <Style Selector="Button.modePicker.fullAccess Path">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerWarning}" />
+    </Style>
+    <Style Selector="ComboBox.toolbarPicker">
+      <Setter Property="Height" Value="28" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="6,0" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+    <Style Selector="UserControl.compact TextBlock.modeLabel">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid Margin="16,8,16,16" MaxWidth="800" HorizontalAlignment="Stretch">
     <StackPanel Spacing="8">
-      <Border x:Name="QueueStrip"
-              IsVisible="{Binding HasQueuedInput}"
-              Background="{DynamicResource AlcolerCard}"
-              BorderBrush="{DynamicResource AlcolerBorder}"
-              BorderThickness="1"
-              CornerRadius="{DynamicResource AlcolerRadiusLarge}"
-              Padding="10,6"
-              MaxHeight="72">
-        <ScrollViewer>
-          <StackPanel Spacing="2">
-            <TextBlock Text="Queued" FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" />
+      <Border x:Name="QueueStrip" IsVisible="{Binding HasQueuedInput}"
+              Background="{DynamicResource AlcolerSurface}"
+              BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+              CornerRadius="12" Padding="12,8" MaxHeight="96">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="4">
+            <TextBlock Text="Queued messages" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
             <ItemsControl x:Name="QueueList" ItemsSource="{Binding Queue}">
               <ItemsControl.Template>
-                <ControlTemplate>
-                  <ItemsPresenter />
-                </ControlTemplate>
+                <ControlTemplate><ItemsPresenter /></ControlTemplate>
               </ItemsControl.Template>
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="events:QueuedInput">
-                  <TextBlock Text="{Binding Text}" FontSize="12" TextWrapping="Wrap"
-                             Foreground="{DynamicResource AlcolerTextSecondary}" />
+                  <TextBlock Text="{Binding Text}" FontSize="13" TextWrapping="Wrap"
+                             Foreground="{DynamicResource AlcolerTextPrimary}" />
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
@@ -35,88 +72,78 @@
         </ScrollViewer>
       </Border>
 
-      <Border Background="{DynamicResource AlcolerInput}"
-              BorderBrush="{DynamicResource AlcolerBorder}"
-              BorderThickness="1"
-              CornerRadius="{DynamicResource AlcolerRadius2XLarge}"
-              Padding="12,10,10,8">
-        <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
-          <TextBox x:Name="InputBox" Grid.Row="0"
-                   Classes="bare"
+      <Border x:Name="ComposerShell" Classes="composerShell"
+              Background="{DynamicResource AlcolerInput}"
+              BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+              CornerRadius="16" Padding="12">
+        <Grid RowDefinitions="Auto,Auto" RowSpacing="12">
+          <TextBox x:Name="InputBox" Grid.Row="0" Classes="bare"
                    Text="{Binding Composer.Draft, Mode=TwoWay}"
                    Watermark="Ask anything..."
-                   AcceptsReturn="True"
-                   TextWrapping="Wrap"
-                   MinHeight="40"
-                   MaxHeight="180"
-                   VerticalContentAlignment="Top"
-                   FontSize="14" />
+                   AcceptsReturn="True" TextWrapping="Wrap"
+                   MinHeight="40" MaxHeight="160" VerticalContentAlignment="Top"
+                   FontSize="13" />
 
-          <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
-            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <Border Background="{DynamicResource AlcolerBackground}" CornerRadius="{DynamicResource AlcolerRadius}"
-                      Padding="2">
-                <StackPanel Orientation="Horizontal" Spacing="0">
-                  <RadioButton GroupName="ComposerMode" Classes="segment" Content="Build"
-                               IsChecked="{Binding Composer.Mode, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Build}" />
-                  <RadioButton GroupName="ComposerMode" Classes="segment" Content="Edit"
-                               IsChecked="{Binding Composer.Mode, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Edit}" />
-                  <RadioButton GroupName="ComposerMode" Classes="segment" Content="Plan"
-                               IsChecked="{Binding Composer.Mode, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Plan}" />
-                  <RadioButton GroupName="ComposerMode" Classes="segment" Content="Yolo"
-                               IsChecked="{Binding Composer.Mode, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Yolo}" />
-                </StackPanel>
-              </Border>
-            </StackPanel>
-
-            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
-              <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" ToolTip.Tip="Context window usage">
-                <Border x:Name="PART_ContextMeterTrack" Width="56" Height="4"
-                        CornerRadius="{DynamicResource AlcolerRadiusSmall}"
-                        Background="{DynamicResource AlcolerSurfaceHigh}" ClipToBounds="True"
-                        VerticalAlignment="Center">
-                  <Border x:Name="PART_ContextMeterFill" Height="4"
-                          CornerRadius="{DynamicResource AlcolerRadiusSmall}"
-                          HorizontalAlignment="Left" VerticalAlignment="Center"
-                          Width="{Binding ContextUsagePercent, Converter={StaticResource AlcolerPercentToWidth}, ConverterParameter=56}"
-                          Background="{Binding ContextUsagePercent, Converter={StaticResource AlcolerContextUsageBrush}}" />
-                </Border>
-                <TextBlock x:Name="PART_ContextUsageText" Text="{Binding ContextUsageText}" FontSize="11"
-                           VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextTertiary}" />
+          <Grid x:Name="ComposerToolbar" Grid.Row="1" ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="6" Height="28">
+            <Button x:Name="ModeSelector" Classes="modePicker" Classes.fullAccess="{Binding Composer.IsFullAccess}"
+                    ToolTip.Tip="Permissions for the next message" VerticalAlignment="Center">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Path Classes="icon" Data="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z M9 12l2 2 4-4" />
+                <TextBlock Classes="modeLabel" Text="{Binding Composer.ModeLabel}" FontSize="13" VerticalAlignment="Center" />
+                <Path Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
               </StackPanel>
-              <ComboBox x:Name="ModelSelector"
-                        Classes="ghost"
-                        MinWidth="140"
-                        MaxWidth="240"
-                        PlaceholderText="Model"
-                        ToolTip.Tip="{Binding ModelText}"
-                        SelectionChanged="OnModelSelected">
-                <ComboBox.ItemTemplate>
-                  <DataTemplate x:DataType="vm:ModelChoice">
-                    <TextBlock Text="{Binding Display}" />
-                  </DataTemplate>
-                </ComboBox.ItemTemplate>
-              </ComboBox>
-              <ComboBox x:Name="ThoughtLevelSelector"
-                        Classes="ghost"
-                        MinWidth="72"
-                        ToolTip.Tip="Reasoning effort"
-                        ItemsSource="{Binding ThoughtLevels}"
+              <Button.Flyout>
+                <Flyout Placement="TopEdgeAlignedLeft">
+                  <StackPanel Spacing="8" MinWidth="220" MaxWidth="256">
+                    <TextBlock Text="Permissions" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <RadioButton GroupName="ComposerMode" Content="Build" ToolTip.Tip="Ask before making changes"
+                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Build}" />
+                    <RadioButton GroupName="ComposerMode" Content="Edit" ToolTip.Tip="Allow file edits"
+                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Edit}" />
+                    <RadioButton GroupName="ComposerMode" Content="Plan" ToolTip.Tip="Plan without making changes"
+                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Plan}" />
+                    <RadioButton GroupName="ComposerMode" Content="Full access" ToolTip.Tip="Allow tools without approval"
+                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Yolo}" />
+                  </StackPanel>
+                </Flyout>
+              </Button.Flyout>
+            </Button>
+
+            <ComboBox x:Name="ModelSelector" Grid.Column="3" Classes="ghost toolbarPicker"
+                      MinWidth="40" MaxWidth="240" HorizontalAlignment="Right" HorizontalContentAlignment="Stretch"
+                      PlaceholderText="{Binding ModelText}" ToolTip.Tip="{Binding ModelText}"
+                      SelectionChanged="OnModelSelected">
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:ModelChoice">
+                  <TextBlock Text="{Binding Display}" TextTrimming="CharacterEllipsis" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+
+            <Button x:Name="ContextButton" Grid.Column="2" Classes="toolbarAction" Width="56" Click="OnCompactClick"
+                    ToolTip.Tip="{Binding ContextUsageText}" IsEnabled="{Binding !Composer.IsTurnActive}">
+                <StackPanel Spacing="4" VerticalAlignment="Center">
+                  <Path Classes="icon small" Data="{StaticResource AlcolerIconArchive}" HorizontalAlignment="Center" />
+                  <Border x:Name="PART_ContextMeterTrack" Width="56" Height="2" CornerRadius="1"
+                          Background="{DynamicResource AlcolerSurfaceHigh}" ClipToBounds="True">
+                    <Border x:Name="PART_ContextMeterFill" Height="2" CornerRadius="1" HorizontalAlignment="Left"
+                            Width="{Binding ContextUsagePercent, Converter={StaticResource AlcolerPercentToWidth}, ConverterParameter=56}"
+                            Background="{Binding ContextUsagePercent, Converter={StaticResource AlcolerContextUsageBrush}}" />
+                  </Border>
+                  <TextBlock x:Name="PART_ContextUsageText" Text="{Binding ContextUsageText}" IsVisible="False" />
+                </StackPanel>
+            </Button>
+            <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <ComboBox x:Name="ThoughtLevelSelector" Classes="ghost toolbarPicker" MinWidth="66" MaxWidth="90"
+                        ToolTip.Tip="Reasoning effort" ItemsSource="{Binding ThoughtLevels}"
                         SelectedItem="{Binding ThoughtLevel, Mode=TwoWay}" />
-              <Button Classes="icon tiny" Click="OnCompactClick" ToolTip.Tip="Compact conversation">
-                <Path Classes="icon small" Data="{StaticResource AlcolerIconArchive}" />
+              <Button x:Name="StopButton" Classes="icon toolbarAction"
+                      IsVisible="{Binding Composer.ShowStop}" Click="OnStopClick" ToolTip.Tip="Stop">
+                <Path Classes="icon small" Data="{StaticResource AlcolerIconSquare}"
+                      Stroke="{DynamicResource AlcolerTextPrimary}" Fill="{DynamicResource AlcolerTextPrimary}" />
               </Button>
-              <Button x:Name="StopButton"
-                      Classes="icon"
-                      IsVisible="{Binding Composer.IsTurnActive}"
-                      Click="OnStopClick" ToolTip.Tip="Stop">
-                <Path Classes="icon" Data="{StaticResource AlcolerIconSquare}"
-                      Stroke="{DynamicResource AlcolerError}" Fill="{DynamicResource AlcolerTransparent}" />
-              </Button>
-              <Button x:Name="SendButton"
-                      Classes="primary icon"
-                      IsEnabled="{Binding Composer.CanSend}"
-                      Click="OnSendClick" ToolTip.Tip="Send">
+              <Button x:Name="SendButton" Classes="primary icon toolbarAction"
+                      IsVisible="{Binding !Composer.ShowStop}" IsEnabled="{Binding Composer.CanSend}" Click="OnSendClick" ToolTip.Tip="{Binding Composer.SendHint}">
                 <Path Classes="icon" Data="{StaticResource AlcolerIconArrowUp}" />
               </Button>
             </StackPanel>

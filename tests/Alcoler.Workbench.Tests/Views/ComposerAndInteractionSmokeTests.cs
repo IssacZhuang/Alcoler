@@ -152,7 +152,7 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
-    public async Task Composer_TurnActive_DisablesSendAndShowsStop()
+    public async Task Composer_TurnActive_AllowsQueueWithoutChangingPermissionsAndShowsStop()
     {
         using var harness = Show<ComposerView>();
         await PumpAsync();
@@ -164,7 +164,73 @@ public class ComposerAndInteractionSmokeTests
         Assert.True(send.IsEnabled);
 
         harness.ViewModel.Composer.IsTurnActive = true;
-        Assert.False(send.IsEnabled);
+        Assert.True(send.IsEnabled);
+        Assert.True(send.IsVisible);
+        Assert.False(stop.IsVisible);
+        send.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+        var command = Assert.IsType<Contracts.Commands.SendTextCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("queued thought", command.Text);
+        Assert.Null(command.Mode);
+        Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
         Assert.True(stop.IsVisible);
+        Assert.False(send.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_UsesCompactReferenceDimensions()
+    {
+        using var harness = Show<ComposerView>();
+        await PumpAsync();
+
+        var shell = FindNamed<Border>(harness.View, "ComposerShell");
+        Assert.Equal(new Avalonia.CornerRadius(16), shell.CornerRadius);
+        Assert.Equal(new Avalonia.Thickness(12), shell.Padding);
+        Assert.Equal(28, FindNamed<Grid>(harness.View, "ComposerToolbar").Height);
+        Assert.Equal(28, FindNamed<Button>(harness.View, "SendButton").Width);
+        Assert.Equal(160, FindNamed<TextBox>(harness.View, "InputBox").MaxHeight);
+        Assert.Equal(56, FindNamed<Border>(harness.View, "PART_ContextMeterTrack").Width);
+        Assert.Contains(FindNamed<Border>(harness.View, "PART_ContextMeterFill"),
+            FindNamed<Button>(harness.View, "ContextButton").GetVisualDescendants());
+    }
+
+    [AvaloniaFact]
+    public async Task QuestionCard_MultiSelectAccumulatesAndRemovesAnswers()
+    {
+        using var harness = Show<InteractionAreaView>();
+        await PumpAsync();
+        var question = new InteractionQuestion("Features", "Which features?",
+            [new InteractionOption("Search", "Find files quickly"), new InteractionOption("History")], MultiSelect: true);
+        var interaction = new InteractionRequest(StrongId.NewInteractionId(), "Choose features", [question]);
+        var state = StateWith(interaction: interaction);
+        harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+        await PumpAsync();
+
+        var submit = FindNamed<Button>(harness.View, "SubmitAnswersButton");
+        var options = harness.View.GetVisualDescendants().OfType<CheckBox>().Where(option => option.IsVisible).ToArray();
+        Assert.Equal(2, options.Length);
+        Assert.False(submit.IsEnabled);
+        foreach (var option in options.Reverse())
+        {
+            option.IsChecked = true;
+            option.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        Assert.Equal("Search, History", harness.ViewModel.PendingInteraction!.SelectedAnswers["Features"]);
+        Assert.True(submit.IsEnabled);
+        Assert.Contains(harness.View.GetVisualDescendants(), control => control is TextBlock { Text: "Find files quickly" });
+
+        foreach (var option in options)
+        {
+            option.IsChecked = false;
+            option.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        Assert.Empty(harness.ViewModel.PendingInteraction.SelectedAnswers);
+        Assert.False(submit.IsEnabled);
+
+        options[0].IsChecked = true;
+        options[0].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("Search", command.InteractionAnswer!.Answers["Features"]);
     }
 }

@@ -1,4 +1,13 @@
 using Alcoler.Workbench.Terminal;
+using Alcoler.Workbench.Ui;
+using Alcoler.Workbench.ViewModel;
+using Alcoler.Workbench.Views;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless.XUnit;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Threading;
 using Xunit;
 using Assert = Xunit.Assert;
 
@@ -51,6 +60,147 @@ public class TerminalServiceTests
         {
             output.Append(chunk);
             firstChunk.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task ViewModel_StartsWithFittedDimensions_AndResizesIfViewportChangesDuringStart()
+    {
+        using var service = new FakePtyService
+        {
+            StartCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        using var viewModel = new TerminalPaneViewModel(@"C:\ws\project", service, InlineUiScheduler.Instance);
+        viewModel.Resize(80, 18);
+        var start = viewModel.StartAsync();
+        Assert.Equal((80, 18), service.StartedSize);
+        viewModel.Resize(90, 20);
+        Assert.Empty(service.Resizes);
+
+        service.StartCompletion!.SetResult();
+        await start;
+
+        Assert.True(viewModel.IsConnected);
+        Assert.Equal((90, 20), Assert.Single(service.Resizes));
+        viewModel.Resize(90, 20);
+        Assert.Single(service.Resizes);
+    }
+
+    [AvaloniaFact]
+    public async Task TerminalView_FitsSurface_ForwardsInputAndToolbarActions_AndRebinds()
+    {
+        using var service = new FakePtyService();
+        using var viewModel = new TerminalPaneViewModel(@"C:\ws\project", service, InlineUiScheduler.Instance);
+        var view = new TerminalView { DataContext = viewModel };
+        var window = new Window { Width = 600, Height = 300, Content = view };
+        try
+        {
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            var surface = view.FindControl<TerminalSurface>("Surface")!;
+            var toolbar = view.FindControl<Grid>("PART_TerminalToolbar")!;
+            Assert.Equal(28, toolbar.Height);
+            Assert.Equal("project", viewModel.WorkspaceName);
+            Assert.True(surface.Bounds.Width > 0);
+            Assert.True(surface.Bounds.Height > 0);
+            var fitted = (viewModel.Buffer.Cols, viewModel.Buffer.Rows);
+            view.FindControl<Button>("PART_TerminalStart")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.True(viewModel.IsConnected);
+            Assert.Equal(fitted, service.StartedSize);
+
+            surface.FontSize = 20;
+            Assert.True(viewModel.Buffer.Cols <= fitted.Cols);
+            Assert.True(viewModel.Buffer.Rows < fitted.Rows);
+            Assert.Equal((viewModel.Buffer.Cols, viewModel.Buffer.Rows), service.Resizes[^1]);
+            var smaller = (viewModel.Buffer.Cols, viewModel.Buffer.Rows);
+            window.Width = 900;
+            window.Height = 480;
+            window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(viewModel.Buffer.Cols > smaller.Cols);
+            Assert.True(viewModel.Buffer.Rows > smaller.Rows);
+            Assert.Equal((viewModel.Buffer.Cols, viewModel.Buffer.Rows), service.Resizes[^1]);
+            var resizeCount = service.Resizes.Count;
+            surface.ResizeToViewport(new Size(0, 0));
+            Assert.Equal(resizeCount, service.Resizes.Count);
+
+            surface.RaiseEvent(new TextInputEventArgs { RoutedEvent = InputElement.TextInputEvent, Text = "echo test" });
+            surface.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Enter });
+            Assert.Equal(new[] { "echo test", "\r" }, service.Writes);
+            service.Emit("output");
+            Assert.Equal('o', viewModel.Buffer.GetRow(0)[0].Char);
+            view.FindControl<Button>("PART_TerminalClear")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(' ', viewModel.Buffer.GetRow(0)[0].Char);
+            view.FindControl<Button>("StopButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.False(viewModel.IsConnected);
+            Assert.Equal(1, service.StopCount);
+
+            using var nextService = new FakePtyService();
+            using var next = new TerminalPaneViewModel(@"C:\ws\next", nextService, InlineUiScheduler.Instance);
+            view.DataContext = next;
+            Assert.Same(next, surface.ViewModel);
+            Assert.Same(next.Buffer, surface.Buffer);
+            Assert.Equal((viewModel.Buffer.Cols, viewModel.Buffer.Rows), (next.Buffer.Cols, next.Buffer.Rows));
+            await next.StartAsync();
+            Assert.Equal((next.Buffer.Cols, next.Buffer.Rows), nextService.StartedSize);
+            view.DataContext = null;
+            Assert.Null(surface.ViewModel);
+            Assert.Null(surface.Buffer);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    private sealed class FakePtyService : IPtyTerminalService
+    {
+        public bool IsRunning { get; private set; }
+
+        public event EventHandler<string>? OutputReceived;
+
+        public event EventHandler<int>? Exited;
+
+        public (int Cols, int Rows) StartedSize { get; private set; }
+
+        public List<(int Cols, int Rows)> Resizes { get; } = [];
+
+        public List<string> Writes { get; } = [];
+
+        public int StopCount { get; private set; }
+
+        public TaskCompletionSource? StartCompletion { get; init; }
+
+        public async Task StartAsync(string workingDirectory, int cols, int rows, CancellationToken cancellationToken)
+        {
+            StartedSize = (cols, rows);
+            if (StartCompletion is not null)
+            {
+                await StartCompletion.Task;
+            }
+            IsRunning = true;
+        }
+
+        public Task WriteAsync(string text, CancellationToken cancellationToken)
+        {
+            Writes.Add(text);
+            return Task.CompletedTask;
+        }
+
+        public void Resize(int cols, int rows) => Resizes.Add((cols, rows));
+
+        public Task StopAsync()
+        {
+            StopCount++;
+            IsRunning = false;
+            Exited?.Invoke(this, 0);
+            return Task.CompletedTask;
+        }
+
+        public void Emit(string output) => OutputReceived?.Invoke(this, output);
+
+        public void Dispose()
+        {
         }
     }
 

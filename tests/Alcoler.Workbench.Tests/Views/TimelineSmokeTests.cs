@@ -10,10 +10,14 @@ using Alcoler.Workbench.ViewModel;
 using Alcoler.Workbench.Views;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Shapes;
+using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.LogicalTree;
+using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
 using Avalonia.Threading;
@@ -77,6 +81,125 @@ public class TimelineSmokeTests
     }
 
     [AvaloniaFact]
+    public void ThinkingBlock_ToggleExpandsAndCollapsesReasoning()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 420, 400);
+        try
+        {
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+            [
+                new RowAppended(new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                    [new ReasoningPart(StrongId.NewPartId(), "reasoning content")],
+                    IsStreaming: false, At: DateTimeOffset.UtcNow)),
+            ], Reset: false));
+            Pump();
+
+            var expander = Assert.Single(view.GetVisualDescendants().OfType<Expander>());
+            var toggle = Assert.Single(expander.GetVisualDescendants().OfType<ToggleButton>());
+            var reasoning = Assert.Single(view.GetLogicalDescendants().OfType<SelectableTextBlock>(),
+                block => block.Text == "reasoning content");
+            var markdown = Assert.Single(view.GetLogicalDescendants().OfType<Markdown.Avalonia.MarkdownScrollViewer>());
+            Assert.False(markdown.IsVisible);
+            Assert.False(expander.IsExpanded);
+            Assert.DoesNotContain(reasoning, view.GetVisualDescendants());
+
+            var point = toggle.TranslatePoint(new Point(toggle.Bounds.Width / 2, toggle.Bounds.Height / 2), window)!.Value;
+            window.MouseDown(point, MouseButton.Left);
+            window.MouseUp(point, MouseButton.Left);
+            Pump();
+
+            Assert.True(expander.IsExpanded);
+            Assert.True(reasoning.IsEffectivelyVisible);
+            Assert.True(reasoning.Bounds.Height > 0);
+
+            window.MouseDown(point, MouseButton.Left);
+            window.MouseUp(point, MouseButton.Left);
+            Pump();
+
+            Assert.False(expander.IsExpanded);
+            Assert.False(reasoning.IsEffectivelyVisible);
+        }
+        finally
+        {
+            window.Close();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void AssistantMarkdown_ReflowsWhenTimelineNarrowsAndWidens()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 1000);
+        try
+        {
+            var paragraph = string.Join(" ", Enumerable.Repeat("Normal assistant text should reflow inside the timeline.", 8));
+            var markdownText = paragraph + "\n\n- Workspace: `C:\\Projects\\Alcoler\\src\\Alcoler.Workbench\\Views\\TimelineView.axaml`" +
+                "\n- Open [the project documentation](https://example.com/docs) for more details.";
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+            [
+                new RowAppended(new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), markdownText)], IsStreaming: false, At: DateTimeOffset.UtcNow)),
+            ], Reset: false));
+            Pump();
+
+            var markdown = Assert.Single(view.GetVisualDescendants().OfType<Markdown.Avalonia.MarkdownScrollViewer>());
+            var body = Assert.Single(markdown.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
+                block => block.Text == paragraph);
+            Assert.Equal(14, body.FontSize);
+            Assert.Equal(24, body.LineHeight);
+            var code = Assert.Single(markdown.GetLogicalDescendants().OfType<ColorTextBlock.Avalonia.CCode>());
+            var link = Assert.Single(markdown.GetLogicalDescendants().OfType<ColorTextBlock.Avalonia.CHyperlink>());
+            Assert.True(link.IsUnderline);
+            var app = Application.Current!;
+            foreach (var variant in new[] { ThemeVariant.Dark, ThemeVariant.Light })
+            {
+                app.RequestedThemeVariant = variant;
+                Pump();
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(view.FindResource(variant, "AlcolerTextPrimary")).Color,
+                    Assert.IsAssignableFrom<ISolidColorBrush>(body.Foreground).Color);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(body.Foreground).Color,
+                    Assert.IsAssignableFrom<ISolidColorBrush>(code.Foreground).Color);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(view.FindResource(variant, "AlcolerSurfaceHigh")).Color,
+                    Assert.IsAssignableFrom<ISolidColorBrush>(code.Background).Color);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(view.FindResource(variant, "AlcolerAccent")).Color,
+                    Assert.IsAssignableFrom<ISolidColorBrush>(link.Foreground).Color);
+            }
+            app.RequestedThemeVariant = ThemeVariant.Dark;
+            Pump();
+            var wideHeight = body.Bounds.Height;
+
+            window.Width = 360;
+            Pump();
+
+            Assert.True(markdown.SelectionEnabled);
+            Assert.Equal(markdownText, markdown.Markdown);
+            Assert.True(body.Bounds.Height > wideHeight, $"Body height did not grow: wide {wideHeight}, narrow {body.Bounds.Height}");
+            foreach (var block in markdown.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>())
+            {
+                var origin = block.TranslatePoint(default, view)!.Value;
+                Assert.True(origin.X >= 0 && origin.X + block.Bounds.Width <= view.Bounds.Width,
+                    $"Markdown block escapes timeline: x {origin.X}, width {block.Bounds.Width}, timeline {view.Bounds.Width}");
+            }
+            Assert.True(view.Scroller.Extent.Width <= view.Scroller.Viewport.Width);
+            Assert.Equal(0, view.Scroller.Offset.X);
+
+            var narrowHeight = body.Bounds.Height;
+            window.Width = 900;
+            Pump();
+            Assert.True(body.Bounds.Height < narrowHeight);
+        }
+        finally
+        {
+            window.Close();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
     public void ToolCallRow_UpsertUpdatesStatus_AndClickTogglesExpansion()
     {
         EnsureFluentTheme();
@@ -104,6 +227,7 @@ public class TimelineSmokeTests
             var descendants = view.GetVisualDescendants().ToList();
             Assert.Contains(descendants, d => d is TextBlock { Text: "succeeded" });
             Assert.Contains(descendants, d => d is TextBlock { Text: "1.5s" });
+            Assert.Contains(descendants, d => d is TextBlock { Text: "ls" });
             Assert.DoesNotContain(descendants, d => d is TextBlock { Text: "running" });
 
             var toolItem = Assert.IsType<ToolCallItemViewModel>(Assert.Single(viewModel.Items));
@@ -112,6 +236,8 @@ public class TimelineSmokeTests
                 d => d is SelectableTextBlock { Text: var t } && t == toolItem.InputJson);
 
             var button = Assert.Single(descendants.OfType<Button>());
+            Assert.Equal(0, button.BorderThickness.Left);
+            Assert.Equal(new Thickness(0, 3), button.Padding);
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.True(toolItem.IsExpanded);
             Pump();

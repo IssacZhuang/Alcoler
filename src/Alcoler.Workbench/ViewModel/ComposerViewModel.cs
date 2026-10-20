@@ -11,11 +11,27 @@ public sealed partial class ComposerViewModel : ObservableObject
     [ObservableProperty]
     private PermissionMode _mode = PermissionMode.Build;
 
-    /// <summary>True while the session is running a turn; disables sending plain input.</summary>
     [ObservableProperty]
     private bool _isTurnActive;
 
-    public bool CanSend => !IsTurnActive && !string.IsNullOrWhiteSpace(Draft);
+    [ObservableProperty]
+    private bool _isSending;
+
+    [ObservableProperty]
+    private PermissionMode _sessionMode = PermissionMode.Build;
+
+    public string ModeLabel => Mode == PermissionMode.Yolo ? "Full access" : Mode.ToString();
+
+    public bool IsFullAccess => Mode == PermissionMode.Yolo;
+
+    public bool ShowStop => IsTurnActive && string.IsNullOrWhiteSpace(Draft);
+
+    public bool CanSend => !IsSending && !string.IsNullOrWhiteSpace(Draft)
+        && (!IsTurnActive || Mode == SessionMode);
+
+    public string SendHint => IsTurnActive
+        ? Mode == SessionMode ? "Queue message (Enter)" : "Stop the active turn before changing permissions"
+        : "Send message (Enter)";
 
     public void ClearIfSendable(string sentText)
     {
@@ -25,7 +41,29 @@ public sealed partial class ComposerViewModel : ObservableObject
         }
     }
 
-    partial void OnDraftChanged(string value) => OnPropertyChanged(nameof(CanSend));
+    partial void OnDraftChanged(string value)
+    {
+        OnPropertyChanged(nameof(CanSend));
+        OnPropertyChanged(nameof(ShowStop));
+    }
 
-    partial void OnIsTurnActiveChanged(bool value) => OnPropertyChanged(nameof(CanSend));
+    partial void OnIsTurnActiveChanged(bool value) => NotifySendState();
+
+    partial void OnIsSendingChanged(bool value) => OnPropertyChanged(nameof(CanSend));
+
+    partial void OnSessionModeChanged(PermissionMode value) => NotifySendState();
+
+    partial void OnModeChanged(PermissionMode value)
+    {
+        OnPropertyChanged(nameof(ModeLabel));
+        OnPropertyChanged(nameof(IsFullAccess));
+        NotifySendState();
+    }
+
+    private void NotifySendState()
+    {
+        OnPropertyChanged(nameof(CanSend));
+        OnPropertyChanged(nameof(SendHint));
+        OnPropertyChanged(nameof(ShowStop));
+    }
 }

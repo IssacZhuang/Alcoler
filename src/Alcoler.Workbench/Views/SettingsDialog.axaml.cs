@@ -8,6 +8,7 @@ namespace Alcoler.Workbench.Views;
 public partial class SettingsDialog : Window
 {
     private readonly SettingsViewModel _viewModel;
+    private bool _isSaving;
 
     public SettingsDialog()
         : this(new WorkbenchConfig([]))
@@ -19,7 +20,8 @@ public partial class SettingsDialog : Window
         InitializeComponent();
         _viewModel = new SettingsViewModel(current);
         DataContext = _viewModel;
-        SectionList.SelectedIndex = 0;
+        ProvidersTab.IsChecked = true;
+        Closing += (_, e) => e.Cancel = _isSaving;
         WindowChrome.Attach(this);
     }
 
@@ -31,24 +33,60 @@ public partial class SettingsDialog : Window
 
     private async void OnSaveClick(object? sender, RoutedEventArgs e)
     {
-        var saved = await _viewModel.SaveAsync();
+        if (_isSaving)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        SettingsContent.IsEnabled = false;
+        SaveButton.IsEnabled = false;
+        CancelButton.IsEnabled = false;
+        CloseButton.IsEnabled = false;
+        BackButton.IsEnabled = false;
+        WorkbenchConfig? saved;
+        try
+        {
+            saved = await _viewModel.SaveAsync();
+        }
+        finally
+        {
+            _isSaving = false;
+            SettingsContent.IsEnabled = true;
+            SaveButton.IsEnabled = true;
+            CancelButton.IsEnabled = true;
+            CloseButton.IsEnabled = true;
+            BackButton.IsEnabled = true;
+        }
         if (saved is not null)
         {
             Close(saved);
         }
     }
 
-    private void OnCancelClick(object? sender, RoutedEventArgs e) => Close(null);
-
-    private void OnSectionChanged(object? sender, SelectionChangedEventArgs e)
+    private void OnCancelClick(object? sender, RoutedEventArgs e)
     {
-        if (ProvidersPanel is null)
+        if (!_isSaving)
+        {
+            Close(null);
+        }
+    }
+
+    private void OnSectionChanged(object? sender, RoutedEventArgs e)
+    {
+        if (ProvidersPanel is null || sender is not RadioButton { IsChecked: true } tab)
         {
             return;
         }
-        var index = SectionList.SelectedIndex;
-        ProvidersPanel.IsVisible = index == 0;
-        McpPanel.IsVisible = index == 1;
-        AppearancePanel.IsVisible = index == 2;
+        var section = tab.Tag as string;
+        ProvidersPanel.IsVisible = section == "providers";
+        McpPanel.IsVisible = section == "mcp";
+        AppearancePanel.IsVisible = section == "appearance";
+        SectionTitle.Text = section switch
+        {
+            "appearance" => "Appearance",
+            "mcp" => "MCP servers",
+            _ => "Model providers",
+        };
     }
 }

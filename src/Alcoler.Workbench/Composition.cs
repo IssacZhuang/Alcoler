@@ -29,7 +29,11 @@ public static class Composition
             AvaloniaUiScheduler.Instance,
             config,
             CombineDisposables(mcp, new AsyncActionDisposable(browser.Dispose)),
-            browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance));
+            browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance, path =>
+            {
+                using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                return Avalonia.Media.Imaging.Bitmap.DecodeToWidth(stream, 1280);
+            }));
         await workbench.RefreshFromRuntimeAsync();
         return workbench;
     }

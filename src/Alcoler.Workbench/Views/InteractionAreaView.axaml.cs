@@ -45,10 +45,9 @@ public partial class InteractionAreaView : UserControl
         }
     }
 
-    // The view model exposes no Banner clearing API; dismissal is view-local and a new banner reopens the strip.
     private void RefreshBanner() => BannerStrip.IsVisible = ViewModel?.Banner is { Length: > 0 };
 
-    private void OnDismissBanner(object? sender, RoutedEventArgs e) => BannerStrip.IsVisible = false;
+    private void OnDismissBanner(object? sender, RoutedEventArgs e) => ViewModel?.ClearBanner();
 
     private void OnAllowClick(object? sender, RoutedEventArgs e) =>
         _ = ViewModel?.ResolvePermissionAsync(PermissionDecision.Allow);
@@ -80,16 +79,12 @@ public partial class InteractionAreaView : UserControl
 
     private void OnOptionClick(object? sender, RoutedEventArgs e)
     {
-        // Answer state stores one value per header, so unchecking a multi-select option is a no-op.
-        if (sender is CheckBox { IsChecked: false })
-        {
-            return;
-        }
         if (sender is Control { Tag: InteractionOption option } control
             && control.GetVisualAncestors().Select(a => a.DataContext).OfType<InteractionQuestion>().FirstOrDefault() is { } question
             && ViewModel is { } viewModel)
         {
-            viewModel.SelectInteractionAnswer(question.Header, option.Label);
+            viewModel.PendingInteraction?.SetOptionSelected(question, option.Label,
+                sender is not CheckBox checkBox || checkBox.IsChecked == true);
         }
     }
 }

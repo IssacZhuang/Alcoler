@@ -4,203 +4,354 @@
         x:Class="Alcoler.Workbench.Views.SettingsDialog"
         x:DataType="vm:SettingsViewModel"
         Title="Settings"
-        Width="860" Height="600" MinWidth="720" MinHeight="480"
+        Width="1080" Height="800" MinWidth="900" MinHeight="600"
         CanResize="True" ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
-        Background="{DynamicResource AlcolerBackground}">
+        Background="{DynamicResource AlcolerSidebar}">
   <Window.Styles>
+    <Style Selector="TextBlock.sectionTitle">
+      <Setter Property="FontSize" Value="28" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
     <Style Selector="TextBlock.fieldLabel">
-      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="FontWeight" Value="Medium" />
+    </Style>
+    <Style Selector="TextBlock.description">
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
-    <Style Selector="ListBox">
-      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="0" />
-    </Style>
-    <Style Selector="ListBoxItem">
-      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+    <Style Selector="TextBox">
+      <Setter Property="MinHeight" Value="36" />
       <Setter Property="Padding" Value="10,7" />
-      <Setter Property="Margin" Value="0,1" />
-      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
-      <Setter Property="FontSize" Value="13" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
     </Style>
-    <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Style Selector="ComboBox">
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
+    </Style>
+    <Style Selector="Button.action">
+      <Setter Property="MinHeight" Value="32" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
+    </Style>
+    <Style Selector="Border.divided">
+      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+      <Setter Property="BorderThickness" Value="0,1,0,0" />
+      <Setter Property="Padding" Value="0,16,0,0" />
+    </Style>
+    <Style Selector="RadioButton.settingsTab">
+      <Setter Property="Height" Value="32" />
+      <Setter Property="Margin" Value="0,2" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border x:Name="TabSurface" Background="{DynamicResource AlcolerTransparent}"
+                  CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="10,0">
+            <ContentPresenter Content="{TemplateBinding Content}" VerticalAlignment="Center" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="RadioButton.settingsTab:pointerover /template/ Border#TabSurface">
       <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
     </Style>
-    <Style Selector="ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    <Style Selector="RadioButton.settingsTab:checked /template/ Border#TabSurface">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
     </Style>
-    <Style Selector="ListBoxItem:selected">
+    <Style Selector="RadioButton.settingsTab:focus-visible /template/ Border#TabSurface">
+      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+      <Setter Property="BorderThickness" Value="1" />
+    </Style>
+    <Style Selector="ListBox.providerList">
+      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="8" />
+    </Style>
+    <Style Selector="ListBox.providerList ListBoxItem">
+      <Setter Property="Padding" Value="10,8" />
+      <Setter Property="Margin" Value="0,1" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+    <Style Selector="ListBox.providerList ListBoxItem:selected">
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+    <Style Selector="ListBox.providerList ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+    </Style>
+    <Style Selector="ListBox.providerList ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
     </Style>
   </Window.Styles>
 
-  <Grid RowDefinitions="52,*,60">
-    <Border Grid.Row="0" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1"
-            Padding="20,0,12,0">
-      <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Text="Settings" FontSize="15" FontWeight="Medium" VerticalAlignment="Center" />
-        <Button Grid.Column="1" Classes="icon" Click="OnCancelClick" ToolTip.Tip="Close">
-          <Path Classes="icon" Data="{StaticResource AlcolerIconX}" />
-        </Button>
-      </Grid>
-    </Border>
-
-    <Grid Grid.Row="1" ColumnDefinitions="188,*" Margin="20,16,20,12">
-      <ListBox x:Name="SectionList" Grid.Column="0" Margin="0,0,20,0"
-               SelectionChanged="OnSectionChanged">
-        <ListBoxItem Content="Providers" />
-        <ListBoxItem Content="MCP servers" />
-        <ListBoxItem Content="Appearance" />
-      </ListBox>
-
-      <Grid Grid.Column="1">
-        <ScrollViewer x:Name="ProvidersPanel" HorizontalScrollBarVisibility="Disabled">
-          <StackPanel Spacing="10">
-            <ItemsControl ItemsSource="{Binding Providers}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:ProviderViewModel">
-                  <Border Background="{DynamicResource AlcolerCard}"
-                          BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
-                          CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="14" Margin="0,0,0,10">
-                    <StackPanel Spacing="10">
-                      <Grid ColumnDefinitions="*,Auto">
-                        <TextBlock Text="Provider" FontSize="13" FontWeight="Medium"
-                                   VerticalAlignment="Center" />
-                        <Button Grid.Column="1" Classes="ghost" Content="Remove" FontSize="11"
-                                Foreground="{DynamicResource AlcolerError}"
-                                Command="{Binding RemoveProviderCommand}" />
-                      </Grid>
-                      <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
-                        <StackPanel Grid.Column="0" Spacing="4">
-                          <TextBlock Classes="fieldLabel" Text="Kind" />
-                          <TextBox Text="{Binding Kind, Mode=TwoWay}" Watermark="anthropic or openai-compatible" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" Spacing="4">
-                          <TextBlock Classes="fieldLabel" Text="Base URL" />
-                          <TextBox Text="{Binding BaseUrl, Mode=TwoWay}" Watermark="https://api.example.com" />
-                        </StackPanel>
-                      </Grid>
-                      <StackPanel Spacing="4">
-                        <TextBlock Classes="fieldLabel" Text="API key" />
-                        <TextBox Text="{Binding ApiKey, Mode=TwoWay}" Watermark="sk-..." />
-                      </StackPanel>
-                      <StackPanel Spacing="4">
-                        <TextBlock Classes="fieldLabel" Text="Models" />
-                        <ItemsControl ItemsSource="{Binding Models}">
-                          <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="vm:ModelViewModel">
-                              <Grid ColumnDefinitions="2*,*,Auto" ColumnSpacing="6" Margin="0,2">
-                                <TextBox Grid.Column="0"
-                                         Text="{Binding ModelId, Mode=TwoWay}" Watermark="model id" />
-                                <TextBox Grid.Column="1"
-                                         Text="{Binding ContextWindowTokens, Mode=TwoWay}" Watermark="Context tokens" />
-                                <Button Grid.Column="2" Classes="ghost" Content="Remove" FontSize="11"
-                                        Foreground="{DynamicResource AlcolerTextTertiary}"
-                                        Command="{Binding RemoveCommand}" />
-                              </Grid>
-                            </DataTemplate>
-                          </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                        <Button Classes="ghost primaryText" FontSize="12" HorizontalAlignment="Left"
-                                Command="{Binding AddModelCommand}">
-                          <StackPanel Orientation="Horizontal" Spacing="5">
-                            <Path Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
-                            <TextBlock Text="Add model" FontSize="12" />
-                          </StackPanel>
-                        </Button>
-                      </StackPanel>
-                    </StackPanel>
-                  </Border>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-            <Button Classes="outline" HorizontalAlignment="Left" Command="{Binding AddProviderCommand}">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <Path Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
-                <TextBlock Text="Add provider" FontSize="12" />
-              </StackPanel>
-            </Button>
+  <Grid ColumnDefinitions="264,*">
+    <Grid Margin="8,16,8,16" RowDefinitions="Auto,*,Auto">
+      <Button x:Name="BackButton" Classes="ghost action" Click="OnCancelClick"
+              HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Margin="4,0,4,24">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Path Classes="icon" Data="M19 12H5m7-7-7 7 7 7" />
+          <TextBlock Text="Back to workspace" />
+        </StackPanel>
+      </Button>
+      <StackPanel Grid.Row="1" Spacing="4">
+        <TextBlock Classes="description" Text="Basics" Margin="10,0,0,4" />
+        <RadioButton x:Name="AppearanceTab" Classes="settingsTab" GroupName="SettingsSection"
+                     Tag="appearance" IsCheckedChanged="OnSectionChanged">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Path Classes="icon" Data="{StaticResource AlcolerIconPanel}" />
+            <TextBlock Text="Appearance" />
           </StackPanel>
-        </ScrollViewer>
-
-        <ScrollViewer x:Name="McpPanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
-          <StackPanel Spacing="10">
-            <ItemsControl ItemsSource="{Binding McpServers}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:McpServerViewModel">
-                  <Border Background="{DynamicResource AlcolerCard}"
-                          BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
-                          CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="14" Margin="0,0,0,10">
-                    <StackPanel Spacing="10">
-                      <Grid ColumnDefinitions="*,Auto">
-                        <TextBlock Text="MCP server" FontSize="13" FontWeight="Medium"
-                                   VerticalAlignment="Center" />
-                        <Button Grid.Column="1" Classes="ghost" Content="Remove" FontSize="11"
-                                Foreground="{DynamicResource AlcolerError}"
-                                Command="{Binding RemoveServerCommand}" />
-                      </Grid>
-                      <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
-                        <StackPanel Grid.Column="0" Spacing="4">
-                          <TextBlock Classes="fieldLabel" Text="Name" />
-                          <TextBox Text="{Binding Name, Mode=TwoWay}" Watermark="filesystem" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" Spacing="4">
-                          <TextBlock Classes="fieldLabel" Text="Command" />
-                          <TextBox Text="{Binding Command, Mode=TwoWay}" Watermark="npx" />
-                        </StackPanel>
-                      </Grid>
-                      <StackPanel Spacing="4">
-                        <TextBlock Classes="fieldLabel" Text="Arguments" />
-                        <TextBox Text="{Binding ArgsLine, Mode=TwoWay}" Watermark="-y @scope/server --flag value" />
-                      </StackPanel>
-                      <StackPanel Spacing="4">
-                        <TextBlock Classes="fieldLabel" Text="Environment (KEY=VALUE per line)" />
-                        <TextBox Text="{Binding EnvText, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
-                                 MinHeight="56" MaxHeight="120" Watermark="NODE_ENV=production" />
-                      </StackPanel>
-                    </StackPanel>
-                  </Border>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-            <Button Classes="outline" HorizontalAlignment="Left" Command="{Binding AddServerCommand}">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <Path Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
-                <TextBlock Text="Add server" FontSize="12" />
-              </StackPanel>
-            </Button>
+        </RadioButton>
+        <RadioButton x:Name="ProvidersTab" Classes="settingsTab" GroupName="SettingsSection"
+                     Tag="providers" IsCheckedChanged="OnSectionChanged">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Path Classes="icon" Data="M12 3 3 7.5v9L12 21l9-4.5v-9ZM3 7.5l9 4.5 9-4.5M12 12v9M7.5 5.25l9 4.5" />
+            <TextBlock Text="Model providers" />
           </StackPanel>
-        </ScrollViewer>
-
-        <ScrollViewer x:Name="AppearancePanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
-          <Border Background="{DynamicResource AlcolerCard}"
-                  BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
-                  CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="14"
-                  HorizontalAlignment="Stretch" VerticalAlignment="Top">
-            <StackPanel Spacing="6">
-              <TextBlock Text="Theme" FontSize="13" FontWeight="Medium" />
-              <TextBlock Text="Choose the workbench color scheme." FontSize="12"
-                         Foreground="{DynamicResource AlcolerTextSecondary}" />
-              <ComboBox ItemsSource="{Binding ThemeChoices}" SelectedItem="{Binding Theme, Mode=TwoWay}"
-                        HorizontalAlignment="Left" MinWidth="160" Margin="0,4,0,0" />
-            </StackPanel>
-          </Border>
-        </ScrollViewer>
-      </Grid>
+        </RadioButton>
+        <TextBlock Classes="description" Text="Agent capabilities" Margin="10,24,0,4" />
+        <RadioButton x:Name="McpTab" Classes="settingsTab" GroupName="SettingsSection"
+                     Tag="mcp" IsCheckedChanged="OnSectionChanged">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Path Classes="icon" Data="{StaticResource AlcolerIconWrench}" />
+            <TextBlock Text="MCP servers" />
+          </StackPanel>
+        </RadioButton>
+      </StackPanel>
+      <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="10,0">
+        <Path Classes="icon" Data="{StaticResource AlcolerIconSettings}" />
+        <TextBlock Text="Settings" FontSize="{DynamicResource AlcolerFontSmall}"
+                   Foreground="{DynamicResource AlcolerTextSecondary}" />
+      </StackPanel>
     </Grid>
 
-    <Border Grid.Row="2" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,1,0,0"
-            Padding="20,0,16,0">
-      <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Text="{Binding Error}" FontSize="11" TextWrapping="Wrap"
-                   VerticalAlignment="Center" Margin="0,0,12,0"
-                   Foreground="{DynamicResource AlcolerError}" IsVisible="{Binding HasError}" />
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-          <Button Classes="outline" Content="Cancel" Click="OnCancelClick" IsCancel="True" />
-          <Button Classes="primary" Content="Save" Click="OnSaveClick" IsDefault="True" />
-        </StackPanel>
+    <Border Grid.Column="1" Margin="0,4,4,4" Background="{DynamicResource AlcolerBackground}"
+            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+            CornerRadius="{DynamicResource AlcolerRadius}">
+      <Grid RowDefinitions="48,*,Auto">
+        <Grid Margin="24,0,12,0" ColumnDefinitions="*,Auto">
+          <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <TextBlock Classes="description" Text="Settings" />
+            <Path Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" />
+            <TextBlock x:Name="SectionTitle" Text="Model providers" FontSize="{DynamicResource AlcolerFontSmall}" />
+          </StackPanel>
+          <Button x:Name="CloseButton" Grid.Column="1" Classes="icon" Click="OnCancelClick"
+                  ToolTip.Tip="Close settings" AutomationProperties.Name="Close settings">
+            <Path Classes="icon" Data="{StaticResource AlcolerIconX}" />
+          </Button>
+        </Grid>
+
+        <Grid x:Name="SettingsContent" Grid.Row="1" Margin="32,8,32,24">
+          <Grid x:Name="ProvidersPanel" RowDefinitions="Auto,Auto,*">
+            <TextBlock Classes="sectionTitle" Text="Model providers" />
+            <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,16,0,20" ColumnSpacing="16">
+              <TextBlock Classes="description" VerticalAlignment="Center"
+                         Text="Configure API access and the models available in your sessions." />
+              <Button x:Name="AddProviderButton" Grid.Column="1" Classes="primary action" Command="{Binding AddProviderCommand}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Path Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
+                  <TextBlock Text="Add provider" />
+                </StackPanel>
+              </Button>
+            </Grid>
+            <Border Grid.Row="2" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+                    Background="{DynamicResource AlcolerCard}" CornerRadius="{DynamicResource AlcolerRadiusXLarge}">
+              <Grid ColumnDefinitions="224,*">
+                <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,1,0">
+                  <Grid RowDefinitions="Auto,*">
+                    <TextBlock Classes="description" Text="Providers" Margin="18,16,12,8" />
+                    <ListBox x:Name="ProviderList" Grid.Row="1" Classes="providerList" ItemsSource="{Binding Providers}"
+                             SelectedItem="{Binding SelectedProvider, Mode=TwoWay}">
+                      <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ProviderViewModel">
+                          <StackPanel Spacing="4">
+                            <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Label}" />
+                            <TextBlock Classes="description" Text="{Binding BaseUrl}" MaxLines="1" TextTrimming="CharacterEllipsis" />
+                          </StackPanel>
+                        </DataTemplate>
+                      </ListBox.ItemTemplate>
+                    </ListBox>
+                  </Grid>
+                </Border>
+                <Grid Grid.Column="1">
+                  <StackPanel x:Name="ProviderEmptyState" Margin="24" Spacing="8"
+                              VerticalAlignment="Center" IsVisible="{Binding !Providers.Count}">
+                    <TextBlock Text="No providers configured" FontWeight="Medium" />
+                    <TextBlock Classes="description" Text="Add a provider to configure API access and models." />
+                  </StackPanel>
+                  <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding !!Providers.Count}">
+                    <ContentControl Content="{Binding SelectedProvider}" HorizontalContentAlignment="Stretch">
+                      <ContentControl.ContentTemplate>
+                        <DataTemplate x:DataType="vm:ProviderViewModel">
+                          <StackPanel Margin="20" Spacing="16">
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                              <TextBlock Text="{Binding Label}" FontSize="{DynamicResource AlcolerFontLarge}"
+                                         FontWeight="Medium" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                              <Button Grid.Column="1" Classes="ghost action" Content="Remove" Command="{Binding RemoveProviderCommand}"
+                                      Foreground="{DynamicResource AlcolerError}" />
+                            </Grid>
+                            <Border Classes="divided">
+                              <StackPanel Spacing="6">
+                                <TextBlock Classes="fieldLabel" Text="API format" />
+                                <TextBox Text="{Binding Kind, Mode=TwoWay}" Watermark="anthropic or openai-compatible"
+                                         AutomationProperties.Name="Provider kind" />
+                                <TextBlock Classes="description" Text="Supported: anthropic, openai-compatible" />
+                              </StackPanel>
+                            </Border>
+                            <StackPanel Spacing="6">
+                              <TextBlock Classes="fieldLabel" Text="Base URL" />
+                              <TextBox Text="{Binding BaseUrl, Mode=TwoWay}" Watermark="https://api.example.com"
+                                       AutomationProperties.Name="Base URL" />
+                            </StackPanel>
+                            <StackPanel Spacing="6">
+                              <TextBlock Classes="fieldLabel" Text="API key" />
+                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBox Text="{Binding ApiKey, Mode=TwoWay}" PasswordChar="{Binding ApiKeyPasswordChar}"
+                                         Watermark="Enter API key" AutomationProperties.Name="API key" />
+                                <CheckBox Grid.Column="1" Content="Show" IsChecked="{Binding IsApiKeyVisible, Mode=TwoWay}"
+                                          FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" />
+                              </Grid>
+                            </StackPanel>
+                            <Border Classes="divided">
+                              <StackPanel Spacing="12">
+                                <Grid ColumnDefinitions="*,Auto">
+                                  <TextBlock Classes="fieldLabel" Text="Models" VerticalAlignment="Center" />
+                                  <Button Grid.Column="1" Classes="outline action" Content="Add model" Command="{Binding AddModelCommand}" />
+                                </Grid>
+                                <TextBlock Classes="description" Text="Add a model ID and, optionally, its context window in tokens." />
+                                <ItemsControl ItemsSource="{Binding Models}">
+                                  <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:ModelViewModel">
+                                      <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1" Padding="0,0,0,12" Margin="0,0,0,12">
+                                        <Grid ColumnDefinitions="2*,*,Auto" ColumnSpacing="8">
+                                          <TextBox Text="{Binding ModelId, Mode=TwoWay}" Watermark="Model ID" AutomationProperties.Name="Model ID" />
+                                          <TextBox Grid.Column="1" Text="{Binding ContextWindowTokens, Mode=TwoWay}" Watermark="Tokens"
+                                                   ToolTip.Tip="Context window (tokens)" AutomationProperties.Name="Context window (tokens)" />
+                                          <Button Grid.Column="2" Classes="icon" Command="{Binding RemoveCommand}" VerticalAlignment="Center"
+                                                  ToolTip.Tip="Remove model" AutomationProperties.Name="Remove model">
+                                            <Path Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+                                          </Button>
+                                        </Grid>
+                                      </Border>
+                                    </DataTemplate>
+                                  </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                              </StackPanel>
+                            </Border>
+                          </StackPanel>
+                        </DataTemplate>
+                      </ContentControl.ContentTemplate>
+                    </ContentControl>
+                  </ScrollViewer>
+                </Grid>
+              </Grid>
+            </Border>
+          </Grid>
+
+          <ScrollViewer x:Name="McpPanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="20">
+              <TextBlock Classes="sectionTitle" Text="MCP servers" />
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <TextBlock Classes="description" Text="Connect local tools through Model Context Protocol servers." VerticalAlignment="Center" />
+                <Button x:Name="AddServerButton" Grid.Column="1" Classes="outline action" Command="{Binding AddServerCommand}">
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Path Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
+                    <TextBlock Text="Add server" />
+                  </StackPanel>
+                </Button>
+              </Grid>
+              <Border IsVisible="{Binding !McpServers.Count}" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+                      Background="{DynamicResource AlcolerCard}" CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="24">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="No MCP servers configured" FontWeight="Medium" />
+                  <TextBlock Classes="description" Text="Add a server and configure its command, arguments, and environment." />
+                </StackPanel>
+              </Border>
+              <ItemsControl ItemsSource="{Binding McpServers}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:McpServerViewModel">
+                    <Border Background="{DynamicResource AlcolerCard}" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+                            CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="20" Margin="0,0,0,16">
+                      <StackPanel Spacing="16">
+                        <Grid ColumnDefinitions="*,Auto">
+                          <TextBlock Text="MCP server" FontSize="{DynamicResource AlcolerFontLarge}" FontWeight="Medium" VerticalAlignment="Center" />
+                          <Button Grid.Column="1" Classes="ghost action" Content="Remove" Foreground="{DynamicResource AlcolerError}"
+                                  Command="{Binding RemoveServerCommand}" />
+                        </Grid>
+                        <Border Classes="divided">
+                          <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+                            <StackPanel Spacing="6">
+                              <TextBlock Classes="fieldLabel" Text="Name" />
+                              <TextBox Text="{Binding Name, Mode=TwoWay}" Watermark="filesystem" AutomationProperties.Name="Server name" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="6">
+                              <TextBlock Classes="fieldLabel" Text="Command" />
+                              <TextBox Text="{Binding Command, Mode=TwoWay}" Watermark="npx" AutomationProperties.Name="Server command" />
+                            </StackPanel>
+                          </Grid>
+                        </Border>
+                        <StackPanel Spacing="6">
+                          <TextBlock Classes="fieldLabel" Text="Arguments" />
+                          <TextBox Text="{Binding ArgsLine, Mode=TwoWay}" Watermark="-y @scope/server --flag value" AutomationProperties.Name="Server arguments" />
+                        </StackPanel>
+                        <Border Classes="divided">
+                          <StackPanel Spacing="6">
+                            <TextBlock Classes="fieldLabel" Text="Environment variables" />
+                            <TextBlock Classes="description" Text="One KEY=VALUE pair per line." />
+                            <TextBox Text="{Binding EnvText, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
+                                     MinHeight="88" MaxHeight="180" Watermark="NODE_ENV=production" AutomationProperties.Name="Server environment" />
+                          </StackPanel>
+                        </Border>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+
+          <ScrollViewer x:Name="AppearancePanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="24">
+              <TextBlock Classes="sectionTitle" Text="Appearance" />
+              <StackPanel Spacing="12">
+                <TextBlock Text="Interface" FontSize="{DynamicResource AlcolerFontLarge}" FontWeight="Medium" />
+                <Border Background="{DynamicResource AlcolerCard}" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+                        CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16">
+                  <Grid ColumnDefinitions="*,192" ColumnSpacing="16">
+                    <StackPanel Spacing="4" VerticalAlignment="Center">
+                      <TextBlock Classes="fieldLabel" Text="Theme" />
+                      <TextBlock Classes="description" Text="Choose the workbench color scheme." />
+                    </StackPanel>
+                    <ComboBox x:Name="ThemePicker" Grid.Column="1" ItemsSource="{Binding ThemeChoices}"
+                              SelectedItem="{Binding Theme, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center" AutomationProperties.Name="Theme" />
+                  </Grid>
+                </Border>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+
+        <Border Grid.Row="2" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,1,0,0" Padding="24,16">
+          <StackPanel Spacing="12">
+            <ScrollViewer IsVisible="{Binding HasError}" MaxHeight="84" HorizontalScrollBarVisibility="Disabled">
+              <TextBlock x:Name="SaveError" Text="{Binding Error}" FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap"
+                         Foreground="{DynamicResource AlcolerError}" IsVisible="{Binding HasError}" />
+            </ScrollViewer>
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+              <TextBlock Classes="description" Text="Changes apply when you save." VerticalAlignment="Center" />
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="CancelButton" Classes="outline action" Content="Cancel" Click="OnCancelClick" IsCancel="True" />
+                <Button x:Name="SaveButton" Classes="primary action" Content="Save changes" Click="OnSaveClick" IsDefault="True" />
+              </StackPanel>
+            </Grid>
+          </StackPanel>
+        </Border>
       </Grid>
     </Border>
   </Grid>

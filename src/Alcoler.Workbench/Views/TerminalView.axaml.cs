@@ -10,10 +10,6 @@ using Avalonia.Media.Immutable;
 
 namespace Alcoler.Workbench.Views;
 
-/// <summary>
-/// Custom-drawn terminal surface: one FormattedText run per same-color stretch of
-/// cells. Redraws are driven exclusively by the view model's BufferChanged event.
-/// </summary>
 public sealed class TerminalSurface : Control
 {
     public static readonly StyledProperty<double> FontSizeProperty =
@@ -48,14 +44,35 @@ public sealed class TerminalSurface : Control
 
     public TerminalPaneViewModel? ViewModel { get; set; }
 
-    protected override Size MeasureOverride(Size availableSize)
+    protected override Size MeasureOverride(Size availableSize) => default;
+
+    protected override Size ArrangeOverride(Size finalSize)
     {
-        if (Buffer is null)
+        ResizeToViewport(finalSize);
+        return finalSize;
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == FontSizeProperty || change.Property == FontFamilyProperty)
         {
-            return default;
+            ResizeToViewport(Bounds.Size);
+            InvalidateVisual();
+        }
+    }
+
+    internal void ResizeToViewport(Size size)
+    {
+        if (ViewModel is null || !double.IsFinite(size.Width) || !double.IsFinite(size.Height)
+            || size.Width <= 0 || size.Height <= 0)
+        {
+            return;
         }
         GetMetrics(out var cellWidth, out var lineHeight);
-        return new Size(Buffer.Cols * cellWidth, Buffer.Rows * lineHeight);
+        ViewModel.Resize(
+            Math.Max(1, (int)Math.Floor(size.Width / cellWidth)),
+            Math.Max(1, (int)Math.Floor(size.Height / lineHeight)));
     }
 
     public override void Render(DrawingContext context)
@@ -66,7 +83,7 @@ public sealed class TerminalSurface : Control
         }
         GetMetrics(out var cellWidth, out var lineHeight);
         var typeface = new Typeface(FontFamily);
-        var defaultForeground = ResolveColor("AlcolerTextPrimary", Color.FromRgb(0xE6, 0xE7, 0xEA));
+        var defaultForeground = ResolveColor("AlcolerTerminalForeground", Color.FromRgb(0xD4, 0xD4, 0xD4));
 
         for (var row = 0; row < Buffer.Rows; row++)
         {
@@ -246,11 +263,12 @@ public partial class TerminalView : UserControl
             _viewModel.BufferChanged -= OnBufferChanged;
         }
         _viewModel = DataContext as TerminalPaneViewModel;
+        Surface.ViewModel = _viewModel;
+        Surface.Buffer = _viewModel?.Buffer;
         if (_viewModel is not null)
         {
-            Surface.ViewModel = _viewModel;
-            Surface.Buffer = _viewModel.Buffer;
             _viewModel.BufferChanged += OnBufferChanged;
+            Surface.ResizeToViewport(Surface.Bounds.Size);
         }
         Surface.InvalidateVisual();
     }

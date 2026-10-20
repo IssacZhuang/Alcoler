@@ -136,6 +136,25 @@ public sealed class GitPaneViewModelTests
         Assert.Equal("commit 0", viewModel.RecentCommits[0].Message);
     }
 
+    [Theory]
+    [InlineData("src/Pane.cs", ChangeState.Modified, "Pane.cs", "src", "M")]
+    [InlineData("src\\Views\\Pane.axaml", ChangeState.Added, "Pane.axaml", "src/Views", "A")]
+    [InlineData("deleted.txt", ChangeState.Deleted, "deleted.txt", "", "D")]
+    [InlineData("renamed.txt", ChangeState.Renamed, "renamed.txt", "", "R")]
+    public void FileChange_ExposesCompactPathAndStatus(
+        string path, ChangeState state, string fileName, string directory, string statusCode)
+    {
+        var change = new GitFileChangeViewModel(path, state);
+
+        Assert.Equal(fileName, change.FileName);
+        Assert.Equal(directory, change.DirectoryName);
+        Assert.Equal(statusCode, change.StatusCode);
+        Assert.Equal(state == ChangeState.Added, change.IsAdded);
+        Assert.Equal(state == ChangeState.Modified, change.IsModified);
+        Assert.Equal(state == ChangeState.Deleted, change.IsDeleted);
+        Assert.Equal(state == ChangeState.Renamed, change.IsRenamed);
+    }
+
     [Fact]
     public async Task LoadAsync_Failure_SurfacesBanner()
     {
@@ -294,6 +313,12 @@ public sealed class GitPaneViewModelTests
         Assert.Single(viewModel.Branches, b => b.IsCurrent);
         Assert.Single(viewModel.Untracked, f => f.Path == "scratch.txt");
         Assert.Single(viewModel.RecentCommits, c => c.Message == "initial commit");
+        var row = Assert.Single(window.GetVisualDescendants().OfType<Grid>(),
+            grid => grid.Classes.Contains("fileChangeRow"));
+        Assert.Equal(32, row.Height);
+        Assert.Contains(row.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "scratch.txt");
+        Assert.Contains(row.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "A");
+        Assert.DoesNotContain(row.GetVisualDescendants().OfType<Button>(), _ => true);
 
         window.Close();
     }

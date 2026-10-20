@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Alcoler.Workbench.Themes;
 using Alcoler.Workbench.ViewModel;
 using Avalonia.Controls;
@@ -13,7 +14,9 @@ public partial class SidebarView : UserControl
         InitializeComponent();
     }
 
-    private async void OnNewSessionClick(object? sender, RoutedEventArgs e)
+    private async void OnNewSessionClick(object? sender, RoutedEventArgs e) => await ShowNewSessionAsync();
+
+    public async Task ShowNewSessionAsync()
     {
         if (DataContext is not WorkbenchViewModel viewModel
             || TopLevel.GetTopLevel(this) is not Window owner)
@@ -45,7 +48,9 @@ public partial class SidebarView : UserControl
         }
     }
 
-    private async void OnSettingsClick(object? sender, RoutedEventArgs e)
+    private async void OnSettingsClick(object? sender, RoutedEventArgs e) => await ShowSettingsAsync();
+
+    public async Task ShowSettingsAsync()
     {
         if (DataContext is not WorkbenchViewModel viewModel
             || TopLevel.GetTopLevel(this) is not Window owner)
@@ -65,10 +70,23 @@ public partial class SidebarView : UserControl
     }
 
     private static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
-        !string.Equals(before.DefaultModel?.ProviderId, after.DefaultModel?.ProviderId, StringComparison.OrdinalIgnoreCase)
-        || !string.Equals(before.DefaultModel?.ModelId, after.DefaultModel?.ModelId, StringComparison.OrdinalIgnoreCase)
-        || before.Providers.Count != after.Providers.Count
-        || before.McpServers?.Count != after.McpServers?.Count;
+        JsonSerializer.Serialize(before with { Theme = "dark" }) != JsonSerializer.Serialize(after with { Theme = "dark" });
+
+    private async void OnRefreshClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is WorkbenchViewModel viewModel)
+        {
+            await viewModel.Sidebar.RefreshAsync();
+        }
+    }
+
+    private void OnTitleBarPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (TopLevel.GetTopLevel(this) is MainWindow owner)
+        {
+            owner.DragTitleBar(e);
+        }
+    }
 
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
 }

@@ -49,6 +49,10 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
 
     public string StartedFrom { get; }
 
+    public string WorkspaceName => Path.GetFileName(StartedFrom.Replace('\\', '/').TrimEnd('/')) is { Length: > 0 } name
+        ? name
+        : StartedFrom;
+
     /// <summary>Raised on the UI thread after the buffer changed; views invalidate on it.</summary>
     public event EventHandler? BufferChanged;
 
@@ -61,8 +65,14 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
         {
             return;
         }
-        await _service.StartAsync(StartedFrom, PortaPtyTerminalService.DefaultCols, PortaPtyTerminalService.DefaultRows, CancellationToken.None);
+        var cols = Buffer.Cols;
+        var rows = Buffer.Rows;
+        await _service.StartAsync(StartedFrom, cols, rows, CancellationToken.None);
         IsConnected = true;
+        if (cols != Buffer.Cols || rows != Buffer.Rows)
+        {
+            _service.Resize(Buffer.Cols, Buffer.Rows);
+        }
     }
 
     public async Task StopAsync()

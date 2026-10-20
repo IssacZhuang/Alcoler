@@ -67,6 +67,9 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     private string _statusText = string.Empty;
 
     [ObservableProperty]
+    private string _summary = string.Empty;
+
+    [ObservableProperty]
     private string _outputText = string.Empty;
 
     [ObservableProperty]
@@ -83,6 +86,7 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         InputJson = JsonSerializer.Serialize(row.Input, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true });
         Status = row.Status;
         StatusText = row.Status.ToString().ToLowerInvariant();
+        Summary = GetSummary(row.Input);
         IsError = row.IsError;
         DurationText = row.Duration is { } duration
             ? duration.TotalMilliseconds < 1000
@@ -92,6 +96,25 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         OutputText = row.Output is null
             ? string.Empty
             : string.Join("\n", row.Output.OfType<ToolResultText>().Select(b => b.Text));
+    }
+
+    private static string GetSummary(JsonElement input)
+    {
+        if (input.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+        foreach (var key in new[] { "description", "file_path", "path", "command", "pattern", "query", "url" })
+        {
+            if (input.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(value.GetString()))
+            {
+                var text = value.GetString()!;
+                var firstLine = text.Split(['\r', '\n'], 2)[0];
+                return firstLine.Length > 160 ? firstLine[..157] + "..." : firstLine;
+            }
+        }
+        return string.Empty;
     }
 }
 

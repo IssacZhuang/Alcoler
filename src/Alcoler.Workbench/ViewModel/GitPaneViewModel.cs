@@ -43,6 +43,35 @@ public sealed class GitFileChangeViewModel
     public ChangeState State { get; }
 
     public string StateText => State.ToString().ToLowerInvariant();
+
+    public string FileName => Path.Replace('\\', '/').Split('/')[^1];
+
+    public string DirectoryName
+    {
+        get
+        {
+            var path = Path.Replace('\\', '/');
+            var index = path.LastIndexOf('/');
+            return index >= 0 ? path[..index] : string.Empty;
+        }
+    }
+
+    public string StatusCode => State switch
+    {
+        ChangeState.Added => "A",
+        ChangeState.Modified => "M",
+        ChangeState.Deleted => "D",
+        ChangeState.Renamed => "R",
+        _ => string.Empty,
+    };
+
+    public bool IsAdded => State == ChangeState.Added;
+
+    public bool IsModified => State == ChangeState.Modified;
+
+    public bool IsDeleted => State == ChangeState.Deleted;
+
+    public bool IsRenamed => State == ChangeState.Renamed;
 }
 
 public sealed class GitCommitViewModel

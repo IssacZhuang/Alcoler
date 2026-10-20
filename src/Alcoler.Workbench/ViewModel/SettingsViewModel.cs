@@ -38,9 +38,20 @@ public sealed partial class ProviderViewModel : ObservableObject
     [ObservableProperty]
     private string _apiKey = string.Empty;
 
+    [ObservableProperty]
+    private bool _isApiKeyVisible;
+
+    public string Label => string.IsNullOrWhiteSpace(Kind) ? "New provider" : Kind;
+
+    public char ApiKeyPasswordChar => IsApiKeyVisible ? '\0' : '*';
+
     public ObservableCollection<ModelViewModel> Models { get; } = [];
 
     public ProviderViewModel(Action<ProviderViewModel> removeFromParent) => _removeFromParent = removeFromParent;
+
+    partial void OnKindChanged(string value) => OnPropertyChanged(nameof(Label));
+
+    partial void OnIsApiKeyVisibleChanged(bool value) => OnPropertyChanged(nameof(ApiKeyPasswordChar));
 
     [RelayCommand]
     private void RemoveProvider() => _removeFromParent(this);
@@ -103,6 +114,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             }
             Providers.Add(providerItem);
         }
+        SelectedProvider = Providers.FirstOrDefault();
         foreach (var server in config.McpServers ?? [])
         {
             McpServers.Add(new McpServerViewModel(RemoveServerItem)
@@ -122,6 +134,9 @@ public sealed partial class SettingsViewModel : ObservableObject
     public IReadOnlyList<string> ThemeChoices { get; } = [Dark, Light];
 
     [ObservableProperty]
+    private ProviderViewModel? _selectedProvider;
+
+    [ObservableProperty]
     private string _theme = Dark;
 
     [ObservableProperty]
@@ -132,12 +147,26 @@ public sealed partial class SettingsViewModel : ObservableObject
     partial void OnErrorChanged(string? value) => OnPropertyChanged(nameof(HasError));
 
     [RelayCommand]
-    private void AddProvider() => Providers.Add(new ProviderViewModel(RemoveProviderItem));
+    private void AddProvider()
+    {
+        var provider = new ProviderViewModel(RemoveProviderItem);
+        Providers.Add(provider);
+        SelectedProvider = provider;
+    }
 
     [RelayCommand]
     private void AddServer() => McpServers.Add(new McpServerViewModel(RemoveServerItem));
 
-    private void RemoveProviderItem(ProviderViewModel provider) => Providers.Remove(provider);
+    private void RemoveProviderItem(ProviderViewModel provider)
+    {
+        var index = Providers.IndexOf(provider);
+        var wasSelected = SelectedProvider == provider;
+        if (!Providers.Remove(provider) || !wasSelected)
+        {
+            return;
+        }
+        SelectedProvider = Providers.Count == 0 ? null : Providers[Math.Min(index, Providers.Count - 1)];
+    }
 
     private void RemoveServerItem(McpServerViewModel server) => McpServers.Remove(server);
 
@@ -151,7 +180,15 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         var saved = BuildConfig();
-        await Task.Run(() => saved.Save(path));
+        try
+        {
+            await Task.Run(() => saved.Save(path));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Error = $"Could not save settings: {ex.Message}";
+            return null;
+        }
         Error = null;
         return saved;
     }
