@@ -1,6 +1,9 @@
+using System.Globalization;
 using Alcoler.Workbench.ViewModel;
 using Avalonia.Controls;
+using Avalonia.Data.Converters;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 
 namespace Alcoler.Workbench.Views;
 
@@ -19,6 +22,7 @@ public partial class TimelineView : UserControl
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
         TimelineScroll.ScrollChanged += OnTimelineScrollChanged;
+        TimelineLayout.SizeChanged += (_, _) => TimelineItems.Classes.Set("wideUserMessages", TimelineLayout.Bounds.Width >= 624);
     }
 
     /// <summary>Number of append notifications that caused a scroll to the bottom; test hook.</summary>
@@ -112,4 +116,26 @@ public partial class TimelineView : UserControl
             e.Handled = true;
         }
     }
+}
+
+public sealed class ConversationIconConverter : IValueConverter
+{
+    private readonly Dictionary<string, Geometry> _geometries = new(StringComparer.Ordinal);
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is not string { Length: > 0 } path)
+        {
+            return null;
+        }
+        if (!_geometries.TryGetValue(path, out var geometry))
+        {
+            geometry = Geometry.Parse(path);
+            _geometries.Add(path, geometry);
+        }
+        return geometry;
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
 }

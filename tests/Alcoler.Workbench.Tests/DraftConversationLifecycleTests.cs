@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
@@ -12,6 +13,22 @@ namespace Alcoler.Workbench.Tests;
 
 public sealed class DraftConversationLifecycleTests
 {
+    private readonly QueuedUiScheduler _scheduler = new();
+
+    [Fact]
+    public async Task ProjectionScheduler_DefersBackgroundCallbacksUntilDrained()
+    {
+        var callbackThread = 0;
+        await Task.Run(() => _scheduler.Post(() => callbackThread = Environment.CurrentManagedThreadId));
+
+        Assert.Equal(0, callbackThread);
+        Assert.True(_scheduler.HasPending);
+        var ownerThread = Environment.CurrentManagedThreadId;
+        _scheduler.RunPending();
+        Assert.Equal(ownerThread, callbackThread);
+        Assert.False(_scheduler.HasPending);
+    }
+
     [Fact]
     public void NewTask_DoesNotCreateOrObserveASession_AndRestoresWorkspaceDrafts()
     {
@@ -97,6 +114,7 @@ public sealed class DraftConversationLifecycleTests
         draft.ThoughtLevel = "high";
         createGate.SetResult();
         await sending;
+        await ApplyInitialProjectionAsync();
 
         var created = Assert.Single(runtime.Created);
         Assert.Equal(PermissionMode.Plan, created.PermissionMode);
@@ -124,6 +142,9 @@ public sealed class DraftConversationLifecycleTests
         var sending = draft.SendAsync();
         Assert.NotNull(workbench.Active);
         Assert.True(workbench.Active!.Composer.IsSending);
+        await ApplyInitialProjectionAsync();
+        Assert.Equal("Test session", workbench.Active.Title);
+        Assert.True(workbench.Active.Composer.IsSending);
         await workbench.Active.SendAsync();
         Assert.Single(runtime.Submitted);
         var command = Assert.Single(runtime.Submitted);
@@ -145,6 +166,7 @@ public sealed class DraftConversationLifecycleTests
         var draft = workbench.Draft!;
         draft.Composer.Draft = "Original captured prompt";
         var sending = draft.SendAsync();
+        await ApplyInitialProjectionAsync();
         workbench.Active!.Composer.Draft = "Newer draft edit";
         if (throws)
         {
@@ -167,6 +189,7 @@ public sealed class DraftConversationLifecycleTests
         Assert.NotSame(draft, workbench.Draft);
         workbench.ClearBanner();
         await workbench.OpenSessionAsync(sessionId);
+        _scheduler.RunPending();
         Assert.Equal("Original captured prompt", workbench.UnsentText);
         Assert.Equal("Newer draft edit", workbench.Active!.Composer.Draft);
         Assert.Single(runtime.Created);
@@ -187,6 +210,7 @@ public sealed class DraftConversationLifecycleTests
         draft.Composer.Draft = "Send once with a document";
 
         await draft.SendAsync();
+        await ApplyInitialProjectionAsync();
 
         Assert.Equal(runtime.LastSessionId.Value, document.OwnerId);
         Assert.Equal(workbench.CurrentDocumentOwnerId, document.OwnerId);
@@ -199,6 +223,7 @@ public sealed class DraftConversationLifecycleTests
         Assert.NotEqual(oldOwner, workbench.CurrentDocumentOwnerId);
         Assert.Empty(workbench.Documents.VisibleItems);
         await workbench.OpenSessionAsync(runtime.LastSessionId);
+        _scheduler.RunPending();
         Assert.Same(document, workbench.Documents.ActiveDocument);
     }
 
@@ -250,6 +275,7 @@ public sealed class DraftConversationLifecycleTests
         using var workbench = Create(runtime);
         var handle = await runtime.CreateSessionAsync(new SessionOptions(Environment.CurrentDirectory), CancellationToken.None);
         await workbench.OpenSessionAsync(handle.Id);
+        await ApplyInitialProjectionAsync();
         var original = workbench.Active!;
         original.Composer.Draft = "Session draft";
         original.Composer.Mode = PermissionMode.Plan;
@@ -260,6 +286,7 @@ public sealed class DraftConversationLifecycleTests
         draft.Composer.Draft = "Workspace draft";
 
         await workbench.OpenSessionAsync(handle.Id);
+        _scheduler.RunPending();
 
         Assert.NotSame(original, workbench.Active);
         Assert.Same(original.Composer, workbench.Active!.Composer);
@@ -271,12 +298,35 @@ public sealed class DraftConversationLifecycleTests
         Assert.Equal("Workspace draft", workbench.Draft!.Composer.Draft);
     }
 
-    private static WorkbenchViewModel Create(DraftRuntime runtime) => new(runtime, InlineUiScheduler.Instance,
+    private WorkbenchViewModel Create(DraftRuntime runtime) => new(runtime, _scheduler,
         new WorkbenchConfig([
             new WorkbenchProviderConfig("openai-compatible", "https://example.test/v1", "key", [
                 new WorkbenchModelConfig("test-model", ReasoningLevels: ["off", "low", "high"]),
             ], Id: "custom"),
         ], new WorkbenchDefaultModelConfig("custom", "test-model")));
+
+    private async Task ApplyInitialProjectionAsync()
+    {
+        await ProjectionStoreTests.WaitUntil(() => _scheduler.HasPending);
+        _scheduler.RunPending();
+    }
+
+    private sealed class QueuedUiScheduler : IUiScheduler
+    {
+        private readonly ConcurrentQueue<Action> _pending = new();
+
+        public bool HasPending => !_pending.IsEmpty;
+
+        public void Post(Action action) => _pending.Enqueue(action);
+
+        public void RunPending()
+        {
+            while (_pending.TryDequeue(out var action))
+            {
+                action();
+            }
+        }
+    }
 
     private sealed class DraftRuntime : IAgentRuntime
     {

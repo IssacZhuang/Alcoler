@@ -49,7 +49,7 @@
     </Style>
   </UserControl.Styles>
 
-  <Grid Margin="16,8,16,16" MaxWidth="800" HorizontalAlignment="Stretch">
+  <controls:ConversationLayout Padding="16,8,16,16">
     <StackPanel Spacing="8">
       <Border x:Name="QueueStrip" IsVisible="{Binding HasQueuedInput}"
               Background="{DynamicResource AlcolerSurface}"
@@ -141,5 +141,5 @@
         </Grid>
       </Border>
     </StackPanel>
-  </Grid>
+  </controls:ConversationLayout>
 </UserControl>

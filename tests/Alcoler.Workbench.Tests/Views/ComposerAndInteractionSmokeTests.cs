@@ -201,6 +201,31 @@ public class ComposerAndInteractionSmokeTests
         Assert.Equal(28, FindNamed<Button>(harness.View, "ContextTrigger").Width);
     }
 
+    [AvaloniaTheory]
+    [Xunit.InlineData(600, 600)]
+    [Xunit.InlineData(900, 804)]
+    [Xunit.InlineData(1400, 1016)]
+    public async Task ConversationDockAndInteraction_UseTheSameResponsiveColumn(double paneWidth, double sectionWidth)
+    {
+        foreach (var interaction in new[] { false, true })
+        {
+            using var harness = interaction
+                ? Show<InteractionAreaView>(StateWith(permission: Permission()))
+                : Show<ComposerView>();
+            harness.Window.Width = paneWidth;
+            harness.Window.Height = 600;
+            await PumpAsync();
+            harness.Window.UpdateLayout();
+            var layout = Assert.Single(harness.View.GetVisualDescendants().OfType<Workbench.Controls.ConversationLayout>());
+            var child = Assert.IsAssignableFrom<Control>(layout.Child);
+            var origin = child.TranslatePoint(default, harness.View)!.Value;
+
+            Assert.InRange(child.Bounds.Width, sectionWidth - 33, sectionWidth - 31);
+            Assert.InRange(origin.X, (paneWidth - sectionWidth) / 2 + 15, (paneWidth - sectionWidth) / 2 + 17);
+            Assert.InRange(origin.X + child.Bounds.Width, paneWidth - origin.X - 1, paneWidth - origin.X + 1);
+        }
+    }
+
     [AvaloniaFact]
     public async Task Composer_ReasoningPicker_TracksConfiguredModelLevels()
     {

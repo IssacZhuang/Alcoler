@@ -27,7 +27,7 @@
     </Style>
   </UserControl.Styles>
 
-  <Grid Margin="16,0,16,0" MaxWidth="800" HorizontalAlignment="Stretch">
+  <controls:ConversationLayout Padding="16,0">
     <StackPanel Spacing="8">
       <Border x:Name="BannerStrip"
               IsVisible="False"
@@ -146,5 +146,5 @@
         </ContentControl.ContentTemplate>
       </ContentControl>
     </StackPanel>
-  </Grid>
+  </controls:ConversationLayout>
 </UserControl>

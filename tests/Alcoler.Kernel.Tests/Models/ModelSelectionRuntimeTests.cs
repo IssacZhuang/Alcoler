@@ -103,13 +103,13 @@ public class ModelSelectionRuntimeTests
         var switched = await runtime.SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), session.Id, 0, new ModelSelection("next", "model", new("medium", 333))), CancellationToken.None);
         Assert.True(switched.Accepted);
         overrideModel.Release.TrySetResult();
-        await WaitIdle(projection);
+        await WaitForTurn(projection, expectedCompletedAssistantMessages: 2);
         Assert.Empty(defaultModel.Requests);
         Assert.Empty(nextModel.Requests);
         Assert.Equal(2, overrideModel.Requests.Count);
         Assert.All(overrideModel.Requests, r => Assert.Equal(turnOptions, r.Options));
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "second"), CancellationToken.None);
-        await WaitIdle(projection);
+        await WaitForTurn(projection, expectedCompletedAssistantMessages: 3);
         Assert.Equal(new ModelCallOptions("medium", 333), Assert.Single(nextModel.Requests).Options);
     }
 
@@ -128,7 +128,7 @@ public class ModelSelectionRuntimeTests
         Assert.True((await runtime.SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), session.Id, 0,
             new ModelSelection("next", "model", new("low", 900))), CancellationToken.None)).Accepted);
         frozen.Release.TrySetResult();
-        await WaitIdle(projection);
+        await WaitForTurn(projection, expectedCompletedAssistantMessages: 1);
         Assert.Empty(next.Requests);
         Assert.Equal(3, frozen.Requests.Count);
         Assert.All(frozen.Requests, request => Assert.Equal(new ModelCallOptions("high", 700), request.Options));
@@ -143,16 +143,18 @@ public class ModelSelectionRuntimeTests
         var session = await runtime.CreateSessionAsync(new SessionOptions(fixture.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "hello"), CancellationToken.None);
-        await WaitIdle(projection);
+        await WaitForTurn(projection, expectedCompletedAssistantMessages: 1);
         var options = Assert.Single(model.Requests).Options;
         Assert.Equal("high", options.ReasoningLevel);
         Assert.InRange(options.MaxOutputTokens!.Value, 1, 3000);
     }
 
-    private static async Task WaitIdle(IConversationProjection projection)
+    private static async Task WaitForTurn(IConversationProjection projection, int expectedCompletedAssistantMessages)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        while (projection.Snapshot().State.Phase != TurnPhase.Idle)
+        while (projection.Snapshot() is var snapshot &&
+               (snapshot.State.Phase != TurnPhase.Idle ||
+                snapshot.Rows.OfType<AssistantMessageRow>().Count(row => !row.IsStreaming) < expectedCompletedAssistantMessages))
             await Task.Delay(10, timeout.Token);
     }
 
