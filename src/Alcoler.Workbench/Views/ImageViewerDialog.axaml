@@ -1,0 +1,30 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Alcoler.Workbench.Views.ImageViewerDialog"
+        Title="Image preview" Width="1000" Height="760" MinWidth="600" MinHeight="300"
+        CanResize="True" ShowInTaskbar="False" WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource AlcolerBackground}">
+  <Grid RowDefinitions="Auto,*">
+    <Border Padding="16,8" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource AlcolerBorder}">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="16">
+        <TextBlock x:Name="FileNameLabel" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                   Foreground="{DynamicResource AlcolerTextPrimary}" />
+        <StackPanel x:Name="ZoomControls" Grid.Column="1" Orientation="Horizontal" Spacing="6" IsEnabled="False">
+          <Button x:Name="ZoomOutButton" Content="−" Click="OnZoomOutClick" ToolTip.Tip="Zoom out" AutomationProperties.Name="Zoom out" />
+          <TextBlock x:Name="ZoomLabel" Text="Fit" MinWidth="48" TextAlignment="Center" VerticalAlignment="Center" />
+          <Button x:Name="ZoomInButton" Content="+" Click="OnZoomInClick" ToolTip.Tip="Zoom in" AutomationProperties.Name="Zoom in" />
+          <Button x:Name="ActualSizeButton" Content="100%" Click="OnActualSizeClick" ToolTip.Tip="Actual size" />
+          <Button x:Name="FitButton" Content="Fit" Click="OnFitClick" ToolTip.Tip="Fit image to window" />
+        </StackPanel>
+        <Button x:Name="CloseImageButton" Grid.Column="2" Content="Close" Click="OnCloseClick" />
+      </Grid>
+    </Border>
+    <Grid Grid.Row="1" Margin="16">
+      <ScrollViewer x:Name="ImageScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+        <Image x:Name="PreviewImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" />
+      </ScrollViewer>
+      <TextBlock x:Name="StatusLabel" Text="Loading image..." HorizontalAlignment="Center" VerticalAlignment="Center"
+                 TextWrapping="Wrap" MaxWidth="560" Foreground="{DynamicResource AlcolerTextSecondary}" />
+    </Grid>
+  </Grid>
+</Window>

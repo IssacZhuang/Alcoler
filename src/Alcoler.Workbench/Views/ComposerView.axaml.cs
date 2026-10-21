@@ -110,7 +110,7 @@ public partial class ComposerView : UserControl
 
     private void OnConversationPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(IComposerHost.ModelText))
+        if (e.PropertyName is nameof(IComposerHost.ModelText) or nameof(IComposerHost.CurrentSelection))
             SynchronizeModel();
         if (e.PropertyName is nameof(IComposerHost.ThoughtLevels) or nameof(IComposerHost.ThoughtLevel))
             BuildThoughtMenu();
@@ -129,12 +129,14 @@ public partial class ComposerView : UserControl
 
     private void SynchronizeModel()
     {
+        var selection = ViewModel?.CurrentSelection;
         var choice = _workbench?.ModelChoices.FirstOrDefault(choice =>
-            $"{choice.ProviderId}/{choice.ModelId}" == ViewModel?.ModelText);
+            choice.ProviderId == selection?.ProviderId && choice.ModelId == selection.ModelId);
         if (choice is not null)
             ViewModel?.ConfigureModel(choice);
-        var provider = choice is not null ? _workbench?.FindProvider(choice.ProviderId) : null;
-        ModelLabel.Text = choice is null ? ViewModel?.ModelText : $"{provider?.Label ?? choice.ProviderId}/{choice.ModelId}";
+        var provider = selection is not null ? _workbench?.FindProvider(selection.ProviderId) : null;
+        ModelLabel.Text = selection is null ? ViewModel?.ModelText : $"{provider?.Label ?? selection.ProviderId}/{selection.ModelId}";
+        ToolTip.SetTip(ModelSelector, ModelLabel.Text);
         _providerUsage.Configure(provider?.EffectiveId, provider?.BaseUrl, provider?.ApiKey);
         BuildModelMenu();
     }
@@ -385,7 +387,7 @@ public partial class ComposerView : UserControl
                 InputBox.CaretIndex = start + text.Length;
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             host.Composer.InputError = $"Could not paste image. {exception.Message}";
         }
@@ -393,6 +395,13 @@ public partial class ComposerView : UserControl
         {
             _pasting = false;
         }
+    }
+
+    private async void OnPreviewImageClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ComposerImageAttachment image }
+            && TopLevel.GetTopLevel(this) is Window owner)
+            await ImageViewerDialog.ShowAsync(owner, image);
     }
 
     private void OnRemoveImageClick(object? sender, RoutedEventArgs e)

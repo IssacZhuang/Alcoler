@@ -339,7 +339,7 @@ public sealed class ConversationPanel : VirtualizingPanel
             or nameof(AssistantMessageItemViewModel.ReasoningBlocks)
             or nameof(AssistantMessageItemViewModel.IsStreaming)
             or nameof(AssistantMessageItemViewModel.IsReasoningExpanded),
-        ToolCallItemViewModel tool => propertyName == nameof(ToolCallItemViewModel.IsExpanded) ||
+        ToolCallItemViewModel tool => propertyName is nameof(ToolCallItemViewModel.IsExpanded) or nameof(ToolCallItemViewModel.ImageMedia) ||
             tool.IsExpanded && propertyName is nameof(ToolCallItemViewModel.InputJson) or nameof(ToolCallItemViewModel.OutputText),
         _ => true,
     };
@@ -359,12 +359,26 @@ public sealed class ConversationPanel : VirtualizingPanel
         InvalidateMeasure();
     }
 
-    private static double EstimateHeight(object? item) => item switch
+    private double EstimateHeight(object? item) => item switch
     {
-        ToolCallItemViewModel { IsExpanded: false } => 32,
+        ToolCallItemViewModel tool => (tool.IsExpanded ? 48 : 32) + EstimateImageHeight(tool.ImageMedia.Count),
         AssistantMessageItemViewModel { IsReasoningExpanded: false, MarkdownText.Length: 0 } => 32,
         _ => 48,
     };
+
+    private double EstimateImageHeight(int imageCount)
+    {
+        if (imageCount == 0)
+            return 0;
+        const double stripLeftMargin = 24;
+        const double stripVerticalMargin = 12;
+        const double thumbnailWidthWithMargin = 134;
+        const double thumbnailHeightWithMargin = 100;
+        var imagesPerRow = double.IsFinite(_width)
+            ? Math.Max(1, Math.Floor(Math.Max(0, _width - stripLeftMargin) / thumbnailWidthWithMargin))
+            : imageCount;
+        return stripVerticalMargin + Math.Ceiling(imageCount / imagesPerRow) * thumbnailHeightWithMargin;
+    }
 
     private static object Key(object? item) => item ?? NullItem;
     private sealed record RealizedRow(object Key, Control Container, bool Generated);

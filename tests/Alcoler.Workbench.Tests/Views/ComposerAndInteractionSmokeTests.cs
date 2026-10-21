@@ -288,6 +288,38 @@ public class ComposerAndInteractionSmokeTests
         Assert.Equal(28, FindNamed<Button>(harness.View, "ContextTrigger").Width);
     }
 
+    [AvaloniaFact]
+    public async Task Composer_HiddenOptionalContentDoesNotReserveSpace()
+    {
+        using var harness = Show<ComposerView>();
+        await PrepareQuestionAsync(harness);
+        var shell = FindNamed<Border>(harness.View, "ComposerShell");
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        var toolbar = FindNamed<Grid>(harness.View, "ComposerToolbar");
+        var inset = shell.Padding.Top + shell.BorderThickness.Top;
+
+        void AssertCompactLayout()
+        {
+            Assert.Equal(inset, input.TranslatePoint(default, shell)!.Value.Y);
+            Assert.Equal(12, toolbar.TranslatePoint(default, shell)!.Value.Y
+                - input.TranslatePoint(default, shell)!.Value.Y - input.Bounds.Height);
+            Assert.Equal(shell.Padding.Top + shell.Padding.Bottom + shell.BorderThickness.Top
+                + shell.BorderThickness.Bottom + input.Bounds.Height + 12 + toolbar.Bounds.Height, shell.Bounds.Height);
+        }
+
+        Assert.False(harness.ViewModel.Composer.HasAttachments);
+        AssertCompactLayout();
+        var compactHeight = shell.Bounds.Height;
+        harness.ViewModel.Composer.InputError = "Could not paste image.";
+        await PumpAsync();
+        harness.Window.UpdateLayout();
+        Assert.True(shell.Bounds.Height > compactHeight);
+        harness.ViewModel.Composer.InputError = null;
+        await PumpAsync();
+        harness.Window.UpdateLayout();
+        AssertCompactLayout();
+    }
+
     [AvaloniaTheory]
     [Xunit.InlineData(false)]
     [Xunit.InlineData(true)]
@@ -427,6 +459,41 @@ public class ComposerAndInteractionSmokeTests
             new WorkbenchProviderConfig("openai-compatible", "https://other.invalid/v1", null,
                 [new WorkbenchModelConfig("plain", ReasoningLevels: [])], Id: "other", Name: "Other provider"),
         ]));
+
+    [AvaloniaFact]
+    public async Task Composer_RuntimeModelUpdatesKeepFriendlyProviderLabel()
+    {
+        const string providerId = "provider-0ff1867c1b0e442a921";
+        using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance,
+            new WorkbenchConfig([
+                new WorkbenchProviderConfig("openai-compatible", "https://example.invalid/v1", null,
+                    [new WorkbenchModelConfig("reasoning", ReasoningLevels: ["low", "high"])],
+                    Id: providerId, Name: "ChatGPT"),
+            ]));
+        using var harness = Show<ComposerView>(workbench: workbench);
+        await PrepareQuestionAsync(harness);
+        var label = FindNamed<TextBlock>(harness.View, "ModelLabel");
+        var picker = FindNamed<Button>(harness.View, "ModelSelector");
+        var selection = new Contracts.Models.ModelSelection(providerId, "reasoning",
+            new Contracts.Models.ModelCallOptions(ReasoningLevel: "high"));
+
+        foreach (var phase in new[] { TurnPhase.AwaitingModel, TurnPhase.Streaming, TurnPhase.Idle })
+        {
+            var state = TestSnapshots.State(phase, modelSelection: selection);
+            harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            await PumpAsync();
+            Assert.Equal("ChatGPT/reasoning", label.Text);
+            Assert.Equal("ChatGPT/reasoning", ToolTip.GetTip(picker));
+        }
+
+        harness.View.DataContext = new DraftConversationViewModel(harness.TempRoot,
+            workbench.ModelChoices.Single(), _ => Task.CompletedTask);
+        await PumpAsync();
+        Assert.Equal("ChatGPT/reasoning", label.Text);
+        harness.View.DataContext = harness.ViewModel;
+        await PumpAsync();
+        Assert.Equal("ChatGPT/reasoning", label.Text);
+    }
 
     [AvaloniaFact]
     public async Task Composer_ExplicitModelChoice_UsesHighestReasoningWithoutChangingHydrationDefaults()

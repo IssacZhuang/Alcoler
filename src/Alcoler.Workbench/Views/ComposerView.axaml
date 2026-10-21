@@ -78,8 +78,8 @@
               Background="{DynamicResource AlcolerInput}"
               BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
               CornerRadius="16" Padding="12">
-        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="12">
-          <Border x:Name="SkillPanel" Grid.Row="0" IsVisible="False" MaxHeight="220"
+        <StackPanel Spacing="12">
+          <Border x:Name="SkillPanel" IsVisible="False" MaxHeight="220"
                   Background="{DynamicResource AlcolerSurface}" CornerRadius="8" Padding="4">
             <ListBox x:Name="SkillSuggestions" SelectionMode="Single" MaxHeight="212">
               <ListBox.ItemTemplate>
@@ -93,7 +93,7 @@
               </ListBox.ItemTemplate>
             </ListBox>
           </Border>
-          <ItemsControl Grid.Row="1" ItemsSource="{Binding Composer.Attachments}" IsVisible="{Binding Composer.HasAttachments}">
+          <ItemsControl ItemsSource="{Binding Composer.Attachments}" IsVisible="{Binding Composer.HasAttachments}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
@@ -101,7 +101,10 @@
               <DataTemplate x:DataType="vm:ComposerImageAttachment">
                 <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="8" Padding="4" Margin="0,0,6,6">
                   <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="4">
-                    <Image Source="{Binding Thumbnail}" Width="72" Height="56" Stretch="UniformToFill" ToolTip.Tip="{Binding Name}" />
+                    <Button Classes="ghost" Padding="0" Cursor="Hand" Click="OnPreviewImageClick"
+                            ToolTip.Tip="{Binding Name}" AutomationProperties.Name="Preview image">
+                      <Image Source="{Binding Thumbnail}" Width="72" Height="56" Stretch="UniformToFill" />
+                    </Button>
                     <Button Grid.Column="1" Classes="icon toolbarAction" VerticalAlignment="Top" Click="OnRemoveImageClick" ToolTip.Tip="Remove image">
                       <controls:Icon Classes="icon small" Data="M6 6l12 12 M18 6 6 18" />
                     </Button>
@@ -110,16 +113,16 @@
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
-          <TextBox x:Name="InputBox" Grid.Row="2" Classes="bare"
+          <TextBox x:Name="InputBox" Classes="bare"
                    Text="{Binding Composer.Draft, Mode=TwoWay}"
                    Watermark="Ask anything..."
                    AcceptsReturn="True" TextWrapping="Wrap"
                    MinHeight="40" MaxHeight="160" VerticalContentAlignment="Top"
                    FontSize="13" />
 
-          <TextBlock Grid.Row="3" Text="{Binding Composer.InputError}" IsVisible="{Binding !!Composer.InputError}"
+          <TextBlock Text="{Binding Composer.InputError}" IsVisible="{Binding !!Composer.InputError}"
                      Foreground="{DynamicResource AlcolerWarning}" FontSize="12" TextWrapping="Wrap" />
-          <Grid x:Name="ComposerToolbar" Grid.Row="4" ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="6" Height="28">
+          <Grid x:Name="ComposerToolbar" ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="6" Height="28">
             <Button x:Name="ModeSelector" Classes="modePicker" Classes.fullAccess="{Binding Composer.IsFullAccess}"
                     ToolTip.Tip="Permissions for the next message" VerticalAlignment="Center" AutomationProperties.Name="Permissions">
               <StackPanel Orientation="Horizontal" Spacing="4">
@@ -145,10 +148,10 @@
             </Button>
 
             <Button x:Name="ModelSelector" Grid.Column="3" Classes="ghost toolbarPicker"
-                    MinWidth="40" MaxWidth="240" HorizontalAlignment="Right" ToolTip.Tip="{Binding ModelText}"
+                    MinWidth="40" MaxWidth="240" HorizontalAlignment="Right"
                     Click="OnModelPickerClick" AutomationProperties.Name="Choose model">
               <StackPanel Orientation="Horizontal" Spacing="4">
-                <TextBlock x:Name="ModelLabel" Text="{Binding ModelText}" MaxWidth="210" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <TextBlock x:Name="ModelLabel" MaxWidth="210" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
               </StackPanel>
               <Button.Flyout><MenuFlyout Placement="TopEdgeAlignedLeft" /></Button.Flyout>
@@ -177,7 +180,7 @@
               </Button>
             </StackPanel>
           </Grid>
-        </Grid>
+        </StackPanel>
       </Border>
     </StackPanel>
   </controls:ConversationLayout>

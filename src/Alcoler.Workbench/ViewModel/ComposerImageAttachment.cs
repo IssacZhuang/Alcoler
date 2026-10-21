@@ -40,6 +40,20 @@ public sealed class ComposerImageAttachment : IDisposable
     public Bitmap Thumbnail { get; }
     public string Name { get; }
     internal string PayloadPath => _payload.Name;
+    internal string MimeType => _mimeType;
+
+    internal byte[] ReadPreviewBytes()
+    {
+        lock (_payload)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ValidateSize(_payload.Length);
+            var bytes = new byte[(int)_payload.Length];
+            _payload.Position = 0;
+            _payload.ReadExactly(bytes);
+            return bytes;
+        }
+    }
 
     public static ComposerImageAttachment FromBytes(byte[] bytes, string mimeType, string name)
     {

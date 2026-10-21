@@ -259,7 +259,8 @@
                       </ItemsControl.ItemsPanel>
                       <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="parts:FilePart">
-                          <controls:ConversationImage ArtifactUri="{Binding ArtifactUri}" MimeType="{Binding MimeType}" ToolTip.Tip="{Binding FileName}" Margin="0,0,6,0" />
+                          <controls:ConversationImage ArtifactUri="{Binding ArtifactUri}" MimeType="{Binding MimeType}" FileName="{Binding FileName}"
+                                                      ToolTip.Tip="{Binding FileName}" Margin="0,0,6,0" />
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
                     </ItemsControl>
@@ -320,6 +321,17 @@
                       </StackPanel>
                     </Grid>
                   </Button>
+                  <ItemsControl Classes="toolImages" ItemsSource="{Binding ImageMedia}" IsVisible="{Binding HasImages}" Margin="24,8,0,4">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="parts:ToolResultMedia">
+                        <controls:ConversationImage ArtifactUri="{Binding ArtifactUri}" MimeType="{Binding MimeType}" FileName="{Binding FileName}"
+                                                    ToolTip.Tip="{Binding FileName}" Margin="0,0,6,4" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
                   <Border Classes="toolDetails" Margin="8,12,0,0" Padding="14,0,0,0"
                           BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1,0,0,0"
                           IsVisible="{Binding IsExpanded}">

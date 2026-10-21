@@ -250,13 +250,25 @@ public sealed class ClipboardImagesTests
             data.Set(DataFormats.Text, "not pasted with image");
             await clipboard.SetDataObjectAsync(data);
             var input = view.FindControl<TextBox>("InputBox")!;
+            var shell = view.FindControl<Border>("ComposerShell")!;
+            window.UpdateLayout();
+            var compactHeight = shell.Bounds.Height;
+            var inputInset = shell.Padding.Top + shell.BorderThickness.Top;
+            Assert.Equal(inputInset, input.TranslatePoint(default, shell)!.Value.Y);
             host.Composer.Draft = "unchanged draft";
             input.Paste();
             await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
 
             Assert.Equal("unchanged draft", host.Composer.Draft);
             Assert.Equal(png, Convert.FromBase64String(Assert.Single(host.Composer.Attachments).Image.Base64Data));
+            window.UpdateLayout();
+            Assert.True(shell.Bounds.Height > compactHeight);
+            Assert.True(input.TranslatePoint(default, shell)!.Value.Y > inputInset);
             host.Composer.ClearAttachments();
+            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+            window.UpdateLayout();
+            Assert.Equal(compactHeight, shell.Bounds.Height);
+            Assert.Equal(inputInset, input.TranslatePoint(default, shell)!.Value.Y);
             await clipboard.SetTextAsync("replacement");
             host.Composer.Draft = "before after";
             input.SelectionStart = 7;

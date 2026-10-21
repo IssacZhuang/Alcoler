@@ -88,6 +88,8 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
 
     public string AccessibleDurationText => string.IsNullOrEmpty(DurationText) ? string.Empty : $"Elapsed time {DurationText}";
 
+    public bool HasImages => ImageMedia.Count > 0;
+
     [ObservableProperty]
     private string _inputJson = string.Empty;
 
@@ -103,6 +105,10 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
 
     [ObservableProperty]
     private string _outputText = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasImages))]
+    private IReadOnlyList<ToolResultMedia> _imageMedia = [];
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasError), nameof(ShowStatus), nameof(DisplayStatusText))]
@@ -136,6 +142,11 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         OutputText = row.Output is null
             ? string.Empty
             : string.Join("\n", row.Output.OfType<ToolResultText>().Select(b => b.Text));
+        ToolResultMedia[] images = row.Output is null
+            ? []
+            : [.. row.Output.OfType<ToolResultMedia>().Where(media => media.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))];
+        if (!ImageMedia.SequenceEqual(images))
+            ImageMedia = images;
     }
 
     private static (string DisplayName, string IconPath) GetPresentation(string toolName) => toolName.ToLowerInvariant() switch
