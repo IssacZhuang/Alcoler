@@ -21,8 +21,8 @@ jobs:
           - rid: win-arm64
             triple: aarch64-pc-windows-msvc
             runs-on: windows-latest
-            rg-archive: ripgrep-14.1.1-aarch64-pc-windows-msvc.zip
-            rg-name: rg.exe
+            rg-archive: ''
+            rg-name: ''
             lib: alco_grep.dll
           - rid: linux-x64
             triple: x86_64-unknown-linux-gnu
@@ -73,30 +73,43 @@ jobs:
         run: src/Alcoler.Adapters.Native/alco-grep/write-delivery.ps1 -Library "src/Alcoler.Adapters.Native/alco-grep/target/${{ matrix.triple }}/release/${{ matrix.lib }}"
 
       - name: Fetch official ripgrep
-        shell: bash
+        shell: pwsh
         run: |
-          curl -fsSL -o rg-download "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/${{ matrix.rg-archive }}"
-          mkdir rg-extract
-          tar -xf rg-download -C rg-extract
+          $archive = '${{ matrix.rg-archive }}'
+          Invoke-WebRequest -Uri "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$archive" -OutFile rg-download
+          New-Item -ItemType Directory -Force rg-extract | Out-Null
+          if ($archive.EndsWith('.zip')) { Expand-Archive rg-download rg-extract } else { tar -xzf rg-download -C rg-extract }
 
-      - name: Stage artifacts
+      - name: Stage library
         shell: pwsh
         run: |
           $crate = 'src/Alcoler.Adapters.Native/alco-grep'
           $lib = "$crate/target/${{ matrix.triple }}/release/${{ matrix.lib }}"
-          New-Item -ItemType Directory -Force -Path "staging/runtimes/${{ matrix.rid }}/native", "staging/tools/ripgrep/${{ matrix.rid }}" | Out-Null
+          New-Item -ItemType Directory -Force -Path "staging/runtimes/${{ matrix.rid }}/native" | Out-Null
           Copy-Item $lib "staging/runtimes/${{ matrix.rid }}/native/"
           Copy-Item "$lib.source.sha256" "staging/runtimes/${{ matrix.rid }}/native/"
+
+      - name: Fetch official ripgrep
+        # ripgrep 14.1.1 ships no aarch64-pc-windows-msvc archive; win-arm64
+        # gets the library only and Bash sessions degrade to no rg shim.
+        if: matrix.rg-archive != ''
+        shell: pwsh
+        run: |
+          $archive = '${{ matrix.rg-archive }}'
+          Invoke-WebRequest -Uri "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$archive" -OutFile rg-download
+          New-Item -ItemType Directory -Force rg-extract | Out-Null
+          if ($archive.EndsWith('.zip')) { Expand-Archive rg-download rg-extract } else { tar -xzf rg-download -C rg-extract }
+          New-Item -ItemType Directory -Force -Path "staging/tools/ripgrep/${{ matrix.rid }}" | Out-Null
           $rgDir = (Get-ChildItem rg-extract -Directory | Select-Object -First 1).FullName
           Copy-Item (Join-Path $rgDir '${{ matrix.rg-name }}') "staging/tools/ripgrep/${{ matrix.rid }}/"
 
       - name: Verify staged binaries
         shell: bash
         run: |
-          if [[ "${{ matrix.rid }}" != "win-arm64" && "${{ matrix.rid }}" != "linux-arm64" ]]; then
+          ls -lR staging
+          if [[ -n "${{ matrix.rg-archive }}" && "${{ matrix.rid }}" != "win-arm64" && "${{ matrix.rid }}" != "linux-arm64" ]]; then
             "staging/tools/ripgrep/${{ matrix.rid }}/${{ matrix.rg-name }}" --version | head -1
           fi
-          ls -l "staging/runtimes/${{ matrix.rid }}/native" "staging/tools/ripgrep/${{ matrix.rid }}"
 
       - uses: actions/upload-artifact@v4
         with:
