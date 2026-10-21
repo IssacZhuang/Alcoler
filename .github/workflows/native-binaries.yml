@@ -72,14 +72,6 @@ jobs:
         shell: pwsh
         run: src/Alcoler.Adapters.Native/alco-grep/write-delivery.ps1 -Library "src/Alcoler.Adapters.Native/alco-grep/target/${{ matrix.triple }}/release/${{ matrix.lib }}"
 
-      - name: Fetch official ripgrep
-        shell: pwsh
-        run: |
-          $archive = '${{ matrix.rg-archive }}'
-          Invoke-WebRequest -Uri "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$archive" -OutFile rg-download
-          New-Item -ItemType Directory -Force rg-extract | Out-Null
-          if ($archive.EndsWith('.zip')) { Expand-Archive rg-download rg-extract } else { tar -xzf rg-download -C rg-extract }
-
       - name: Stage library
         shell: pwsh
         run: |
