@@ -6,6 +6,7 @@
              xmlns:controls="using:Alcoler.Workbench.Controls"
              xmlns:views="using:Alcoler.Workbench.Views"
              x:Class="Alcoler.Workbench.Views.TimelineView"
+             x:Name="TimelineRoot"
              x:DataType="vm:ConversationViewModel"
              Background="{DynamicResource AlcolerBackground}">
   <UserControl.Resources>
@@ -404,8 +405,8 @@
 
     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" Margin="24"
                 IsVisible="{Binding Items.Count, Converter={StaticResource AlcolerZeroToVisible}}">
-      <TextBlock Text="What can I help you with?" FontSize="20" FontWeight="Medium" HorizontalAlignment="Center" />
-      <TextBlock Text="Ask a question, plan a change, or describe a task." FontSize="14" TextWrapping="Wrap"
+      <TextBlock Text="{Binding #TimelineRoot.EmptyTitle}" FontSize="20" FontWeight="Medium" HorizontalAlignment="Center" />
+      <TextBlock Text="{Binding #TimelineRoot.EmptyDescription}" FontSize="14" TextWrapping="Wrap"
                  TextAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
     </StackPanel>
   </Grid>

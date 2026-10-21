@@ -221,6 +221,10 @@ public sealed class ConversationStatusViewTests
             Assert.True(Named<Border>(harness.View, name).IsEffectivelyVisible);
         }
 
+        var gitContainer = Named<Border>(harness.View, "GitContainer");
+        var changes = Named<Button>(harness.View, "ChangesButton");
+        Assert.InRange(changes.Bounds.Width, gitContainer.Bounds.Width - 1, gitContainer.Bounds.Width);
+
         foreach (var name in new[] { "GitSection", "PlansSection", "ProgressSection", "TerminalsSection", "AgentsSection" })
         {
             await ToggleSectionAsync(harness.View, name);

@@ -147,6 +147,7 @@
       <Setter Property="Padding" Value="0" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Background" Value="Transparent" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="Template">
         <ControlTemplate>
@@ -287,7 +288,7 @@
           <Border x:Name="GitContainer" IsVisible="{Binding HasGit}" BorderBrush="{DynamicResource AlcolerBorder}">
             <Expander x:Name="GitSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Git tools">
               <Expander.Header><TextBlock Classes="statusHeading" Text="Git tools" /></Expander.Header>
-              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <StackPanel>
                   <Button x:Name="ChangesButton" Classes="statusRow" Height="32" Click="OnReviewClick"
                           AutomationProperties.Name="Review changes">
@@ -312,7 +313,7 @@
                     </Grid>
                     <Button.Flyout>
                       <Flyout Placement="LeftEdgeAlignedTop" FlyoutPresenterClasses="statusFlyout">
-                        <ScrollViewer Width="272" MaxHeight="192" HorizontalScrollBarVisibility="Disabled">
+                        <ScrollViewer Width="272" MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                           <ItemsControl ItemsSource="{Binding Git.Branches}" IsEnabled="{Binding !Git.IsBusy}">
                             <ItemsControl.ItemTemplate>
                               <DataTemplate x:DataType="vm:GitBranchViewModel">
@@ -341,7 +342,7 @@
           <Border x:Name="PlansContainer" IsVisible="{Binding HasPlans}" BorderBrush="{DynamicResource AlcolerBorder}">
             <Expander x:Name="PlansSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Plans">
               <Expander.Header><TextBlock Classes="statusHeading" Text="Plans" /></Expander.Header>
-              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <ItemsControl ItemsSource="{Binding Plans}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:StatusPlan">
@@ -368,7 +369,7 @@
                   <TextBlock Classes="statusCount" Text="{Binding TodoCountText}" />
                 </StackPanel>
               </Expander.Header>
-              <ScrollViewer MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer MaxHeight="320" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <StackPanel>
                   <Button x:Name="EarlierTodosButton" Classes="statusRow" IsVisible="{Binding !!EarlierTodos.Count}">
                     <StackPanel Orientation="Horizontal" Spacing="8">
@@ -378,14 +379,14 @@
                     </StackPanel>
                     <ToolTip.Tip>
                       <ToolTip Classes="statusPreview">
-                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                           <ItemsControl ItemsSource="{Binding EarlierTodos}" ItemTemplate="{StaticResource TodoRow}" />
                         </ScrollViewer>
                       </ToolTip>
                     </ToolTip.Tip>
                     <Button.Flyout>
                       <Flyout Placement="LeftEdgeAlignedTop" FlyoutPresenterClasses="statusFlyout">
-                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                           <ItemsControl ItemsSource="{Binding EarlierTodos}" ItemTemplate="{StaticResource TodoRow}" />
                         </ScrollViewer>
                       </Flyout>
@@ -400,14 +401,14 @@
                     </StackPanel>
                     <ToolTip.Tip>
                       <ToolTip Classes="statusPreview">
-                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                           <ItemsControl ItemsSource="{Binding LaterTodos}" ItemTemplate="{StaticResource TodoRow}" />
                         </ScrollViewer>
                       </ToolTip>
                     </ToolTip.Tip>
                     <Button.Flyout>
                       <Flyout Placement="LeftEdgeAlignedTop" FlyoutPresenterClasses="statusFlyout">
-                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                           <ItemsControl ItemsSource="{Binding LaterTodos}" ItemTemplate="{StaticResource TodoRow}" />
                         </ScrollViewer>
                       </Flyout>
@@ -426,7 +427,7 @@
                   <TextBlock Classes="statusCount" Text="{Binding TerminalCountText}" />
                 </StackPanel>
               </Expander.Header>
-              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <ItemsControl ItemsSource="{Binding Terminals}" ItemTemplate="{StaticResource TerminalRow}" />
               </ScrollViewer>
             </Expander>
@@ -440,7 +441,7 @@
                   <TextBlock Classes="statusCount" Text="{Binding AgentCountText}" />
                 </StackPanel>
               </Expander.Header>
-              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled">
+              <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <StackPanel>
                   <ItemsControl ItemsSource="{Binding Agents}" ItemTemplate="{StaticResource AgentRow}" />
                   <Border x:Name="EndedAgentsContainer" BorderBrush="{DynamicResource AlcolerBorder}"
@@ -454,7 +455,7 @@
                       </Grid>
                       <Button.Flyout>
                         <Flyout Placement="LeftEdgeAlignedTop" FlyoutPresenterClasses="statusFlyout">
-                          <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+                          <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                             <ItemsControl ItemsSource="{Binding EndedAgents}" ItemTemplate="{StaticResource AgentRow}" />
                           </ScrollViewer>
                         </Flyout>

@@ -318,6 +318,31 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
+    public void Sidebar_ProjectNewTaskButton_StaysInsideViewport_WithLongSessionTitles()
+    {
+        var viewModel = CreateWorkbench();
+        var longTitle = string.Join(' ', Enumerable.Repeat("Aligning long session titles", 8));
+        viewModel.Sidebar.ApplySummaries([
+            new SessionSummaryViewModel(NewId(), longTitle, @"C:\ws\alpha", DateTimeOffset.UtcNow),
+        ]);
+
+        var window = new MainWindow(viewModel);
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+
+        var sidebar = Assert.Single(window.GetVisualDescendants().OfType<Workbench.Views.SidebarView>());
+        var newTask = Assert.Single(sidebar.GetVisualDescendants().OfType<Button>(),
+            button => button.Classes.Contains("projectNewTask"));
+        var origin = newTask.TranslatePoint(default, sidebar)!.Value;
+
+        Assert.True(origin.X >= 0);
+        Assert.True(origin.X + newTask.Bounds.Width <= sidebar.Bounds.Width,
+            $"New-task button spans {origin.X}..{origin.X + newTask.Bounds.Width} in a {sidebar.Bounds.Width}px sidebar.");
+        window.Close();
+    }
+
+    [AvaloniaFact]
     public void Sidebar_ShowsEmptyState_WhenNoSessions()
     {
         var viewModel = CreateWorkbench();

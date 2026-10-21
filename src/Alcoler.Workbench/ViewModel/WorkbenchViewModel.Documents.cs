@@ -1,5 +1,3 @@
-using System.Text;
-using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Projections;
 
 namespace Alcoler.Workbench.ViewModel;
@@ -31,35 +29,31 @@ public sealed partial class WorkbenchViewModel
         {
             if (activity.ChildSessionId is { } childSessionId)
             {
-                using var projection = Active is { } active && _runtime is ISessionActivityRuntime activities
-                    ? activities.TryObserveSubagent(active.SessionId, childSessionId) ?? _runtime.TryObserve(childSessionId)
+                EnsureDocumentContext();
+                var id = $"agent:{childSessionId.Value}";
+                var ownerId = CurrentDocumentOwnerId;
+                var existing = Documents.VisibleItems.FirstOrDefault(document => document.Id == id && document.OwnerId == ownerId);
+                if (existing is not null)
+                {
+                    Documents.Activate(existing);
+                    return;
+                }
+                var parentSessionId = Active?.SessionId;
+                IConversationProjection? Observe() => parentSessionId is { } parent && _runtime is ISessionActivityRuntime activities
+                    ? activities.TryObserveSubagent(parent, childSessionId) ?? _runtime.TryObserve(childSessionId)
                     : _runtime.TryObserve(childSessionId);
+                var projection = Observe();
                 if (projection is null)
                 {
                     OpenTextDocument($"agent:{activity.Id}", activity.Title,
                         activity.OutputText ?? "This agent transcript is no longer available.", "markdown");
                     return;
                 }
-                var transcript = new StringBuilder();
-                foreach (var row in projection.Snapshot().Rows)
-                {
-                    var (heading, text) = row switch
-                    {
-                        UserMessageRow user => ("User", user.Text),
-                        AssistantMessageRow assistant => ("Assistant", string.Join("\n\n",
-                            assistant.Parts.OfType<TextPart>().Select(part => part.Text))),
-                        ToolCallRow tool => (tool.ToolName, string.Join("\n",
-                            tool.Output?.OfType<ToolResultText>().Select(block => block.Text) ?? [])),
-                        SystemNoticeRow notice => ("Status", notice.Text),
-                        _ => (string.Empty, string.Empty),
-                    };
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        transcript.Append("## ").AppendLine(heading).AppendLine().AppendLine(text).AppendLine();
-                    }
-                }
-                OpenTextDocument($"agent:{activity.Id}", activity.Title,
-                    transcript.Length > 0 ? transcript.ToString() : "This agent has not produced output yet.", "markdown");
+                var transcript = new SubagentDocumentViewModel(
+                    _runtime, childSessionId, CurrentWorkspaceRoot, projection,
+                    () => Observe() ?? throw new InvalidOperationException("This agent transcript is no longer available."), _scheduler);
+                OpenDocument(new DocumentViewModel(
+                    id, "subagent", activity.Title, TextDocumentIcon, transcript, CurrentWorkspaceRoot, ownerId));
             }
             else if (activity.OutputPath is { Length: > 0 } path)
             {

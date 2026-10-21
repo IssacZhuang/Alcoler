@@ -96,7 +96,8 @@ public sealed class ProjectionStore : IDisposable
                 return;
             }
             _pumpCts = new CancellationTokenSource();
-            _pump = Task.Run(() => RunAsync(_pumpCts.Token));
+            var ct = _pumpCts.Token;
+            _pump = Task.Run(() => RunAsync(ct));
         }
     }
 
@@ -132,6 +133,8 @@ public sealed class ProjectionStore : IDisposable
             {
                 lock (_sync)
                 {
+                    if (_disposed)
+                        return;
                     _projection = _subscribe();
                     projection = _projection;
                 }

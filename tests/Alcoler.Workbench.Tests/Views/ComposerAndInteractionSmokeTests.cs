@@ -424,6 +424,11 @@ public class ComposerAndInteractionSmokeTests
             new Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"])));
         await PumpAsync();
         Assert.True(picker.IsVisible);
+        var thoughtIcon = picker.GetVisualDescendants().OfType<Workbench.Controls.Icon>()
+            .Single(icon => icon.Name != "ThoughtChevron");
+        var thoughtLabel = picker.GetVisualDescendants().OfType<TextBlock>().Single(block => block.Text == "low");
+        Assert.Equal(thoughtIcon.Bounds.Height, thoughtLabel.Bounds.Height, 2);
+        Assert.Equal(thoughtIcon.Bounds.Center.Y, thoughtLabel.Bounds.Center.Y, 2);
         var menu = Assert.IsType<MenuFlyout>(picker.Flyout);
         Assert.True(FindNamed<Workbench.Controls.Icon>(harness.View, "ThoughtChevron").IsVisible);
         Assert.Equal(new[] { "low", "high" }, menu.Items.OfType<MenuItem>().Select(item => item.Header));

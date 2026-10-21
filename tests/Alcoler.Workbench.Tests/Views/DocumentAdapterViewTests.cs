@@ -2,6 +2,8 @@ using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Subagents;
+using Alcoler.Workbench.Controls;
 using Alcoler.Workbench.Git;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
@@ -179,6 +181,266 @@ public sealed class DocumentAdapterViewTests : IDisposable
             window.Close();
         }
     }
+
+    [AvaloniaFact]
+    public async Task AgentActivityClick_OpensLiveChildTimelineWithDisclosuresAndDisposesOnClose()
+    {
+        EnsureTheme();
+        var runtime = new FakeAgentRuntime();
+        var parentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        var startedAt = DateTimeOffset.UtcNow;
+        var activity = AgentActivityRow(childId, "Inspect child transcript", startedAt);
+        runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1,
+            [new UserMessageRow("parent-user", "Keep the parent conversation active", startedAt), activity],
+            TestSnapshots.State() with { Title = "Parent conversation" }));
+        var reasoningPart = new ReasoningPart(StrongId.NewPartId(), "Inspect the child workspace first.");
+        var textPart = new TextPart(StrongId.NewPartId(), "The child is reviewing the change.");
+        var assistant = new AssistantMessageRow("child-assistant", StrongId.NewMessageId(),
+            [reasoningPart, textPart], true, startedAt);
+        var tool = new ToolCallRow("child-tool", StrongId.NewToolCallId(), "Bash",
+            JsonSerializer.SerializeToElement(new { command = "inspect-child", description = "Inspect child files" }),
+            ToolCallStatus.Failed, [new ToolResultText("Child tool output: retry needed.")],
+            true, TimeSpan.FromMilliseconds(420), startedAt);
+        var childProjection = runtime.RegisterSession(childId, new ConversationSnapshot(0, 1,
+            [assistant, tool], TestSnapshots.State(TurnPhase.Streaming) with { Title = "Child conversation" }));
+        using var workbench = new WorkbenchViewModel(runtime, AvaloniaUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+        var parent = Assert.IsType<ConversationViewModel>(workbench.Active);
+        var window = new MainWindow(workbench) { Width = 1400, Height = 900 };
+        window.Show();
+        try
+        {
+            await WaitUntilAsync(window, () => parent.Status.Agents.Count == 1 && parent.Items.Count == 2);
+            var parentTimeline = Assert.Single(window.GetVisualDescendants().OfType<TimelineView>());
+            Assert.Same(parent, parentTimeline.DataContext);
+            var status = window.FindControl<ConversationStatusView>("SessionStatus")!;
+            var conversationArea = window.FindControl<Grid>("ConversationArea")!;
+            var statusOrigin = status.TranslatePoint(default, conversationArea)!.Value;
+            Assert.True(status.IsEffectivelyVisible);
+            Assert.InRange(statusOrigin.Y, 15, 17);
+            Assert.InRange(statusOrigin.X + status.Bounds.Width, conversationArea.Bounds.Width - 17, conversationArea.Bounds.Width - 15);
+            await ExpandAgentsAsync(window, status);
+            await ClickAsync(window, AgentActivityButton(status, childId));
+            await WaitUntilAsync(window, () => workbench.Documents.ActiveDocument?.Content is SubagentDocumentViewModel
+                && childProjection.SubscribeCount == 1
+                && window.GetVisualDescendants().OfType<TimelineView>().Count() == 2);
+
+            var document = Assert.Single(workbench.Documents.Items);
+            Assert.Same(document, workbench.Documents.ActiveDocument);
+            Assert.Equal("subagent", document.Kind);
+            Assert.Equal($"agent:{childId.Value}", document.Id);
+            Assert.Equal("Inspect child transcript", document.Title);
+            Assert.Equal(parentId.Value, document.OwnerId);
+            Assert.Equal(_root, document.WorkspaceRoot);
+            var transcript = Assert.IsType<SubagentDocumentViewModel>(document.Content);
+            Assert.False(transcript.IsDisposed);
+            Assert.Equal(childId, transcript.Conversation.SessionId);
+            Assert.NotSame(parent, transcript.Conversation);
+            Assert.Same(parent, workbench.Active);
+            Assert.Equal(parentId, workbench.Active!.SessionId);
+            var documentsView = Assert.Single(window.GetVisualDescendants().OfType<DocumentWorkspaceView>());
+            var childTimeline = Assert.Single(documentsView.GetVisualDescendants().OfType<TimelineView>());
+            Assert.True(workbench.IsSidePaneVisible);
+            Assert.True(documentsView.IsEffectivelyVisible);
+            Assert.True(childTimeline.IsEffectivelyVisible);
+            Assert.Same(transcript.Conversation, childTimeline.DataContext);
+            Assert.Same(parent, parentTimeline.DataContext);
+            Assert.Equal(2, window.GetVisualDescendants().OfType<TimelineView>().Count());
+            var childOrigin = childTimeline.TranslatePoint(default, window)!.Value;
+            var parentOrigin = parentTimeline.TranslatePoint(default, window)!.Value;
+            Assert.True(childOrigin.X >= parentOrigin.X + parentTimeline.Bounds.Width);
+            Assert.True(childTimeline.Bounds.Width > 0 && childTimeline.Bounds.Height > 0);
+            Assert.Empty(documentsView.GetVisualDescendants().OfType<FileDocumentView>());
+            Assert.Empty(documentsView.GetVisualDescendants().OfType<ComposerView>());
+            Assert.Empty(childTimeline.GetVisualDescendants().OfType<TextBox>());
+            Assert.Same(parent, Assert.Single(window.GetVisualDescendants().OfType<ComposerView>()).DataContext);
+            Assert.Empty(runtime.Submitted);
+
+            var assistantItem = Assert.Single(transcript.Conversation.Items.OfType<AssistantMessageItemViewModel>());
+            var toolItem = Assert.Single(transcript.Conversation.Items.OfType<ToolCallItemViewModel>());
+            var markdown = Assert.Single(childTimeline.GetVisualDescendants().OfType<ConversationMarkdown>());
+            Assert.True(markdown.IsEffectivelyVisible);
+            Assert.Equal(textPart.Text, markdown.Markdown);
+            Assert.Contains(markdown.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == textPart.Text);
+            var thinking = Assert.Single(childTimeline.GetVisualDescendants().OfType<Expander>(),
+                expander => expander.Classes.Contains("thinkingBlock"));
+            var thinkingToggle = Assert.Single(thinking.GetVisualDescendants().OfType<ToggleButton>(),
+                button => button.Classes.Contains("thinkingToggle"));
+            Assert.False(thinking.IsExpanded);
+            Assert.False(assistantItem.IsReasoningExpanded);
+            await ClickAsync(window, thinkingToggle);
+            Pump(window);
+            Assert.True(thinking.IsExpanded);
+            Assert.True(assistantItem.IsReasoningExpanded);
+            AssertVisibleText(childTimeline, reasoningPart.Text);
+
+            var toolButton = Assert.Single(childTimeline.GetVisualDescendants().OfType<Button>(),
+                button => button.Classes.Contains("toolRow") && ReferenceEquals(button.DataContext, toolItem));
+            Assert.False(toolItem.IsExpanded);
+            AssertVisibleText(toolButton, "Error");
+            AssertVisibleText(toolButton, "420ms");
+            await ClickAsync(window, toolButton);
+            Pump(window);
+            Assert.True(toolItem.IsExpanded);
+            var toolDetails = Assert.Single(childTimeline.GetVisualDescendants().OfType<Border>(),
+                border => border.Classes.Contains("toolDetails") && ReferenceEquals(border.DataContext, toolItem));
+            Assert.True(toolDetails.IsEffectivelyVisible);
+            AssertVisibleText(toolDetails, "Input");
+            AssertVisibleText(toolDetails, "Output");
+            AssertVisibleText(toolDetails, toolItem.InputJson);
+            Assert.Contains("inspect-child", toolItem.InputJson);
+            AssertVisibleText(toolDetails, "Child tool output: retry needed.");
+
+            var updatedReasoning = reasoningPart with { Text = "The child found the cause and is checking the result." };
+            var updatedText = textPart with { Text = "The child review now includes a live update." };
+            childProjection.Emit(new ConversationDelta(2,
+                [new RowUpserted(assistant with { Parts = [updatedReasoning, updatedText] })]));
+            await WaitUntilAsync(window, () => markdown.Markdown == updatedText.Text
+                && childTimeline.GetVisualDescendants().OfType<SelectableTextBlock>()
+                    .Any(block => block.IsEffectivelyVisible && block.Text == updatedReasoning.Text));
+            Assert.True(thinking.IsExpanded);
+            Assert.True(assistantItem.IsReasoningExpanded);
+            Assert.True(toolItem.IsExpanded);
+            Assert.Contains(markdown.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == updatedText.Text);
+
+            childProjection.Emit(new ConversationDelta(3,
+                [new RowUpserted(tool with
+                {
+                    Output = [new ToolResultText("Live child tool output after retry.")],
+                    Duration = TimeSpan.FromMilliseconds(840),
+                })]));
+            await WaitUntilAsync(window, () => toolItem.OutputText == "Live child tool output after retry."
+                && toolItem.DurationText == "840ms");
+            Assert.Same(assistantItem, Assert.Single(transcript.Conversation.Items.OfType<AssistantMessageItemViewModel>()));
+            Assert.Same(toolItem, Assert.Single(transcript.Conversation.Items.OfType<ToolCallItemViewModel>()));
+            Assert.True(thinking.IsExpanded);
+            Assert.True(toolItem.IsExpanded);
+            Assert.True(toolDetails.IsEffectivelyVisible);
+            AssertVisibleText(childTimeline, updatedReasoning.Text);
+            AssertVisibleText(toolDetails, "Live child tool output after retry.");
+            AssertVisibleText(toolButton, "Error");
+            AssertVisibleText(toolButton, "840ms");
+            Assert.Same(parent, workbench.Active);
+            Assert.DoesNotContain(parent.Items, item => item.RowId is "child-assistant" or "child-tool");
+
+            await ClickAsync(window, AgentActivityButton(status, childId));
+            Pump(window);
+            Assert.Same(document, workbench.Documents.ActiveDocument);
+            Assert.Same(document, Assert.Single(workbench.Documents.Items));
+            Assert.Same(childTimeline, Assert.Single(documentsView.GetVisualDescendants().OfType<TimelineView>()));
+            Assert.Equal(1, childProjection.SubscribeCount);
+            Assert.True(thinking.IsExpanded);
+            Assert.True(toolItem.IsExpanded);
+            Assert.False(transcript.IsDisposed);
+            Assert.Empty(runtime.Submitted);
+
+            var close = Assert.Single(documentsView.GetVisualDescendants().OfType<Button>(),
+                button => button.Classes.Contains("documentClose") && ReferenceEquals(button.DataContext, document));
+            await ClickAsync(window, close);
+            await WaitUntilAsync(window, () => transcript.IsDisposed && workbench.Documents.Items.Count == 0);
+            Assert.Null(workbench.Documents.ActiveDocument);
+            Assert.False(workbench.IsSidePaneVisible);
+            Assert.Single(window.GetVisualDescendants().OfType<TimelineView>());
+            Assert.Same(parent, workbench.Active);
+            Assert.Same(parent, parentTimeline.DataContext);
+            Assert.Empty(runtime.Submitted);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task EmptyAgentActivityClick_ShowsAgentPlaceholderUntilFirstLiveMessage()
+    {
+        EnsureTheme();
+        var runtime = new FakeAgentRuntime();
+        var parentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        var startedAt = DateTimeOffset.UtcNow;
+        runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1,
+            [AgentActivityRow(childId, "Waiting child", startedAt)], TestSnapshots.State()));
+        var childProjection = runtime.RegisterSession(childId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        using var workbench = new WorkbenchViewModel(runtime, AvaloniaUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+        var parent = Assert.IsType<ConversationViewModel>(workbench.Active);
+        var window = new MainWindow(workbench) { Width = 1400, Height = 900 };
+        window.Show();
+        try
+        {
+            await WaitUntilAsync(window, () => parent.Status.Agents.Count == 1);
+            var status = window.FindControl<ConversationStatusView>("SessionStatus")!;
+            await ExpandAgentsAsync(window, status);
+            await ClickAsync(window, AgentActivityButton(status, childId));
+            await WaitUntilAsync(window, () => workbench.Documents.ActiveDocument?.Content is SubagentDocumentViewModel
+                && childProjection.SubscribeCount == 1);
+            var document = Assert.Single(workbench.Documents.Items);
+            var transcript = Assert.IsType<SubagentDocumentViewModel>(document.Content);
+            var documentsView = Assert.Single(window.GetVisualDescendants().OfType<DocumentWorkspaceView>());
+            var timeline = Assert.Single(documentsView.GetVisualDescendants().OfType<TimelineView>());
+            Assert.Same(transcript.Conversation, timeline.DataContext);
+            Assert.Equal(childId, transcript.Conversation.SessionId);
+            Assert.Empty(transcript.Conversation.Items);
+            AssertVisibleText(timeline, "No agent output yet");
+            AssertVisibleText(timeline, "This agent's messages, thinking and tool calls will appear here.");
+            Assert.DoesNotContain(timeline.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "What can I help you with?");
+            Assert.Empty(documentsView.GetVisualDescendants().OfType<FileDocumentView>());
+            Assert.Empty(documentsView.GetVisualDescendants().OfType<ComposerView>());
+            Assert.Empty(timeline.GetVisualDescendants().OfType<TextBox>());
+            Assert.Same(parent, workbench.Active);
+            Assert.Empty(runtime.Submitted);
+
+            childProjection.Emit(new ConversationDelta(2,
+                [new RowAppended(new AssistantMessageRow("first-child-message", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), "The first child output has arrived.")], false, startedAt))]));
+            await WaitUntilAsync(window, () => timeline.GetVisualDescendants().OfType<ConversationMarkdown>()
+                .Any(markdown => markdown.IsEffectivelyVisible && markdown.Markdown == "The first child output has arrived."));
+            Assert.DoesNotContain(timeline.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "No agent output yet");
+            Assert.Same(timeline, Assert.Single(documentsView.GetVisualDescendants().OfType<TimelineView>()));
+            Assert.Same(parent, workbench.Active);
+            Assert.Empty(runtime.Submitted);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    private static SystemNoticeRow AgentActivityRow(SessionId childId, string title, DateTimeOffset startedAt) =>
+        new("child-activity", "subagent", "Child agent started", new SubagentState(StrongId.NewSubagentId(),
+            childId, title, SubagentStatus.Running, null, startedAt, null));
+
+    private static Button AgentActivityButton(ConversationStatusView status, SessionId childId) =>
+        Assert.Single(status.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("activityRow")
+            && button.DataContext is StatusActivity { ChildSessionId: var id } && id == childId);
+
+    private static async Task ExpandAgentsAsync(Window window, ConversationStatusView status)
+    {
+        if (!status.IsExpanded)
+        {
+            await ClickAsync(window, status.FindControl<Button>("SummaryButton")!);
+            Pump(window);
+        }
+        var agents = status.FindControl<Expander>("AgentsSection")!;
+        Assert.False(agents.IsExpanded);
+        await ClickAsync(window, Assert.Single(agents.GetVisualDescendants().OfType<ToggleButton>(),
+            button => button.Classes.Contains("sectionHeader")));
+        Pump(window);
+        Assert.True(status.IsExpanded);
+        Assert.True(agents.IsExpanded);
+    }
+
+    private static void AssertVisibleText(Control root, string expected) =>
+        Assert.Contains(root.GetVisualDescendants().OfType<TextBlock>(),
+            block => block.IsEffectivelyVisible && block.Text == expected);
 
     private static void EnsureTheme()
     {

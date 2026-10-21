@@ -15,6 +15,24 @@ public partial class TimelineView : UserControl
 {
     private const double BottomStickThreshold = 48;
 
+    public static readonly StyledProperty<string> EmptyTitleProperty =
+        AvaloniaProperty.Register<TimelineView, string>(nameof(EmptyTitle), "What can I help you with?");
+
+    public static readonly StyledProperty<string> EmptyDescriptionProperty =
+        AvaloniaProperty.Register<TimelineView, string>(nameof(EmptyDescription), "Ask a question, plan a change, or describe a task.");
+
+    public string EmptyTitle
+    {
+        get => GetValue(EmptyTitleProperty);
+        set => SetValue(EmptyTitleProperty, value);
+    }
+
+    public string EmptyDescription
+    {
+        get => GetValue(EmptyDescriptionProperty);
+        set => SetValue(EmptyDescriptionProperty, value);
+    }
+
     private ConversationViewModel? _conversation;
     private bool _pendingScrollToEnd;
     private bool _awaitingLayout;

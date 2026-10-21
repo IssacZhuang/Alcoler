@@ -82,8 +82,8 @@
                  IsVisible="{Binding Sidebar.Groups.Count, Converter={StaticResource AlcolerZeroToVisible}}" />
       <TextBlock Text="Loading sessions..." FontSize="{DynamicResource AlcolerFontSmall}" Margin="16,8" VerticalAlignment="Top"
                  Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding Sidebar.IsLoading}" />
-      <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="8,0,8,8">
-        <ItemsControl ItemsSource="{Binding Sidebar.Groups}">
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+        <ItemsControl ItemsSource="{Binding Sidebar.Groups}" Margin="8,0,8,8">
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="vm:SessionGroupViewModel">
               <StackPanel Margin="0,4,0,12">

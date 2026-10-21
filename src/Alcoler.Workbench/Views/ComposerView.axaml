@@ -173,7 +173,8 @@
                       ToolTip.Tip="Reasoning effort (Ctrl+T)" IsVisible="{Binding !!ThoughtLevels.Count}" Click="OnThoughtPickerClick" AutomationProperties.Name="Reasoning effort">
                 <StackPanel Orientation="Horizontal" Spacing="4">
                   <controls:Icon Classes="icon small" Data="M12 18V5 M12 5C8 0 3 4 5 8 1 10 3 15 6 15c-1 5 5 7 6 3 M12 5c4-5 9-1 7 3 4 2 2 7-1 7 1 5-5 7-6 3" />
-                  <TextBlock Text="{Binding ThoughtLevel}" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
+                  <TextBlock Text="{Binding ThoughtLevel}" FontSize="{DynamicResource AlcolerFontBase}"
+                             LineHeight="{DynamicResource AlcolerIconSizeSmall}" VerticalAlignment="Center" />
                   <controls:Icon x:Name="ThoughtChevron" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
                 </StackPanel>
                 <Button.Flyout><MenuFlyout Placement="TopEdgeAlignedLeft" /></Button.Flyout>

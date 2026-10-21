@@ -1,6 +1,12 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Sessions;
+using Alcoler.Contracts.Tools;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Xunit;
@@ -182,11 +188,17 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
         Assert.Same(document, workbench.Documents.ActiveDocument);
 
         await workbench.OpenStatusActivityAsync(new StatusActivity { Id = "agent", Title = "Review", ChildSessionId = childId });
-        var transcript = Assert.IsType<TextDocumentViewModel>(workbench.Documents.ActiveDocument!.Content).Text;
-        Assert.Contains("## User\n\nReview this change", transcript.Replace("\r\n", "\n"));
-        Assert.Contains("The change is safe.", transcript);
+        var agentDocument = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        var transcript = Assert.IsType<SubagentDocumentViewModel>(agentDocument.Content).Conversation;
+        Assert.Equal("subagent", agentDocument.Kind);
+        Assert.Equal($"agent:{childId.Value}", agentDocument.Id);
+        Assert.Equal(childId, transcript.SessionId);
+        Assert.Collection(transcript.Items,
+            item => Assert.Equal("Review this change", Assert.IsType<UserMessageItemViewModel>(item).Text),
+            item => Assert.Equal("The change is safe.", Assert.IsType<AssistantMessageItemViewModel>(item).MarkdownText));
         Assert.Equal(parentId, workbench.Active!.SessionId);
-        Assert.Equal(parentId.Value, workbench.Documents.ActiveDocument.OwnerId);
+        Assert.Equal(parentId.Value, agentDocument.OwnerId);
+        Assert.Equal(Path.GetFullPath(_root), agentDocument.WorkspaceRoot);
 
         var outputPath = Path.Combine(_root, "job-output.txt");
         await File.WriteAllTextAsync(outputPath, "actual detached output");
@@ -196,24 +208,459 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
     }
 
     [Fact]
+    public async Task StatusActivity_SubagentPreservesRichRowsAndLiveDisclosureStateWithoutDuplicateObservations()
+    {
+        var runtime = new ParentScopedRuntime();
+        var parentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        runtime.RegisterParent(parentId);
+        var assistantRow = new AssistantMessageRow("assistant", StrongId.NewMessageId(),
+            [new ReasoningPart(StrongId.NewPartId(), "Check ownership before updating."),
+                new TextPart(StrongId.NewPartId(), "Review in progress")], true, DateTimeOffset.UtcNow);
+        var toolRow = new ToolCallRow("tool", StrongId.NewToolCallId(), "Bash",
+            JsonSerializer.SerializeToElement(new { command = "git status", timeout = 1200 }),
+            ToolCallStatus.Running, [new ToolResultText("partial output")], false, null, DateTimeOffset.UtcNow);
+        var source = runtime.RegisterChild(parentId, childId, new ConversationSnapshot(0, 1,
+        [
+            new UserMessageRow("user", "Review the patch", DateTimeOffset.UtcNow),
+            assistantRow,
+            toolRow,
+            new SystemNoticeRow("notice", "compact", "Earlier context was compacted."),
+        ], TestSnapshots.State(TurnPhase.ExecutingTools)));
+        var scheduler = new QueuedScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+        var activity = new StatusActivity { Id = "running-task", Title = "Review", ChildSessionId = childId, CanStop = true };
+
+        await workbench.OpenStatusActivityAsync(activity);
+
+        var document = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        var content = Assert.IsType<SubagentDocumentViewModel>(document.Content);
+        var conversation = content.Conversation;
+        Assert.Equal("subagent", document.Kind);
+        Assert.Equal($"agent:{childId.Value}", document.Id);
+        Assert.Equal(parentId.Value, document.OwnerId);
+        Assert.Equal(Path.GetFullPath(_root), document.WorkspaceRoot);
+        Assert.Equal(childId, conversation.SessionId);
+        Assert.False(content.IsDisposed);
+        Assert.Equal(4, conversation.Items.Count);
+        Assert.Equal("Review the patch", Assert.IsType<UserMessageItemViewModel>(conversation.Items[0]).Text);
+        var assistant = Assert.IsType<AssistantMessageItemViewModel>(conversation.Items[1]);
+        Assert.Equal("Review in progress", assistant.MarkdownText);
+        Assert.Equal("Check ownership before updating.", Assert.Single(assistant.ReasoningBlocks));
+        Assert.True(assistant.IsStreaming);
+        var tool = Assert.IsType<ToolCallItemViewModel>(conversation.Items[2]);
+        using (var input = JsonDocument.Parse(tool.InputJson))
+        {
+            Assert.Equal("git status", input.RootElement.GetProperty("command").GetString());
+            Assert.Equal(1200, input.RootElement.GetProperty("timeout").GetInt32());
+        }
+        Assert.Equal("partial output", tool.OutputText);
+        Assert.Equal(ToolCallStatus.Running, tool.Status);
+        var notice = Assert.IsType<SystemNoticeItemViewModel>(conversation.Items[3]);
+        Assert.Equal("compact", notice.Kind);
+        Assert.Equal("Earlier context was compacted.", notice.Text);
+        Assert.Equal(TurnPhase.ExecutingTools.ToString(), conversation.PhaseText);
+        assistant.IsReasoningExpanded = true;
+        tool.IsExpanded = true;
+        var observation = Assert.Single(source.Observations);
+        await observation.Subscribed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        scheduler.RunPending();
+
+        workbench.OpenTextDocument("other", "Other output", "not the agent");
+        await workbench.OpenStatusActivityAsync(activity);
+        await workbench.OpenStatusActivityAsync(activity with { Id = "completion-notice", Title = "Review complete" });
+
+        Assert.Same(document, workbench.Documents.ActiveDocument);
+        Assert.Same(content, document.Content);
+        Assert.Single(workbench.Documents.Items, item => item.Kind == "subagent");
+        Assert.Single(source.Observations);
+        Assert.Single(runtime.ScopedObservations);
+        Assert.DoesNotContain(childId, runtime.GenericObservations);
+        Assert.DoesNotContain(childId, runtime.Subscriptions);
+        Assert.False(observation.IsDisposed);
+        source.Projection.Emit(new ConversationDelta(2,
+        [
+            new RowUpserted(assistantRow with
+            {
+                Parts = [new ReasoningPart(StrongId.NewPartId(), "Ownership is preserved."),
+                    new TextPart(StrongId.NewPartId(), "Review complete")],
+                IsStreaming = false,
+            }),
+            new RowUpserted(toolRow with
+            {
+                Input = JsonSerializer.SerializeToElement(new { command = "git diff", timeout = 2400 }),
+                Status = ToolCallStatus.Failed,
+                Output = [new ToolResultText("first result"), new ToolResultText("second result")],
+                IsError = true,
+                Duration = TimeSpan.FromMilliseconds(125),
+            }),
+            new RowAppended(new UserMessageRow("follow-up", "Check the tests too", DateTimeOffset.UtcNow)),
+            new StatePatched(TestSnapshots.State(TurnPhase.Idle)),
+        ]));
+        await DeliverUntilAsync(scheduler, () => conversation.Items.Count == 5);
+
+        Assert.Same(assistant, conversation.Items[1]);
+        Assert.Same(tool, conversation.Items[2]);
+        Assert.Same(notice, conversation.Items[3]);
+        Assert.True(assistant.IsReasoningExpanded);
+        Assert.True(tool.IsExpanded);
+        Assert.Equal("Ownership is preserved.", Assert.Single(assistant.ReasoningBlocks));
+        Assert.Equal("Review complete", assistant.MarkdownText);
+        Assert.False(assistant.IsStreaming);
+        using (var input = JsonDocument.Parse(tool.InputJson))
+        {
+            Assert.Equal("git diff", input.RootElement.GetProperty("command").GetString());
+            Assert.Equal(2400, input.RootElement.GetProperty("timeout").GetInt32());
+        }
+        Assert.Equal("first result\nsecond result", tool.OutputText);
+        Assert.Equal(ToolCallStatus.Failed, tool.Status);
+        Assert.True(tool.IsError);
+        Assert.Equal("125ms", tool.DurationText);
+        Assert.Equal("Check the tests too", Assert.IsType<UserMessageItemViewModel>(conversation.Items[4]).Text);
+        Assert.Equal(TurnPhase.Idle.ToString(), conversation.PhaseText);
+        Assert.Equal(parentId, workbench.Active!.SessionId);
+        Assert.Single(source.Observations);
+        AssertNoCommands(runtime);
+    }
+
+    [Fact]
+    public async Task StatusActivity_EmptyAvailableSubagentRemainsLiveForFirstOutput()
+    {
+        var runtime = new ParentScopedRuntime();
+        var parentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        runtime.RegisterParent(parentId);
+        var source = runtime.RegisterChild(parentId, childId,
+            new ConversationSnapshot(0, 1, [], TestSnapshots.State(TurnPhase.Streaming)));
+        var scheduler = new QueuedScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+
+        await workbench.OpenStatusActivityAsync(new StatusActivity { Id = "early", Title = "Starting", ChildSessionId = childId });
+
+        var document = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        var content = Assert.IsType<SubagentDocumentViewModel>(document.Content);
+        Assert.Empty(content.Conversation.Items);
+        Assert.Equal(TurnPhase.Streaming.ToString(), content.Conversation.PhaseText);
+        var observation = Assert.Single(source.Observations);
+        await observation.Subscribed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        source.Projection.Emit(new ConversationDelta(2,
+            [new RowAppended(new UserMessageRow("first", "First child output", DateTimeOffset.UtcNow))]));
+        await DeliverUntilAsync(scheduler, () => content.Conversation.Items.Count == 1);
+
+        Assert.Equal("First child output", Assert.IsType<UserMessageItemViewModel>(Assert.Single(content.Conversation.Items)).Text);
+        Assert.Same(document, workbench.Documents.ActiveDocument);
+        Assert.False(content.IsDisposed);
+        Assert.False(observation.IsDisposed);
+        Assert.Single(source.Observations);
+        AssertNoCommands(runtime);
+    }
+
+    [Fact]
+    public async Task StatusActivity_SubagentIsolationAndGapResubscribeKeepCapturedParentAfterNavigation()
+    {
+        var runtime = new ParentScopedRuntime();
+        var firstParentId = StrongId.NewSessionId();
+        var secondParentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        runtime.RegisterParent(firstParentId);
+        runtime.RegisterParent(secondParentId);
+        var firstSource = runtime.RegisterChild(firstParentId, childId, new ConversationSnapshot(0, 1,
+            [new UserMessageRow("first", "First parent child", DateTimeOffset.UtcNow)], TestSnapshots.State()));
+        var secondSource = runtime.RegisterChild(secondParentId, childId, new ConversationSnapshot(0, 1,
+            [new UserMessageRow("second", "Second parent child", DateTimeOffset.UtcNow)], TestSnapshots.State()));
+        var scheduler = new QueuedScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(firstParentId);
+        var activity = new StatusActivity { Id = "shared-activity", Title = "Review", ChildSessionId = childId };
+        await workbench.OpenStatusActivityAsync(activity);
+        var first = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        var firstContent = Assert.IsType<SubagentDocumentViewModel>(first.Content);
+        var firstObservation = Assert.Single(firstSource.Observations);
+        await firstObservation.Subscribed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        scheduler.RunPending();
+
+        await workbench.OpenSessionAsync(secondParentId);
+        await workbench.OpenStatusActivityAsync(activity);
+        var second = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        var secondContent = Assert.IsType<SubagentDocumentViewModel>(second.Content);
+        var secondObservation = Assert.Single(secondSource.Observations);
+        await secondObservation.Subscribed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        scheduler.RunPending();
+
+        Assert.NotSame(first, second);
+        Assert.NotSame(firstContent.Conversation, secondContent.Conversation);
+        Assert.Equal(first.Id, second.Id);
+        Assert.Equal(firstParentId.Value, first.OwnerId);
+        Assert.Equal(secondParentId.Value, second.OwnerId);
+        Assert.DoesNotContain(first, workbench.Documents.VisibleItems);
+        Assert.Contains(second, workbench.Documents.VisibleItems);
+        Assert.False(firstContent.IsDisposed);
+        Assert.False(firstObservation.IsDisposed);
+        Assert.Equal("Second parent child", Assert.IsType<UserMessageItemViewModel>(Assert.Single(secondContent.Conversation.Items)).Text);
+        firstSource.Projection.SetSnapshot(new ConversationSnapshot(0, 4,
+        [
+            new UserMessageRow("first", "First parent child", DateTimeOffset.UtcNow),
+            new SystemNoticeRow("recovered", "compact", "Recovered from first parent"),
+        ], TestSnapshots.State()));
+        firstSource.Projection.Emit(new ConversationDelta(4,
+            [new RowAppended(new SystemNoticeRow("gap-only", "turn_error", "Must not apply the gap delta"))]));
+        await DeliverUntilAsync(scheduler, () => firstContent.Conversation.Items.Count == 2);
+
+        Assert.True(firstObservation.IsDisposed);
+        Assert.Equal(2, firstSource.Observations.Length);
+        Assert.Single(secondSource.Observations);
+        Assert.Equal(new[] { firstParentId, secondParentId, firstParentId },
+            runtime.ScopedObservations.Select(request => request.Parent));
+        Assert.DoesNotContain(firstContent.Conversation.Items, item => item.RowId == "gap-only");
+        Assert.Equal("Recovered from first parent", Assert.IsType<SystemNoticeItemViewModel>(firstContent.Conversation.Items[1]).Text);
+        Assert.Single(secondContent.Conversation.Items);
+        Assert.Same(second, workbench.Documents.ActiveDocument);
+        Assert.Equal(secondParentId, workbench.Active!.SessionId);
+        Assert.Equal(Path.GetFullPath(_root), first.WorkspaceRoot);
+        Assert.Equal(Path.GetFullPath(_root), second.WorkspaceRoot);
+        await workbench.OpenSessionAsync(firstParentId);
+        Assert.Contains(first, workbench.Documents.VisibleItems);
+        Assert.DoesNotContain(second, workbench.Documents.VisibleItems);
+        await workbench.OpenStatusActivityAsync(activity with { Id = "different-notice" });
+        Assert.Same(first, workbench.Documents.ActiveDocument);
+        Assert.Equal(2, firstSource.Observations.Length);
+        Assert.DoesNotContain(childId, runtime.GenericObservations);
+        AssertNoCommands(runtime);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StatusActivity_CloseReopenAndWorkbenchDisposalReleaseObservationsWithoutStoppingAgent(bool closeImmediately)
+    {
+        var runtime = new ParentScopedRuntime();
+        var parentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        runtime.RegisterParent(parentId);
+        var source = runtime.RegisterChild(parentId, childId, new ConversationSnapshot(0, 1,
+            [new UserMessageRow("initial", "Initial child row", DateTimeOffset.UtcNow)], TestSnapshots.State()));
+        var scheduler = new QueuedScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+        var activity = new StatusActivity { Id = "running", Title = "Review", ChildSessionId = childId, CanStop = true };
+        await workbench.OpenStatusActivityAsync(activity);
+        var document = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        var content = Assert.IsType<SubagentDocumentViewModel>(document.Content);
+        var observation = Assert.Single(source.Observations);
+        if (!closeImmediately)
+        {
+            await observation.Subscribed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            scheduler.RunPending();
+            source.Projection.Emit(new ConversationDelta(2,
+                [new RowAppended(new UserMessageRow("queued", "Queued before close", DateTimeOffset.UtcNow))]));
+            await ProjectionStoreTests.WaitUntil(() => observation.LastDeltaSequence == 2 && scheduler.PendingCount > 0);
+        }
+
+        workbench.Documents.Close(document);
+
+        Assert.True(content.IsDisposed);
+        Assert.True(observation.IsDisposed);
+        if (observation.Subscribed.Task.IsCompleted)
+            await observation.Ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        scheduler.RunPending();
+        Assert.Single(content.Conversation.Items);
+        Assert.DoesNotContain(document, workbench.Documents.Items);
+        Assert.Single(source.Observations);
+        AssertNoCommands(runtime);
+        source.Projection.SetSnapshot(new ConversationSnapshot(0, 2,
+            [new UserMessageRow("reopened", "Fresh snapshot after reopening", DateTimeOffset.UtcNow)], TestSnapshots.State()));
+
+        await workbench.OpenStatusActivityAsync(activity);
+
+        var reopened = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        var reopenedContent = Assert.IsType<SubagentDocumentViewModel>(reopened.Content);
+        Assert.NotSame(document, reopened);
+        Assert.NotSame(content, reopenedContent);
+        Assert.NotSame(content.Conversation, reopenedContent.Conversation);
+        Assert.False(reopenedContent.IsDisposed);
+        Assert.Equal("Fresh snapshot after reopening", Assert.IsType<UserMessageItemViewModel>(Assert.Single(reopenedContent.Conversation.Items)).Text);
+        var reopenedObservation = source.Observations[1];
+        Assert.Equal(2, source.Observations.Length);
+        await reopenedObservation.Subscribed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        scheduler.RunPending();
+        source.Projection.Emit(new ConversationDelta(3,
+            [new RowAppended(new UserMessageRow("late", "Queued before workbench disposal", DateTimeOffset.UtcNow))]));
+        await ProjectionStoreTests.WaitUntil(() => reopenedObservation.LastDeltaSequence == 3 && scheduler.PendingCount > 0);
+
+        workbench.Dispose();
+        await reopenedObservation.Ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        scheduler.RunPending();
+
+        Assert.True(reopenedContent.IsDisposed);
+        Assert.True(reopenedObservation.IsDisposed);
+        Assert.All(source.Observations, item => Assert.True(item.IsDisposed));
+        Assert.Equal(2, source.Observations.Length);
+        Assert.Single(reopenedContent.Conversation.Items);
+        Assert.Empty(workbench.Documents.Items);
+        AssertNoCommands(runtime);
+    }
+
+    [Fact]
     public async Task StatusActivity_UnavailableAgentUsesSummaryAndForegroundUsesOutput()
     {
         using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
         workbench.ShowNewTask(_root);
         await workbench.OpenStatusActivityAsync(new StatusActivity
         {
-            Id = "ended", Title = "Ended agent", ChildSessionId = StrongId.NewSessionId(), OutputText = "Review complete",
+            Id = "ended",
+            Title = "Ended agent",
+            ChildSessionId = StrongId.NewSessionId(),
+            OutputText = "Review complete",
         });
         Assert.Equal("Review complete", Assert.IsType<TextDocumentViewModel>(workbench.Documents.ActiveDocument!.Content).Text);
         await workbench.OpenStatusActivityAsync(new StatusActivity { Id = "shell", Title = "Build", OutputText = "partial output" });
         Assert.Equal("partial output", Assert.IsType<TextDocumentViewModel>(workbench.Documents.ActiveDocument!.Content).Text);
     }
 
+    private static async Task DeliverUntilAsync(QueuedScheduler scheduler, Func<bool> condition)
+    {
+        await ProjectionStoreTests.WaitUntil(() =>
+        {
+            scheduler.RunPending();
+            return condition();
+        });
+    }
+
+    private static void AssertNoCommands(ParentScopedRuntime runtime)
+    {
+        Assert.Empty(runtime.Parents.Submitted);
+        Assert.Empty(runtime.StoppedSubagents);
+        Assert.Empty(runtime.StoppedBackgroundJobs);
+    }
+
     public void Dispose() => Directory.Delete(_root, recursive: true);
+
+    private sealed class ParentScopedRuntime : IAgentRuntime, ISessionActivityRuntime
+    {
+        private readonly Dictionary<(SessionId Parent, SessionId Child), ChildProjectionSource> _children = [];
+
+        public FakeAgentRuntime Parents { get; } = new();
+        public ConcurrentQueue<(SessionId Parent, SessionId Child)> ScopedObservations { get; } = new();
+        public ConcurrentQueue<SessionId> GenericObservations { get; } = new();
+        public ConcurrentQueue<SessionId> Subscriptions { get; } = new();
+        public ConcurrentQueue<(SessionId Parent, string TaskId)> StoppedSubagents { get; } = new();
+        public ConcurrentQueue<(SessionId Parent, BackgroundJobId JobId)> StoppedBackgroundJobs { get; } = new();
+
+        public void RegisterParent(SessionId sessionId) =>
+            Parents.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+
+        public ChildProjectionSource RegisterChild(SessionId parentId, SessionId childId, ConversationSnapshot snapshot)
+        {
+            var source = new ChildProjectionSource(snapshot);
+            _children.Add((parentId, childId), source);
+            return source;
+        }
+
+        public IConversationProjection? TryObserveSubagent(SessionId parentSessionId, SessionId childSessionId)
+        {
+            ScopedObservations.Enqueue((parentSessionId, childSessionId));
+            return _children.TryGetValue((parentSessionId, childSessionId), out var source) ? source.Observe() : null;
+        }
+
+        public IConversationProjection? TryObserve(SessionId sessionId)
+        {
+            GenericObservations.Enqueue(sessionId);
+            return Parents.TryObserve(sessionId);
+        }
+
+        public IConversationProjection Subscribe(SessionId sessionId)
+        {
+            Subscriptions.Enqueue(sessionId);
+            return Parents.Subscribe(sessionId);
+        }
+
+        public IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId) => [];
+
+        public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId)
+        {
+            StoppedBackgroundJobs.Enqueue((sessionId, jobId));
+            return true;
+        }
+
+        public ValueTask<bool> TryStopSubagentAsync(SessionId sessionId, string taskId)
+        {
+            StoppedSubagents.Enqueue((sessionId, taskId));
+            return ValueTask.FromResult(true);
+        }
+
+        public ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken) =>
+            Parents.CreateSessionAsync(options, cancellationToken);
+
+        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
+            Parents.ResumeSessionAsync(sessionId, cancellationToken);
+
+        public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken) =>
+            Parents.ListSessionsAsync(workspaceRoot, limit, cancellationToken);
+
+        public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
+            Parents.SubmitAsync(command, cancellationToken);
+
+        public ValueTask DisposeAsync() => Parents.DisposeAsync();
+    }
+
+    private sealed class ChildProjectionSource(ConversationSnapshot snapshot)
+    {
+        private readonly ConcurrentQueue<TrackedObservation> _observations = new();
+
+        public FakeConversationProjection Projection { get; } = new(snapshot);
+        public TrackedObservation[] Observations => _observations.ToArray();
+
+        public TrackedObservation Observe()
+        {
+            var observation = new TrackedObservation(Projection);
+            _observations.Enqueue(observation);
+            return observation;
+        }
+    }
+
+    private sealed class TrackedObservation(FakeConversationProjection projection) : IConversationProjection
+    {
+        private int _disposed;
+        private long _lastDeltaSequence;
+
+        public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+        public long LastDeltaSequence => Volatile.Read(ref _lastDeltaSequence);
+        public TaskCompletionSource Subscribed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Ended { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ConversationSnapshot Snapshot() => projection.Snapshot();
+
+        public async IAsyncEnumerable<ConversationDelta> Deltas([EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Subscribed.TrySetResult();
+            try
+            {
+                await foreach (var delta in projection.Deltas(cancellationToken))
+                {
+                    yield return delta;
+                    Interlocked.Exchange(ref _lastDeltaSequence, delta.Sequence);
+                }
+            }
+            finally
+            {
+                Ended.TrySetResult();
+            }
+        }
+
+        public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
+    }
 
     private sealed class QueuedScheduler : IUiScheduler
     {
         private readonly ConcurrentQueue<Action> _actions = new();
+
+        public int PendingCount => _actions.Count;
 
         public void Post(Action action) => _actions.Enqueue(action);
 
