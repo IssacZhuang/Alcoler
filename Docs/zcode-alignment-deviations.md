@@ -65,11 +65,12 @@ Sources: `src/Alcoler.Kernel/Tools/AskUserQuestionTool.cs`, `src/Alcoler.Workben
 
 ### 1.6 Grep search engine
 
-- The Grep tool executes on the ripgrep 14.1.1 engine crates (`ignore` walker, `grep-searcher`, `grep-regex`) compiled into an in-process Rust library (`alco_grep.dll`) and invoked via P/Invoke; no helper process is spawned. A managed .NET engine remains as a fallback when the native library is unavailable, mirroring the reference's JS fallback architecture. The tool contract, parameter schema, and output formats are unchanged.
+- The Grep tool executes on the ripgrep 14.1.1 engine crates (`ignore` walker, `grep-searcher`, `grep-regex`) compiled into an in-process Rust library (`alco_grep`) and invoked via P/Invoke; no helper process is spawned. A managed .NET engine remains as a fallback when the native library is unavailable, mirroring the reference's JS fallback architecture. The tool contract, parameter schema, and output formats are unchanged.
+- Native libraries are delivered for win-x64, win-arm64, linux-x64, linux-arm64, osx-x64, and osx-arm64 (`src/Alcoler.Adapters/runtimes/<rid>/native/`), produced by the `native-binaries` GitHub workflow; a fresh checkout of any of these RIDs needs no Rust installation.
 - File selection honors `.gitignore` / `.ignore` / `.rgignore` rules, searches hidden files, excludes version-control directories, skips binary files the way ripgrep's quit mode does, and sniffs BOMs (UTF-16) during search.
 - Cancellation interrupts a running native search through a cancel flag checked during the walk; invalid patterns surface the same error text on both engines; lines longer than 500 characters are truncated identically by the shared formatter.
 - The regex dialect is ripgrep's Rust regex (no look-around or backreferences), stated in the tool description.
-- Bash sessions define an `rg` shell function over a bundled official ripgrep 14.1.1 binary when no system `rg` is on PATH.
+- Bash sessions define an `rg` shell function over a bundled official ripgrep 14.1.1 binary when no system `rg` is on PATH. The official release publishes no aarch64-pc-windows-msvc build, so win-arm64 bundles no rg and its Bash sessions degrade to a system rg or none; packaging copies only the target platform's binary (`tools/ripgrep/<rid>/`).
 
 Sources: `src/Alcoler.Adapters.Native/alco-grep/`, `src/Alcoler.Adapters/Grep/`, `src/Alcoler.Adapters/Tools/GrepTool.cs`, `src/Alcoler.Adapters/Tools/ManagedGrepEngine.cs`, `src/Alcoler.Adapters/Tools/AlcoGrepEngine.cs`, `src/Alcoler.Adapters/Tools/RipgrepBinary.cs`, `src/Alcoler.Adapters/Tools/BackgroundBashRunner.cs`.
 
@@ -79,11 +80,11 @@ Sources: `src/Alcoler.Adapters.Native/alco-grep/`, `src/Alcoler.Adapters/Grep/`,
 
 **Priority: Medium. Directly affects model evidence only where the native library is unavailable.**
 
-- The delivered win-x64 build loads the native ripgrep engine for every search. On other RIDs without a Rust toolchain at build time, the managed .NET fallback runs instead: .NET Regex semantics, no ignore-file rules, a heuristic binary sniff instead of ripgrep quit-mode detection, and no per-match regex timeout. Output formats are identical; file-selection semantics are not.
+- The six delivered RIDs load the native ripgrep engine for every search. On any other RID without a Rust toolchain at build time, the managed .NET fallback runs instead: .NET Regex semantics, no ignore-file rules, a heuristic binary sniff instead of ripgrep quit-mode detection, and no per-match regex timeout. Output formats are identical; file-selection semantics are not.
 - `head_limit` paginates results after the search completes; the engine does not stop early at the limit, preserving deterministic mtime/ordinal ordering. A small `head_limit` limits returned results, not the work performed.
-- The native library and the bundled `rg.exe` shim binary are both version-locked to ripgrep 14.1.1 but are separate artifacts; updating one does not update the other.
+- The native libraries and the bundled `rg` binaries are all version-locked to ripgrep 14.1.1 but are separate artifacts produced by different sources (cargo build vs. official release download); updating one does not update the other.
 
-Long-task effect: on the delivered build, repeated searches no longer include ignored dependencies, generated files, or build output, and cancellation bounds a runaway search. Fallback builds retain the original evidence-noise and unbounded-match exposure.
+Long-task effect: on the delivered RIDs, repeated searches no longer include ignored dependencies, generated files, or build output, and cancellation bounds a runaway search. Fallback RIDs retain the original evidence-noise and unbounded-match exposure.
 
 Narrowing path/glob still reduces exposure on fallback builds. Do not assume the fallback glob matcher supports all ripgrep exclusion syntax.
 
