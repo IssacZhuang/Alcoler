@@ -1,4 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Evaluated before the tools/ripgrep content items below. -->
+    <_AlcoGrepRid>$(RuntimeIdentifier)</_AlcoGrepRid>
+    <_AlcoGrepRid Condition="'$(_AlcoGrepRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_AlcoGrepRid>
+    <_AlcoGrepRgName Condition="$(_AlcoGrepRid.StartsWith('win'))">rg.exe</_AlcoGrepRgName>
+    <_AlcoGrepRgName Condition="'$(_AlcoGrepRgName)' == ''">rg</_AlcoGrepRgName>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
@@ -9,4 +19,200 @@
     <ProjectReference Include="..\Alcoler.Contracts\Alcoler.Contracts.csproj" />
     <ProjectReference Include="..\Alcoler.Kernel\Alcoler.Kernel.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Bundled ripgrep for Bash-session shims, one directory per RID; packaging
+         copies only the target platform's binary flat next to the app. The
+         alco-grep library is delivered separately by IncludeAlcoGrepNative. -->
+    <Content Include="$(MSBuildThisFileDirectory)tools\ripgrep\$(_AlcoGrepRid)\$(_AlcoGrepRgName)"
+             Condition="Exists('$(MSBuildThisFileDirectory)tools\ripgrep\$(_AlcoGrepRid)\$(_AlcoGrepRgName)')">
+      <Link>tools\ripgrep\$(_AlcoGrepRgName)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>False</Visible>
+    </Content>
+    <Content Include="$(MSBuildThisFileDirectory)tools\ripgrep\LICENSE-*;$(MSBuildThisFileDirectory)tools\ripgrep\UNLICENSE">
+      <Link>tools\ripgrep\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>False</Visible>
+    </Content>
+  </ItemGroup>
+
+  <!-- Normalize source line endings so delivery fingerprints survive checkout
+       on another OS. Validate the library hash as well as its source fingerprint. -->
+  <UsingTask TaskName="AlcoGrepCheckDelivery" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <CrateDirectory ParameterType="System.String" Required="true" />
+      <Library ParameterType="System.String" Required="true" />
+      <SourceHash ParameterType="System.String" Output="true" />
+      <BinaryHash ParameterType="System.String" Output="true" />
+      <IsCurrent ParameterType="System.Boolean" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text" />
+      <Using Namespace="System.Security.Cryptography" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var files = new System.Collections.Generic.List<string>();
+        foreach (var relative in new[] { "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "build.rs", ".cargo/config.toml" })
+        {
+            var path = Path.Combine(CrateDirectory, relative);
+            if (File.Exists(path)) files.Add(relative);
+        }
+        var sourceDirectory = Path.Combine(CrateDirectory, "src");
+        if (Directory.Exists(sourceDirectory))
+        {
+            foreach (var path in Directory.GetFiles(sourceDirectory, "*.rs", SearchOption.AllDirectories))
+                files.Add(path.Substring(CrateDirectory.TrimEnd('/', '\\').Length + 1).Replace('\\', '/'));
+        }
+        files.Sort(StringComparer.Ordinal);
+        using (var sha = SHA256.Create())
+        {
+            var entries = new StringBuilder();
+            foreach (var relative in files)
+            {
+                var text = File.ReadAllText(Path.Combine(CrateDirectory, relative)).Replace("\r\n", "\n").Replace("\r", "\n");
+                var hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(text))).Replace("-", "").ToLowerInvariant();
+                entries.Append(relative).Append('\0').Append(hash).Append('\n');
+            }
+            SourceHash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(entries.ToString()))).Replace("-", "").ToLowerInvariant();
+            BinaryHash = "";
+            IsCurrent = false;
+            if (File.Exists(Library))
+            {
+                using (var stream = File.OpenRead(Library))
+                    BinaryHash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+                var stamp = Library + ".source.sha256";
+                if (File.Exists(stamp))
+                {
+                    var lines = File.ReadAllLines(stamp);
+                    IsCurrent = lines.Length == 2 && lines[0] == SourceHash && lines[1] == BinaryHash;
+                }
+            }
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!-- Delivered binaries need no Rust installation. Opt in to source builds when
+       changing Rust code. Every RID with a committed runtimes/<rid>/native library
+       is delivered and fails hard when provenance is stale and Cargo is absent;
+       a missing library on any other RID degrades to the managed grep fallback
+       at runtime, so unlike alco-gpu it is a warning, not an error. -->
+  <PropertyGroup>
+    <AlcoGrepBuildNative Condition="'$(AlcoGrepBuildNative)' == ''">false</AlcoGrepBuildNative>
+    <AlcoGrepCargoExecutable Condition="'$(AlcoGrepCargoExecutable)' == ''">cargo</AlcoGrepCargoExecutable>
+    <AlcoGrepCargoTargetDirectory Condition="'$(AlcoGrepCargoTargetDirectory)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/$(BaseIntermediateOutputPath)alco-grep'))</AlcoGrepCargoTargetDirectory>
+    <_AlcoGrepCrateDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../Alcoler.Adapters.Native/alco-grep'))</_AlcoGrepCrateDirectory>
+    <_AlcoGrepRustTarget Condition="'$(_AlcoGrepRid)' == 'win-x64'">x86_64-pc-windows-msvc</_AlcoGrepRustTarget>
+    <_AlcoGrepRustTarget Condition="'$(_AlcoGrepRid)' == 'win-arm64'">aarch64-pc-windows-msvc</_AlcoGrepRustTarget>
+    <_AlcoGrepRustTarget Condition="'$(_AlcoGrepRid)' == 'linux-x64'">x86_64-unknown-linux-gnu</_AlcoGrepRustTarget>
+    <_AlcoGrepRustTarget Condition="'$(_AlcoGrepRid)' == 'linux-arm64'">aarch64-unknown-linux-gnu</_AlcoGrepRustTarget>
+    <_AlcoGrepRustTarget Condition="'$(_AlcoGrepRid)' == 'osx-x64'">x86_64-apple-darwin</_AlcoGrepRustTarget>
+    <_AlcoGrepRustTarget Condition="'$(_AlcoGrepRid)' == 'osx-arm64'">aarch64-apple-darwin</_AlcoGrepRustTarget>
+    <_AlcoGrepLibraryName Condition="'$(_AlcoGrepRid)' == 'win-x64' or '$(_AlcoGrepRid)' == 'win-arm64'">alco_grep.dll</_AlcoGrepLibraryName>
+    <_AlcoGrepLibraryName Condition="'$(_AlcoGrepRid)' == 'linux-x64' or '$(_AlcoGrepRid)' == 'linux-arm64'">libalco_grep.so</_AlcoGrepLibraryName>
+    <_AlcoGrepLibraryName Condition="'$(_AlcoGrepRid)' == 'osx-x64' or '$(_AlcoGrepRid)' == 'osx-arm64'">libalco_grep.dylib</_AlcoGrepLibraryName>
+    <_AlcoGrepCommittedLibrary>$(MSBuildProjectDirectory)/runtimes/$(_AlcoGrepRid)/native/$(_AlcoGrepLibraryName)</_AlcoGrepCommittedLibrary>
+    <_AlcoGrepBuiltLibrary>$(AlcoGrepCargoTargetDirectory)/$(_AlcoGrepRustTarget)/release/$(_AlcoGrepLibraryName)</_AlcoGrepBuiltLibrary>
+    <_AlcoGrepNativeLibrary>$(_AlcoGrepBuiltLibrary)</_AlcoGrepNativeLibrary>
+  </PropertyGroup>
+
+  <Target Name="ResolveAlcoGrepNative" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Message Importance="Normal" Condition="'$(_AlcoGrepRustTarget)' == ''"
+             Text="alco-grep: no native mapping for RID '$(_AlcoGrepRid)'; Grep falls back to the managed engine at runtime." />
+    <PropertyGroup>
+      <_AlcoGrepSkipNative Condition="'$(_AlcoGrepRustTarget)' == ''">true</_AlcoGrepSkipNative>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(_AlcoGrepSkipNative)' != 'true'">
+      <_AlcoGrepNativeInputs Include="$(_AlcoGrepCrateDirectory)/Cargo.toml;$(_AlcoGrepCrateDirectory)/Cargo.lock;$(_AlcoGrepCrateDirectory)/rust-toolchain.toml;$(MSBuildProjectFullPath);$(_AlcoGrepCrateDirectory)/src/**/*.rs" />
+      <_AlcoGrepNativeInputs Include="$(_AlcoGrepCrateDirectory)/build.rs" Condition="Exists('$(_AlcoGrepCrateDirectory)/build.rs')" />
+      <_AlcoGrepNativeInputs Include="$(_AlcoGrepCrateDirectory)/.cargo/config.toml" Condition="Exists('$(_AlcoGrepCrateDirectory)/.cargo/config.toml')" />
+    </ItemGroup>
+    <AlcoGrepCheckDelivery CrateDirectory="$(_AlcoGrepCrateDirectory)" Library="$(_AlcoGrepCommittedLibrary)"
+                           Condition="'$(_AlcoGrepSkipNative)' != 'true'">
+      <Output TaskParameter="SourceHash" PropertyName="_AlcoGrepSourceHash" />
+      <Output TaskParameter="IsCurrent" PropertyName="_AlcoGrepDeliveryIsCurrent" />
+    </AlcoGrepCheckDelivery>
+    <PropertyGroup Condition="'$(_AlcoGrepSkipNative)' != 'true'">
+      <_AlcoGrepNativeLibrary Condition="'$(AlcoGrepBuildNative)' != 'true' and '$(_AlcoGrepDeliveryIsCurrent)' == 'true'">$(_AlcoGrepCommittedLibrary)</_AlcoGrepNativeLibrary>
+      <_AlcoGrepNeedsBuild Condition="'$(_AlcoGrepNativeLibrary)' == '$(_AlcoGrepBuiltLibrary)'">true</_AlcoGrepNeedsBuild>
+    </PropertyGroup>
+    <AlcoGrepCheckDelivery CrateDirectory="$(_AlcoGrepCrateDirectory)" Library="$(_AlcoGrepBuiltLibrary)"
+                           Condition="'$(_AlcoGrepNeedsBuild)' == 'true'">
+      <Output TaskParameter="IsCurrent" PropertyName="_AlcoGrepBuiltIsCurrent" />
+    </AlcoGrepCheckDelivery>
+    <Message Importance="Normal" Condition="'$(_AlcoGrepSkipNative)' != 'true' and Exists('$(_AlcoGrepCommittedLibrary)') and '$(_AlcoGrepDeliveryIsCurrent)' != 'true'"
+             Text="The delivered alco-grep library for $(_AlcoGrepRid) has missing/stale source or binary provenance; using a source build in obj. Refresh src/Alcoler.Adapters/runtimes/$(_AlcoGrepRid)/native and its .source.sha256 sidecar to build without Rust (src/Alcoler.Adapters.Native/alco-grep/write-delivery.ps1)." />
+    <Message Importance="Normal" Condition="'$(_AlcoGrepSkipNative)' != 'true'"
+             Text="alco-grep: $(_AlcoGrepRid) -> $(_AlcoGrepRustTarget), $(_AlcoGrepNativeLibrary); source SHA256 $(_AlcoGrepSourceHash)" />
+  </Target>
+
+  <Target Name="PrepareAlcoGrepNativeBuild" DependsOnTargets="ResolveAlcoGrepNative"
+          Condition="'$(_AlcoGrepNeedsBuild)' == 'true'">
+    <!-- Invalidating the stamp also detects deleted sources or preserved timestamps. -->
+    <Delete Files="$(_AlcoGrepBuiltLibrary).source.sha256" Condition="'$(_AlcoGrepBuiltIsCurrent)' != 'true'" />
+  </Target>
+
+  <!-- Only locally built libraries track source timestamps. A fresh checkout with
+       a validated delivery must not require Cargo because git reset timestamps. -->
+  <Target Name="BuildAlcoGrepNative" DependsOnTargets="PrepareAlcoGrepNativeBuild"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(_AlcoGrepNeedsBuild)' == 'true'"
+          Inputs="@(_AlcoGrepNativeInputs)"
+          Outputs="$(_AlcoGrepBuiltLibrary);$(_AlcoGrepBuiltLibrary).source.sha256">
+    <Error Condition="!Exists('$(_AlcoGrepCrateDirectory)/Cargo.toml') or !Exists('$(_AlcoGrepCrateDirectory)/Cargo.lock')" Code="ALCOGREP002"
+           Text="Cannot build alco-grep for $(_AlcoGrepRid): the native crate or Cargo.lock is missing from '$(_AlcoGrepCrateDirectory)'. Use a complete source checkout or supply '$(_AlcoGrepCommittedLibrary)'." />
+    <Exec Command="&quot;$(AlcoGrepCargoExecutable)&quot; --version" WorkingDirectory="$(_AlcoGrepCrateDirectory)"
+          EnvironmentVariables="RUSTUP_AUTO_INSTALL=0"
+          IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ExitCode" PropertyName="_AlcoGrepCargoCheckExitCode" />
+    </Exec>
+    <PropertyGroup>
+      <_AlcoGrepCargoMissing Condition="'$(_AlcoGrepCargoCheckExitCode)' != '0'">true</_AlcoGrepCargoMissing>
+    </PropertyGroup>
+    <Error Condition="'$(_AlcoGrepCargoMissing)' == 'true' and (Exists('$(_AlcoGrepCommittedLibrary)') or '$(AlcoGrepBuildNative)' == 'true')" Code="ALCOGREP003"
+           Text="Cannot build alco-grep for $(_AlcoGrepRid): Cargo/Rust 1.97.1 is unavailable. Install Rust with rustup, run 'rustup target add --toolchain 1.97.1 $(_AlcoGrepRustTarget)', and put cargo on PATH or set AlcoGrepCargoExecutable. A delivered '$(_AlcoGrepCommittedLibrary)' needs no Rust installation." />
+    <Message Importance="High" Condition="'$(_AlcoGrepCargoMissing)' == 'true'"
+             Text="alco-grep: Cargo unavailable for $(_AlcoGrepRid) and no delivered library; Grep falls back to the managed engine at runtime." />
+    <PropertyGroup Condition="'$(_AlcoGrepCargoMissing)' == 'true'">
+      <_AlcoGrepSkipNative>true</_AlcoGrepSkipNative>
+    </PropertyGroup>
+    <Message Importance="High" Condition="'$(_AlcoGrepSkipNative)' != 'true'" Text="Building alco-grep for $(_AlcoGrepRid) ($(_AlcoGrepRustTarget)); requires installed Rust and a target linker/SDK." />
+    <Exec Condition="'$(_AlcoGrepSkipNative)' != 'true'" Command="&quot;$(AlcoGrepCargoExecutable)&quot; build --locked --release --target $(_AlcoGrepRustTarget) --target-dir &quot;$(AlcoGrepCargoTargetDirectory)&quot;"
+          WorkingDirectory="$(_AlcoGrepCrateDirectory)" EnvironmentVariables="RUSTUP_AUTO_INSTALL=0"
+          IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true">
+      <Output TaskParameter="ExitCode" PropertyName="_AlcoGrepCargoBuildExitCode" />
+    </Exec>
+    <Error Condition="'$(_AlcoGrepSkipNative)' != 'true' and '$(_AlcoGrepCargoBuildExitCode)' != '0'" Code="ALCOGREP004"
+           Text="Cargo failed to build alco-grep for $(_AlcoGrepRid). See the Cargo output above; install Rust 1.97.1 and 'rustup target add --toolchain 1.97.1 $(_AlcoGrepRustTarget)'. Windows needs MSVC C++ Build Tools and Windows SDK; Linux a C linker/sysroot; macOS Xcode command-line tools. Cross-compilation needs the matching cross linker." />
+    <Error Condition="'$(_AlcoGrepSkipNative)' != 'true' and !Exists('$(_AlcoGrepBuiltLibrary)')" Code="ALCOGREP005" Text="Cargo did not produce '$(_AlcoGrepBuiltLibrary)'. Check the native linker/SDK and Cargo output." />
+    <AlcoGrepCheckDelivery Condition="'$(_AlcoGrepSkipNative)' != 'true'" CrateDirectory="$(_AlcoGrepCrateDirectory)" Library="$(_AlcoGrepBuiltLibrary)">
+      <Output TaskParameter="SourceHash" PropertyName="_AlcoGrepBuiltSourceHash" />
+      <Output TaskParameter="BinaryHash" PropertyName="_AlcoGrepBuiltBinaryHash" />
+    </AlcoGrepCheckDelivery>
+    <WriteLinesToFile Condition="'$(_AlcoGrepSkipNative)' != 'true'" File="$(_AlcoGrepBuiltLibrary).source.sha256" Lines="$(_AlcoGrepBuiltSourceHash);$(_AlcoGrepBuiltBinaryHash)" Overwrite="true" />
+    <Touch Condition="'$(_AlcoGrepSkipNative)' != 'true'" Files="$(_AlcoGrepBuiltLibrary)" />
+  </Target>
+
+  <!-- Add Content after Cargo runs, before output/publish path assignment,
+       including packing and publishing without a managed build. -->
+  <Target Name="IncludeAlcoGrepNative" BeforeTargets="AssignTargetPaths;_GetPackageFiles"
+          DependsOnTargets="ResolveAlcoGrepNative;BuildAlcoGrepNative"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(_AlcoGrepSkipNative)' != 'true'">
+    <Error Condition="!Exists('$(_AlcoGrepNativeLibrary)')" Code="ALCOGREP005"
+           Text="The required alco-grep library '$(_AlcoGrepNativeLibrary)' was not produced for $(_AlcoGrepRid). Check the native toolchain and Cargo output." />
+    <ItemGroup>
+      <Content Include="$(_AlcoGrepNativeLibrary)">
+        <Link>$(_AlcoGrepLibraryName)</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <Pack>true</Pack>
+        <PackagePath>runtimes/$(_AlcoGrepRid)/native/</PackagePath>
+        <Visible>False</Visible>
+      </Content>
+    </ItemGroup>
+  </Target>
+
 </Project>

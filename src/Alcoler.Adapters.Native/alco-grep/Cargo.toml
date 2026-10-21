@@ -1,0 +1,24 @@
+[package]
+name = "alco-grep"
+version = "0.1.0"
+edition = "2021"
+description = "Alco-owned C ABI over the ripgrep search engine"
+license = "MIT OR Unlicense"
+publish = false
+
+[lib]
+name = "alco_grep"
+crate-type = ["cdylib", "rlib"]
+
+# Pinned to the dependency set of ripgrep 14.1.1.
+[dependencies]
+grep-matcher = "=0.1.7"
+grep-regex = "=0.1.13"
+grep-searcher = "=0.1.14"
+ignore = "=0.4.23"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+panic = "unwind"

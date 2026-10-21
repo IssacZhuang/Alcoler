@@ -1,0 +1,105 @@
+name: native-binaries
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            triple: x86_64-pc-windows-msvc
+            runs-on: windows-latest
+            rg-archive: ripgrep-14.1.1-x86_64-pc-windows-msvc.zip
+            rg-name: rg.exe
+            lib: alco_grep.dll
+          - rid: win-arm64
+            triple: aarch64-pc-windows-msvc
+            runs-on: windows-latest
+            rg-archive: ripgrep-14.1.1-aarch64-pc-windows-msvc.zip
+            rg-name: rg.exe
+            lib: alco_grep.dll
+          - rid: linux-x64
+            triple: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-24.04
+            rg-archive: ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
+            rg-name: rg
+            lib: libalco_grep.so
+          - rid: linux-arm64
+            triple: aarch64-unknown-linux-gnu
+            runs-on: ubuntu-24.04
+            rg-archive: ripgrep-14.1.1-aarch64-unknown-linux-gnu.tar.gz
+            rg-name: rg
+            lib: libalco_grep.so
+          - rid: osx-x64
+            triple: x86_64-apple-darwin
+            runs-on: macos-15-intel
+            rg-archive: ripgrep-14.1.1-x86_64-apple-darwin.tar.gz
+            rg-name: rg
+            lib: libalco_grep.dylib
+          - rid: osx-arm64
+            triple: aarch64-apple-darwin
+            runs-on: macos-15
+            rg-archive: ripgrep-14.1.1-aarch64-apple-darwin.tar.gz
+            rg-name: rg
+            lib: libalco_grep.dylib
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross linker
+        if: matrix.rid == 'linux-arm64'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install Rust toolchain and target
+        working-directory: src/Alcoler.Adapters.Native/alco-grep
+        run: |
+          rustup show
+          rustup target add --toolchain 1.97.1 ${{ matrix.triple }}
+
+      - name: Build alco-grep
+        working-directory: src/Alcoler.Adapters.Native/alco-grep
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.triple == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-gcc' || 'unused' }}
+        run: cargo build --locked --release --target ${{ matrix.triple }}
+
+      - name: Stamp delivery sidecar
+        shell: pwsh
+        run: src/Alcoler.Adapters.Native/alco-grep/write-delivery.ps1 -Library "src/Alcoler.Adapters.Native/alco-grep/target/${{ matrix.triple }}/release/${{ matrix.lib }}"
+
+      - name: Fetch official ripgrep
+        shell: bash
+        run: |
+          curl -fsSL -o rg-download "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/${{ matrix.rg-archive }}"
+          mkdir rg-extract
+          tar -xf rg-download -C rg-extract
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $crate = 'src/Alcoler.Adapters.Native/alco-grep'
+          $lib = "$crate/target/${{ matrix.triple }}/release/${{ matrix.lib }}"
+          New-Item -ItemType Directory -Force -Path "staging/runtimes/${{ matrix.rid }}/native", "staging/tools/ripgrep/${{ matrix.rid }}" | Out-Null
+          Copy-Item $lib "staging/runtimes/${{ matrix.rid }}/native/"
+          Copy-Item "$lib.source.sha256" "staging/runtimes/${{ matrix.rid }}/native/"
+          $rgDir = (Get-ChildItem rg-extract -Directory | Select-Object -First 1).FullName
+          Copy-Item (Join-Path $rgDir '${{ matrix.rg-name }}') "staging/tools/ripgrep/${{ matrix.rid }}/"
+
+      - name: Verify staged binaries
+        shell: bash
+        run: |
+          if [[ "${{ matrix.rid }}" != "win-arm64" && "${{ matrix.rid }}" != "linux-arm64" ]]; then
+            "staging/tools/ripgrep/${{ matrix.rid }}/${{ matrix.rg-name }}" --version | head -1
+          fi
+          ls -l "staging/runtimes/${{ matrix.rid }}/native" "staging/tools/ripgrep/${{ matrix.rid }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alco-native-${{ matrix.rid }}
+          path: staging/
+          if-no-files-found: error

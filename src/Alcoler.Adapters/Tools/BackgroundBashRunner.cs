@@ -72,7 +72,8 @@ internal sealed class BashProcessSession : IDisposable
             if (posix)
             {
                 startInfo.ArgumentList.Add(shell.Arguments);
-                startInfo.ArgumentList.Add("exec 2>&1; " + (captureCwd ? WrapWithCwdCapture(command) : command));
+                startInfo.ArgumentList.Add(
+                    "exec 2>&1; " + BashRipgrepShim.Preamble() + (captureCwd ? WrapWithCwdCapture(command) : command));
             }
             else
             {

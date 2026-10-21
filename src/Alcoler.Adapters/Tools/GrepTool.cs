@@ -1,63 +1,42 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Alcoler.Contracts.Tools;
-using Alcoler.Kernel.Tools;
 
 namespace Alcoler.Adapters.Tools;
 
+/// <summary>
+/// Content search over the ripgrep engine (native alco-grep library first,
+/// managed .NET regex fallback), preserving the reference tool contract and
+/// output formats.
+/// </summary>
 public sealed class GrepTool : ITool
 {
     internal const int DefaultHeadLimit = 250;
     internal const int MaxModelChars = 20_000;
+    internal const int MaxColumnChars = 500;
     private const int DefaultTimeoutMs = 30_000;
-    private const int BinaryProbeBytes = 8192;
+    private const string TruncationSuffix = " [...truncated]";
 
-    private static readonly Regex LineBreakRegex = new("\r?\n", RegexOptions.CultureInvariant);
+    private static readonly Lazy<IGrepEngine> DefaultEngine = new(
+        () => (IGrepEngine?)AlcoGrepEngine.TryCreate() ?? new ManagedGrepEngine());
 
-    private static readonly Dictionary<string, string[]> TypeExtensions = new(StringComparer.Ordinal)
+    private readonly IGrepEngine _engine;
+
+    public GrepTool() : this(DefaultEngine.Value)
     {
-        ["c"] = [".c", ".h"],
-        ["cpp"] = [".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"],
-        ["cs"] = [".cs"],
-        ["csharp"] = [".cs"],
-        ["css"] = [".css"],
-        ["go"] = [".go"],
-        ["html"] = [".html", ".htm"],
-        ["java"] = [".java"],
-        ["javascript"] = [".js", ".jsx", ".mjs", ".cjs"],
-        ["js"] = [".js", ".jsx", ".mjs", ".cjs"],
-        ["json"] = [".json", ".jsonc"],
-        ["kotlin"] = [".kt", ".kts"],
-        ["kt"] = [".kt", ".kts"],
-        ["markdown"] = [".md", ".markdown"],
-        ["md"] = [".md", ".markdown"],
-        ["php"] = [".php"],
-        ["py"] = [".py"],
-        ["python"] = [".py"],
-        ["rb"] = [".rb"],
-        ["ruby"] = [".rb"],
-        ["rs"] = [".rs"],
-        ["rust"] = [".rs"],
-        ["scala"] = [".scala"],
-        ["sh"] = [".sh", ".bash", ".zsh"],
-        ["sql"] = [".sql"],
-        ["swift"] = [".swift"],
-        ["toml"] = [".toml"],
-        ["ts"] = [".ts", ".tsx", ".mts", ".cts"],
-        ["tsx"] = [".tsx"],
-        ["typescript"] = [".ts", ".tsx", ".mts", ".cts"],
-        ["txt"] = [".txt"],
-        ["xml"] = [".xml"],
-        ["yaml"] = [".yaml", ".yml"],
-    };
+    }
+
+    internal GrepTool(IGrepEngine engine)
+    {
+        _engine = engine;
+    }
 
     public ToolContract Contract { get; } = new(
         "Grep",
         """
-        Content search built on .NET regex. Prefer this over `grep`/`rg` via Bash — results integrate with the permission UI and file links.
+        Content search built on ripgrep. Prefer this over `grep`/`rg` via Bash — results integrate with the permission UI and file links.
 
-        - Full regex syntax (e.g. "log.*Error", "function\s+\w+"). .NET regex, not grep — escape literal braces (`interface\{\}`).
+        - Full regex syntax (e.g. "log.*Error", "function\s+\w+"). ripgrep's Rust regex, not grep — no look-around or backreferences; escape literal braces (`interface\{\}`).
         - Filter with `glob` (e.g. "**/*.tsx") or `type` (e.g. "js", "py", "rust").
         - `output_mode`: "content" (matching lines), "files_with_matches" (paths only, default), or "count".
         - `multiline: true` for patterns that span lines.
@@ -132,21 +111,6 @@ public sealed class GrepTool : ITool
 
         var ignoreCase = ToolInput.BoolOrDefault(context.Input, "-i", false);
         var multiline = ToolInput.BoolOrDefault(context.Input, "multiline", false);
-        var regexOptions = RegexOptions.CultureInvariant;
-        if (ignoreCase)
-            regexOptions |= RegexOptions.IgnoreCase;
-        if (multiline)
-            regexOptions |= RegexOptions.Singleline;
-        Regex regex;
-        try
-        {
-            regex = new Regex(pattern, regexOptions);
-        }
-        catch (ArgumentException)
-        {
-            return ToolExecutionResult.Text($"Invalid grep regular expression: {pattern}", isError: true);
-        }
-
         var glob = ToolInput.StringOrNull(context.Input, "glob");
         var typeFilter = ToolInput.StringOrNull(context.Input, "type");
         var showLineNumbers = ToolInput.BoolOrDefault(context.Input, "-n", true);
@@ -157,65 +121,52 @@ public sealed class GrepTool : ITool
         var headLimit = ToolInput.IntOrNull(context.Input, "head_limit");
         var offset = Math.Max(0, ToolInput.IntOrNull(context.Input, "offset") ?? 0);
 
-        var globFilters = new List<GlobFilter>();
-        if (glob is not null)
-            globFilters.AddRange(SplitGlobPatterns(glob).Select(static candidate => new GlobFilter(candidate)));
-
+        var globPatterns = glob is null ? [] : GrepGlobSupport.SplitPatterns(glob);
         var filterRoot = Path.TrimEndingDirectorySeparator(
             Path.GetFullPath(isSingleFile ? Path.GetDirectoryName(searchPath)! : searchPath));
-        List<string> candidates;
-        if (isSingleFile)
-            candidates = [searchPath];
-        else
-            candidates = [.. FileSearchSupport.EnumerateFiles(searchPath).OrderBy(static path => path, StringComparer.Ordinal)];
 
-        var contentEntries = new List<ContentEntry>();
-        var countEntries = new List<(string Path, int Count)>();
-        var matchingFiles = new List<(DateTime MtimeUtc, string Path)>();
-        var numMatches = 0;
-
-        foreach (var file in candidates)
+        var engineResult = new GrepEngineResult();
+        if (!isSingleFile || SingleFilePassesFilters(searchPath, filterRoot, globPatterns, typeFilter))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var relativePath = ToPosixRelative(filterRoot, file);
-            if (globFilters.Count > 0 && !globFilters.Any(filter => filter.Matches(relativePath, Path.GetFileName(file))))
-                continue;
-            if (typeFilter is not null && !MatchesFileType(file, typeFilter))
-                continue;
-            if (LooksBinary(file))
-                continue;
-
-            string content;
+            var request = new GrepEngineRequest
+            {
+                Pattern = pattern,
+                SearchPath = searchPath,
+                FilterRoot = filterRoot,
+                Mode = mode,
+                GlobPatterns = globPatterns,
+                TypeFilter = typeFilter,
+                IsSingleFile = isSingleFile,
+                IgnoreCase = ignoreCase,
+                Multiline = multiline,
+                OnlyMatching = onlyMatching,
+                BeforeContext = beforeContext,
+                AfterContext = afterContext,
+            };
             try
             {
-                content = await File.ReadAllTextAsync(file, cancellationToken);
+                engineResult = await Task.Run(() => _engine.Search(request, cancellationToken), cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (GrepPatternException)
             {
-                continue;
+                return ToolExecutionResult.Text($"Invalid grep regular expression: {pattern}", isError: true);
             }
-
-            var search = multiline
-                ? SearchMultilineContent(file, content, regex, onlyMatching, beforeContext, afterContext)
-                : SearchLineContent(file, content, regex, onlyMatching, beforeContext, afterContext);
-            if (search.MatchCount == 0)
-                continue;
-
-            numMatches += search.MatchCount;
-            matchingFiles.Add((FileSearchSupport.GetLastWriteTimeUtcSafe(file), file));
-            if (mode == "content")
-                contentEntries.AddRange(search.Entries);
-            else if (mode == "count")
-                countEntries.Add((file, search.MatchCount));
+            catch (InvalidOperationException ex)
+            {
+                return ToolExecutionResult.Text(ex.Message, isError: true);
+            }
         }
 
-        matchingFiles.Sort(FileSearchSupport.CompareNewestFirst);
         var root = context.Workspace.Root;
 
         string text;
         if (mode == "files_with_matches")
         {
-            var filenames = matchingFiles.ConvertAll(match => FileSearchSupport.ToDisplayPath(root, match.Path));
+            var sorted = engineResult.MatchedFiles
+                .Select(path => (MtimeUtc: FileSearchSupport.GetLastWriteTimeUtcSafe(path), Path: path))
+                .ToList();
+            sorted.Sort(FileSearchSupport.CompareNewestFirst);
+            var filenames = sorted.ConvertAll(match => FileSearchSupport.ToDisplayPath(root, match.Path));
             var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(filenames, headLimit, offset);
             if (page.Count == 0)
                 return ToolExecutionResult.Text("No files found");
@@ -223,17 +174,21 @@ public sealed class GrepTool : ITool
         }
         else if (mode == "count")
         {
-            var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(countEntries, headLimit, offset);
+            var entries = engineResult.CountEntries.OrderBy(entry => entry.Path, StringComparer.Ordinal).ToList();
+            var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(entries, headLimit, offset);
+            var numMatches = entries.Sum(entry => entry.Count);
             var body = page.Count == 0
                 ? "No matches found"
                 : string.Join("\n", page.Select(entry => $"{FileSearchSupport.ToDisplayPath(root, entry.Path)}:{entry.Count}"));
-            var summary = $"Found {numMatches} total {Plural(numMatches, "occurrence")} across {matchingFiles.Count} {Plural(matchingFiles.Count, "file")}.";
+            var summary = $"Found {numMatches} total {Plural((int)numMatches, "occurrence")} across {entries.Count} {Plural(entries.Count, "file")}.";
             var limitInfo = FormatLimitInfo(appliedLimit, appliedOffset);
             text = $"{body}\n\n{summary}{(limitInfo.Length > 0 ? $" with pagination = {limitInfo}" : "")}";
         }
         else
         {
-            var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(contentEntries, headLimit, offset);
+            // Stable ordering keeps within-file event order while native walk order becomes deterministic.
+            var entries = engineResult.ContentEntries.OrderBy(entry => entry.Path, StringComparer.Ordinal).ToList();
+            var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(entries, headLimit, offset);
             var body = page.Count == 0
                 ? "No matches found"
                 : string.Join("\n", page.Select(entry => FormatContentEntry(root, entry, showLineNumbers)));
@@ -251,9 +206,19 @@ public sealed class GrepTool : ITool
         return ToolExecutionResult.Text(text);
     }
 
-    private readonly record struct ContentEntry(string Path, int? LineNumber, string Text);
-
-    private readonly record struct LineSearch(int MatchCount, List<ContentEntry> Entries);
+    internal static bool SingleFilePassesFilters(string file, string filterRoot, IReadOnlyList<string> globPatterns, string? typeFilter)
+    {
+        if (globPatterns.Count > 0)
+        {
+            var relativePath = GrepGlobSupport.ToPosixRelative(filterRoot, file);
+            var filters = globPatterns.Select(pattern => new GrepGlobFilter(pattern)).ToList();
+            if (!filters.Any(filter => filter.Matches(relativePath, Path.GetFileName(file))))
+                return false;
+        }
+        if (typeFilter is not null && !GrepTypeMap.MatchesFile(file, typeFilter))
+            return false;
+        return true;
+    }
 
     private static (List<T> Page, int? AppliedLimit, int? AppliedOffset) ApplyHeadLimit<T>(List<T> items, int? headLimit, int offset)
     {
@@ -286,285 +251,14 @@ public sealed class GrepTool : ITool
 
     private static string Plural(int count, string noun) => count == 1 ? noun : noun + "s";
 
-    private static string FormatContentEntry(string root, ContentEntry entry, bool showLineNumbers)
+    internal static string TruncateLine(string text) =>
+        text.Length > MaxColumnChars ? text[..MaxColumnChars] + TruncationSuffix : text;
+
+    private static string FormatContentEntry(string root, GrepContentEntry entry, bool showLineNumbers)
     {
         var path = FileSearchSupport.ToDisplayPath(root, entry.Path);
         return showLineNumbers && entry.LineNumber is int lineNumber
-            ? $"{path}:{lineNumber}:{entry.Text}"
-            : $"{path}:{entry.Text}";
-    }
-
-    private static LineSearch SearchLineContent(
-        string file,
-        string content,
-        Regex regex,
-        bool onlyMatching,
-        int beforeContext,
-        int afterContext)
-    {
-        var lines = SplitLines(content);
-        if (onlyMatching)
-        {
-            var entriesByLine = new Dictionary<int, List<ContentEntry>>();
-            for (var index = 0; index < lines.Length; index++)
-            {
-                foreach (Match match in regex.Matches(lines[index]))
-                {
-                    if (!entriesByLine.TryGetValue(index, out var perLine))
-                        entriesByLine[index] = perLine = [];
-                    perLine.AddRange(OnlyMatchingEntries(file, index + 1, match.Value));
-                }
-            }
-
-            var ranges = entriesByLine.Keys.Select(static index => (Start: index, End: index)).ToList();
-            return new(entriesByLine.Count, BuildContextEntries(file, lines, ranges, entriesByLine, beforeContext, afterContext));
-        }
-
-        var matchingRanges = new List<(int Start, int End)>();
-        for (var index = 0; index < lines.Length; index++)
-        {
-            if (regex.IsMatch(lines[index]))
-                matchingRanges.Add((index, index));
-        }
-
-        var entries = ContextLineIndexes(lines.Length, matchingRanges, beforeContext, afterContext)
-            .Select(index => new ContentEntry(file, index + 1, lines[index]))
-            .ToList();
-        return new(matchingRanges.Count, entries);
-    }
-
-    private static LineSearch SearchMultilineContent(
-        string file,
-        string content,
-        Regex regex,
-        bool onlyMatching,
-        int beforeContext,
-        int afterContext)
-    {
-        if (!onlyMatching)
-        {
-            var entries = new List<ContentEntry>();
-            foreach (Match match in regex.Matches(content))
-                entries.Add(new ContentEntry(file, LineNumberForIndex(content, match.Index), FirstLine(match.Value)));
-            return new(entries.Count, entries);
-        }
-
-        var entriesByLine = new Dictionary<int, List<ContentEntry>>();
-        var ranges = new List<(int Start, int End)>();
-        foreach (Match match in regex.Matches(content))
-        {
-            var startLine = LineNumberForIndex(content, match.Index);
-            foreach (var entry in OnlyMatchingEntries(file, startLine, match.Value))
-            {
-                var lineIndex = entry.LineNumber is int lineNumber ? lineNumber - 1 : startLine - 1;
-                if (!entriesByLine.TryGetValue(lineIndex, out var perLine))
-                    entriesByLine[lineIndex] = perLine = [];
-                perLine.Add(entry);
-            }
-
-            var endLine = match.Value.Length == 0
-                ? startLine
-                : LineNumberForIndex(content, match.Index + match.Value.Length - 1);
-            ranges.Add((startLine - 1, endLine - 1));
-        }
-
-        return new(ranges.Count, BuildContextEntries(file, SplitLines(content), ranges, entriesByLine, beforeContext, afterContext));
-    }
-
-    private static List<ContentEntry> BuildContextEntries(
-        string file,
-        string[] lines,
-        List<(int Start, int End)> ranges,
-        Dictionary<int, List<ContentEntry>> entriesByLine,
-        int beforeContext,
-        int afterContext)
-    {
-        var matchedIndexes = new HashSet<int>();
-        foreach (var (start, end) in ranges)
-        {
-            for (var index = start; index <= end; index++)
-                matchedIndexes.Add(index);
-        }
-
-        var entries = new List<ContentEntry>();
-        foreach (var lineIndex in ContextLineIndexes(lines.Length, ranges, beforeContext, afterContext))
-        {
-            if (entriesByLine.TryGetValue(lineIndex, out var matched))
-            {
-                entries.AddRange(matched);
-                continue;
-            }
-            if (matchedIndexes.Contains(lineIndex))
-                continue;
-            entries.Add(new ContentEntry(file, lineIndex + 1, lines[lineIndex]));
-        }
-        return entries;
-    }
-
-    private static IEnumerable<int> ContextLineIndexes(int lineCount, List<(int Start, int End)> ranges, int beforeContext, int afterContext)
-    {
-        var indexes = new SortedSet<int>();
-        foreach (var (start, end) in ranges)
-        {
-            for (var index = Math.Max(0, start - beforeContext); index <= Math.Min(lineCount - 1, end + afterContext); index++)
-                indexes.Add(index);
-        }
-        return indexes;
-    }
-
-    private static IEnumerable<ContentEntry> OnlyMatchingEntries(string file, int? lineNumber, string text)
-    {
-        if (text.Length == 0)
-        {
-            yield return new ContentEntry(file, lineNumber, "");
-            yield break;
-        }
-
-        var subLine = 0;
-        foreach (var part in text.Split(["\r\n", "\n"], StringSplitOptions.None))
-        {
-            if (part.Length > 0)
-                yield return new ContentEntry(file, lineNumber + subLine, part);
-            subLine++;
-        }
-    }
-
-    // Line boundaries are LF/CRLF only; a trailing line break is not an extra line and a lone CR stays in the line.
-    private static string[] SplitLines(string content)
-    {
-        if (content.Length == 0)
-            return [];
-        var trimmed = content.EndsWith('\n') ? content[..^1] : content;
-        trimmed = trimmed.EndsWith('\r') ? trimmed[..^1] : trimmed;
-        return LineBreakRegex.Split(trimmed);
-    }
-
-    private static string FirstLine(string value)
-    {
-        var newline = value.IndexOf('\n');
-        var first = newline < 0 ? value : value[..newline];
-        return first.EndsWith('\r') ? first[..^1] : first;
-    }
-
-    private static int LineNumberForIndex(string content, int index) =>
-        1 + content.AsSpan(0, index).Count('\n');
-
-    private static string ToPosixRelative(string root, string filePath) =>
-        Path.GetRelativePath(root, filePath).Replace('\\', '/');
-
-    private static bool MatchesFileType(string path, string type)
-    {
-        var normalized = type.ToLowerInvariant().TrimStart('.');
-        var extension = Path.GetExtension(path).ToLowerInvariant();
-        return TypeExtensions.TryGetValue(normalized, out var extensions)
-            ? extensions.Contains(extension)
-            : extension == "." + normalized;
-    }
-
-    private static bool LooksBinary(string path)
-    {
-        try
-        {
-            using var stream = File.OpenRead(path);
-            var buffer = new byte[BinaryProbeBytes];
-            var read = stream.Read(buffer, 0, buffer.Length);
-            return buffer.AsSpan(0, read).Contains((byte)0);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return true;
-        }
-    }
-
-    private sealed class GlobFilter
-    {
-        private readonly Regex _pathRegex;
-        private readonly Regex? _fileNameRegex;
-
-        public GlobFilter(string pattern)
-        {
-            var normalized = NormalizeGlobPattern(pattern);
-            _pathRegex = GlobPatternToRegex(normalized);
-            _fileNameRegex = normalized.Contains('/') ? null : _pathRegex;
-        }
-
-        public bool Matches(string relativePath, string fileName) =>
-            _pathRegex.IsMatch(relativePath) || (_fileNameRegex?.IsMatch(fileName) ?? false);
-    }
-
-    private static List<string> SplitGlobPatterns(string glob)
-    {
-        var patterns = new List<string>();
-        foreach (var raw in glob.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (raw.Contains('{') && raw.Contains('}'))
-            {
-                patterns.Add(raw);
-                continue;
-            }
-            patterns.AddRange(raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
-        }
-        return patterns;
-    }
-
-    private static string NormalizeGlobPattern(string pattern)
-    {
-        var normalized = pattern.Replace('\\', '/');
-        return normalized.StartsWith("./", StringComparison.Ordinal) ? normalized[2..] : normalized;
-    }
-
-    private static Regex GlobPatternToRegex(string pattern)
-    {
-        var builder = new StringBuilder("^");
-        for (var index = 0; index < pattern.Length; index++)
-        {
-            var c = pattern[index];
-            if (c == '*')
-            {
-                if (index + 1 < pattern.Length && pattern[index + 1] == '*')
-                {
-                    if (index + 2 < pattern.Length && pattern[index + 2] == '/')
-                    {
-                        builder.Append("(?:.*/)?");
-                        index += 2;
-                    }
-                    else
-                    {
-                        builder.Append(".*");
-                        index += 1;
-                    }
-                }
-                else
-                {
-                    builder.Append("[^/]*");
-                }
-                continue;
-            }
-
-            if (c == '?')
-            {
-                builder.Append("[^/]");
-                continue;
-            }
-
-            if (c == '{')
-            {
-                var closing = pattern.IndexOf('}', index + 1);
-                if (closing > index)
-                {
-                    var alternatives = string.Join(
-                        "|",
-                        pattern.Substring(index + 1, closing - index - 1).Split(',').Select(static part => Regex.Escape(part)));
-                    builder.Append("(?:").Append(alternatives).Append(')');
-                    index = closing;
-                    continue;
-                }
-            }
-
-            builder.Append(Regex.Escape(c.ToString()));
-        }
-
-        builder.Append('$');
-        return new Regex(builder.ToString(), RegexOptions.CultureInvariant);
+            ? $"{path}:{lineNumber}:{TruncateLine(entry.Text)}"
+            : $"{path}:{TruncateLine(entry.Text)}";
     }
 }

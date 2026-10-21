@@ -63,22 +63,31 @@ Sources: `src/Alcoler.Adapters/Tools/ReadTool.cs`, `src/Alcoler.Adapters/Tools/B
 
 Sources: `src/Alcoler.Kernel/Tools/AskUserQuestionTool.cs`, `src/Alcoler.Workbench/ViewModel/PendingInteractionViewModel.cs`, `src/Alcoler.Kernel/Subagents/RespondToCoordinatorTool.cs`, `src/Alcoler.Kernel/Subagents/SubagentWiring.cs`, `src/Alcoler.Kernel/Tools/BackgroundJobNotifications.cs`.
 
+### 1.6 Grep search engine
+
+- The Grep tool executes on the ripgrep 14.1.1 engine crates (`ignore` walker, `grep-searcher`, `grep-regex`) compiled into an in-process Rust library (`alco_grep.dll`) and invoked via P/Invoke; no helper process is spawned. A managed .NET engine remains as a fallback when the native library is unavailable, mirroring the reference's JS fallback architecture. The tool contract, parameter schema, and output formats are unchanged.
+- File selection honors `.gitignore` / `.ignore` / `.rgignore` rules, searches hidden files, excludes version-control directories, skips binary files the way ripgrep's quit mode does, and sniffs BOMs (UTF-16) during search.
+- Cancellation interrupts a running native search through a cancel flag checked during the walk; invalid patterns surface the same error text on both engines; lines longer than 500 characters are truncated identically by the shared formatter.
+- The regex dialect is ripgrep's Rust regex (no look-around or backreferences), stated in the tool description.
+- Bash sessions define an `rg` shell function over a bundled official ripgrep 14.1.1 binary when no system `rg` is on PATH.
+
+Sources: `src/Alcoler.Adapters.Native/alco-grep/`, `src/Alcoler.Adapters/Grep/`, `src/Alcoler.Adapters/Tools/GrepTool.cs`, `src/Alcoler.Adapters/Tools/ManagedGrepEngine.cs`, `src/Alcoler.Adapters/Tools/AlcoGrepEngine.cs`, `src/Alcoler.Adapters/Tools/RipgrepBinary.cs`, `src/Alcoler.Adapters/Tools/BackgroundBashRunner.cs`.
+
 ## 2. Remaining Differences and Long-Task Impact
 
-### 2.1 Grep search semantics and execution boundaries
+### 2.1 Grep engine fallback and pagination cost
 
-**Priority: High. Directly affects model evidence, repeated-search cost, and context noise.**
+**Priority: Medium. Directly affects model evidence only where the native library is unavailable.**
 
-- Alcoler uses .NET Regex rather than ripgrep. Common patterns work, but advanced expressions, Unicode behavior, and glob syntax are not guaranteed equivalent.
-- The current file walker includes hidden files and excludes version-control directories and reparse points, but does not implement `.gitignore` / `.ignore` rules. The reference's default ripgrep path enables hidden files without disabling ignore rules.
-- Content search enumerates candidates, reads files, and accumulates matches before pagination. A small `head_limit` limits returned results, not necessarily the work performed.
-- Regex matching has no explicit per-match timeout. An outer tool deadline does not guarantee immediate interruption of a running synchronous match.
+- The delivered win-x64 build loads the native ripgrep engine for every search. On other RIDs without a Rust toolchain at build time, the managed .NET fallback runs instead: .NET Regex semantics, no ignore-file rules, a heuristic binary sniff instead of ripgrep quit-mode detection, and no per-match regex timeout. Output formats are identical; file-selection semantics are not.
+- `head_limit` paginates results after the search completes; the engine does not stop early at the limit, preserving deterministic mtime/ordinal ordering. A small `head_limit` limits returned results, not the work performed.
+- The native library and the bundled `rg.exe` shim binary are both version-locked to ripgrep 14.1.1 but are separate artifacts; updating one does not update the other.
 
-Long-task effect: repeated searches can include ignored dependencies, generated files, or build output, displacing useful source matches and consuming extra calls, latency, and context. Incorrect target selection is a possible downstream consequence, not an observed failure established by the current tests. Large-repository performance and pathological-pattern behavior need targeted measurement.
+Long-task effect: on the delivered build, repeated searches no longer include ignored dependencies, generated files, or build output, and cancellation bounds a runaway search. Fallback builds retain the original evidence-noise and unbounded-match exposure.
 
-Narrowing path/glob can reduce exposure. Bash can use native `rg` when installed, but that is a workaround, not equivalent built-in behavior. Do not assume the custom glob matcher supports all ripgrep exclusion syntax.
+Narrowing path/glob still reduces exposure on fallback builds. Do not assume the fallback glob matcher supports all ripgrep exclusion syntax.
 
-Sources: `src/Alcoler.Adapters/Tools/GrepTool.cs`, `src/Alcoler.Adapters/Tools/FileSearchSupport.cs`, `src/Alcoler.Kernel/Tools/ToolCallExecutor.cs`.
+Sources: `src/Alcoler.Adapters/Tools/GrepTool.cs`, `src/Alcoler.Adapters/Tools/ManagedGrepEngine.cs`, `src/Alcoler.Adapters/Grep/AlcoGrepNative.cs`, `src/Alcoler.Adapters/Alcoler.Adapters.csproj`.
 
 ### 2.2 Image transformation and extreme decode size
 
@@ -176,7 +185,7 @@ These are validation limits, not known architectural failures. Scripted regressi
 
 ## 4. Long-Task Priorities
 
-1. Align or harden Grep's file-selection rules, search cost, and regex execution bounds. This is the clearest remaining direct difference in evidence supplied to the model.
+1. Close Grep's residual gaps: native-engine delivery beyond win-x64 (source builds or additional prebuilts) and `head_limit` early exit without breaking deterministic ordering. Evidence supplied by the model on the delivered build now comes from real ripgrep semantics.
 2. Compare real long tasks with the same model and repository, including repeated search, compaction, stream interruption, delegation, and session resumption. Use failures to distinguish harness effects from model variation.
 3. Bound extreme image decode resources and validate the actual target-platform desktop/AOT artifacts.
 4. Add on-demand child-transcript navigation and structured historical sources where complex delegation or cross-session verification warrants them.
