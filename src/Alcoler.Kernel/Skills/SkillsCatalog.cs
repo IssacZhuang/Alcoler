@@ -17,31 +17,39 @@ public sealed record SkillInfo(
     string? Alias = null);
 
 /// <summary>
-/// Loads skills from {workspaceRoot}/.alcoler/skills and {userProfile}/.alcoler/skills.
-/// Workspace skills shadow user skills with the same name; malformed entries are skipped.
+/// Loads skills from {workspaceRoot}/.alcoler/skills, {workspaceRoot}/.agents/skills,
+/// {userProfile}/.alcoler/skills, and {userProfile}/.agents/skills. The two roots of a
+/// level are merged, not fallback; within a level .alcoler shadows .agents with the same
+/// name, and workspace shadows user. Malformed entries are skipped.
 /// </summary>
 public sealed class SkillsCatalog
 {
     private const string SkillFileName = "SKILL.md";
     private const string ListingHeader = "Available skills:";
+    private const string BrandDirectoryName = ".alcoler";
+    private const string AgentsDirectoryName = ".agents";
 
-    private readonly string _userSkillsRoot;
+    private readonly string _userSkillsBase;
 
-    public SkillsCatalog(string? userSkillsRoot = null) =>
-        _userSkillsRoot = userSkillsRoot ?? DefaultUserSkillsRoot();
+    public SkillsCatalog(string? userSkillsBase = null) =>
+        _userSkillsBase = userSkillsBase ?? DefaultUserSkillsBase();
 
-    public static string DefaultUserSkillsRoot() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".alcoler", "skills");
+    public static string DefaultUserSkillsBase() =>
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
     public IReadOnlyList<SkillInfo> Load(string workspaceRoot)
     {
         var byName = new Dictionary<string, SkillInfo>(StringComparer.OrdinalIgnoreCase);
-        foreach (var skill in LoadFrom(Path.Combine(workspaceRoot, ".alcoler", "skills"), SkillSource.Workspace))
+        foreach (var skill in LoadLevel(workspaceRoot, SkillSource.Workspace))
             byName.TryAdd(skill.Name, skill);
-        foreach (var skill in LoadFrom(_userSkillsRoot, SkillSource.User))
+        foreach (var skill in LoadLevel(_userSkillsBase, SkillSource.User))
             byName.TryAdd(skill.Name, skill);
         return [.. byName.Values];
     }
+
+    private static IEnumerable<SkillInfo> LoadLevel(string baseDirectory, SkillSource source) =>
+        new[] { BrandDirectoryName, AgentsDirectoryName }
+            .SelectMany(directoryName => LoadFrom(Path.Combine(baseDirectory, directoryName, "skills"), source));
 
     public static string RenderListing(IReadOnlyList<SkillInfo> skills)
     {

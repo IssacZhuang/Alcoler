@@ -34,6 +34,8 @@ public sealed class SessionRuntimeOptions
 
     public string? SkillsListing { get; init; }
 
+    public string? UserSkillsBase { get; init; }
+
     public string? ShellName { get; init; }
 
     public Func<ShellEnvironment?, ShellEnvironment>? ResolveShell { get; init; }
@@ -136,7 +138,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync);
         _subagentTasks = deps.Tools.Tools.OfType<ISubagentTasks>().FirstOrDefault();
         _auxModel = new SessionAuxModelClient(() => _record.ModelSelection ?? deps.Options.DefaultModel, deps.ResolveModel);
-        _skills = new SkillContentProvider(record.WorkspaceRoot);
+        _skills = new SkillContentProvider(record.WorkspaceRoot, deps.Options.UserSkillsBase);
         _lastActivityUtc = deps.Clock.GetUtcNow();
         _isGitRepository = RuntimeEnvironmentFacts.IsGitRepository(record.WorkspaceRoot);
         _gitSnapshotSection = deps.Options.GitSnapshot is { } snapshot && _isGitRepository
@@ -1456,7 +1458,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         var currentDate = EnvironmentSections.FormatLocalIsoDate(_deps.Clock.GetLocalNow().LocalDateTime);
         var media = await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
         var skillsListing = _deps.Tools.VisibleContracts.Any(tool => tool.Name == "Skill")
-            ? _deps.Options.SkillsListing ?? SkillsListing.Render(new SkillsCatalog().Load(_record.WorkspaceRoot))
+            ? _deps.Options.SkillsListing ?? SkillsListing.Render(new SkillsCatalog(_deps.Options.UserSkillsBase).Load(_record.WorkspaceRoot))
             : null;
         return ContextBuilder.Assemble(new ContextAssemblyInput(
             CliPrefix: PromptTexts.CliPrefix,

@@ -150,7 +150,7 @@ public class SkillsListingTests : IDisposable
             Body.
             """);
 
-        var catalog = new SkillsCatalog(userSkillsRoot: Path.Combine(_userRoot.Root, "skills"));
+        var catalog = new SkillsCatalog(userSkillsBase: _userRoot.Root);
         var skill = Assert.Single(catalog.Load(_workspaceRoot.Root));
 
         Assert.Equal("Use when the user wants research", skill.WhenToUse);

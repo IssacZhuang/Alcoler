@@ -159,6 +159,7 @@ public static class SubagentWiring
             ShellName = options.ShellName,
             ResolveShell = options.ResolveShell,
             GitSnapshotProvider = options.GitSnapshotProvider,
+            UserSkillsBase = options.UserSkillsBase,
         });
 
         var handle = await childRuntime.CreateSessionAsync(

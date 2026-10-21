@@ -17,7 +17,11 @@ public class SkillsCatalogTests : IDisposable
 
     private string WorkspaceSkills => Path.Combine(_workspaceRoot.Root, ".alcoler", "skills");
 
-    private string UserSkills => Path.Combine(_userRoot.Root, "skills");
+    private string WorkspaceAgentsSkills => Path.Combine(_workspaceRoot.Root, ".agents", "skills");
+
+    private string UserSkills => Path.Combine(_userRoot.Root, ".alcoler", "skills");
+
+    private string UserAgentsSkills => Path.Combine(_userRoot.Root, ".agents", "skills");
 
     private void WriteSkill(string skillsRoot, string name, string content)
     {
@@ -26,7 +30,7 @@ public class SkillsCatalogTests : IDisposable
         File.WriteAllText(Path.Combine(directory, "SKILL.md"), content);
     }
 
-    private SkillsCatalog Catalog() => new(userSkillsRoot: UserSkills);
+    private SkillsCatalog Catalog() => new(userSkillsBase: _userRoot.Root);
 
     [Fact]
     public void Load_ParsesFrontMatter()
@@ -117,6 +121,111 @@ public class SkillsCatalogTests : IDisposable
 
         var skill = Assert.Single(skills);
         Assert.Equal("workspace deploy", skill.Description);
+        Assert.Equal(SkillSource.Workspace, skill.Source);
+    }
+
+    [Fact]
+    public void Load_MergesAgentsRootsAtBothLevels()
+    {
+        WriteSkill(
+            WorkspaceAgentsSkills,
+            "ws-agents",
+            """
+            ---
+            name: ws-agents
+            description: workspace agents skill
+            ---
+            """);
+        WriteSkill(
+            UserAgentsSkills,
+            "user-agents",
+            """
+            ---
+            name: user-agents
+            description: user agents skill
+            ---
+            """);
+
+        var skills = Catalog().Load(_workspaceRoot.Root);
+
+        Assert.Equal(
+            [("ws-agents", SkillSource.Workspace), ("user-agents", SkillSource.User)],
+            skills.Select(skill => (skill.Name, skill.Source)));
+    }
+
+    [Fact]
+    public void Load_BrandRootShadowsAgentsRootWithSameNameWithinLevel()
+    {
+        WriteSkill(
+            WorkspaceSkills,
+            "deploy",
+            """
+            ---
+            name: deploy
+            description: workspace brand deploy
+            ---
+            """);
+        WriteSkill(
+            WorkspaceAgentsSkills,
+            "deploy",
+            """
+            ---
+            name: deploy
+            description: workspace agents deploy
+            ---
+            """);
+        WriteSkill(
+            UserSkills,
+            "report",
+            """
+            ---
+            name: report
+            description: user brand report
+            ---
+            """);
+        WriteSkill(
+            UserAgentsSkills,
+            "report",
+            """
+            ---
+            name: report
+            description: user agents report
+            ---
+            """);
+
+        var skills = Catalog().Load(_workspaceRoot.Root);
+
+        Assert.Equal(
+            [("deploy", "workspace brand deploy"), ("report", "user brand report")],
+            skills.Select(skill => (skill.Name, skill.Description)));
+    }
+
+    [Fact]
+    public void Load_WorkspaceAgentsShadowsUserBrand_WithSameName()
+    {
+        WriteSkill(
+            WorkspaceAgentsSkills,
+            "deploy",
+            """
+            ---
+            name: deploy
+            description: workspace agents deploy
+            ---
+            """);
+        WriteSkill(
+            UserSkills,
+            "deploy",
+            """
+            ---
+            name: deploy
+            description: user brand deploy
+            ---
+            """);
+
+        var skills = Catalog().Load(_workspaceRoot.Root);
+
+        var skill = Assert.Single(skills);
+        Assert.Equal("workspace agents deploy", skill.Description);
         Assert.Equal(SkillSource.Workspace, skill.Source);
     }
 

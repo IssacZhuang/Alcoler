@@ -13,9 +13,11 @@ public sealed class ComposerSkillCatalogTests : IDisposable
 
     private string WorkspaceSkills => Path.Combine(WorkspaceRoot, ".alcoler", "skills");
 
-    private string UserSkills => Path.Combine(_directory, "user", "skills");
+    private string UserBase => Path.Combine(_directory, "user");
 
-    private ComposerSkillCatalog Catalog() => new(new SkillsCatalog(userSkillsRoot: UserSkills));
+    private string UserSkills => Path.Combine(UserBase, ".alcoler", "skills");
+
+    private ComposerSkillCatalog Catalog() => new(new SkillsCatalog(userSkillsBase: UserBase));
 
     public void Dispose() => Directory.Delete(_directory, recursive: true);
 
@@ -53,7 +55,7 @@ public sealed class ComposerSkillCatalogTests : IDisposable
     {
         WriteSkill(UserSkills, "deploy", "User deployment.");
         var workspacePath = WriteSkill(WorkspaceSkills, "DEPLOY", "Workspace deployment.");
-        var scanner = new SkillsCatalog(userSkillsRoot: UserSkills);
+        var scanner = new SkillsCatalog(userSkillsBase: UserBase);
 
         var entry = Assert.Single(new ComposerSkillCatalog(scanner).GetEntries(WorkspaceRoot));
         var kernelEntry = Assert.Single(scanner.Load(WorkspaceRoot));
@@ -174,6 +176,6 @@ public sealed class ComposerSkillCatalogTests : IDisposable
         var entry = Assert.Single(Catalog().Query(WorkspaceRoot, "/coderev"));
 
         Assert.Equal("/CodeReview examine this diff", "/" + entry.Name + " examine this diff");
-        Assert.Equal("CodeReview", Assert.Single(new SkillsCatalog(userSkillsRoot: UserSkills).Load(WorkspaceRoot)).Name);
+        Assert.Equal("CodeReview", Assert.Single(new SkillsCatalog(userSkillsBase: UserBase).Load(WorkspaceRoot)).Name);
     }
 }

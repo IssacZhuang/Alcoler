@@ -73,6 +73,8 @@ public sealed class TestHarness : IAsyncDisposable
             WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
             DefaultModel = new ModelSelection("scripted", "test-model"),
             TodoStore = todoStore,
+            // Isolates the user skills level from the developer's real home directory.
+            UserSkillsBase = Path.Combine(root, "user-skills-base"),
             SubagentOutputRoot = Path.Combine(root, "agent-output"),
         });
         return runtime;
@@ -120,6 +122,8 @@ public sealed class TestHarness : IAsyncDisposable
             WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
             DefaultModel = new ModelSelection("scripted", "test-model"),
             TodoStore = todoStore,
+            // Isolates the user skills level from the developer's real home directory.
+            UserSkillsBase = Path.Combine(Root, "user-skills-base"),
             SubagentOutputRoot = Path.Combine(Root, "agent-output"),
         };
         runtime = new AgentRuntime(transform?.Invoke(options) ?? options);

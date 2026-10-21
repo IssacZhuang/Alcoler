@@ -52,6 +52,8 @@ public sealed record AgentRuntimeOptions
 
     public string? SkillsListing { get; init; }
 
+    public string? UserSkillsBase { get; init; }
+
     public ITodoStore? TodoStore { get; init; }
 
     public TimeProvider Clock { get; init; } = TimeProvider.System;
@@ -184,6 +186,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 ResolveShell = _options.ResolveShell,
                 GitSnapshot = _options.GitSnapshotProvider?.Invoke(record.WorkspaceRoot),
                 SkillsListing = _options.SkillsListing,
+                UserSkillsBase = _options.UserSkillsBase,
                 DefaultModel = _options.DefaultModel,
                 SessionTitleGenerationEnabled = _options.SessionTitleGenerationEnabled,
                 SessionTitleGenerationTimeout = _options.SessionTitleGenerationTimeout,
