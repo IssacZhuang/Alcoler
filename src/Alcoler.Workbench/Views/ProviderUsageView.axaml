@@ -35,7 +35,7 @@
 
     <StackPanel x:Name="PART_UsageBalance" Spacing="4" IsVisible="{Binding ShowBalance}">
       <TextBlock Text="{Binding BalanceText}" FontSize="{DynamicResource AlcolerFontLarge}"
-                 FontWeight="SemiBold" FontFamily="Consolas,Courier New,monospace"
+                 FontWeight="SemiBold" FontFamily="{DynamicResource AlcolerFontMonospace}"
                  Foreground="{DynamicResource AlcolerTextPrimary}" />
       <TextBlock Text="{Binding BalanceDetail}" IsVisible="{Binding HasBalanceDetail}" TextWrapping="Wrap"
                  FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
@@ -52,7 +52,7 @@
           <StackPanel Spacing="5" Margin="0,0,8,0" ToolTip.Tip="Remaining quota">
             <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"
                        FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
-            <TextBlock Text="{Binding PercentageText}" FontFamily="Consolas,Courier New,monospace"
+            <TextBlock Text="{Binding PercentageText}" FontFamily="{DynamicResource AlcolerFontMonospace}"
                        FontSize="{DynamicResource AlcolerFontLarge}" FontWeight="SemiBold"
                        Foreground="{DynamicResource AlcolerTextPrimary}" />
             <ProgressBar Minimum="0" Maximum="100" Value="{Binding MeterValue}" IsVisible="{Binding HasPercentage}"

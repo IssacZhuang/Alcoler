@@ -45,7 +45,7 @@
           <TextBlock Text="A" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center"
                      VerticalAlignment="Center" Foreground="{DynamicResource AlcolerBrandText}" />
         </Border>
-        <TextBlock Text="Alcoler" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
+        <TextBlock Text="Alcoler" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
       </StackPanel>
       <Button Grid.Column="1" Classes="icon tiny" Command="{Binding ToggleSidebarCommand}"
               ToolTip.Tip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar">
@@ -56,13 +56,13 @@
       <Button x:Name="PART_NewSession" Classes="sidebarAction" Click="OnNewSessionClick" AutomationProperties.Name="New task">
         <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
           <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconCirclePlus}" />
-          <TextBlock Grid.Column="1" Text="New task" FontSize="13" VerticalAlignment="Center" />
-          <TextBlock Grid.Column="2" Text="Ctrl+N" FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="1" Text="New task" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="2" Text="Ctrl+N" FontSize="{DynamicResource AlcolerFontXs}" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
       </Button>
     </StackPanel>
     <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="16,0,10,4">
-      <TextBlock Text="Projects" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+      <TextBlock Text="Projects" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
       <Button Grid.Column="1" Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions" AutomationProperties.Name="Refresh projects">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
       </Button>
@@ -71,16 +71,16 @@
       <Button x:Name="PART_Settings" Classes="sidebarAction" Click="OnSettingsClick" AutomationProperties.Name="Settings">
         <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSettings}" />
-          <TextBlock Grid.Column="1" Text="Preferences" FontSize="12" VerticalAlignment="Center" />
-          <TextBlock Grid.Column="2" Text="Ctrl+," FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="1" Text="Preferences" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="2" Text="Ctrl+," FontSize="{DynamicResource AlcolerFontXs}" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
       </Button>
     </Border>
     <Grid>
       <TextBlock x:Name="PART_SidebarEmpty" Text="No sessions yet" HorizontalAlignment="Center" VerticalAlignment="Top"
-                 Margin="0,20,0,0" FontSize="12" Foreground="{DynamicResource AlcolerTextTertiary}"
+                 Margin="0,20,0,0" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}"
                  IsVisible="{Binding Sidebar.Groups.Count, Converter={StaticResource AlcolerZeroToVisible}}" />
-      <TextBlock Text="Loading sessions..." FontSize="11" Margin="16,8" VerticalAlignment="Top"
+      <TextBlock Text="Loading sessions..." FontSize="{DynamicResource AlcolerFontSmall}" Margin="16,8" VerticalAlignment="Top"
                  Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding Sidebar.IsLoading}" />
       <ScrollViewer HorizontalScrollBarVisibility="Disabled" Padding="8,0,8,8">
         <ItemsControl ItemsSource="{Binding Sidebar.Groups}">
@@ -91,7 +91,7 @@
                   <Button Classes="groupHeader" Click="OnGroupClick" ToolTip.Tip="{Binding WorkspaceRoot}">
                     <Grid ColumnDefinitions="14,*,12" ColumnSpacing="8">
                       <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
-                      <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}" FontSize="13" TextTrimming="CharacterEllipsis"
+                      <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" TextTrimming="CharacterEllipsis"
                                  VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
                       <controls:Icon Grid.Column="2" Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}"
                             IsVisible="{Binding !IsExpanded}" Stroke="{DynamicResource AlcolerTextTertiary}" />
@@ -131,9 +131,9 @@
                               </controls:Icon.RenderTransform>
                             </controls:Icon>
                           </Grid>
-                          <TextBlock Grid.Column="1" Classes="sessionTitle" Text="{Binding DisplayTitle}" FontSize="13"
+                          <TextBlock Grid.Column="1" Classes="sessionTitle" Text="{Binding DisplayTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}"
                                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                          <TextBlock Grid.Column="2" Classes="sessionTime" Text="{Binding UpdatedAtText}" FontSize="11"
+                          <TextBlock Grid.Column="2" Classes="sessionTime" Text="{Binding UpdatedAtText}" FontSize="{DynamicResource AlcolerFontSmall}"
                                      VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
                         </Grid>
                       </Button>

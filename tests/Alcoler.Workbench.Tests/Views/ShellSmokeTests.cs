@@ -3,7 +3,9 @@ using Alcoler.Contracts.Projections;
 using Alcoler.Workbench.Stores;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.LogicalTree;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Media;
@@ -37,7 +39,9 @@ public sealed class ShellTestApp : Avalonia.Application
 
     public static Avalonia.AppBuilder BuildAvaloniaApp() =>
         Avalonia.AppBuilder.Configure<ShellTestApp>()
-            .UseHeadless(new AvaloniaHeadlessPlatformOptions());
+            .WithInterFont()
+            .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
+            .UseSkia();
 }
 
 public class ShellSmokeTests
@@ -70,6 +74,24 @@ public class ShellSmokeTests
         Assert.IsType<Workbench.Views.InteractionAreaView>(Assert.Single(window.GetVisualDescendants().OfType<Workbench.Views.InteractionAreaView>()));
         Assert.IsType<Workbench.Views.ComposerView>(Assert.Single(window.GetVisualDescendants().OfType<Workbench.Views.ComposerView>()));
         window.Close();
+    }
+
+    [AvaloniaFact]
+    public void DraftScreen_DoesNotShowStatusCardBeforeTheConversationStarts()
+    {
+        var runtime = new FakeAgentRuntime();
+        using var viewModel = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            var status = window.FindControl<Workbench.Views.ConversationStatusView>("SessionStatus")!;
+            Assert.Null(viewModel.Active);
+            Assert.True(viewModel.IsDraft);
+            Assert.False(status.IsVisible);
+        }
+        finally { window.Close(); }
     }
 
     [AvaloniaFact]
@@ -182,6 +204,74 @@ public class ShellSmokeTests
         }
 
         window.Close();
+    }
+
+    [AvaloniaFact]
+    public void Typography_UsesSourceGitFamiliesAndZCodeSizesInBothThemes()
+    {
+        using var viewModel = CreateWorkbench();
+        viewModel.Sidebar.ApplySummaries([
+            new SessionSummaryViewModel(NewId(), "Typography session", @"C:\ws\alpha", DateTimeOffset.UtcNow),
+        ]);
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            foreach (var theme in new[] { ThemeVariant.Dark, ThemeVariant.Light })
+            {
+                window.RequestedThemeVariant = theme;
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+                Assert.Equal(14, window.FontSize);
+                Assert.Equal("Inter", window.FontFamily.Name);
+                foreach (var (key, size) in new (string, double)[]
+                {
+                    ("AlcolerFontXs", 10), ("AlcolerFontSmall", 12), ("AlcolerFontCaption", 13),
+                    ("AlcolerFontBase", 14), ("AlcolerFontLarge", 16), ("AlcolerFontXLarge", 18),
+                })
+                {
+                    Assert.Equal(size, Assert.IsType<double>(window.FindResource(theme, key)));
+                }
+                var composer = window.FindControl<Workbench.Views.ComposerView>("MainComposer")!;
+                var input = composer.FindControl<TextBox>("InputBox")!;
+                Assert.Equal(14, input.FontSize);
+                Assert.Equal(20, input.LineHeight);
+                Assert.Equal("JetBrains Mono", input.FontFamily.Name);
+                Assert.Equal(14, composer.FindControl<TextBlock>("ModelLabel")!.FontSize);
+                Assert.Equal(14, composer.FindControl<TextBlock>("StatusTriggerText")!.FontSize);
+                var title = Assert.Single(window.GetVisualDescendants().OfType<TextBlock>(),
+                    block => block.Classes.Contains("sessionTitle"));
+                var time = Assert.Single(window.GetVisualDescendants().OfType<TextBlock>(),
+                    block => block.Classes.Contains("sessionTime"));
+                Assert.Equal(14, title.FontSize);
+                Assert.Equal("JetBrains Mono", title.FontFamily.Name);
+                Assert.Equal(12, time.FontSize);
+                var terminal = Assert.Single(window.GetLogicalDescendants().OfType<Workbench.Views.TerminalView>());
+                var surface = terminal.FindControl<Workbench.Views.TerminalSurface>("Surface")!;
+                Assert.Equal(13, surface.FontSize);
+                Assert.Equal("JetBrains Mono", surface.FontFamily.Name);
+                foreach (var key in new[] { "AlcolerFontPrimary", "AlcolerFontMonospace" })
+                {
+                    var family = Assert.IsType<FontFamily>(window.FindResource(theme, key));
+                    Assert.Equal("JetBrains Mono", family.Name);
+                    foreach (var (weight, style) in new[]
+                    {
+                        (FontWeight.Normal, FontStyle.Normal), (FontWeight.Bold, FontStyle.Normal),
+                        (FontWeight.Normal, FontStyle.Italic),
+                    })
+                    {
+                        Assert.True(FontManager.Current.TryGetGlyphTypeface(new Typeface(family, style, weight), out var glyph));
+                        Assert.Equal("JetBrains Mono", glyph.FamilyName);
+                        Assert.Equal(weight, glyph.Weight);
+                        Assert.Equal(style, glyph.Style);
+                        Assert.Equal(FontSimulations.None, glyph.FontSimulations);
+                        Assert.True(glyph.TryGetTable(0x6E616D65u, out var nameTable));
+                        Assert.NotEmpty(nameTable);
+                    }
+                }
+            }
+        }
+        finally { window.Close(); }
     }
 
     [AvaloniaFact]

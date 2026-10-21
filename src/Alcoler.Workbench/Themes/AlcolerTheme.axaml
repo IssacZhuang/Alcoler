@@ -198,6 +198,10 @@
   <x:Double x:Key="AlcolerSpacingLarge">12</x:Double>
   <x:Double x:Key="AlcolerSpacingXLarge">16</x:Double>
 
+  <FontFamily x:Key="AlcolerFontDefault">fonts:Inter#Inter</FontFamily>
+  <FontFamily x:Key="AlcolerFontPrimary">avares://Alcoler.Workbench/Assets/Fonts#JetBrains Mono</FontFamily>
+  <FontFamily x:Key="AlcolerFontMonospace">avares://Alcoler.Workbench/Assets/Fonts#JetBrains Mono</FontFamily>
+
   <x:Double x:Key="AlcolerFontXs">10</x:Double>
   <x:Double x:Key="AlcolerFontSmall">12</x:Double>
   <x:Double x:Key="AlcolerFontCaption">13</x:Double>

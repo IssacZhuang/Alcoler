@@ -111,9 +111,9 @@
       <Setter Property="MaxWidth" Value="576" />
     </Style>
     <Style Selector="SelectableTextBlock.mono">
-      <Setter Property="FontFamily" Value="Consolas, JetBrains Mono" />
-      <Setter Property="FontSize" Value="12" />
-      <Setter Property="LineHeight" Value="19" />
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="LineHeight" Value="20" />
       <Setter Property="TextWrapping" Value="NoWrap" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
@@ -125,7 +125,7 @@
       <Setter Property="Padding" Value="12,10" />
     </Style>
     <Style Selector="TextBlock.caption">
-      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
     </Style>
     <Style Selector="controls|Icon.conversationIcon">
@@ -159,7 +159,7 @@
       <Setter Property="Opacity" Value="1" />
     </Style>
     <Style Selector="TextBlock.toolStatus">
-      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
     </Style>
     <Style Selector="TextBlock.toolStatus.error">
@@ -241,7 +241,7 @@
   <Grid>
     <ScrollViewer x:Name="TimelineScroll" HorizontalScrollBarVisibility="Disabled"
                   VerticalScrollBarVisibility="Visible" AllowAutoHide="False">
-      <controls:ConversationLayout x:Name="TimelineLayout" Padding="16,56,16,20" UseResponsiveHorizontalPadding="True">
+      <controls:ConversationLayout x:Name="TimelineLayout" Padding="16,20,16,20" UseResponsiveHorizontalPadding="True">
         <StackPanel MinWidth="0" HorizontalAlignment="Stretch">
           <ItemsControl x:Name="TimelineItems" ItemsSource="{Binding Items}" Background="Transparent">
             <ItemsControl.ItemsPanel>
@@ -264,7 +264,8 @@
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="14" LineHeight="24.5"
+                    <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                                         FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
                                          IsVisible="{Binding !!Text}" Foreground="{DynamicResource AlcolerTextPrimary}" />
                   </StackPanel>
                 </Border>
@@ -282,7 +283,8 @@
                     <Border Classes="reasoningDetails" Margin="8,12,0,0" Padding="14,0,0,0"
                             BorderThickness="1,0,0,0" BorderBrush="{DynamicResource AlcolerBorder}">
                       <ScrollViewer MaxHeight="240" HorizontalScrollBarVisibility="Disabled">
-                        <SelectableTextBlock TextWrapping="Wrap" FontSize="14" LineHeight="24.5"
+                        <SelectableTextBlock TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                                             FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
                                              Foreground="{DynamicResource AlcolerTextSecondary}"
                                              Text="{Binding ReasoningBlocks, Converter={x:Static conv:TimelineConverters.JoinLines}}" />
                       </ScrollViewer>
@@ -308,7 +310,7 @@
                       <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                         <TextBlock Classes="toolStatus" Classes.error="{Binding HasError}" Text="{Binding DisplayStatusText}"
                                    IsVisible="{Binding ShowStatus}" />
-                        <TextBlock Text="{Binding DurationText}" FontSize="11" VerticalAlignment="Center"
+                        <TextBlock Text="{Binding DurationText}" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
                                    Foreground="{DynamicResource AlcolerTextSecondary}"
                                    AutomationProperties.Name="{Binding AccessibleDurationText}" ToolTip.Tip="{Binding AccessibleDurationText}"
                                    IsVisible="{Binding DurationText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
@@ -348,7 +350,7 @@
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                           <TextBlock Classes="caption" Text="Output" VerticalAlignment="Center" />
                           <Button Grid.Column="1" Classes="ghost openToolOutput" Content="Open in side panel"
-                                  Click="OnOpenToolOutputClick" Padding="6,2" FontSize="11" />
+                                  Click="OnOpenToolOutputClick" Padding="6,2" FontSize="{DynamicResource AlcolerFontBase}" />
                         </Grid>
                         <Border Classes="monoPane"
                                 IsVisible="{Binding ToolName, Converter={x:Static conv:TimelineConverters.TerminalTool}}">
@@ -392,7 +394,7 @@
                 <Ellipse Width="6" Height="6" HorizontalAlignment="Center" VerticalAlignment="Center"
                          Fill="{Binding PhaseText, Converter={StaticResource AlcolerPhaseBrush}}" IsVisible="{Binding !IsWorking}" />
               </Grid>
-              <TextBlock Text="{Binding ActivityText}" FontSize="13" FontWeight="Medium" VerticalAlignment="Center"
+              <TextBlock Text="{Binding ActivityText}" FontSize="{DynamicResource AlcolerFontBase}" FontWeight="Medium" VerticalAlignment="Center"
                          Foreground="{DynamicResource AlcolerTextPrimary}" />
             </StackPanel>
           </Border>

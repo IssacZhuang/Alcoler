@@ -97,6 +97,12 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
     public string AgentCountText => EndedAgents.Count == 0
         ? Agents.Count.ToString()
         : $"{Agents.Count}/{Agents.Count + EndedAgents.Count}";
+    public bool HasRunningActivities => Terminals.Count > 0 || Agents.Count > 0;
+    public string RunningActivityCountText => (Terminals.Count + Agents.Count) switch
+    {
+        1 => "1 running",
+        var count => $"{count} running",
+    };
 
     public void ApplyUpdate(ProjectionUpdate update)
     {
@@ -231,20 +237,35 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         SetList(ref _endedAgents, ended, nameof(EndedAgents));
         OnPropertyChanged(nameof(HasAgents));
         OnPropertyChanged(nameof(AgentCountText));
+        OnPropertyChanged(nameof(HasRunningActivities));
+        OnPropertyChanged(nameof(RunningActivityCountText));
         UpdateSummary();
     }
 
-    public bool StopActivity(StatusActivity activity)
+    public async Task<bool> StopActivityAsync(StatusActivity activity)
     {
-        if (_disposed || _activities is null || !activity.CanStop || activity.BackgroundJobId is not { } id
-            || !Terminals.Any(terminal => terminal.BackgroundJobId == id && terminal.CanStop)
-            || !_activities.GetBackgroundJobs(_sessionId).Any(job => job.Id == id && job.Status == BackgroundJobStatus.Running))
+        if (_disposed || _activities is null || !activity.CanStop)
         {
             return false;
         }
-        var stopped = _activities.StopBackgroundJob(_sessionId, id);
+        if (activity.BackgroundJobId is { } id)
+        {
+            if (!Terminals.Any(terminal => terminal.BackgroundJobId == id && terminal.CanStop)
+                || !_activities.GetBackgroundJobs(_sessionId).Any(job => job.Id == id && job.Status == BackgroundJobStatus.Running))
+            {
+                return false;
+            }
+            var stopped = _activities.StopBackgroundJob(_sessionId, id);
+            RefreshActivities();
+            return stopped;
+        }
+        if (activity.ChildSessionId is null)
+        {
+            return false;
+        }
+        var agentStopped = await _activities.TryStopSubagentAsync(_sessionId, activity.Id);
         RefreshActivities();
-        return stopped;
+        return agentStopped;
     }
 
     public void Dispose()
@@ -466,6 +487,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
             DurationText = FormatDuration(agent.StartedAt, agent.EndedAt ?? now),
             StatusText = agent.Status.ToString(),
             OutputText = agent.ResultSummary,
+            CanStop = agent.Status == SubagentStatus.Running,
         };
     }
 

@@ -36,6 +36,7 @@ public partial class MainWindow : Window
         };
         ConversationArea.SizeChanged += (_, _) => ApplyConversationOverlays();
         SessionStatus.DisplayModeChanged += (_, _) => ApplyConversationOverlays();
+        MainComposer.StatusRequested += () => SessionStatus.ExpandAndOpenRunningSections();
         SessionStatus.ReviewRequested += () => _viewModel?.ShowGitPaneCommand.Execute(null);
         SessionStatus.PlanRequested += plan => _viewModel?.OpenStatusPlan(plan);
         SessionStatus.ActivityRequested += async activity =>

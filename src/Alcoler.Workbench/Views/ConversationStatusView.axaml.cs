@@ -45,6 +45,23 @@ public partial class ConversationStatusView : UserControl
 
     public event EventHandler? DisplayModeChanged;
 
+    public void ExpandAndOpenRunningSections()
+    {
+        if (ViewModel?.HasContent != true)
+        {
+            return;
+        }
+        SetCurrentValue(ExpandedOverrideProperty, true);
+        if (ViewModel.Terminals.Count > 0)
+        {
+            TerminalsSection.IsExpanded = true;
+        }
+        if (ViewModel.Agents.Count > 0)
+        {
+            AgentsSection.IsExpanded = true;
+        }
+    }
+
     public double ConversationWidth
     {
         get => GetValue(ConversationWidthProperty);
@@ -96,7 +113,6 @@ public partial class ConversationStatusView : UserControl
         AgentsSection.IsExpanded = false;
         _terminalCount = 0;
         _agentCount = 0;
-        SetCurrentValue(ExpandedOverrideProperty, null);
         StatusScroll.Offset = default;
         UpdateContentState();
         RefreshVisibleActivities();
@@ -281,11 +297,11 @@ public partial class ConversationStatusView : UserControl
         }
     }
 
-    private void OnStopActivityClick(object? sender, RoutedEventArgs e)
+    private async void OnStopActivityClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Control { DataContext: StatusActivity { CanStop: true } activity })
         {
-            ViewModel?.StopActivity(activity);
+            await ViewModel!.StopActivityAsync(activity);
             e.Handled = true;
         }
     }

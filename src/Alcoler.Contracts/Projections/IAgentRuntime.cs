@@ -25,6 +25,8 @@ public interface ISessionActivityRuntime
 
     bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId);
 
+    ValueTask<bool> TryStopSubagentAsync(SessionId sessionId, string taskId) => ValueTask.FromResult(false);
+
     SessionActivitySnapshot? GetSessionActivity(SessionId sessionId) => null;
 
     event Action<SessionId>? SessionActivityChanged

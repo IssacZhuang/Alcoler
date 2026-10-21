@@ -322,7 +322,7 @@
                                       <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1" Padding="0,8">
                                         <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="6">
                                           <StackPanel Spacing="5" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding ModelId}" FontFamily="monospace" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ModelId}" AutomationProperties.Name="Model ID" />
+                                            <TextBlock Text="{Binding ModelId}" FontFamily="{DynamicResource AlcolerFontMonospace}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ModelId}" AutomationProperties.Name="Model ID" />
                                             <StackPanel Orientation="Horizontal" Spacing="7">
                                               <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="4" Padding="4,1" ToolTip.Tip="{Binding ContextDescription}">
                                                 <TextBlock Text="{Binding ContextBadge}" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />

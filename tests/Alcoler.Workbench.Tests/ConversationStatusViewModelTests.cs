@@ -271,7 +271,7 @@ public sealed class ConversationStatusViewModelTests
     }
 
     [Fact]
-    public void Terminals_OnlyForegroundPendingOrRunningBash_WithOutputAndNoGenericStop()
+    public async Task Terminals_OnlyForegroundPendingOrRunningBash_WithOutputAndNoGenericStop()
     {
         var runtime = new FakeAgentRuntime();
         using var model = new ConversationStatusViewModel(Session, runtime);
@@ -298,7 +298,7 @@ public sealed class ConversationStatusViewModelTests
         Assert.Equal("Running", activity.StatusText);
         Assert.False(activity.CanStop);
         Assert.Null(activity.BackgroundJobId);
-        Assert.False(model.StopActivity(activity));
+        Assert.False(await model.StopActivityAsync(activity));
         Assert.Empty(runtime.Submitted);
         Assert.Equal("pwd", model.Terminals[1].Title);
         Assert.Equal("Pending", model.Terminals[1].StatusText);
@@ -326,7 +326,7 @@ public sealed class ConversationStatusViewModelTests
     }
 
     [Fact]
-    public void DetachedJobs_AreLiveAuthoritativeAndSessionScoped()
+    public async Task DetachedJobs_AreLiveAuthoritativeAndSessionScoped()
     {
         var runtime = new ActivityRuntime();
         var other = new SessionId("other");
@@ -347,8 +347,8 @@ public sealed class ConversationStatusViewModelTests
         Assert.Equal("running", activity.Title);
         Assert.Equal("1m 0s", activity.DurationText);
         Assert.True(activity.CanStop);
-        Assert.False(model.StopActivity(Assert.Single(otherModel.Terminals)));
-        Assert.True(model.StopActivity(activity));
+        Assert.False(await model.StopActivityAsync(Assert.Single(otherModel.Terminals)));
+        Assert.True(await model.StopActivityAsync(activity));
         Assert.Equal((Session, running.Id), Assert.Single(runtime.Stops));
         Assert.Empty(model.Terminals);
         Assert.Single(otherModel.Terminals);
@@ -356,7 +356,7 @@ public sealed class ConversationStatusViewModelTests
     }
 
     [Fact]
-    public void DetachedJobs_CompletedRowDoesNotResurrectJob_AndStaleStopIsRejected()
+    public async Task DetachedJobs_CompletedRowDoesNotResurrectJob_AndStaleStopIsRejected()
     {
         var runtime = new ActivityRuntime();
         var job = Job("job", BackgroundJobStatus.Running);
@@ -367,7 +367,7 @@ public sealed class ConversationStatusViewModelTests
         var stale = Assert.Single(model.Terminals);
 
         runtime.Jobs[Session] = [job with { Status = BackgroundJobStatus.Completed }];
-        Assert.False(model.StopActivity(stale));
+        Assert.False(await model.StopActivityAsync(stale));
         Assert.Empty(runtime.Stops);
         model.RefreshActivities(Now.AddMinutes(1));
         Assert.False(model.HasTerminals);
@@ -387,6 +387,7 @@ public sealed class ConversationStatusViewModelTests
         Assert.Equal(2, model.Agents.Count);
         Assert.Empty(model.EndedAgents);
         Assert.Equal("2", model.AgentCountText);
+        Assert.All(model.Agents, agent => Assert.True(agent.CanStop));
         Assert.Equal("2 agents running", model.SummaryText);
 
         var ended = Agent("end", "one", SubagentStatus.Completed);
@@ -449,6 +450,23 @@ public sealed class ConversationStatusViewModelTests
         Assert.Equal("1/4", model.AgentCountText);
         Apply(model, new RowUpserted(latest[0]));
         Assert.Equal("1/4", model.AgentCountText);
+    }
+
+    [Fact]
+    public async Task RunningAgents_StopThroughTheSessionRuntimeScopedToTheirSession()
+    {
+        var runtime = new ActivityRuntime();
+        using var model = new ConversationStatusViewModel(Session, runtime);
+        Reset(model, Agent("agent", "one", SubagentStatus.Running));
+        model.RefreshActivities(Now);
+        var activity = Assert.Single(model.Agents);
+        Assert.True(activity.CanStop);
+
+        Assert.True(await model.StopActivityAsync(activity));
+        Assert.Equal((Session, "one"), Assert.Single(runtime.AgentStops));
+        runtime.AgentStopResult = false;
+        Assert.False(await model.StopActivityAsync(activity));
+        Assert.Equal(2, runtime.AgentStops.Count);
     }
 
     [Theory]
@@ -670,7 +688,7 @@ public sealed class ConversationStatusViewModelTests
     }
 
     [Fact]
-    public void DisposedModel_DoesNotApplyUpdatesRefreshOrStopJobs()
+    public async Task DisposedModel_DoesNotApplyUpdatesRefreshOrStopJobs()
     {
         var runtime = new ActivityRuntime();
         runtime.Jobs[Session] = [Job("running", BackgroundJobStatus.Running)];
@@ -682,7 +700,7 @@ public sealed class ConversationStatusViewModelTests
 
         Reset(model, Todo("todos", ("Task", "pending")));
         model.RefreshActivities(Now);
-        Assert.False(model.StopActivity(activity));
+        Assert.False(await model.StopActivityAsync(activity));
         Assert.False(model.HasTodos);
         Assert.Equal(queries, runtime.Queries);
         Assert.Empty(runtime.Stops);
@@ -726,7 +744,15 @@ public sealed class ConversationStatusViewModelTests
         public FakeAgentRuntime Inner { get; } = new();
         public Dictionary<SessionId, IReadOnlyList<BackgroundJobInfo>> Jobs { get; } = [];
         public List<(SessionId SessionId, BackgroundJobId JobId)> Stops { get; } = [];
+        public List<(SessionId SessionId, string TaskId)> AgentStops { get; } = [];
+        public bool AgentStopResult { get; set; } = true;
         public int Queries { get; private set; }
+
+        public ValueTask<bool> TryStopSubagentAsync(SessionId sessionId, string taskId)
+        {
+            AgentStops.Add((sessionId, taskId));
+            return ValueTask.FromResult(AgentStopResult);
+        }
 
         public IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId)
         {

@@ -249,7 +249,7 @@ public sealed class ConversationStatusViewTests
     }
 
     [AvaloniaFact]
-    public async Task ContextChange_ResetsManualDisplayOverrideAndSectionDefaults()
+    public async Task ContextChange_ResetsSectionDefaults_AndPreservesManualDisplayOverride()
     {
         using var harness = new Harness(1400, FullRows());
         harness.Model.BindGit(CreateGit());
@@ -266,8 +266,8 @@ public sealed class ConversationStatusViewTests
         replacement.BindGit(CreateGit());
         harness.View.DataContext = replacement;
         await RenderAsync(harness.Window);
-        Assert.Null(harness.View.ExpandedOverride);
-        Assert.True(harness.View.IsExpanded);
+        Assert.Equal(false, harness.View.ExpandedOverride);
+        Assert.False(harness.View.IsExpanded);
         AssertSections(harness.View, git: true, plans: true, progress: true, terminals: false, agents: false);
 
         await harness.ResizeConversationAsync(900);
@@ -275,14 +275,14 @@ public sealed class ConversationStatusViewTests
         Assert.Equal(true, harness.View.ExpandedOverride);
         harness.View.DataContext = harness.CreateModel(Todo("new-session", "New conversation"));
         await RenderAsync(harness.Window);
-        Assert.Null(harness.View.ExpandedOverride);
-        Assert.False(harness.View.IsExpanded);
+        Assert.Equal(true, harness.View.ExpandedOverride);
+        Assert.True(harness.View.IsExpanded);
         Assert.Equal("New conversation", harness.Model.SummaryText);
 
         Reset(previous);
         await RenderAsync(harness.Window);
         Assert.True(harness.View.IsVisible);
-        Assert.False(harness.View.IsExpanded);
+        Assert.True(harness.View.IsExpanded);
     }
 
     [AvaloniaFact]

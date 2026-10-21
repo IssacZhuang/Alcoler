@@ -156,7 +156,7 @@
                 <controls:ConversationMarkdown x:Name="QuestionPreview" Markdown="{Binding ActivePreview}">
                   <controls:ConversationMarkdown.Styles>
                     <Style Selector="ct|CTextBlock">
-                      <Setter Property="FontFamily" Value="Consolas, JetBrains Mono" />
+                      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
                     </Style>
                   </controls:ConversationMarkdown.Styles>
                 </controls:ConversationMarkdown>

@@ -34,7 +34,7 @@
       </Grid>
     </Border>
     <TextBlock DockPanel.Dock="Bottom" Margin="12,4" Text="{Binding Language, StringFormat='Read-only · {0}'}"
-               FontSize="11" Foreground="{DynamicResource AlcolerTextTertiary}" />
+               FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
     <TextBlock DockPanel.Dock="Top" Text="Loading file..." IsVisible="{Binding IsLoading}" Margin="12,8"
                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
     <Border DockPanel.Dock="Top" Margin="12" Padding="10" BorderBrush="{DynamicResource AlcolerError}"
@@ -46,7 +46,7 @@
     <ScrollViewer x:Name="PART_DocumentScroll" HorizontalScrollBarVisibility="{Binding HorizontalScrollMode}"
                   VerticalScrollBarVisibility="Auto" Padding="12">
       <SelectableTextBlock x:Name="PART_DocumentText" Text="{Binding Text}" TextWrapping="{Binding TextWrapping}"
-                           FontFamily="Consolas, JetBrains Mono, monospace" FontSize="12"
+                           FontFamily="{DynamicResource AlcolerFontMonospace}" FontSize="12"
                            Foreground="{DynamicResource AlcolerTextPrimary}" />
     </ScrollViewer>
   </DockPanel>

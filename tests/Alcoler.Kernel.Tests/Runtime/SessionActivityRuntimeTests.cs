@@ -6,6 +6,7 @@ using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tests.EndToEnd;
@@ -169,6 +170,67 @@ public class SessionActivityRuntimeTests
 
             await runtime.DisposeAsync();
             Assert.Null(activity.TryObserveSubagent(parent.Id, state.ChildSessionId));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task SubagentStop_StopsTheTargetedRunningChildAndReportsCancelledState()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new FakeTool("WaitForRelease", execute: async (_, ct) =>
+        {
+            started.TrySetResult();
+            await release.Task.WaitAsync(ct);
+            return ToolExecutionResult.Text("released");
+        });
+        // The stopped child never makes a second model call, so the parent's single
+        // post-tool-call response is the terminal reply.
+        await using var harness = TestHarness.Create(
+            new ScriptStep.Events(
+                new ModelToolCallReady(new ToolCall(StrongId.NewToolCallId(), "Agent",
+                    JsonSerializer.SerializeToElement(new { prompt = "Read the workspace", description = "reader" }))),
+                new ModelStreamFinished(ModelFinishReason.ToolCalls)),
+            new ScriptStep.Events(
+                new ModelTextDelta("Current child text"),
+                new ModelToolCallReady(new ToolCall(StrongId.NewToolCallId(), "WaitForRelease", JsonSerializer.SerializeToElement(new { }))),
+                new ModelStreamFinished(ModelFinishReason.ToolCalls)),
+            Reply());
+        await using var runtime = harness.BuildRuntime(gate);
+        var activity = Assert.IsAssignableFrom<ISessionActivityRuntime>(runtime);
+        var parent = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: Contracts.Permissions.PermissionMode.Yolo), CancellationToken.None);
+        using var parentProjection = runtime.Subscribe(parent.Id);
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), parent.Id, 0, "delegate"), CancellationToken.None);
+        Assert.True(ack.Accepted);
+
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            SubagentState CurrentState()
+            {
+                using var projection = runtime.Subscribe(parent.Id);
+                var state = Assert.Single(projection.Snapshot().Rows.OfType<SystemNoticeRow>(),
+                    row => row.Kind == "subagent").Subagent;
+                Assert.NotNull(state);
+                return state;
+            }
+
+            var state = CurrentState();
+            Assert.False(await activity.TryStopSubagentAsync(StrongId.NewSessionId(), state.Id.Value));
+            Assert.False(await activity.TryStopSubagentAsync(parent.Id, "missing-task"));
+            Assert.True(await activity.TryStopSubagentAsync(parent.Id, state.Id.Value));
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (CurrentState().Status != Contracts.Subagents.SubagentStatus.Cancelled)
+                await Task.Delay(10, timeout.Token);
+            await WaitForRepliesAsync(parentProjection, 1);
+            Assert.False(await activity.TryStopSubagentAsync(parent.Id, state.Id.Value));
         }
         finally
         {

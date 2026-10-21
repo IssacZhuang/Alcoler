@@ -13,6 +13,7 @@
     <Application.Styles>
         <FluentTheme />
         <Style Selector="Window">
+            <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontDefault}" />
             <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
             <Setter Property="Background" Value="{DynamicResource AlcolerBackground}" />
         </Style>
@@ -184,7 +185,7 @@
             <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
             <Setter Property="Padding" Value="8,4" />
             <Setter Property="MinHeight" Value="28" />
-            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
             <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
@@ -202,7 +203,7 @@
         </Style>
         <Style Selector="ComboBoxItem">
             <Setter Property="Padding" Value="10,6" />
-            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+            <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
         </Style>
 
         <Style Selector="RadioButton.segment">

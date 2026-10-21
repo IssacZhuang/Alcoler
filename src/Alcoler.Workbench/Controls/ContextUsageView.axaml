@@ -28,7 +28,7 @@
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" Margin="0,0,0,4">
               <TextBlock Text="Context capacity" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource AlcolerTextPrimary}" />
               <TextBlock x:Name="ContextSummary" Grid.Column="1" Text="{Binding Summary}" FontSize="12"
-                         FontFamily="monospace" HorizontalAlignment="Right" VerticalAlignment="Center"
+                         FontFamily="{DynamicResource AlcolerFontMonospace}" HorizontalAlignment="Right" VerticalAlignment="Center"
                          Foreground="{DynamicResource AlcolerTextSecondary}" />
             </Grid>
             <controls:ContextUsageProgress x:Name="ContextProgress" Height="8" Usage="{Binding}" />
@@ -45,7 +45,7 @@
                           Background="{DynamicResource AlcolerInfo}" Opacity="{Binding ToneOpacity}" />
                   <TextBlock Grid.Column="1" Text="{Binding Label}" FontSize="12" TextTrimming="CharacterEllipsis"
                              Foreground="{DynamicResource AlcolerTextSecondary}" />
-                  <TextBlock Grid.Column="2" Text="{Binding PercentText}" FontSize="12" FontFamily="monospace"
+                  <TextBlock Grid.Column="2" Text="{Binding PercentText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"
                              MinWidth="40" TextAlignment="Right" Foreground="{DynamicResource AlcolerTextPrimary}" />
                 </Grid>
               </DataTemplate>
@@ -55,7 +55,7 @@
                   BorderBrush="{DynamicResource AlcolerBorder}" Padding="0,12,0,0">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
               <TextBlock Text="Cache hit rate" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
-              <TextBlock Grid.Column="1" Text="{Binding CacheHitRateText}" FontSize="12" FontFamily="monospace"
+              <TextBlock Grid.Column="1" Text="{Binding CacheHitRateText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"
                          Foreground="{DynamicResource AlcolerTextPrimary}" />
             </Grid>
           </Border>

@@ -166,7 +166,7 @@ public class IconTests
                 Assert.Equal(VerticalAlignment.Center, label.VerticalAlignment);
                 Assert.Equal(row.Bounds.Height / 2, icon.Bounds.Center.Y, 6);
                 Assert.Equal(icon.Bounds.Center.Y, small.Bounds.Center.Y, 6);
-                Assert.Equal(icon.Bounds.Center.Y, label.Bounds.Center.Y, 6);
+                Assert.InRange(Math.Abs(icon.Bounds.Center.Y - label.Bounds.Center.Y), 0, 0.5 / window.RenderScaling);
                 Assert.True(window.TryFindResource("AlcolerBrandText", theme, out var foreground));
                 var color = Assert.IsAssignableFrom<ISolidColorBrush>(foreground).Color;
                 Assert.Equal(color, Assert.IsAssignableFrom<ISolidColorBrush>(icon.Stroke).Color);

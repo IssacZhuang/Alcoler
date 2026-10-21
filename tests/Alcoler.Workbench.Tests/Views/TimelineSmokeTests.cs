@@ -116,6 +116,7 @@ public class TimelineSmokeTests
                 Assert.Equal(new CornerRadius(12, 2, 12, 12), bubble.CornerRadius);
                 Assert.Equal(TextWrapping.Wrap, user.TextWrapping);
                 Assert.Equal(14, user.FontSize);
+                Assert.Equal("JetBrains Mono", user.FontFamily.Name);
                 Assert.Equal(24.5, user.LineHeight);
                 Assert.Equal(text, user.Text);
                 var paneWidth = layout.Bounds.Width;
@@ -127,7 +128,7 @@ public class TimelineSmokeTests
                 Assert.InRange(items.Bounds.Width, sectionWidth - padding * 2 - 1, sectionWidth - padding * 2 + 1);
                 var expectedLeft = (paneWidth - sectionWidth) / 2 + padding;
                 Assert.InRange(origin.X, expectedLeft - 1, expectedLeft + 1);
-                Assert.InRange(origin.Y, 55, 57);
+                Assert.InRange(origin.Y, 19, 21);
                 Assert.Equal(20, layout.Padding.Bottom);
                 if (paneWidth >= 624)
                 {
@@ -155,24 +156,31 @@ public class TimelineSmokeTests
     }
 
     [AvaloniaFact]
-    public void ConversationLayout_InheritedStatusReservationShiftsWideContentOnly()
+    public void ConversationLayout_InheritedStatusReservationShiftsWideContentViaTransform()
     {
         var child = new Border { Height = 32 };
         var layout = new ConversationLayout { Child = child, Padding = new Thickness(16, 0) };
+        layout.Transitions = null;
         var parent = new Grid { Children = { layout } };
         var window = new Window { Content = parent, Width = 1400, Height = 200 };
         window.Show();
         try
         {
             Pump();
-            var initial = child.Bounds.X;
+            var transform = Assert.IsType<TranslateTransform>(layout.RenderTransform);
+            Assert.Equal(0, transform.X);
+            Assert.Equal(0, layout.TargetStatusPanelShift);
+            var centered = child.Bounds.X;
             ConversationLayout.SetReserveStatusPanelSpace(parent, true);
             Pump();
-            Assert.Equal(initial - 168, child.Bounds.X, 1);
             Assert.True(ConversationLayout.GetReserveStatusPanelSpace(layout));
+            Assert.Equal(-168, layout.TargetStatusPanelShift);
+            Assert.Equal(-168, transform.X);
+            Assert.Equal(centered, child.Bounds.X, 1);
             ConversationLayout.SetReserveStatusPanelSpace(parent, false);
             Pump();
-            Assert.Equal(initial, child.Bounds.X, 1);
+            Assert.Equal(0, layout.TargetStatusPanelShift);
+            Assert.Equal(0, transform.X);
             window.Width = 900;
             Pump();
             var narrow = child.Bounds.X;
@@ -184,8 +192,8 @@ public class TimelineSmokeTests
             ConversationLayout.SetReserveStatusPanelSpace(parent, true);
             Pump();
             Assert.True(layout.Bounds.Width < 1280);
-            Assert.Equal(withScrollbar - 168, child.Bounds.X, 1);
-            Assert.True(child.Bounds.X >= 0);
+            Assert.Equal(-168, layout.TargetStatusPanelShift);
+            Assert.Equal(withScrollbar, child.Bounds.X, 1);
         }
         finally { window.Close(); }
     }
@@ -494,8 +502,11 @@ public class TimelineSmokeTests
             AssertHeaderDuration(button, duration);
             Assert.Contains(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
                 block => block.IsEffectivelyVisible && block.Text == toolItem.InputJson);
-            Assert.Contains(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
+            var output = Assert.Single(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
                 block => block.IsEffectivelyVisible && block.Text == "updated tool output");
+            Assert.Equal(14, output.FontSize);
+            Assert.Equal(20, output.LineHeight);
+            Assert.Equal("JetBrains Mono", output.FontFamily.Name);
 
             viewModel.ApplyUpdate(new ProjectionUpdate(4, TestSnapshots.State(),
                 [new RowUpserted(updated with { Output = [new ToolResultText("final tool output")] })], Reset: false));
@@ -1088,7 +1099,7 @@ public class TimelineSmokeTests
                 Assert.Equal(text, Avalonia.Automation.AutomationProperties.GetName(bar));
                 var label = Assert.Single(bar.GetVisualDescendants().OfType<TextBlock>());
                 Assert.Equal(text, label.Text);
-                Assert.Equal(13, label.FontSize);
+                Assert.Equal(14, label.FontSize);
                 Assert.Equal(FontWeight.Medium, label.FontWeight);
                 var dots = bar.GetVisualDescendants().OfType<Border>()
                     .Where(border => border.Classes.Contains("workingDot")).ToArray();

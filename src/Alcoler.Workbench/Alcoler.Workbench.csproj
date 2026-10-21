@@ -18,6 +18,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Alcoler.Workbench.Tests" />
     <EmbeddedResource Include="Models\ModelDefaults.json" />
+    <AvaloniaResource Include="Assets\Fonts\*.ttf" />
+    <None Update="Assets\Fonts\OFL.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Alcoler.Contracts\Alcoler.Contracts.csproj" />

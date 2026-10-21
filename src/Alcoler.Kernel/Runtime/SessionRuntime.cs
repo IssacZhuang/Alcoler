@@ -198,6 +198,13 @@ public sealed class SessionRuntime : IAsyncDisposable
     internal bool StopBackgroundJob(BackgroundJobId jobId) =>
         !Volatile.Read(ref _disposed) && _backgroundJobs.Stop(jobId);
 
+    internal ValueTask<bool> TryStopSubagentAsync(string taskId)
+    {
+        if (Volatile.Read(ref _disposed) || _subagentTasks is null)
+            return ValueTask.FromResult(false);
+        return _subagentTasks.TryStopAsync(taskId, CancellationToken.None);
+    }
+
     public async Task<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken ct)
     {
         await _commandLock.WaitAsync(ct).ConfigureAwait(false);

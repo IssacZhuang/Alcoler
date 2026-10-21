@@ -42,7 +42,7 @@
       <Setter Property="MinHeight" Value="0" />
       <Setter Property="Padding" Value="6,0" />
       <Setter Property="CornerRadius" Value="8" />
-      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
     <Style Selector="UserControl.compact TextBlock.modeLabel">
@@ -58,14 +58,14 @@
               CornerRadius="12" Padding="12,8" MaxHeight="96">
         <ScrollViewer HorizontalScrollBarVisibility="Disabled">
           <StackPanel Spacing="4">
-            <TextBlock Text="Queued messages" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
+            <TextBlock Text="Queued messages" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
             <ItemsControl x:Name="QueueList" ItemsSource="{Binding Queue}">
               <ItemsControl.Template>
                 <ControlTemplate><ItemsPresenter /></ControlTemplate>
               </ItemsControl.Template>
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="events:QueuedInput">
-                  <TextBlock Text="{Binding Text}" FontSize="13" TextWrapping="Wrap"
+                  <TextBlock Text="{Binding Text}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" TextWrapping="Wrap"
                              Foreground="{DynamicResource AlcolerTextPrimary}" />
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
@@ -85,8 +85,8 @@
               <ListBox.ItemTemplate>
                 <DataTemplate x:DataType="local:ComposerSkillEntry">
                   <StackPanel Spacing="2" Margin="4">
-                    <TextBlock Text="{Binding Name}" FontSize="13" />
-                    <TextBlock Text="{Binding Description}" FontSize="12" MaxWidth="560"
+                    <TextBlock Text="{Binding Name}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" />
+                    <TextBlock Text="{Binding Description}" FontSize="{DynamicResource AlcolerFontSmall}" MaxWidth="560"
                                TextTrimming="CharacterEllipsis" Foreground="{DynamicResource AlcolerTextSecondary}" />
                   </StackPanel>
                 </DataTemplate>
@@ -118,34 +118,43 @@
                    Watermark="Ask anything..."
                    AcceptsReturn="True" TextWrapping="Wrap"
                    MinHeight="40" MaxHeight="160" VerticalContentAlignment="Top"
-                   FontSize="13" />
+                   FontSize="{DynamicResource AlcolerFontBase}" LineHeight="20" FontFamily="{DynamicResource AlcolerFontPrimary}" />
 
           <TextBlock Text="{Binding Composer.InputError}" IsVisible="{Binding !!Composer.InputError}"
-                     Foreground="{DynamicResource AlcolerWarning}" FontSize="12" TextWrapping="Wrap" />
+                     Foreground="{DynamicResource AlcolerWarning}" FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap" />
           <Grid x:Name="ComposerToolbar" ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="6" Height="28">
-            <Button x:Name="ModeSelector" Classes="modePicker" Classes.fullAccess="{Binding Composer.IsFullAccess}"
-                    ToolTip.Tip="Permissions for the next message" VerticalAlignment="Center" AutomationProperties.Name="Permissions">
-              <StackPanel Orientation="Horizontal" Spacing="4">
-                <controls:Icon Classes="icon" Data="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z M9 12l2 2 4-4" />
-                <TextBlock Classes="modeLabel" Text="{Binding Composer.ModeLabel}" FontSize="13" VerticalAlignment="Center" />
-                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
-              </StackPanel>
-              <Button.Flyout>
-                <Flyout Placement="TopEdgeAlignedLeft">
-                  <StackPanel Spacing="8" MinWidth="220" MaxWidth="256">
-                    <TextBlock Text="Permissions" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
-                    <RadioButton GroupName="ComposerMode" Content="Build" ToolTip.Tip="Ask before making changes"
-                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Build}" />
-                    <RadioButton GroupName="ComposerMode" Content="Edit" ToolTip.Tip="Allow file edits"
-                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Edit}" />
-                    <RadioButton GroupName="ComposerMode" Content="Plan" ToolTip.Tip="Plan without making changes"
-                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Plan}" />
-                    <RadioButton GroupName="ComposerMode" Content="Full access" ToolTip.Tip="Allow tools without approval"
-                                 IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Yolo}" />
-                  </StackPanel>
-                </Flyout>
-              </Button.Flyout>
-            </Button>
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+              <Button x:Name="ModeSelector" Classes="modePicker" Classes.fullAccess="{Binding Composer.IsFullAccess}"
+                      ToolTip.Tip="Permissions for the next message" VerticalAlignment="Center" AutomationProperties.Name="Permissions">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <controls:Icon Classes="icon" Data="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z M9 12l2 2 4-4" />
+                  <TextBlock Classes="modeLabel" Text="{Binding Composer.ModeLabel}" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
+                  <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
+                </StackPanel>
+                <Button.Flyout>
+                  <Flyout Placement="TopEdgeAlignedLeft">
+                    <StackPanel Spacing="8" MinWidth="220" MaxWidth="256">
+                      <TextBlock Text="Permissions" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                      <RadioButton GroupName="ComposerMode" Content="Build" ToolTip.Tip="Ask before making changes"
+                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Build}" />
+                      <RadioButton GroupName="ComposerMode" Content="Edit" ToolTip.Tip="Allow file edits"
+                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Edit}" />
+                      <RadioButton GroupName="ComposerMode" Content="Plan" ToolTip.Tip="Plan without making changes"
+                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Plan}" />
+                      <RadioButton GroupName="ComposerMode" Content="Full access" ToolTip.Tip="Allow tools without approval"
+                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Yolo}" />
+                    </StackPanel>
+                  </Flyout>
+                </Button.Flyout>
+              </Button>
+              <Button x:Name="StatusTrigger" Classes="modePicker" Click="OnStatusClick" IsVisible="False" VerticalAlignment="Center"
+                      ToolTip.Tip="Show running activities" AutomationProperties.Name="Show running activities">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <controls:Icon Classes="icon" Data="M4 4h16v16H4ZM7 8l3 3-3 3M12 15h5" />
+                  <TextBlock x:Name="StatusTriggerText" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+            </StackPanel>
 
             <Button x:Name="ModelSelector" Grid.Column="3" Classes="ghost toolbarPicker"
                     MinWidth="40" MaxWidth="240" HorizontalAlignment="Right"
@@ -164,7 +173,7 @@
                       ToolTip.Tip="Reasoning effort (Ctrl+T)" IsVisible="{Binding !!ThoughtLevels.Count}" Click="OnThoughtPickerClick" AutomationProperties.Name="Reasoning effort">
                 <StackPanel Orientation="Horizontal" Spacing="4">
                   <controls:Icon Classes="icon small" Data="M12 18V5 M12 5C8 0 3 4 5 8 1 10 3 15 6 15c-1 5 5 7 6 3 M12 5c4-5 9-1 7 3 4 2 2 7-1 7 1 5-5 7-6 3" />
-                  <TextBlock Text="{Binding ThoughtLevel}" FontSize="13" VerticalAlignment="Center" />
+                  <TextBlock Text="{Binding ThoughtLevel}" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
                   <controls:Icon x:Name="ThoughtChevron" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
                 </StackPanel>
                 <Button.Flyout><MenuFlyout Placement="TopEdgeAlignedLeft" /></Button.Flyout>

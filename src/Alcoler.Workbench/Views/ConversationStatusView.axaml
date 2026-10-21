@@ -161,11 +161,23 @@
                 </Grid>
               </Grid>
             </ToggleButton>
-            <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+            <ContentPresenter Classes="sectionBody" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
                               IsVisible="{TemplateBinding IsExpanded}" />
           </StackPanel>
         </ControlTemplate>
       </Setter>
+    </Style>
+    <Style Selector="Expander.statusSection[IsExpanded=True] /template/ ContentPresenter.sectionBody">
+      <Style.Animations>
+        <Animation Duration="0:0:0.2" Easing="CubicEaseOut">
+          <KeyFrame Cue="0%">
+            <Setter Property="Opacity" Value="0" />
+          </KeyFrame>
+          <KeyFrame Cue="100%">
+            <Setter Property="Opacity" Value="1" />
+          </KeyFrame>
+        </Animation>
+      </Style.Animations>
     </Style>
     <Style Selector="ToggleButton.sectionHeader">
       <Setter Property="Height" Value="32" />
@@ -235,6 +247,13 @@
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
     <Style Selector="FlyoutPresenter.statusFlyout">
+      <Setter Property="Background" Value="{DynamicResource AlcolerPopover}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="8" />
+    </Style>
+    <Style Selector="ToolTip.statusPreview">
       <Setter Property="Background" Value="{DynamicResource AlcolerPopover}" />
       <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
       <Setter Property="BorderThickness" Value="1" />
@@ -357,6 +376,13 @@
                       <TextBlock Text="{Binding EarlierTodos.Count, StringFormat='Earlier tasks ({0})'}" FontSize="14"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
                     </StackPanel>
+                    <ToolTip.Tip>
+                      <ToolTip Classes="statusPreview">
+                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+                          <ItemsControl ItemsSource="{Binding EarlierTodos}" ItemTemplate="{StaticResource TodoRow}" />
+                        </ScrollViewer>
+                      </ToolTip>
+                    </ToolTip.Tip>
                     <Button.Flyout>
                       <Flyout Placement="LeftEdgeAlignedTop" FlyoutPresenterClasses="statusFlyout">
                         <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
@@ -372,6 +398,13 @@
                       <TextBlock Text="{Binding LaterTodos.Count, StringFormat='Later tasks ({0})'}" FontSize="14"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
                     </StackPanel>
+                    <ToolTip.Tip>
+                      <ToolTip Classes="statusPreview">
+                        <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
+                          <ItemsControl ItemsSource="{Binding LaterTodos}" ItemTemplate="{StaticResource TodoRow}" />
+                        </ScrollViewer>
+                      </ToolTip>
+                    </ToolTip.Tip>
                     <Button.Flyout>
                       <Flyout Placement="LeftEdgeAlignedTop" FlyoutPresenterClasses="statusFlyout">
                         <ScrollViewer Width="288" MaxHeight="320" HorizontalScrollBarVisibility="Disabled">

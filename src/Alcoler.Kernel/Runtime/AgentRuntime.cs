@@ -154,6 +154,13 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId) =>
         !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime) && runtime.StopBackgroundJob(jobId);
 
+    public async ValueTask<bool> TryStopSubagentAsync(SessionId sessionId, string taskId)
+    {
+        if (Volatile.Read(ref _disposed) || !_sessions.TryGetValue(sessionId, out var runtime))
+            return false;
+        return await runtime.TryStopSubagentAsync(taskId).ConfigureAwait(false);
+    }
+
     public IConversationProjection? TryObserveSubagent(SessionId parentSessionId, SessionId childSessionId)
     {
         if (Volatile.Read(ref _disposed) || !_sessions.ContainsKey(parentSessionId) ||

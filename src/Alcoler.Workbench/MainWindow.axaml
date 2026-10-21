@@ -44,11 +44,11 @@
                 IsVisible="{Binding Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
             <StackPanel Spacing="6" VerticalAlignment="Center">
-              <TextBlock Text="{Binding Banner}" FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource AlcolerError}" />
-              <Expander Header="Original message" FontSize="12"
+              <TextBlock Text="{Binding Banner}" FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap" Foreground="{DynamicResource AlcolerError}" />
+              <Expander Header="Original message" FontSize="{DynamicResource AlcolerFontSmall}"
                         IsVisible="{Binding UnsentText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
                 <ScrollViewer MaxHeight="140" HorizontalScrollBarVisibility="Disabled">
-                  <SelectableTextBlock Text="{Binding UnsentText}" FontSize="12" TextWrapping="Wrap" />
+                  <SelectableTextBlock Text="{Binding UnsentText}" FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap" />
                 </ScrollViewer>
               </Expander>
             </StackPanel>
@@ -66,21 +66,21 @@
               <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
             </Button>
             <Grid Grid.Column="1" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
-              <TextBlock Text="{Binding Active.HeaderTitle}" FontSize="13" FontWeight="Medium"
+              <TextBlock Text="{Binding Active.HeaderTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" FontWeight="Medium"
                          TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                          IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNotNull}}" />
-              <TextBlock Text="New task" FontSize="13" FontWeight="Medium" VerticalAlignment="Center"
+              <TextBlock Text="New task" FontSize="{DynamicResource AlcolerFontBase}" FontWeight="Medium" VerticalAlignment="Center"
                          IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNull}}" />
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="8,0"
                           IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNotNull}}">
                 <Ellipse Width="5" Height="5" VerticalAlignment="Center"
                          Fill="{Binding Active.PhaseText, Converter={StaticResource AlcolerPhaseBrush}}" />
-                <TextBlock x:Name="PART_PhaseText" Text="{Binding Active.PhaseText}" FontSize="11"
+                <TextBlock x:Name="PART_PhaseText" Text="{Binding Active.PhaseText}" FontSize="{DynamicResource AlcolerFontSmall}"
                            VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
                 <Border x:Name="PART_QueueBadge" CornerRadius="{DynamicResource AlcolerRadiusFull}" Padding="6,1"
                         Background="{DynamicResource AlcolerSurfaceHigh}" VerticalAlignment="Center"
                         IsVisible="{Binding Active.HasQueuedInput}" ToolTip.Tip="Queued inputs">
-                  <TextBlock Text="{Binding Active.Queue.Count}" FontSize="10" />
+                  <TextBlock Text="{Binding Active.Queue.Count}" FontSize="{DynamicResource AlcolerFontXs}" />
                 </Border>
               </StackPanel>
             </Grid>
@@ -115,14 +115,14 @@
                     ToolTip.Tip="{Binding Draft.WorkspaceRoot}" AutomationProperties.Name="Choose workspace">
               <StackPanel Orientation="Horizontal" Spacing="8">
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
-                <TextBlock Text="{Binding Draft.WorkspaceName}" FontSize="14" VerticalAlignment="Center" MaxWidth="360"
+                <TextBlock Text="{Binding Draft.WorkspaceName}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" VerticalAlignment="Center" MaxWidth="360"
                            TextTrimming="CharacterEllipsis" />
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
               </StackPanel>
               <Button.Flyout>
                 <Flyout Placement="Bottom">
                   <StackPanel Spacing="6" MinWidth="240" MaxWidth="420">
-                    <TextBlock Text="Workspace" Margin="8,4" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <TextBlock Text="Workspace" Margin="8,4" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
                     <ScrollViewer MaxHeight="280" HorizontalScrollBarVisibility="Disabled">
                       <ItemsControl ItemsSource="{Binding Sidebar.Groups}">
                         <ItemsControl.ItemTemplate>
@@ -148,7 +148,8 @@
           <views:ComposerView x:Name="MainComposer" Grid.Row="1" DataContext="{Binding ComposerHost}" />
         </Grid>
         <views:ConversationStatusView x:Name="SessionStatus" Grid.Row="2" ZIndex="10"
-                                      DataContext="{Binding Active.Status}" IsVisible="{Binding HasContent}"
+                                      DataContext="{Binding Active.Status}"
+                                      IsVisible="{Binding HasContent, FallbackValue=False}"
                                       HorizontalAlignment="Right" VerticalAlignment="Top" Margin="16" />
         <GridSplitter Grid.Row="3" ResizeDirection="Rows" IsVisible="{Binding IsTerminalVisible}"
                       DragCompleted="OnTerminalSplitterDragCompleted" />

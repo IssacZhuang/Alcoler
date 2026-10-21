@@ -31,6 +31,7 @@ public class ConversationMarkdownTests
         var blocks = view.GetVisualDescendants().OfType<CTextBlock>().ToArray();
         var body = Assert.Single(blocks, block => block.Classes.Contains("Paragraph"));
         Assert.Equal(14, body.FontSize);
+        Assert.Equal("JetBrains Mono", body.FontFamily.Name);
         Assert.Equal(24.5, body.LineHeight);
         Assert.Equal(0, blocks[0].Margin.Top);
         Assert.Equal(0, body.Margin.Bottom);
@@ -55,6 +56,7 @@ public class ConversationMarkdownTests
         var link = Assert.Single(view.GetLogicalDescendants().OfType<CHyperlink>());
         Assert.Equal(FontWeight.Medium, strong.FontWeight);
         Assert.Equal(12, code.FontSize);
+        Assert.Equal("JetBrains Mono", code.MonospaceFontFamily.Name);
         Assert.Equal(new Thickness(6, 2), code.Padding);
         Assert.Equal(new Thickness(2, 0), code.Margin);
         Assert.Equal(new CornerRadius(6), code.CornerRadius);
@@ -229,6 +231,7 @@ public class ConversationMarkdownTests
         var copy = Assert.Single(view.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("copyCode"));
         var block = Assert.Single(view.GetVisualDescendants().OfType<CTextBlock>(), text => text.Classes.Contains("CodeBlock"));
         Assert.Equal(12, block.FontSize);
+        Assert.Equal("JetBrains Mono", block.FontFamily.Name);
         Assert.Equal(TextWrapping.NoWrap, block.TextWrapping);
         foreach (var keyboard in new[] { false, true })
         {

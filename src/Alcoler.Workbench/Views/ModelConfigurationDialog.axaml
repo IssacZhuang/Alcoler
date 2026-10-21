@@ -202,7 +202,7 @@
       <StackPanel Spacing="18" Margin="0,0,12,20">
         <StackPanel Spacing="6">
           <TextBlock Classes="label" Text="Model ID" />
-          <TextBox x:Name="ModelIdBox" Text="{Binding Draft.ModelId, Mode=TwoWay}" Watermark="Model ID" FontFamily="monospace" AutomationProperties.Name="Model ID" />
+          <TextBox x:Name="ModelIdBox" Text="{Binding Draft.ModelId, Mode=TwoWay}" Watermark="Model ID" FontFamily="{DynamicResource AlcolerFontMonospace}" AutomationProperties.Name="Model ID" />
         </StackPanel>
         <StackPanel Spacing="6">
           <TextBlock Classes="label" Text="Context window" ToolTip.Tip="Maximum input and output context in tokens. Leave empty in smart mode to inherit the catalog value." />
@@ -271,7 +271,7 @@
             <StackPanel Spacing="8">
               <TextBlock Classes="label" Text="Reasoning level mapping (JSON / CEL)" />
               <TextBlock Classes="help" Text="An object-valued JSON or restricted CEL expression. Use reasoningLevel to map each configured level to provider request fields. Empty inherits the catalog mapping." />
-              <TextBox x:Name="ReasoningMappingBox" Text="{Binding Draft.ReasoningMapping, Mode=TwoWay}" Watermark="{Binding Draft.ReasoningMappingPlaceholder}" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="monospace" MinHeight="120" MaxHeight="240" AutomationProperties.Name="Reasoning level mapping" />
+              <TextBox x:Name="ReasoningMappingBox" Text="{Binding Draft.ReasoningMapping, Mode=TwoWay}" Watermark="{Binding Draft.ReasoningMappingPlaceholder}" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontMonospace}" MinHeight="120" MaxHeight="240" AutomationProperties.Name="Reasoning level mapping" />
             </StackPanel>
           </StackPanel>
         </Expander>

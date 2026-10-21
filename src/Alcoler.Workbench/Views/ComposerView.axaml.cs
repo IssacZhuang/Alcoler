@@ -13,6 +13,7 @@ namespace Alcoler.Workbench.Views;
 public partial class ComposerView : UserControl
 {
     private IComposerHost? _observed;
+    private ConversationStatusViewModel? _observedStatus;
     private WorkbenchViewModel? _workbench;
     private Window? _owner;
     private readonly ProviderUsageViewModel _providerUsage = new();
@@ -89,6 +90,52 @@ public partial class ComposerView : UserControl
         _observed.PropertyChanged -= OnConversationPropertyChanged;
         _observed.Composer.PropertyChanged -= OnComposerPropertyChanged;
         _observed = null;
+        UnobserveStatus();
+    }
+
+    private void UnobserveStatus()
+    {
+        if (_observedStatus is null)
+            return;
+        _observedStatus.PropertyChanged -= OnStatusPropertyChanged;
+        _observedStatus = null;
+    }
+
+    private void ObserveStatus()
+    {
+        UnobserveStatus();
+        _observedStatus = (DataContext as ConversationViewModel)?.Status;
+        if (_observedStatus is not null)
+        {
+            _observedStatus.PropertyChanged += OnStatusPropertyChanged;
+        }
+        UpdateStatusTrigger();
+    }
+
+    private void OnStatusPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(e.PropertyName)
+            || e.PropertyName is nameof(ConversationStatusViewModel.HasRunningActivities)
+                or nameof(ConversationStatusViewModel.RunningActivityCountText))
+        {
+            UpdateStatusTrigger();
+        }
+    }
+
+    private void UpdateStatusTrigger()
+    {
+        var status = _observedStatus;
+        StatusTrigger.IsVisible = status?.HasRunningActivities == true;
+        StatusTriggerText.Text = status?.RunningActivityCountText ?? string.Empty;
+    }
+
+    private void OnStatusClick(object? sender, RoutedEventArgs e)
+    {
+        if (_observedStatus?.HasRunningActivities == true)
+        {
+            StatusRequested?.Invoke();
+        }
+        e.Handled = true;
     }
 
     private void ObserveConversation()
@@ -101,6 +148,7 @@ public partial class ComposerView : UserControl
             _observed.Composer.PropertyChanged += OnComposerPropertyChanged;
             _observed.Composer.ConfigureWorkspace(_observed.WorkspaceRoot);
         }
+        ObserveStatus();
         _dismissedSkillToken = null;
         _historyRecallText = null;
         SkillPanel.IsVisible = false;
@@ -144,6 +192,8 @@ public partial class ComposerView : UserControl
     private IComposerHost? ViewModel => DataContext as IComposerHost;
 
     public void FocusInput() => InputBox.Focus();
+
+    public event Action? StatusRequested;
 
     private static void ClosePickers(params Button[] buttons)
     {
