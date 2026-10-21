@@ -5819,6 +5819,9 @@
         "en-US": "ChatGPT"
       },
       "config": {
+        "access": {
+          "type": "chatgpt-account"
+        },
         "api": {
           "type": "openai-responses",
           "baseUrl": "https://api.openai.com/v1"

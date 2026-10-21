@@ -33,7 +33,8 @@ public sealed record WorkbenchProviderConfig(
     string? Name = null,
     bool Enabled = true,
     string? ApiKeyManagementUrl = null,
-    string? TemplateId = null)
+    string? TemplateId = null,
+    string? AccessType = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public string EffectiveId => string.IsNullOrWhiteSpace(Id) ? Kind : Id;

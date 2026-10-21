@@ -28,7 +28,7 @@ public sealed class SubagentService : ISubagentPort
     {
         var id = StrongId.NewSubagentId();
         var child = await _factory(id, request, cancellationToken).ConfigureAwait(false);
-        TrackStarted(id, child.ChildSessionId, DescriptionOf(request));
+        TrackStarted(id, child, request);
         return await RunToResultAsync(id, child, request, cancellationToken).ConfigureAwait(false);
     }
 
@@ -40,7 +40,7 @@ public sealed class SubagentService : ISubagentPort
         var id = StrongId.NewSubagentId();
         var child = await _factory(id, request, cancellationToken).ConfigureAwait(false);
         var description = DescriptionOf(request);
-        TrackStarted(id, child.ChildSessionId, description);
+        TrackStarted(id, child, request);
         _ = NotifyInBackgroundAsync(id, child, request, onCompleted, cancellationToken);
         return new SubagentHandle(
             id, child.ChildSessionId, description, Background: true, OutputFile: child.OutputFile);
@@ -131,15 +131,18 @@ public sealed class SubagentService : ISubagentPort
         }
     }
 
-    private void TrackStarted(SubagentId id, SessionId childSessionId, string description) =>
+    private void TrackStarted(SubagentId id, SubagentChildSession child, SubagentRequest request) =>
         _states[id] = new SubagentState(
             id,
-            childSessionId,
-            description,
+            child.ChildSessionId,
+            DescriptionOf(request),
             SubagentStatus.Running,
             ResultSummary: null,
             StartedAt: _clock.GetUtcNow(),
-            EndedAt: null);
+            EndedAt: null,
+            OutputFile: child.OutputFile,
+            ParentToolCallId: request.ParentToolCallId,
+            AgentType: request.AgentType ?? SubagentPrompts.GeneralPurposeAgentType);
 
     private SubagentResult Complete(SubagentId id, SubagentStatus status, string output, int? toolUseCount = null)
     {

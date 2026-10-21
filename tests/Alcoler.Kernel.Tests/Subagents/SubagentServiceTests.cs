@@ -43,6 +43,49 @@ public class SubagentServiceTests
         Assert.Equal("child output", state.ResultSummary);
         Assert.Equal(Now, state.StartedAt);
         Assert.Equal(Now, state.EndedAt);
+        Assert.Null(state.ParentToolCallId);
+        Assert.Equal(SubagentPrompts.GeneralPurposeAgentType, state.AgentType);
+    }
+
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(false, "Explore")]
+    [InlineData(true, null)]
+    [InlineData(true, "Explore")]
+    public async Task StartedAndCompletedStates_PreserveDispatchMetadata(bool background, string? agentType)
+    {
+        const string outputFile = "child-output.txt";
+        var factory = new FakeSubagentFactory(_ => new FakeChildSession { OutputFile = outputFile });
+        var service = new SubagentService(factory.ToFactory(), new FixedTimeProvider(Now));
+        var callId = new ToolCallId("dispatch");
+        var request = Request(background: background) with { ParentToolCallId = callId, AgentType = agentType };
+        var completion = new TaskCompletionSource<SubagentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<SubagentResult> result;
+        if (background)
+        {
+            await service.StartBackgroundAsync(request, completed =>
+            {
+                completion.SetResult(completed);
+                return ValueTask.CompletedTask;
+            }, CancellationToken.None);
+            result = completion.Task;
+        }
+        else
+        {
+            result = service.RunAsync(request, CancellationToken.None).AsTask();
+        }
+        var running = Assert.Single(service.ActiveStates);
+        Assert.Equal(SubagentStatus.Running, running.Status);
+        Assert.Equal(callId, running.ParentToolCallId);
+        Assert.Equal(agentType ?? SubagentPrompts.GeneralPurposeAgentType, running.AgentType);
+        Assert.Equal(outputFile, running.OutputFile);
+
+        Assert.Single(factory.Children).Complete();
+        var completed = await result.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(SubagentStatus.Completed, completed.State.Status);
+        Assert.Equal(callId, completed.State.ParentToolCallId);
+        Assert.Equal(running.AgentType, completed.State.AgentType);
+        Assert.Equal(outputFile, completed.State.OutputFile);
     }
 
     [Fact]

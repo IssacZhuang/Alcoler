@@ -4,7 +4,10 @@ using Alcoler.Contracts.Models;
 
 namespace Alcoler.Workbench;
 
-public sealed record ProviderTemplate(string Id, string Name, string Kind, string BaseUrl, string? ApiKeyManagementUrl, IReadOnlyList<string> ModelIds);
+public sealed record ProviderTemplate(string Id, string Name, string Kind, string BaseUrl, string? ApiKeyManagementUrl, IReadOnlyList<string> ModelIds, string? AccessType = null)
+{
+    public const string ChatGptAccount = "chatgpt-account";
+}
 
 public static class WorkbenchModelCatalog
 {
@@ -140,7 +143,7 @@ public static class WorkbenchModelCatalog
                 "openai-responses" => "openai-responses",
                 _ => null,
             };
-            if (kind is null || config["access"]?["type"]?.GetValue<string>() is not ("api-key" or "zhipu-coding-plan-api-key"))
+            if (kind is null || config["access"]?["type"]?.GetValue<string>() is not ("api-key" or "zhipu-coding-plan-api-key" or ProviderTemplate.ChatGptAccount))
             {
                 continue;
             }
@@ -150,7 +153,8 @@ public static class WorkbenchModelCatalog
                 kind,
                 config["api"]!["baseUrl"]!.GetValue<string>(),
                 config["access"]?["apiKeyManagementUrl"]?.GetValue<string>(),
-                config["builtinModelIds"]?.AsArray().Select(x => x!.GetValue<string>()).ToArray() ?? []));
+                config["builtinModelIds"]?.AsArray().Select(x => x!.GetValue<string>()).ToArray() ?? [],
+                config["access"]?["type"]?.GetValue<string>() == ProviderTemplate.ChatGptAccount ? ProviderTemplate.ChatGptAccount : null));
         }
         return result;
     }

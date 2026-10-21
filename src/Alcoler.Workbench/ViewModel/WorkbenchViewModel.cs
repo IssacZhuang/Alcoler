@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Sessions;
+using Alcoler.Workbench.Auth;
 using Alcoler.Workbench.Git;
 using Alcoler.Workbench.Stores;
 using Alcoler.Workbench.Ui;
@@ -70,7 +71,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         IAsyncDisposable? ownedResource = null,
         BrowserPaneViewModel? browserPane = null,
         Action<WorkbenchComposerConfig>? saveComposer = null,
-        Action<WorkbenchConfig>? applySettings = null)
+        Action<WorkbenchConfig>? applySettings = null,
+        ChatGptAccountService? chatGptAccount = null)
     {
         _runtime = runtime;
         _config = config;
@@ -86,6 +88,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         };
         _ownedResource = ownedResource;
         _scheduler = scheduler;
+        ChatGptAccount = chatGptAccount;
         BrowserPane = browserPane;
         _hub = new SessionProjectionHub(runtime, scheduler, coalesceWindow: TimeSpan.FromMilliseconds(30));
         Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync);
@@ -103,6 +106,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     }
 
     public SessionSidebarViewModel Sidebar { get; }
+
+    public ChatGptAccountService? ChatGptAccount { get; }
 
     public IReadOnlyList<ModelChoice> ModelChoices { get; }
 

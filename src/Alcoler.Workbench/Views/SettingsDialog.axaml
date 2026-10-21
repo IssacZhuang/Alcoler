@@ -289,7 +289,7 @@
                                 </ComboBox.ItemTemplate>
                               </ComboBox>
                             </StackPanel>
-                            <StackPanel Spacing="6">
+                            <StackPanel Spacing="6" IsVisible="{Binding !IsChatGptAccount}">
                               <Grid ColumnDefinitions="*,Auto">
                                 <TextBlock Classes="fieldLabel" Text="API key" VerticalAlignment="Center" />
                                 <Button Grid.Column="1" Classes="ghost" Content="Get API Key" Padding="0" MinHeight="20"
@@ -306,6 +306,39 @@
                                   </Grid>
                                 </Button>
                               </Grid>
+                            </StackPanel>
+                            <StackPanel Spacing="6" IsVisible="{Binding IsChatGptAccount}">
+                              <StackPanel Spacing="6"
+                                          DataContext="{Binding $parent[Window].((vm:SettingsViewModel)DataContext).ChatGpt}">
+                                <Grid ColumnDefinitions="*,Auto">
+                                  <TextBlock Classes="fieldLabel" Text="ChatGPT account" VerticalAlignment="Center" />
+                                  <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                    <Button Classes="primary action" Content="Sign in with ChatGPT" Command="{Binding SignInCommand}"
+                                            IsVisible="{Binding !IsWaiting}" AutomationProperties.Name="Sign in with ChatGPT" />
+                                    <Button Classes="outline action" Content="Cancel" Command="{Binding CancelSignInCommand}"
+                                            IsVisible="{Binding IsWaiting}" AutomationProperties.Name="Cancel sign-in" />
+                                    <Button Classes="outline action" Content="Sign out" Command="{Binding SignOutCommand}"
+                                            IsVisible="{Binding IsSignedIn}" AutomationProperties.Name="Sign out of ChatGPT" />
+                                  </StackPanel>
+                                </Grid>
+                                <TextBlock Classes="description"
+                                           Text="Authorization opens in your browser. Models come from your ChatGPT plan; credentials stay on this machine." />
+                                <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="{Binding HasAccountDisplay}">
+                                  <TextBlock Text="{Binding AccountDisplay}" FontWeight="Medium" VerticalAlignment="Center" />
+                                  <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="4" Padding="4,1"
+                                          IsVisible="{Binding AccountPlan, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                                    <TextBlock Text="{Binding AccountPlan}" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                                  </Border>
+                                </StackPanel>
+                                <StackPanel Spacing="6" IsVisible="{Binding IsWaiting}">
+                                  <TextBlock Classes="description" Text="Waiting for authorization in the browser..." />
+                                  <Button Classes="ghost action" Content="Open authorization page" Command="{Binding OpenAuthorizationPageCommand}" HorizontalAlignment="Left" />
+                                  <TextBox Text="{Binding AuthorizeUrl, Mode=OneWay}" IsReadOnly="True"
+                                           FontFamily="{DynamicResource AlcolerFontMonospace}" AutomationProperties.Name="Authorization URL" />
+                                </StackPanel>
+                                <TextBlock Classes="description" Text="{Binding Message}" TextWrapping="Wrap"
+                                           IsVisible="{Binding Message, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                              </StackPanel>
                             </StackPanel>
                             <views:ProviderUsageView DataContext="{Binding Usage}" />
                             <Border Classes="divided">

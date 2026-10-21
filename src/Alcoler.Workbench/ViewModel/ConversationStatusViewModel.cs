@@ -39,6 +39,12 @@ public sealed record StatusActivity
     public BackgroundJobId? BackgroundJobId { get; init; }
     public bool CanStop { get; init; }
     public string StatusText { get; init; } = string.Empty;
+    public string? AgentType { get; init; }
+    public string DetailText => string.IsNullOrWhiteSpace(AgentType) ? StatusText : $"{AgentType} · {StatusText}";
+    public SubagentStatus? AgentStatus { get; init; }
+    public bool IsCompleted => AgentStatus == SubagentStatus.Completed;
+    public bool IsFailed => AgentStatus == SubagentStatus.Failed;
+    public bool IsCancelled => AgentStatus == SubagentStatus.Cancelled;
 }
 
 public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
@@ -94,9 +100,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
     public IReadOnlyList<StatusActivity> Agents => _agents;
     public IReadOnlyList<StatusActivity> EndedAgents => _endedAgents;
     public bool HasAgents => Agents.Count + EndedAgents.Count > 0;
-    public string AgentCountText => EndedAgents.Count == 0
-        ? Agents.Count.ToString()
-        : $"{Agents.Count}/{Agents.Count + EndedAgents.Count}";
+    public string AgentCountText => Agents.Count > 0 ? $"{Agents.Count} running" : string.Empty;
     public bool HasRunningActivities => Terminals.Count > 0 || Agents.Count > 0;
     public string RunningActivityCountText => (Terminals.Count + Agents.Count) switch
     {
@@ -230,6 +234,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         var latestAgents = OrderedRows().Where(row => row.Subagent is not null)
             .GroupBy(row => row.Subagent!.Id).Select(group => group.Last()).ToArray();
         var active = latestAgents.Where(row => row.Subagent!.Status == SubagentStatus.Running)
+            .OrderBy(row => row.Subagent!.StartedAt)
             .Select(row => AgentActivity(row, currentTime)).ToArray();
         var ended = latestAgents.Reverse().Where(row => row.Subagent!.Status != SubagentStatus.Running)
             .Select(row => AgentActivity(row, currentTime)).ToArray();
@@ -486,6 +491,8 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
             StartedAt = agent.StartedAt,
             DurationText = FormatDuration(agent.StartedAt, agent.EndedAt ?? now),
             StatusText = agent.Status.ToString(),
+            AgentType = agent.AgentType,
+            AgentStatus = agent.Status,
             OutputText = agent.ResultSummary,
             CanStop = agent.Status == SubagentStatus.Running,
         };
@@ -553,13 +560,14 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
             var terminals = $"{Terminals.Count} {(Terminals.Count == 1 ? "terminal" : "terminals")}";
             var agents = $"{Agents.Count} {(Agents.Count == 1 ? "agent" : "agents")}";
             text = HasTerminals && Agents.Count > 0 ? $"{terminals} and {agents} running"
-                : HasTerminals ? $"{terminals} running" : Agents.Count > 0 ? $"{agents} running" : string.Empty;
+                : HasTerminals ? $"{terminals} running" : Agents.Count > 0 ? $"{agents} running"
+                : EndedAgents.Count > 0 ? $"{EndedAgents.Count} ended {(EndedAgents.Count == 1 ? "agent" : "agents")}" : string.Empty;
             icon = HasTerminals && Agents.Count > 0 ? StatusIcons.Activities
-                : HasTerminals ? StatusIcons.Terminal : Agents.Count > 0 ? StatusIcons.Agent : string.Empty;
+                : HasTerminals ? StatusIcons.Terminal : HasAgents ? StatusIcons.Agent : string.Empty;
         }
         SetProperty(ref _summaryText, text, nameof(SummaryText));
         SetProperty(ref _summaryIconPath, icon, nameof(SummaryIconPath));
-        SetProperty(ref _hasContent, HasTodos || HasGit || HasPlans || HasTerminals || Agents.Count > 0, nameof(HasContent));
+        SetProperty(ref _hasContent, HasTodos || HasGit || HasPlans || HasTerminals || HasAgents, nameof(HasContent));
     }
 
     private bool SetList<T>(ref IReadOnlyList<T> field, IReadOnlyList<T> value, string propertyName) =>

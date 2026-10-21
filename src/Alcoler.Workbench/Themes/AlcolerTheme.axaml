@@ -30,6 +30,8 @@
       <Color x:Key="AlcolerErrorColor">#FFFF5C5C</Color>
       <Color x:Key="AlcolerErrorTextColor">#FFFFFFFF</Color>
       <Color x:Key="AlcolerInfoColor">#FF4099FF</Color>
+      <SolidColorBrush x:Key="AlcolerAgentExplore">#FF67E8F9</SolidColorBrush>
+      <SolidColorBrush x:Key="AlcolerAgentGeneral">#FF7DD3FC</SolidColorBrush>
       <Color x:Key="AlcolerPhaseIdleColor">#FF888888</Color>
       <Color x:Key="AlcolerPhaseBusyColor">#FF4099FF</Color>
       <Color x:Key="AlcolerPhaseToolsColor">#FFFF8A30</Color>
@@ -120,6 +122,8 @@
       <Color x:Key="AlcolerErrorColor">#FFE03131</Color>
       <Color x:Key="AlcolerErrorTextColor">#FFFFFFFF</Color>
       <Color x:Key="AlcolerInfoColor">#FF0B7FFF</Color>
+      <SolidColorBrush x:Key="AlcolerAgentExplore">#FF0E7490</SolidColorBrush>
+      <SolidColorBrush x:Key="AlcolerAgentGeneral">#FF0369A1</SolidColorBrush>
       <Color x:Key="AlcolerPhaseIdleColor">#FF7A7A7A</Color>
       <Color x:Key="AlcolerPhaseBusyColor">#FF0B7FFF</Color>
       <Color x:Key="AlcolerPhaseToolsColor">#FFE07B00</Color>

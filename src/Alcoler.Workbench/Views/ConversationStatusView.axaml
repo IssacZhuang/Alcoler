@@ -49,16 +49,18 @@
     <DataTemplate x:Key="AgentRow" x:DataType="vm:StatusActivity">
       <Grid ColumnDefinitions="*,Auto">
         <Button Classes="statusRow activityRow" Click="OnActivityClick" ToolTip.Tip="{Binding Title}"
-                AutomationProperties.Name="{Binding Title}">
+                AutomationProperties.Name="{Binding Title}" AutomationProperties.HelpText="{Binding DetailText}">
           <Grid ColumnDefinitions="16,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="4">
-            <controls:Icon Classes="icon" VerticalAlignment="Top" Margin="0,2,0,0"
+            <controls:Icon Classes="icon agentIcon" Classes.running="{Binding CanStop}"
+                           Classes.completed="{Binding IsCompleted}" Classes.failed="{Binding IsFailed}"
+                           Classes.cancelled="{Binding IsCancelled}" VerticalAlignment="Top" Margin="0,2,0,0"
                            Data="M12 8V4H8M5 8h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2ZM9 13v2M15 13v2M1 13v4M23 13v4M9 18h6" />
             <TextBlock Grid.Column="1" Text="{Binding Title}" FontSize="14" LineHeight="20"
                        TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" />
             <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="8">
               <TextBlock Classes="activityDetail" Text="{Binding DurationText}" />
-              <TextBlock Classes="activityDetail" Text="{Binding StatusText}" TextTrimming="CharacterEllipsis"
-                         MaxWidth="120" />
+              <TextBlock Classes="activityDetail" Text="{Binding DetailText}" ToolTip.Tip="{Binding DetailText}"
+                         TextTrimming="CharacterEllipsis" MaxWidth="160" />
             </StackPanel>
           </Grid>
         </Button>
@@ -106,6 +108,21 @@
     </Style>
     <Style Selector="controls|Icon.todoIcon.completed">
       <Setter Property="Stroke" Value="{DynamicResource AlcolerSuccess}" />
+    </Style>
+    <Style Selector="controls|Icon.agentIcon">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerTextTertiary}" />
+    </Style>
+    <Style Selector="controls|Icon.agentIcon.running">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+    <Style Selector="controls|Icon.agentIcon.completed">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerSuccess}" />
+    </Style>
+    <Style Selector="controls|Icon.agentIcon.failed">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerError}" />
+    </Style>
+    <Style Selector="controls|Icon.agentIcon.cancelled">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerWarning}" />
     </Style>
     <Style Selector="TextBlock.todoText.completed">
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextTertiary}" />
@@ -438,7 +455,8 @@
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="6">
                   <TextBlock Classes="statusHeading" Text="Agents" />
-                  <TextBlock Classes="statusCount" Text="{Binding AgentCountText}" />
+                  <TextBlock x:Name="AgentRunningCount" Classes="statusCount" Text="{Binding AgentCountText}"
+                             IsVisible="{Binding !!Agents.Count}" />
                 </StackPanel>
               </Expander.Header>
               <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
@@ -449,7 +467,7 @@
                     <Button x:Name="EndedAgentsButton" Classes="statusRow" AutomationProperties.Name="Ended agents">
                       <Grid ColumnDefinitions="16,*,Auto,14" ColumnSpacing="8">
                         <controls:Icon Classes="icon" Data="M9 12l2 2 4-4M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" />
-                        <TextBlock Grid.Column="1" Text="Ended agents" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="Ended" FontSize="14" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="2" Classes="statusCount" Text="{Binding EndedAgents.Count}" />
                         <controls:Icon Grid.Column="3" Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" />
                       </Grid>

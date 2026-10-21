@@ -361,6 +361,7 @@ public sealed class ConversationPanel : VirtualizingPanel
 
     private double EstimateHeight(object? item) => item switch
     {
+        AgentCallItemViewModel => 32,
         ToolCallItemViewModel tool => (tool.IsExpanded ? 48 : 32) + EstimateImageHeight(tool.ImageMedia.Count),
         AssistantMessageItemViewModel { IsReasoningExpanded: false, MarkdownText.Length: 0 } => 32,
         _ => 48,

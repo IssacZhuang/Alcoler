@@ -1186,10 +1186,10 @@ public sealed class SessionRuntime : IAsyncDisposable
         switch (notification)
         {
             case ToolExecutionStarted started:
-                await EmitAsync(new ToolCallStartedEvent(turnId, started.Call.Id, started.Call.Name, started.Call.Input), persist: false).ConfigureAwait(false);
+                await EmitAsync(new ToolCallStartedEvent(turnId, started.Call.Id, started.Call.Name, started.Call.Input), persist: true).ConfigureAwait(false);
                 break;
             case ToolExecutionResultNotification result:
-                await EmitAsync(new ToolCallResultEvent(turnId, result.Call.Id, result.Call.Name, result.Result, result.Duration), persist: false).ConfigureAwait(false);
+                await EmitAsync(new ToolCallResultEvent(turnId, result.Call.Id, result.Call.Name, result.Result, result.Duration), persist: true).ConfigureAwait(false);
                 if (!result.Result.IsError
                     && string.Equals(result.Call.Name, "Read", StringComparison.OrdinalIgnoreCase)
                     && result.Result.Content.OfType<ToolResultText>().FirstOrDefault() is { } readText
@@ -1380,10 +1380,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _history.Append(message);
         var sequence = await _deps.Store.GetNextMessageSequenceAsync(_record.Id, _sessionCts.Token).ConfigureAwait(false);
         await _deps.Store.AppendMessagesAsync(_record.Id, [message], sequence, _sessionCts.Token).ConfigureAwait(false);
-        SessionEvent committed = message.Role == MessageRole.User
-            ? new UserMessageCommittedEvent(message)
-            : new AssistantMessageCommittedEvent(message);
-        await EmitAsync(committed, persist: false).ConfigureAwait(false);
+        await EmitAsync(MessageCommitted(message), persist: true).ConfigureAwait(false);
         await PersistRecordAsync(_sessionCts.Token,
             record => record with { UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
         if (!_titleAttempted && IsRealUserTurn(message))
@@ -1678,17 +1675,9 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
 
         var messages = await _deps.Store.LoadMessagesAsync(_record.Id, CancellationToken.None).ConfigureAwait(false);
-        foreach (var stored in messages)
+        foreach (var (sessionEvent, occurredAt) in ReconstructTimeline(messages, durable))
         {
-            SessionEvent committed = stored.Message.Role == MessageRole.User
-                ? new UserMessageCommittedEvent(stored.Message)
-                : new AssistantMessageCommittedEvent(stored.Message);
-            EmitForReplay(committed);
-        }
-        foreach (var sessionEvent in durable.Select(evt => evt.Event)
-                     .Where(evt => evt is SubagentStartedEvent or SubagentStatusChangedEvent or TurnFailedEvent or TurnCompletedEvent))
-        {
-            EmitForReplay(sessionEvent);
+            _events.Append(sessionEvent, occurredAt);
         }
         var queuedInputs = new Dictionary<CommandId, (long Sequence, QueuedInput Input)>();
         foreach (var entry in durable)
@@ -1737,6 +1726,70 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
     }
 
+    private static IEnumerable<(SessionEvent Event, DateTimeOffset OccurredAt)> ReconstructTimeline(
+        IReadOnlyList<StoredMessage> messages, IReadOnlyList<SequencedEvent> durable)
+    {
+        var canonical = messages.ToDictionary(stored => stored.Message.Id, stored => stored.Message);
+        var toolCalls = messages.SelectMany(stored => stored.Message.Parts).OfType<ToolCallPart>()
+            .Select(call => call.ToolCallId).ToHashSet();
+        var timeline = new List<(SessionEvent Event, DateTimeOffset OccurredAt)>();
+        var anchors = new Dictionary<MessageId, int>();
+        foreach (var entry in durable.OrderBy(entry => entry.Sequence))
+        {
+            var committed = entry.Event switch
+            {
+                UserMessageCommittedEvent user => user.Message,
+                AssistantMessageCommittedEvent assistant => assistant.Message,
+                _ => null,
+            };
+            if (committed is not null)
+            {
+                // Compaction can replace or remove messages without rewriting old envelopes.
+                if (canonical.TryGetValue(committed.Id, out var message) && anchors.TryAdd(message.Id, timeline.Count))
+                    timeline.Add((MessageCommitted(message), entry.OccurredAt));
+            }
+            else if (entry.Event is SubagentStartedEvent or SubagentStatusChangedEvent or TurnFailedEvent or TurnCompletedEvent
+                || entry.Event is ToolCallStartedEvent started && toolCalls.Contains(started.ToolCallId)
+                || entry.Event is ToolCallResultEvent result && toolCalls.Contains(result.ToolCallId))
+            {
+                timeline.Add((entry.Event, entry.OccurredAt));
+            }
+        }
+
+        var nextAnchors = new int[messages.Count];
+        var nextAnchor = timeline.Count;
+        for (var index = messages.Count - 1; index >= 0; index--)
+        {
+            if (anchors.TryGetValue(messages[index].Message.Id, out var anchor))
+                nextAnchor = anchor;
+            nextAnchors[index] = nextAnchor;
+        }
+
+        var eventIndex = 0;
+        for (var index = 0; index < messages.Count; index++)
+        {
+            var message = messages[index].Message;
+            if (anchors.TryGetValue(message.Id, out var anchor))
+            {
+                while (eventIndex <= anchor)
+                    yield return timeline[eventIndex++];
+            }
+            else
+            {
+                // Legacy messages have no shared sequence; ties favor messages, bounded by exact anchors.
+                while (eventIndex < nextAnchors[index] && timeline[eventIndex].OccurredAt < message.CreatedAt)
+                    yield return timeline[eventIndex++];
+                yield return (MessageCommitted(message), message.CreatedAt);
+            }
+        }
+        while (eventIndex < timeline.Count)
+            yield return timeline[eventIndex++];
+    }
+
+    private static SessionEvent MessageCommitted(ConversationMessage message) => message.Role == MessageRole.User
+        ? new UserMessageCommittedEvent(message)
+        : new AssistantMessageCommittedEvent(message);
+
     private void EmitForReplay(SessionEvent sessionEvent) => _events.Append(sessionEvent);
 
     // ZCode session-history-hydrator: a persisted tool call without a later tool result is
@@ -1772,7 +1825,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _history.Append(repairMessage);
         var sequence = await _deps.Store.GetNextMessageSequenceAsync(_record.Id, CancellationToken.None).ConfigureAwait(false);
         await _deps.Store.AppendMessagesAsync(_record.Id, [repairMessage], sequence, CancellationToken.None).ConfigureAwait(false);
-        EmitForReplay(new UserMessageCommittedEvent(repairMessage));
+        await EmitAsync(new UserMessageCommittedEvent(repairMessage), persist: true).ConfigureAwait(false);
     }
 
     private static bool HasLaterToolResult(IReadOnlyList<StoredMessage> messages, int fromIndex, ToolCallId toolCallId)

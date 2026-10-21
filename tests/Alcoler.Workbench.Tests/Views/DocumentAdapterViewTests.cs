@@ -183,6 +183,48 @@ public sealed class DocumentAdapterViewTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task AgentDispatchClick_OpensAndReusesReadOnlyChildTimelineWithoutChangingParent()
+    {
+        EnsureTheme();
+        var runtime = new FakeAgentRuntime();
+        var parentId = StrongId.NewSessionId();
+        var childId = StrongId.NewSessionId();
+        var toolId = StrongId.NewToolCallId();
+        var now = DateTimeOffset.UtcNow;
+        var tool = new ToolCallRow("dispatch", toolId, "Agent",
+            JsonSerializer.SerializeToElement(new { description = "Inspect child transcript", subagent_type = "Explore" }),
+            ToolCallStatus.Succeeded, null, false, TimeSpan.FromSeconds(1), now);
+        var notice = AgentActivityRow(childId, "Inspect child transcript", now);
+        notice = notice with { Subagent = notice.Subagent! with { ParentToolCallId = toolId, AgentType = "Explore" } };
+        runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1, [tool, notice], TestSnapshots.State()));
+        var child = runtime.RegisterSession(childId, new ConversationSnapshot(0, 1,
+            [new AssistantMessageRow("answer", StrongId.NewMessageId(), [new TextPart(StrongId.NewPartId(), "Child answer")], false, now)], TestSnapshots.State()));
+        using var workbench = new WorkbenchViewModel(runtime, AvaloniaUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+        var window = new MainWindow(workbench) { Width = 1400, Height = 900 };
+        window.Show();
+        try
+        {
+            await WaitUntilAsync(window, () => workbench.Active!.Items.OfType<AgentCallItemViewModel>().Count() == 1);
+            var timeline = Assert.Single(window.GetVisualDescendants().OfType<TimelineView>());
+            var header = Assert.Single(timeline.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("agentRow"));
+            await ClickAsync(window, header);
+            await WaitUntilAsync(window, () => workbench.Documents.ActiveDocument?.Content is SubagentDocumentViewModel && child.SubscribeCount == 1);
+            var document = Assert.Single(workbench.Documents.Items);
+            Assert.Equal("Inspect child transcript", document.Title);
+            Assert.Equal(parentId, workbench.Active!.SessionId);
+            Assert.Empty(window.GetVisualDescendants().OfType<DocumentWorkspaceView>().Single().GetVisualDescendants().OfType<ComposerView>());
+            await ClickAsync(window, header);
+            await WaitUntilAsync(window, () => ReferenceEquals(document, workbench.Documents.ActiveDocument));
+            Assert.Single(workbench.Documents.Items);
+            Assert.Equal(1, child.SubscribeCount);
+            Assert.Empty(runtime.Submitted);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
     public async Task AgentActivityClick_OpensLiveChildTimelineWithDisclosuresAndDisposesOnClose()
     {
         EnsureTheme();

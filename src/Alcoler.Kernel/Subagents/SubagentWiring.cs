@@ -187,7 +187,9 @@ public static class SubagentWiring
             null,
             startedAt,
             null,
-            OutputFile: outputFile);
+            OutputFile: outputFile,
+            ParentToolCallId: request.ParentToolCallId,
+            AgentType: agentType);
 
         async ValueTask StopChildAsync(CancellationToken token) =>
             await childRuntime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), handle.Id, 0), token)

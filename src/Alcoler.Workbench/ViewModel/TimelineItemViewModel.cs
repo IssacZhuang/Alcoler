@@ -228,7 +228,9 @@ public static class TimelineItemFactory
     {
         UserMessageRow user => new UserMessageItemViewModel(user.RowId, user.Text, user.Images),
         AssistantMessageRow assistant => CreateAssistant(assistant),
+        ToolCallRow tool when AgentCallItemViewModel.IsAgentTool(tool.ToolName) => new AgentCallItemViewModel(tool),
         ToolCallRow tool => CreateTool(tool),
+        SystemNoticeRow { Subagent: not null } agent => new AgentCallItemViewModel(agent),
         SystemNoticeRow notice => new SystemNoticeItemViewModel(notice.RowId, notice.Kind, notice.Text),
         _ => null,
     };

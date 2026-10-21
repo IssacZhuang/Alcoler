@@ -17,20 +17,22 @@ public partial class SettingsDialog : Window
     {
     }
 
-    internal SettingsDialog(WorkbenchConfig current)
+    internal SettingsDialog(WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null)
     {
         InitializeComponent();
-        _viewModel = new SettingsViewModel(current);
+        _viewModel = new SettingsViewModel(current, chatGptAccount: chatGptAccount);
         DataContext = _viewModel;
+        if (_viewModel.ChatGpt is { } chatGpt)
+            chatGpt.OpenAuthorizeUrl = uri => Launcher.LaunchUriAsync(uri);
         ProvidersTab.IsChecked = true;
         Closing += (_, e) => e.Cancel = _isSaving;
         Closed += (_, _) => _viewModel.Dispose();
         WindowChrome.Attach(this);
     }
 
-    public static async Task<WorkbenchConfig?> ShowAsync(Window owner, WorkbenchConfig current)
+    public static async Task<WorkbenchConfig?> ShowAsync(Window owner, WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null)
     {
-        var dialog = new SettingsDialog(current);
+        var dialog = new SettingsDialog(current, chatGptAccount);
         return await dialog.ShowDialog<WorkbenchConfig?>(owner);
     }
 

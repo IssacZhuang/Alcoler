@@ -9,6 +9,7 @@ using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
+using Alcoler.Workbench.Auth;
 using Alcoler.Workbench.Git;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
@@ -33,8 +34,9 @@ public static class Composition
             extraTools.Add(webSearch);
         }
         var currentConfig = config;
+        var chatGptAccount = new ChatGptAccountService(Path.Combine(WorkbenchDataPaths.Root, "auth.json"));
         var runtime = await BuildRuntimeAsync(config, ct, mcp, extraTools,
-            () => Volatile.Read(ref currentConfig).IntegratedTerminalShell);
+            () => Volatile.Read(ref currentConfig).IntegratedTerminalShell, chatGptAccount);
         var workbench = new WorkbenchViewModel(
             runtime,
             AvaloniaUiScheduler.Instance,
@@ -47,6 +49,7 @@ public static class Composition
                     webFetch.Dispose();
                     webSearch?.Dispose();
                 })),
+            chatGptAccount: chatGptAccount,
             browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance, path =>
             {
                 using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -63,7 +66,8 @@ public static class Composition
         CancellationToken ct,
         McpServerManager? mcp = null,
         IReadOnlyList<ITool>? extraTools = null,
-        Func<ShellEnvironment?>? shellPreference = null)
+        Func<ShellEnvironment?>? shellPreference = null,
+        ChatGptAccountService? chatGptAccount = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(WorkbenchDataPaths.DatabasePath)!);
         Directory.CreateDirectory(WorkbenchDataPaths.ArtifactsPath);
@@ -104,7 +108,7 @@ public static class Composition
         {
             Store = store,
             Artifacts = artifacts,
-            Providers = BuildProviders(config),
+            Providers = BuildProviders(config, chatGptAccount),
             Tools = tools,
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
             DefaultModel = WorkbenchModelCatalog.DefaultSelection(config),
@@ -145,10 +149,10 @@ public static class Composition
         }
     }
 
-    internal static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config) =>
-        [.. config.Providers.Where(provider => provider.Enabled).Select(BuildProvider)];
+    internal static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config, ChatGptAccountService? chatGptAccount = null) =>
+        [.. config.Providers.Where(provider => provider.Enabled).Select(provider => BuildProvider(provider, chatGptAccount))];
 
-    private static IModelProvider BuildProvider(WorkbenchProviderConfig provider) =>
+    private static IModelProvider BuildProvider(WorkbenchProviderConfig provider, ChatGptAccountService? chatGptAccount) =>
         provider.Kind.ToLowerInvariant() switch
         {
             "anthropic" => new AnthropicModelProvider(
@@ -161,6 +165,16 @@ public static class Composition
                 provider.ApiKey ?? string.Empty,
                 modelProperties: ToProperties(provider),
                 providerId: provider.EffectiveId),
+            "openai-responses" when provider.AccessType == ProviderTemplate.ChatGptAccount => new OpenAiResponsesModelProvider(
+                provider.BaseUrl,
+                // The account channel resolves its bearer per request; the static
+                // key stays empty so nothing but the OAuth token is ever sent.
+                string.Empty,
+                modelProperties: ToProperties(provider),
+                providerId: provider.EffectiveId,
+                accessTokenSource: chatGptAccount is null
+                    ? null
+                    : ct => chatGptAccount.GetAccessTokenAsync(ct)),
             "openai-responses" => new OpenAiResponsesModelProvider(
                 provider.BaseUrl,
                 provider.ApiKey ?? string.Empty,

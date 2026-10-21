@@ -24,6 +24,7 @@ public sealed partial class ProviderViewModel : ObservableObject
     [ObservableProperty] private string? _apiKeyManagementUrl;
     [ObservableProperty] private bool _isApiKeyVisible;
     [ObservableProperty] private bool _isRenaming;
+    [ObservableProperty] private string? _accessType;
 
     public ProviderUsageViewModel Usage { get; } = new();
     public string? TemplateId { get; set; }
@@ -33,6 +34,7 @@ public sealed partial class ProviderViewModel : ObservableObject
     public char ApiKeyPasswordChar => IsApiKeyVisible ? '\0' : '*';
     public string ApiKeyVisibilityLabel => IsApiKeyVisible ? "Hide API key" : "Show API key";
     public bool HasApiKeyManagementUrl => ApiKeyManagementUri is not null;
+    public bool IsChatGptAccount => AccessType == ProviderTemplate.ChatGptAccount;
     public Uri? ApiKeyManagementUri => Uri.TryCreate(ApiKeyManagementUrl, UriKind.Absolute, out var uri)
         && uri.Scheme == Uri.UriSchemeHttps
         && string.IsNullOrEmpty(uri.UserInfo) ? uri : null;
@@ -76,6 +78,7 @@ public sealed partial class ProviderViewModel : ObservableObject
     partial void OnNameChanged(string? value) => OnPropertyChanged(nameof(Label));
     partial void OnEnabledChanged(bool value) => OnPropertyChanged(nameof(StatusLabel));
     partial void OnApiKeyManagementUrlChanged(string? value) => OnPropertyChanged(nameof(HasApiKeyManagementUrl));
+    partial void OnAccessTypeChanged(string? value) => OnPropertyChanged(nameof(IsChatGptAccount));
     partial void OnIsApiKeyVisibleChanged(bool value)
     {
         OnPropertyChanged(nameof(ApiKeyPasswordChar));
@@ -84,9 +87,11 @@ public sealed partial class ProviderViewModel : ObservableObject
 
     public WorkbenchProviderConfig ToConfig() => new(
         Kind.Trim(), BaseUrl.Trim(), string.IsNullOrWhiteSpace(ApiKey) ? null : ApiKey.Trim(),
-        Models.Select(model => model.ToConfig()).ToList(), Id, Name, Enabled, ApiKeyManagementUrl, TemplateId);
+        Models.Select(model => model.ToConfig()).ToList(), Id, Name, Enabled, ApiKeyManagementUrl, TemplateId,
+        AccessType == ProviderTemplate.ChatGptAccount ? AccessType : null);
 
-    internal WorkbenchProviderConfig ModelProviderConfig() => new(Kind.Trim(), BaseUrl.Trim(), null, [], Id, Name, Enabled, TemplateId: TemplateId);
+    internal WorkbenchProviderConfig ModelProviderConfig() => new(Kind.Trim(), BaseUrl.Trim(), null, [], Id, Name, Enabled,
+        TemplateId: TemplateId, AccessType: AccessType == ProviderTemplate.ChatGptAccount ? AccessType : null);
 
     public ModelConfigurationViewModel CreateModelEditor(ModelViewModel? model = null) => new(this, model);
 
@@ -148,10 +153,17 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     {
     }
 
-    internal SettingsViewModel(WorkbenchConfig config, IReadOnlyList<ShellEnvironment> shells, bool isWindows)
+    internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount)
+        : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount)
+    {
+    }
+
+    internal SettingsViewModel(WorkbenchConfig config, IReadOnlyList<ShellEnvironment> shells, bool isWindows,
+        Auth.ChatGptAccountService? chatGptAccount = null)
     {
         _config = config;
         SupportsShellSelection = isWindows;
+        ChatGpt = chatGptAccount is null ? null : new ChatGptAccountViewModel(chatGptAccount, ApplyChatGptModels);
         var choices = new List<ShellChoice> { new("Auto (Git Bash, then CMD)") };
         choices.AddRange(shells.Select(shell => new ShellChoice(
             shell.Dialect == ShellDialect.Cmd ? "CMD" : shell.Name, shell)));
@@ -173,6 +185,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 Enabled = provider.Enabled,
                 ApiKeyManagementUrl = provider.ApiKeyManagementUrl,
                 TemplateId = provider.TemplateId,
+                AccessType = provider.AccessType,
             };
             foreach (var model in provider.Models ?? [])
             {
@@ -196,6 +209,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public ObservableCollection<ProviderViewModel> Providers { get; } = [];
 
     public ObservableCollection<McpServerViewModel> McpServers { get; } = [];
+
+    public ChatGptAccountViewModel? ChatGpt { get; }
 
     public IReadOnlyList<string> ThemeChoices { get; } = [Dark, Light];
 
@@ -232,6 +247,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             BaseUrl = template?.BaseUrl ?? string.Empty,
             ApiKeyManagementUrl = template?.ApiKeyManagementUrl,
             TemplateId = template?.Id,
+            AccessType = template?.AccessType,
         };
         foreach (var modelId in template?.ModelIds ?? [])
             provider.Models.Add(provider.CreateModel(new WorkbenchModelConfig(modelId)));
@@ -252,6 +268,16 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     }
 
     private void RemoveServerItem(McpServerViewModel server) => McpServers.Remove(server);
+
+    // Sign-in replaces the plan model list: the catalog is the account's source of truth.
+    internal void ApplyChatGptModels(IReadOnlyList<string> modelIds)
+    {
+        var provider = Providers.FirstOrDefault(provider => provider.IsChatGptAccount);
+        if (provider is null) return;
+        provider.Models.Clear();
+        foreach (var modelId in modelIds)
+            provider.Models.Add(provider.CreateModel(new WorkbenchModelConfig(modelId)));
+    }
 
     public void Dispose()
     {

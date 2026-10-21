@@ -26,6 +26,8 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private readonly IAgentRuntime _runtime;
     private readonly ProjectionStore _store;
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
+    private readonly Dictionary<string, SystemNoticeRow> _agentRows = [];
+    private readonly List<string> _rowOrder = [];
     private readonly IReadOnlyList<ModelChoice>? _modelChoices;
     private readonly ModelSelection? _defaultSelection;
     private bool _hasLocalSelection;
@@ -146,6 +148,16 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             appendedDelta |= ApplyOp(op);
         }
+        if (update.Ops.Any(op => op switch
+            {
+                RowAppended { Row: SystemNoticeRow { Subagent: not null } } => true,
+                RowUpserted { Row: SystemNoticeRow { Subagent: not null } } => true,
+                RowAppended { Row: ToolCallRow tool } => AgentCallItemViewModel.IsAgentTool(tool.ToolName),
+                RowUpserted { Row: ToolCallRow tool } => AgentCallItemViewModel.IsAgentTool(tool.ToolName),
+                RowRemoved => _agentRows.Count > 0 || Items.OfType<AgentCallItemViewModel>().Any(),
+                _ => false,
+            }))
+            ReconcileAgents();
         if (update.Ops.OfType<StatePatched>().Any())
         {
             ApplyState(update.State);
@@ -159,8 +171,13 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private void ReconcileRows(IReadOnlyList<ConversationRow> rows)
     {
         List<TimelineItemViewModel> items = [];
+        _agentRows.Clear();
+        _rowOrder.Clear();
         foreach (var row in rows)
         {
+            _rowOrder.Add(row.RowId);
+            if (row is SystemNoticeRow { Subagent: not null } agent)
+                _agentRows[row.RowId] = agent;
             var existing = _itemsByRowId.GetValueOrDefault(row.RowId);
             var item = existing is not null && TryUpdateItem(existing, row)
                 ? existing
@@ -201,10 +218,53 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 Items.Insert(index, item);
             }
         }
+        ReconcileAgents();
+    }
+
+    private void ReconcileAgents()
+    {
+        var dispatches = _itemsByRowId.Values.OfType<AgentCallItemViewModel>().Where(item => item.IsDispatch).ToArray();
+        var byToolId = dispatches.ToDictionary(item => item.Id!.Value);
+        var legacyIds = dispatches.Where(item => !string.IsNullOrEmpty(item.LegacyAgentId))
+            .GroupBy(item => item.LegacyAgentId!, StringComparer.Ordinal)
+            .Where(group => group.Count() == 1).ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
+        var paired = new HashSet<string>();
+        var states = new Dictionary<AgentCallItemViewModel, Alcoler.Contracts.Subagents.SubagentState>();
+        foreach (var row in _agentRows.Values)
+        {
+            var agent = row.Subagent!;
+            AgentCallItemViewModel? dispatch = null;
+            if (agent.ParentToolCallId is { } toolId)
+                byToolId.TryGetValue(toolId, out dispatch);
+            else
+                legacyIds.TryGetValue(agent.Id.Value, out dispatch);
+            if (dispatch is null)
+                continue;
+            states[dispatch] = agent;
+            paired.Add(row.RowId);
+        }
+        foreach (var dispatch in dispatches)
+            dispatch.SetSubagent(states.GetValueOrDefault(dispatch));
+        for (var index = Items.Count - 1; index >= 0; index--)
+            if (paired.Contains(Items[index].RowId))
+                Items.RemoveAt(index);
+        foreach (var row in _agentRows.Values.Where(row => !paired.Contains(row.RowId)))
+        {
+            var item = _itemsByRowId[row.RowId];
+            if (Items.Contains(item))
+                continue;
+            var rowIndex = _rowOrder.IndexOf(row.RowId);
+            var index = Items.TakeWhile(visible => _rowOrder.IndexOf(visible.RowId) < rowIndex).Count();
+            Items.Insert(index, item);
+        }
     }
 
     private static bool TryUpdateItem(TimelineItemViewModel item, ConversationRow row) => (item, row) switch
     {
+        (AgentCallItemViewModel agent, ToolCallRow tool) when agent.Id == tool.Id && AgentCallItemViewModel.IsAgentTool(tool.ToolName) =>
+            UpdateAgent(agent, tool),
+        (AgentCallItemViewModel { IsDispatch: false } agent, SystemNoticeRow { Subagent: not null } notice) =>
+            UpdateAgent(agent, notice),
         (AssistantMessageItemViewModel assistant, AssistantMessageRow assistantRow) when assistant.Id == assistantRow.Id =>
             TimelineItemFactory.Update(item, row),
         (ToolCallItemViewModel tool, ToolCallRow toolRow) when tool.Id == toolRow.Id && tool.ToolName == toolRow.ToolName =>
@@ -214,8 +274,30 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         _ => false,
     };
 
+    private static bool UpdateAgent(AgentCallItemViewModel item, ToolCallRow row)
+    {
+        item.UpdateFrom(row);
+        return true;
+    }
+
+    private static bool UpdateAgent(AgentCallItemViewModel item, SystemNoticeRow row)
+    {
+        item.UpdateFrom(row);
+        return true;
+    }
+
     private bool ApplyOp(RowOp op)
     {
+        var row = op switch { RowAppended appended => appended.Row, RowUpserted upserted => upserted.Row, _ => null };
+        if (row is not null)
+        {
+            if (!_itemsByRowId.ContainsKey(row.RowId))
+                _rowOrder.Add(row.RowId);
+            if (row is SystemNoticeRow { Subagent: not null } agent)
+                _agentRows[row.RowId] = agent;
+            else
+                _agentRows.Remove(row.RowId);
+        }
         switch (op)
         {
             case RowAppended appended when TimelineItemFactory.Create(appended.Row) is { } item:
@@ -244,6 +326,8 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 return false;
 
             case RowRemoved removed:
+                _agentRows.Remove(removed.RowId);
+                _rowOrder.Remove(removed.RowId);
                 if (_itemsByRowId.Remove(removed.RowId, out var removedItem))
                 {
                     Items.Remove(removedItem);

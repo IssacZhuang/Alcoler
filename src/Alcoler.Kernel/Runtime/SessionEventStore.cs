@@ -47,23 +47,18 @@ public sealed class SessionEventStore
         }
     }
 
-    public SequencedEvent Append(SessionEvent sessionEvent)
+    public SequencedEvent Append(SessionEvent sessionEvent, DateTimeOffset? occurredAt = null)
     {
-        ChannelWriter<SequencedEvent>[] writers;
-        SequencedEvent sequenced;
         lock (_sync)
         {
-            sequenced = new SequencedEvent(_nextSequence++, SessionId, _clock.GetUtcNow(), sessionEvent);
+            var sequenced = new SequencedEvent(_nextSequence++, SessionId, occurredAt ?? _clock.GetUtcNow(), sessionEvent);
             _events.Add(sequenced);
-            writers = [.. _subscribers];
+            foreach (var writer in _subscribers)
+            {
+                writer.TryWrite(sequenced);
+            }
+            return sequenced;
         }
-
-        foreach (var writer in writers)
-        {
-            writer.TryWrite(sequenced);
-        }
-
-        return sequenced;
     }
 
     public SessionEventSubscriber Subscribe(long afterSequence)
@@ -73,16 +68,13 @@ public sealed class SessionEventStore
             SingleReader = true,
             SingleWriter = false,
         });
-        List<SequencedEvent> replay;
         lock (_sync)
         {
             _subscribers.Add(channel.Writer);
-            replay = _events.Where(e => e.Sequence > afterSequence).ToList();
-        }
-
-        foreach (var evt in replay)
-        {
-            channel.Writer.TryWrite(evt);
+            foreach (var evt in _events.Where(e => e.Sequence > afterSequence))
+            {
+                channel.Writer.TryWrite(evt);
+            }
         }
 
         return new SessionEventSubscriber(channel.Reader, () =>

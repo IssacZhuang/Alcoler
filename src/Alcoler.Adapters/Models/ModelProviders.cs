@@ -41,7 +41,8 @@ public sealed class OpenAiResponsesModelProvider(
     string baseUrl,
     string apiKey,
     IReadOnlyDictionary<string, ModelProperties>? modelProperties = null,
-    string? providerId = null) : IModelProvider
+    string? providerId = null,
+    Func<CancellationToken, ValueTask<string>>? accessTokenSource = null) : IModelProvider
 {
     private static readonly HttpClient SharedClient = ModelProviderCatalog.CreateSharedClient();
 
@@ -51,7 +52,7 @@ public sealed class OpenAiResponsesModelProvider(
     public ValueTask<IChatModel> BindAsync(ModelSelection selection, CancellationToken cancellationToken) =>
         ValueTask.FromResult<IChatModel>(new OpenAiResponsesChatModel(SharedClient,
             new OpenAiResponsesModelOptions(selection.ModelId, apiKey, baseUrl),
-            ModelProviderCatalog.Resolve(Id, selection, modelProperties), Id));
+            ModelProviderCatalog.Resolve(Id, selection, modelProperties), Id, accessTokenSource));
 }
 
 public sealed class ScriptedModelProvider(IChatModel model, string? providerId = null) : IModelProvider

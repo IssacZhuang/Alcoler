@@ -2,6 +2,11 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Alcoler.Adapters.Models;
+using Alcoler.Adapters.Storage;
+using Alcoler.Contracts.Events;
+using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tests.Subagents;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
@@ -70,6 +75,8 @@ public class SubagentEndToEndTests
         Assert.Contains("Completed", notice.Text);
 
         var finishedState = Assert.IsType<SubagentState>(notice.Subagent);
+        Assert.Equal(taskRow.Id, finishedState.ParentToolCallId);
+        Assert.Equal("general-purpose", finishedState.AgentType);
         Assert.NotNull(finishedState.OutputFile);
         Assert.Equal(Path.Combine(harness.Root, "agent-output", session.Id.Value, finishedState.Id.Value, "output.txt"),
             finishedState.OutputFile);
@@ -89,6 +96,9 @@ public class SubagentEndToEndTests
         var childId = finishedState.ChildSessionId;
         await runtime.DisposeAsync();
         await using var reopened = harness.BuildRuntime();
+        await reopened.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var parentProjection = reopened.Subscribe(session.Id);
+        Assert.Equal(snapshot.Rows.Select(RowIdentity), parentProjection.Snapshot().Rows.Select(RowIdentity));
         var sessions = await reopened.ListSessionsAsync(harness.Root, 10, CancellationToken.None);
         Assert.Equal(session.Id, Assert.Single(sessions).Id);
 
@@ -155,6 +165,8 @@ public class SubagentEndToEndTests
         foreach (var state in finished)
         {
             var call = calls.Single(row => row.Input.GetProperty("description").GetString() == state.Description);
+            Assert.Equal(call.Id, state.ParentToolCallId);
+            Assert.Equal("general-purpose", state.AgentType);
             var output = string.Join("\n", (call.Output ?? []).OfType<ToolResultText>().Select(text => text.Text));
             Assert.Contains($"agentId: {state.Id.Value}", output);
             Assert.NotNull(state.EndedAt);
@@ -173,6 +185,7 @@ public class SubagentEndToEndTests
                 Assert.Contains(model.ParentToolResults, result => result.Contains(state.Id.Value, StringComparison.Ordinal));
         }
 
+        var liveOrder = projection.Snapshot().Rows.Select(RowIdentity).ToArray();
         await runtime.DisposeAsync();
         await using var reopened = TestHarness.BuildRuntimeFor(model, harness.Root);
         Assert.Equal(session.Id, Assert.Single(
@@ -180,6 +193,7 @@ public class SubagentEndToEndTests
         await reopened.ResumeSessionAsync(session.Id, CancellationToken.None);
         using var restored = reopened.Subscribe(session.Id);
         Assert.Equal(4, Subagents(restored).Count);
+        Assert.Equal(liveOrder, restored.Snapshot().Rows.Select(RowIdentity));
         foreach (var state in finished)
         {
             await reopened.ResumeSessionAsync(state.ChildSessionId, CancellationToken.None);
@@ -278,6 +292,9 @@ public class SubagentEndToEndTests
             var resumed = Assert.Single(Subagents(projection));
             Assert.Equal(original.Id, resumed.Id);
             Assert.Equal(original.ChildSessionId, resumed.ChildSessionId);
+            Assert.Equal(new ToolCallId("delegate-0"), original.ParentToolCallId);
+            Assert.Equal(original.ParentToolCallId, resumed.ParentToolCallId);
+            Assert.Equal(original.AgentType, resumed.AgentType);
             Assert.Equal(SubagentStatus.Running, resumed.Status);
             Assert.Null(resumed.EndedAt);
             await WaitForPhaseAsync(projection, TurnPhase.Idle);
@@ -294,6 +311,8 @@ public class SubagentEndToEndTests
             await WaitForAsync(() => Subagents(projection) is [ { Status: SubagentStatus.Completed } ]);
             var completed = Assert.Single(Subagents(projection));
             Assert.Equal(original.Id, completed.Id);
+            Assert.Equal(original.ParentToolCallId, completed.ParentToolCallId);
+            Assert.Equal(original.AgentType, completed.AgentType);
             Assert.NotNull(completed.EndedAt);
             Assert.Single(await runtime.ListSessionsAsync(null, 10, CancellationToken.None));
         }
@@ -363,6 +382,190 @@ public class SubagentEndToEndTests
         else
             Assert.DoesNotContain("<result>", notification);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task SqliteReplay_ReconstructsLegacyMixedAndExactTimeline_WithoutComparingSequenceDomains(int format)
+    {
+        await using var harness = TestHarness.Create();
+        var sessionId = StrongId.NewSessionId();
+        var now = new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero);
+        var turn = StrongId.NewTurnId();
+        var call1 = new ToolCallId("first-call");
+        var call2 = new ToolCallId("parallel-call");
+        var input = JsonSerializer.SerializeToElement(new { prompt = "research" });
+        var first = new SubagentState(StrongId.NewSubagentId(), StrongId.NewSessionId(), "first",
+            SubagentStatus.Running, null, now, null, ParentToolCallId: call1, AgentType: "Explore");
+        var parallel = first with { Id = StrongId.NewSubagentId(), ChildSessionId = StrongId.NewSessionId(),
+            Description = "parallel", ParentToolCallId = call2 };
+        var messages = new List<ConversationMessage>();
+        var events = new List<SequencedEvent>();
+        var expected = new ProjectionBuilder();
+        long sequence = 1000;
+        var offset = 0;
+        void Add(SessionEvent sessionEvent)
+        {
+            var at = format == 2 ? now : now.AddSeconds(offset++);
+            if (format == 4 && sessionEvent is (UserMessageCommittedEvent or AssistantMessageCommittedEvent)
+                && messages.Count % 2 == 1)
+                at = messages.Count == 1 ? now.AddDays(1) : now.AddDays(-1);
+            var message = sessionEvent switch
+            {
+                UserMessageCommittedEvent user => user.Message,
+                AssistantMessageCommittedEvent assistant => assistant.Message,
+                _ => null,
+            };
+            if (message is not null)
+            {
+                message = message with { CreatedAt = at };
+                messages.Add(message);
+                sessionEvent = message.Role == MessageRole.User
+                    ? new UserMessageCommittedEvent(message) : new AssistantMessageCommittedEvent(message);
+            }
+            var entry = new SequencedEvent(sequence += 7, sessionId, at, sessionEvent);
+            expected.Apply(entry);
+            if (format == 3 && sessionEvent is ToolCallStartedEvent or ToolCallResultEvent)
+                return;
+            if (message is null || format is 2 or 4 || format == 1 && messages.Count % 2 == 0)
+                events.Add(entry);
+        }
+        ConversationMessage Text(MessageRole role, string text) => new(StrongId.NewMessageId(), role,
+            [new TextPart(StrongId.NewPartId(), text)], now);
+        Add(new UserMessageCommittedEvent(Text(MessageRole.User, "turn one")));
+        Add(new AssistantMessageCommittedEvent(new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
+            [new ToolCallPart(StrongId.NewPartId(), call1, "Agent", input),
+             new ToolCallPart(StrongId.NewPartId(), call2, "Agent", input)], now)));
+        Add(new ToolCallStartedEvent(turn, call1, "Agent", input));
+        Add(new SubagentStartedEvent(first));
+        Add(new ToolCallStartedEvent(turn, call2, "Agent", input));
+        Add(new SubagentStartedEvent(parallel));
+        Add(new UserMessageCommittedEvent(Text(MessageRole.User, "progress during turn")));
+        Add(new SubagentStatusChangedEvent(first with { Status = SubagentStatus.Completed, ResultSummary = "done" }));
+        Add(new ToolCallResultEvent(turn, call1, "Agent", ToolExecutionResult.Text("first result"), TimeSpan.FromSeconds(2)));
+        Add(new SubagentStatusChangedEvent(parallel with { Status = SubagentStatus.Failed, ResultSummary = "child failed" }));
+        Add(new ToolCallResultEvent(turn, call2, "Agent", ToolExecutionResult.Text("parallel result", isError: true), TimeSpan.FromSeconds(3)));
+        Add(new UserMessageCommittedEvent(new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
+            [new ToolResultPart(StrongId.NewPartId(), call1, [new ToolResultText("first result")]),
+             new ToolResultPart(StrongId.NewPartId(), call2, [new ToolResultText("parallel result")], IsError: true)], now)));
+        Add(new AssistantMessageCommittedEvent(Text(MessageRole.Assistant, "turn one done")));
+        Add(new TurnCompletedEvent(turn, TurnOutcome.Completed));
+        Add(new UserMessageCommittedEvent(Text(MessageRole.User, "turn two")));
+        Add(new TurnFailedEvent(StrongId.NewTurnId(), "parent failed"));
+        Add(new TurnCompletedEvent(turn, TurnOutcome.Failed));
+        Add(new UserMessageCommittedEvent(Text(MessageRole.User, "turn three")));
+        Add(new AssistantMessageCommittedEvent(Text(MessageRole.Assistant, "turn three done")));
+        Add(new SubagentStatusChangedEvent(first with { Status = SubagentStatus.Running }));
+        Add(new SubagentStatusChangedEvent(first with { Status = SubagentStatus.Completed, ResultSummary = "resumed" }));
+        Add(new TurnCompletedEvent(turn, TurnOutcome.Completed));
+
+        await using (var store = new SqliteSessionStore(harness.DatabasePath))
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            await store.UpsertSessionAsync(new SessionRecord(sessionId, harness.Root, "Replay", PermissionMode.Yolo,
+                null, now, now), CancellationToken.None);
+            await store.AppendMessagesAsync(sessionId, messages, 50_000, CancellationToken.None);
+            await store.AppendDurableEventsAsync(events.AsEnumerable().Reverse().ToArray(), CancellationToken.None);
+        }
+        for (var reopen = 0; reopen < 2; reopen++)
+        {
+            await using var store = new SqliteSessionStore(harness.DatabasePath);
+            await using var runtime = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, store);
+            await runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
+            using var projection = runtime.Subscribe(sessionId);
+            var restored = projection.Snapshot();
+            Assert.Equal(expected.Rows().Select(RowIdentity), restored.Rows.Select(RowIdentity));
+            Assert.Equal(TurnPhase.Idle, restored.State.Phase);
+            Assert.Equal(first.ParentToolCallId, Subagents(projection)[0].ParentToolCallId);
+            Assert.Equal("Explore", Subagents(projection)[0].AgentType);
+            Assert.Equal("resumed", Subagents(projection)[0].ResultSummary);
+            Assert.Equal(SubagentStatus.Failed, Subagents(projection)[1].Status);
+            Assert.Equal(format == 3 ? null : TimeSpan.FromSeconds(2), restored.Rows.OfType<ToolCallRow>().First().Duration);
+            Assert.Equal(events.Count, (await store.LoadDurableEventsAsync(sessionId, CancellationToken.None)).Count);
+        }
+    }
+
+    [Fact]
+    public async Task SqliteReplay_UsesCanonicalMessages_WithoutResurrectingCompactedEnvelopesOrTools()
+    {
+        await using var harness = TestHarness.Create();
+        var now = DateTimeOffset.UtcNow;
+        var sessionId = StrongId.NewSessionId();
+        var callId = new ToolCallId("removed-call");
+        var stale = new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
+            [new ToolCallPart(StrongId.NewPartId(), callId, "Read", JsonSerializer.SerializeToElement(new { }))], now);
+        var retained = new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
+            [new TextPart(StrongId.NewPartId(), "old content")], now);
+        var canonical = retained with { Parts = [new TextPart(StrongId.NewPartId(), "canonical content")] };
+        await using (var store = new SqliteSessionStore(harness.DatabasePath))
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            await store.UpsertSessionAsync(new SessionRecord(sessionId, harness.Root, "Compacted", PermissionMode.Yolo,
+                null, now, now), CancellationToken.None);
+            await store.AppendMessagesAsync(sessionId, [canonical], 0, CancellationToken.None);
+            await store.AppendDurableEventsAsync([
+                new SequencedEvent(10, sessionId, now, new AssistantMessageCommittedEvent(stale)),
+                new SequencedEvent(11, sessionId, now, new ToolCallStartedEvent(StrongId.NewTurnId(), callId, "Read",
+                    JsonSerializer.SerializeToElement(new { }))),
+                new SequencedEvent(20, sessionId, now, new AssistantMessageCommittedEvent(retained)),
+                new SequencedEvent(21, sessionId, now, new AssistantMessageCommittedEvent(retained))], CancellationToken.None);
+        }
+        await using var reopenedStore = new SqliteSessionStore(harness.DatabasePath);
+        await using var runtime = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, reopenedStore);
+        await runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
+        using var projection = runtime.Subscribe(sessionId);
+        var row = Assert.IsType<AssistantMessageRow>(Assert.Single(projection.Snapshot().Rows));
+        Assert.Equal(canonical.Id, row.Id);
+        Assert.Equal("canonical content", Assert.IsType<TextPart>(Assert.Single(row.Parts)).Text);
+    }
+
+    [Fact]
+    public async Task ActualTurns_WithTiedTimestampsAndFailure_PreserveRowChronologyAcrossSqliteRestart()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("Agent", new { prompt = "child task", description = "reader", subagent_type = "Explore" }),
+            FinalText("child answer"),
+            FinalText("first answer"),
+            new ScriptStep.Events(new ModelStreamFailed(new ModelFailure(ModelFailureKind.InvalidRequest, "second turn failed"))),
+            FinalText("third answer"));
+        var clock = new FixedTimeProvider(new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero));
+        await using var runtime = harness.BuildRuntime(options => options with { Clock = clock });
+        var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        for (var turn = 1; turn <= 3; turn++)
+        {
+            Assert.True((await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, $"turn {turn}"), CancellationToken.None)).Accepted);
+            await WaitForAsync(() => projection.Snapshot().Rows.OfType<UserMessageRow>().Count() == turn
+                && projection.Snapshot().State.Phase == TurnPhase.Idle);
+        }
+        var expected = projection.Snapshot().Rows.Select(RowIdentity).ToArray();
+        Assert.Contains(expected, identity => identity == "turn_error:second turn failed");
+        Assert.Equal("Explore", Assert.Single(Subagents(projection)).AgentType);
+        await runtime.DisposeAsync();
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var persisted = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Equal((await store.LoadMessagesAsync(session.Id, CancellationToken.None)).Count,
+            persisted.Count(entry => entry.Event is UserMessageCommittedEvent or AssistantMessageCommittedEvent));
+        Assert.All(persisted, entry => Assert.Equal(clock.GetUtcNow(), entry.OccurredAt));
+        for (var reopen = 0; reopen < 2; reopen++)
+        {
+            await using var reopenedStore = new SqliteSessionStore(harness.DatabasePath);
+            await using var reopened = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, reopenedStore);
+            await reopened.ResumeSessionAsync(session.Id, CancellationToken.None);
+            using var restored = reopened.Subscribe(session.Id);
+            Assert.Equal(expected, restored.Snapshot().Rows.Select(RowIdentity));
+        }
+    }
+
+    private static string RowIdentity(ConversationRow row) => row switch
+    {
+        SystemNoticeRow { Kind: "turn_error" } notice => $"turn_error:{notice.Text}",
+        _ => $"{row.GetType().Name}:{row.RowId}",
+    };
 
     private static IReadOnlyList<SubagentState> Subagents(IConversationProjection projection) =>
         projection.Snapshot().Rows.OfType<SystemNoticeRow>()

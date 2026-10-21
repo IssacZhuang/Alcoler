@@ -321,7 +321,8 @@ public sealed class ConversationStatusViewTests
         var agents = Enumerable.Range(1, 4).Select(index => Agent($"agent-{index}", "Independent review")).ToArray();
         using var harness = new Harness(1400, agents);
         await ToggleSectionAsync(harness.View, "AgentsSection");
-        Assert.Equal("4", harness.Model.AgentCountText);
+        Assert.Equal("4 running", harness.Model.AgentCountText);
+        Assert.Equal("4 running", Named<TextBlock>(harness.View, "AgentRunningCount").Text);
         foreach (var agent in agents)
             Assert.True(ActivityButton(harness.View, agent.RowId).IsEffectivelyVisible);
 
@@ -330,7 +331,10 @@ public sealed class ConversationStatusViewTests
             Subagent = agent.Subagent! with { Status = SubagentStatus.Completed, EndedAt = StartedAt.AddMinutes(1) },
         })).ToArray());
         await RenderAsync(harness.Window);
-        Assert.Equal("1/4", harness.Model.AgentCountText);
+        Assert.Equal("1 running", harness.Model.AgentCountText);
+        var runningCount = Named<TextBlock>(harness.View, "AgentRunningCount");
+        Assert.True(runningCount.IsEffectivelyVisible);
+        Assert.Equal("1 running", runningCount.Text);
         Assert.Equal("agent-4", Assert.Single(harness.Model.Agents).RowId);
         Assert.True(ActivityButton(harness.View, "agent-4").IsEffectivelyVisible);
         Assert.Single(harness.View.GetVisualDescendants().OfType<Button>(),
@@ -340,6 +344,110 @@ public sealed class ConversationStatusViewTests
         var directory = Assert.IsAssignableFrom<Control>(Assert.IsType<Flyout>(endedButton.Flyout).Content);
         foreach (var agent in agents.Take(3))
             Assert.True(ActivityButton(directory, agent.RowId).IsEffectivelyVisible);
+    }
+
+    [AvaloniaFact]
+    public async Task Agents_LastRunningCompletionClosesGroupButKeepsEndedEntryAccessible()
+    {
+        var running = Agent("running", "Inspect production view");
+        using var harness = new Harness(1400, running, Agent("ended", "Earlier review", SubagentStatus.Completed));
+        await RenderAsync(harness.Window);
+        var section = Named<Expander>(harness.View, "AgentsSection");
+        var count = Named<TextBlock>(harness.View, "AgentRunningCount");
+        Assert.False(section.IsExpanded);
+        Assert.True(count.IsEffectivelyVisible);
+        Assert.Equal("1 running", count.Text);
+        await ToggleSectionAsync(harness.View, "AgentsSection");
+
+        Apply(harness.Model, new RowUpserted(running with
+        {
+            Subagent = running.Subagent! with { Status = SubagentStatus.Completed, EndedAt = StartedAt.AddMinutes(2) },
+        }));
+        await RenderAsync(harness.Window);
+        Assert.True(harness.View.IsVisible);
+        Assert.True(Named<Border>(harness.View, "AgentsContainer").IsEffectivelyVisible);
+        Assert.False(section.IsExpanded);
+        Assert.False(count.IsVisible);
+        Assert.Equal(string.Empty, count.Text);
+        Assert.Equal("2 ended agents", harness.Model.SummaryText);
+
+        await ToggleSectionAsync(harness.View, "AgentsSection");
+        var endedButton = Named<Button>(harness.View, "EndedAgentsButton");
+        Assert.True(endedButton.IsEffectivelyVisible);
+        Assert.Contains(endedButton.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Ended");
+        Assert.Contains(endedButton.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "2");
+        await ClickAsync(endedButton);
+        var flyout = Assert.IsType<Flyout>(endedButton.Flyout);
+        Assert.True(flyout.IsOpen);
+        var content = Assert.IsAssignableFrom<Control>(flyout.Content);
+        Assert.True(ActivityButton(content, "running").IsEffectivelyVisible);
+        Assert.True(ActivityButton(content, "ended").IsEffectivelyVisible);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(SubagentStatus.Completed, "AlcolerSuccess")]
+    [InlineData(SubagentStatus.Failed, "AlcolerError")]
+    [InlineData(SubagentStatus.Cancelled, "AlcolerWarning")]
+    public async Task EndedOnlyAgents_KeepSummaryAndFlyoutNavigationWithoutRunningCount(SubagentStatus status, string iconBrush)
+    {
+        using var harness = new Harness(900, Agent("ended", "Finished review", status));
+        List<StatusActivity> requested = [];
+        harness.View.ActivityRequested += requested.Add;
+        await RenderAsync(harness.Window);
+        Assert.True(harness.View.IsVisible);
+        Assert.False(harness.View.IsExpanded);
+        Assert.Equal("1 ended agent", harness.Model.SummaryText);
+        var summary = Named<Button>(harness.View, "SummaryButton");
+        Assert.Contains(summary.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "1 ended agent");
+
+        await ClickAsync(summary);
+        Assert.False(Named<Expander>(harness.View, "AgentsSection").IsExpanded);
+        Assert.False(Named<TextBlock>(harness.View, "AgentRunningCount").IsVisible);
+        Assert.Equal(string.Empty, Named<TextBlock>(harness.View, "AgentRunningCount").Text);
+        await ToggleSectionAsync(harness.View, "AgentsSection");
+        var endedButton = Named<Button>(harness.View, "EndedAgentsButton");
+        await ClickAsync(endedButton);
+        var flyout = Assert.IsType<Flyout>(endedButton.Flyout);
+        Assert.True(flyout.IsOpen);
+        var content = Assert.IsAssignableFrom<Control>(flyout.Content);
+        var row = ActivityButton(content, "ended");
+        var icon = Assert.Single(row.GetVisualDescendants().OfType<Alcoler.Workbench.Controls.Icon>(),
+            control => control.Classes.Contains("agentIcon"));
+        AssertThemeBrush(harness.Window, harness.View.ActualThemeVariant, iconBrush, icon.Stroke);
+        Assert.DoesNotContain(content.GetVisualDescendants().OfType<Button>(),
+            button => button.Classes.Contains("stopActivity") && button.IsVisible);
+
+        await ClickAsync(row);
+        Assert.False(flyout.IsOpen);
+        var activity = Assert.Single(requested);
+        Assert.Equal("ended", activity.RowId);
+        Assert.Equal(new SessionId("child-ended"), activity.ChildSessionId);
+        Assert.Equal(status.ToString(), activity.StatusText);
+        Assert.False(activity.CanStop);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task ActiveAgent_ShowsTypedIdentityAndIndependentStopWithoutTranscriptNavigation()
+    {
+        var agent = Agent("agent", "Inspect production view");
+        using var harness = new Harness(1400, agent with { Subagent = agent.Subagent! with { AgentType = "Explore" } });
+        List<StatusActivity> requested = [];
+        harness.View.ActivityRequested += requested.Add;
+        await ToggleSectionAsync(harness.View, "AgentsSection");
+        var row = ActivityButton(harness.View, "agent");
+        Assert.Contains(row.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Explore · Running");
+        var icon = Assert.Single(row.GetVisualDescendants().OfType<Alcoler.Workbench.Controls.Icon>(),
+            control => control.Classes.Contains("agentIcon"));
+        AssertThemeBrush(harness.Window, harness.View.ActualThemeVariant, "AlcolerTextPrimary", icon.Stroke);
+        var stop = Assert.Single(harness.View.GetVisualDescendants().OfType<Button>(),
+            button => button.Classes.Contains("stopActivity") && button.IsEffectivelyVisible);
+        Assert.DoesNotContain(row.GetVisualDescendants(), visual => ReferenceEquals(visual, stop));
+        await ClickAsync(stop);
+        Assert.Empty(requested);
+        Assert.True(Named<Expander>(harness.View, "AgentsSection").IsExpanded);
+        await ClickAsync(row);
+        Assert.Equal(new SessionId("child-agent"), Assert.Single(requested).ChildSessionId);
     }
 
     [AvaloniaFact]

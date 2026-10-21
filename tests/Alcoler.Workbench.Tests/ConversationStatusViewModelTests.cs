@@ -41,7 +41,7 @@ public sealed class ConversationStatusViewModelTests
         Assert.False(model.HasGit);
         Assert.Equal("0/0", model.TodoCountText);
         Assert.Equal("0", model.TerminalCountText);
-        Assert.Equal("0", model.AgentCountText);
+        Assert.Empty(model.AgentCountText);
     }
 
     [Fact]
@@ -386,7 +386,7 @@ public sealed class ConversationStatusViewModelTests
         model.RefreshActivities(Now);
         Assert.Equal(2, model.Agents.Count);
         Assert.Empty(model.EndedAgents);
-        Assert.Equal("2", model.AgentCountText);
+        Assert.Equal("2 running", model.AgentCountText);
         Assert.All(model.Agents, agent => Assert.True(agent.CanStop));
         Assert.Equal("2 agents running", model.SummaryText);
 
@@ -402,7 +402,7 @@ public sealed class ConversationStatusViewModelTests
         Assert.Equal("Result one", activity.OutputText);
         Assert.Equal("2m 0s", activity.DurationText);
         Assert.False(activity.CanStop);
-        Assert.Equal("1/2", model.AgentCountText);
+        Assert.Equal("1 running", model.AgentCountText);
 
         model.RefreshActivities(Now.AddHours(3));
         Assert.Equal("2m 0s", Assert.Single(model.EndedAgents).DurationText);
@@ -413,9 +413,10 @@ public sealed class ConversationStatusViewModelTests
         Assert.Empty(model.Agents);
         Assert.Equal(2, model.EndedAgents.Count);
         Assert.True(model.HasAgents);
-        Assert.Equal("0/2", model.AgentCountText);
-        Assert.False(model.HasContent);
-        Assert.Empty(model.SummaryText);
+        Assert.Empty(model.AgentCountText);
+        Assert.True(model.HasContent);
+        Assert.False(model.HasRunningActivities);
+        Assert.Equal("2 ended agents", model.SummaryText);
         Apply(model, new RowRemoved("end"));
         Assert.Equal("one", Assert.Single(model.Agents).Id);
     }
@@ -432,7 +433,7 @@ public sealed class ConversationStatusViewModelTests
         Assert.Empty(model.Agents);
         Apply(model, running.Select(row => (RowOp)new RowAppended(row)).ToArray());
         Assert.Equal(4, model.Agents.Count);
-        Assert.Equal("4", model.AgentCountText);
+        Assert.Equal("4 running", model.AgentCountText);
 
         var latest = running.Select((row, index) => index == 3 ? row : row with
         {
@@ -441,15 +442,83 @@ public sealed class ConversationStatusViewModelTests
         Apply(model, latest.Take(3).Select(row => (RowOp)new RowUpserted(row)).ToArray());
         Assert.Equal("4", Assert.Single(model.Agents).Id);
         Assert.Equal(3, model.EndedAgents.Count);
-        Assert.Equal("1/4", model.AgentCountText);
+        Assert.Equal("1 running", model.AgentCountText);
         Assert.Equal("1 agent running", model.SummaryText);
 
         Reset(model, [.. calls, .. latest]);
         Assert.Equal("4", Assert.Single(model.Agents).Id);
         Assert.Equal(3, model.EndedAgents.Count);
-        Assert.Equal("1/4", model.AgentCountText);
+        Assert.Equal("1 running", model.AgentCountText);
         Apply(model, new RowUpserted(latest[0]));
-        Assert.Equal("1/4", model.AgentCountText);
+        Assert.Equal("1 running", model.AgentCountText);
+    }
+
+    [Theory]
+    [InlineData(null, "Running")]
+    [InlineData("   ", "Running")]
+    [InlineData("Explore", "Explore · Running")]
+    public void Agents_TypeIdentityComesOnlyFromTypedLifecycle(string? agentType, string expected)
+    {
+        using var model = Create();
+        var agent = Agent("agent", "one", SubagentStatus.Running);
+        Reset(model, Tool("call", "Agent", new { description = "Agent one", subagent_type = "Untyped" }, ToolCallStatus.Running),
+            agent with { Subagent = agent.Subagent! with { AgentType = agentType } });
+        var activity = Assert.Single(model.Agents);
+        Assert.Equal(agentType, activity.AgentType);
+        Assert.Equal("Running", activity.StatusText);
+        Assert.Equal(expected, activity.DetailText);
+    }
+
+    [Fact]
+    public void Agents_ActiveOrderFollowsStartTimeAfterReorderedCompletionsAndSnapshotReset()
+    {
+        using var model = Create();
+        var first = Agent("first", "one", SubagentStatus.Running, Now.AddMinutes(-6));
+        var second = Agent("second", "two", SubagentStatus.Running, Now.AddMinutes(-5));
+        var third = Agent("third", "three", SubagentStatus.Running, Now.AddMinutes(-4));
+        var fourth = Agent("fourth", "four", SubagentStatus.Running, Now.AddMinutes(-3));
+        Reset(model, third, fourth, first, second);
+        model.RefreshActivities(Now);
+        Assert.Equal(new[] { "one", "two", "three", "four" }, model.Agents.Select(agent => agent.Id));
+
+        var secondEnded = second with
+        {
+            RowId = "second-ended",
+            Subagent = second.Subagent! with { Status = SubagentStatus.Completed, EndedAt = Now },
+        };
+        var fourthEnded = fourth with
+        {
+            RowId = "fourth-ended",
+            Subagent = fourth.Subagent! with { Status = SubagentStatus.Failed, EndedAt = Now },
+        };
+        Apply(model, new RowAppended(fourthEnded), new RowAppended(secondEnded));
+        Assert.Equal(new[] { "one", "three" }, model.Agents.Select(agent => agent.Id));
+        Assert.Equal("2 running", model.AgentCountText);
+        Assert.Equal(2, model.EndedAgents.Count);
+
+        Reset(model, third, second, fourth, first, secondEnded, fourthEnded);
+        model.RefreshActivities(Now);
+        Assert.Equal(new[] { "one", "three" }, model.Agents.Select(agent => agent.Id));
+        Assert.Equal(new[] { "6m 0s", "4m 0s" }, model.Agents.Select(agent => agent.DurationText));
+        Assert.Equal("2 running", model.AgentCountText);
+        Assert.Equal(2, model.EndedAgents.Count);
+    }
+
+    [Fact]
+    public void EndedAgents_SummaryUsesEndedCountOnlyWhenNoHigherPriorityContentRemains()
+    {
+        using var model = Create();
+        var ended = Enumerable.Range(1, 5)
+            .Select(index => Agent($"ended-{index}", index.ToString(), SubagentStatus.Completed)).ToArray();
+        Reset(model, [Todo("todos", ("Keep working", "pending")), .. ended]);
+        Assert.Equal("Keep working", model.SummaryText);
+        Assert.Empty(model.AgentCountText);
+
+        Apply(model, new RowRemoved("todos"));
+        Assert.True(model.HasContent);
+        Assert.Equal("5 ended agents", model.SummaryText);
+        Assert.NotEmpty(model.SummaryIconPath);
+        Assert.False(model.HasRunningActivities);
     }
 
     [Fact]
@@ -473,15 +542,27 @@ public sealed class ConversationStatusViewModelTests
     [InlineData(SubagentStatus.Completed)]
     [InlineData(SubagentStatus.Failed)]
     [InlineData(SubagentStatus.Cancelled)]
-    public void EndedAgentsAlone_AreRetainedWithoutShowingCard(SubagentStatus status)
+    public void EndedAgentsAlone_KeepCardAccessibleWithEndedSummaryAndNoRunningCount(SubagentStatus status)
     {
         using var model = Create();
         Reset(model, Agent("agent", "one", status));
         Assert.Empty(model.Agents);
-        Assert.Single(model.EndedAgents);
+        var ended = Assert.Single(model.EndedAgents);
+        Assert.Equal(status, ended.AgentStatus);
+        Assert.Equal(status == SubagentStatus.Completed, ended.IsCompleted);
+        Assert.Equal(status == SubagentStatus.Failed, ended.IsFailed);
+        Assert.Equal(status == SubagentStatus.Cancelled, ended.IsCancelled);
         Assert.True(model.HasAgents);
+        Assert.True(model.HasContent);
+        Assert.False(model.HasRunningActivities);
+        Assert.Empty(model.AgentCountText);
+        Assert.Equal("1 ended agent", model.SummaryText);
+        Assert.NotEmpty(model.SummaryIconPath);
+
+        Apply(model, new RowRemoved("agent"));
         Assert.False(model.HasContent);
         Assert.Empty(model.SummaryText);
+        Assert.Empty(model.SummaryIconPath);
     }
 
     [Fact]
@@ -731,9 +812,9 @@ public sealed class ConversationStatusViewModelTests
     private static ToolCallRow Plan(string rowId, string markdown, string? summary = null) =>
         Tool(rowId, "ExitPlanMode", new { plan = markdown, summary });
 
-    private static SystemNoticeRow Agent(string rowId, string id, SubagentStatus status) =>
+    private static SystemNoticeRow Agent(string rowId, string id, SubagentStatus status, DateTimeOffset? startedAt = null) =>
         new(rowId, "arbitrary-kind", "Text is not parsed", new SubagentState(new SubagentId(id), new SessionId($"child-{id}"),
-            $"Agent {id}", status, status == SubagentStatus.Running ? null : $"Result {id}", Now.AddMinutes(-3),
+            $"Agent {id}", status, status == SubagentStatus.Running ? null : $"Result {id}", startedAt ?? Now.AddMinutes(-3),
             status == SubagentStatus.Running ? null : Now.AddMinutes(-1)));
 
     private static BackgroundJobInfo Job(string id, BackgroundJobStatus status) =>

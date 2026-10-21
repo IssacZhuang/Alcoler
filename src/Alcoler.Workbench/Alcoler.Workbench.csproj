@@ -14,6 +14,7 @@
     <PackageReference Include="LibGit2Sharp" Version="0.32.0" />
     <PackageReference Include="Markdown.Avalonia.Tight" Version="11.0.3" />
     <PackageReference Include="Porta.Pty" Version="2.2.3" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Alcoler.Workbench.Tests" />

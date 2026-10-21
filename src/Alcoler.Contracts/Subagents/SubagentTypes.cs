@@ -37,7 +37,9 @@ public sealed record SubagentState(
     string? ResultSummary,
     DateTimeOffset StartedAt,
     DateTimeOffset? EndedAt,
-    string? OutputFile = null);
+    string? OutputFile = null,
+    ToolCallId? ParentToolCallId = null,
+    string? AgentType = null);
 
 public sealed record SubagentResult(SubagentState State, string Output, int? ToolUseCount = null);
 

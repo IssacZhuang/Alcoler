@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
@@ -105,6 +107,73 @@ public class SubagentProjectionTests
         Assert.Null(notice.Subagent);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SubagentEvents_DispatchMetadataRoundTripsAndLegacyFieldsDefaultToNull(bool changed)
+    {
+        var state = RunningState();
+        SessionEvent sessionEvent = changed ? new SubagentStatusChangedEvent(state) : new SubagentStartedEvent(state);
+        var restored = AlcolerJson.Deserialize<SessionEvent>(AlcolerJson.Serialize(sessionEvent));
+        Assert.Equal(sessionEvent, restored);
+        var payload = JsonNode.Parse(AlcolerJson.Serialize(sessionEvent))!.AsObject();
+        payload["state"]!.AsObject().Remove("parentToolCallId");
+        payload["state"]!.AsObject().Remove("agentType");
+        var legacy = AlcolerJson.Deserialize<SessionEvent>(payload.ToJsonString());
+        var legacyState = legacy switch
+        {
+            SubagentStartedEvent started => started.State,
+            SubagentStatusChangedEvent updated => updated.State,
+            _ => throw new InvalidOperationException(),
+        };
+        Assert.Equal(state with { ParentToolCallId = null, AgentType = null }, legacyState);
+    }
+
+    [Fact]
+    public void StatusUpdates_AfterProgressErrorsAndLaterTurns_StayAtOriginalRow()
+    {
+        var builder = new ProjectionBuilder();
+        var sessionId = StrongId.NewSessionId();
+        var state = RunningState();
+        long sequence = 0;
+        void Apply(SessionEvent sessionEvent) => builder.Apply(new SequencedEvent(
+            ++sequence, sessionId, state.StartedAt, sessionEvent));
+        ConversationMessage Message(string text) => new(StrongId.NewMessageId(), MessageRole.User,
+            [new TextPart(StrongId.NewPartId(), text)], state.StartedAt);
+
+        Apply(new UserMessageCommittedEvent(Message("first turn")));
+        Apply(new SubagentStartedEvent(state));
+        var parallel = state with { Id = StrongId.NewSubagentId(), ParentToolCallId = new ToolCallId("parallel") };
+        Apply(new SubagentStartedEvent(parallel));
+        Apply(new UserMessageCommittedEvent(Message("progress")));
+        Apply(new TurnFailedEvent(StrongId.NewTurnId(), "turn failed"));
+        Apply(new UserMessageCommittedEvent(Message("later turn")));
+        var before = builder.Rows().Select(row => row.RowId).ToArray();
+        Apply(new SubagentStatusChangedEvent(parallel with { Status = SubagentStatus.Failed }));
+        Apply(new SubagentStatusChangedEvent(state with { Status = SubagentStatus.Completed }));
+        Apply(new SubagentStatusChangedEvent(state with { Status = SubagentStatus.Running }));
+        Assert.Equal(before, builder.Rows().Select(row => row.RowId));
+        Assert.Equal(state.ParentToolCallId, Assert.IsType<SystemNoticeRow>(builder.Rows()[1]).Subagent!.ParentToolCallId);
+        Assert.Equal(SubagentStatus.Running, Assert.IsType<SystemNoticeRow>(builder.Rows()[1]).Subagent!.Status);
+        Assert.Equal(SubagentStatus.Failed, Assert.IsType<SystemNoticeRow>(builder.Rows()[2]).Subagent!.Status);
+    }
+
+    [Fact]
+    public async Task ConcurrentEvents_AreDeliveredToEverySubscriberInSequenceOrder()
+    {
+        var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
+        using var subscriber = store.Subscribe(0);
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+        {
+            for (var index = 0; index < 250; index++)
+                store.Append(new SubagentStartedEvent(RunningState()));
+        })));
+        var received = new List<long>();
+        while (subscriber.Reader.TryRead(out var entry))
+            received.Add(entry.Sequence);
+        Assert.Equal(Enumerable.Range(1, 2000).Select(value => (long)value), received);
+    }
+
     private static SubagentState RunningState() => new(
         StrongId.NewSubagentId(),
         StrongId.NewSessionId(),
@@ -112,5 +181,7 @@ public class SubagentProjectionTests
         SubagentStatus.Running,
         null,
         DateTimeOffset.UtcNow,
-        null);
+        null,
+        ParentToolCallId: new ToolCallId("dispatch"),
+        AgentType: "Explore");
 }

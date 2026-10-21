@@ -631,7 +631,7 @@ public class TimelineSmokeTests
             var tools = new (string Name, string Label)[]
             {
                 ("Bash", "Terminal"), ("Read", "Read"), ("Edit", "Edit"), ("Write", "Write"),
-                ("Glob", "Search"), ("Grep", "Search"), ("Browser", "Browser"), ("Task", "Agent"),
+                ("Glob", "Search"), ("Grep", "Search"), ("Browser", "Browser"),
                 ("TodoRead", "Tasks"), ("TodoWrite", "Tasks"), ("ExitPlanMode", "Plan"),
             };
             var input = JsonSerializer.SerializeToElement(new { description = "Inspect the workspace" });
@@ -685,7 +685,62 @@ public class TimelineSmokeTests
             var distinctTypes = viewModel.Items.OfType<ToolCallItemViewModel>()
                 .Where(item => item.ToolName is not ("Glob" or "TodoWrite"))
                 .Select(item => item.IconPath).ToArray();
-            Assert.Equal(9, distinctTypes.Distinct().Count());
+            Assert.Equal(8, distinctTypes.Distinct().Count());
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AgentDispatch_UsesSingleLineSummaryWithoutInlineResultOrDisclosure(bool failed)
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 600);
+        try
+        {
+            var id = StrongId.NewToolCallId();
+            var title = string.Join(" ", Enumerable.Repeat("Review the workspace", 12));
+            var tool = new ToolCallRow("dispatch", id, "Agent",
+                JsonSerializer.SerializeToElement(new { description = title, subagent_type = "Explore" }),
+                ToolCallStatus.Succeeded, [new ToolResultText("# Raw child result")], false, TimeSpan.FromSeconds(60), DateTimeOffset.UtcNow);
+            var state = new Alcoler.Contracts.Subagents.SubagentState(StrongId.NewSubagentId(), StrongId.NewSessionId(), title,
+                failed ? Alcoler.Contracts.Subagents.SubagentStatus.Failed : Alcoler.Contracts.Subagents.SubagentStatus.Completed,
+                "# Raw child result", DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow, ParentToolCallId: id, AgentType: "Explore");
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], true,
+                [tool, new SystemNoticeRow("agent", "subagent", "Completed - # Raw child result", state)]));
+            Pump();
+            var item = Assert.IsType<AgentCallItemViewModel>(Assert.Single(viewModel.Items));
+            foreach (var variant in new[] { ThemeVariant.Dark, ThemeVariant.Light })
+            foreach (var width in new[] { 900d, 360 })
+            {
+                window.RequestedThemeVariant = variant;
+                window.Width = width;
+                Pump();
+                var header = Assert.Single(view.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("agentRow"));
+                var texts = header.GetVisualDescendants().OfType<TextBlock>().Where(block => block.IsEffectivelyVisible).ToArray();
+                Assert.Contains(texts, block => block.Text == "SubAgent");
+                var type = Assert.Single(texts, block => block.Text == "Explore");
+                Assert.Equal("JetBrains Mono", type.FontFamily.Name);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(view.FindResource(variant, "AlcolerAgentExplore")).Color,
+                    Assert.IsAssignableFrom<ISolidColorBrush>(type.Foreground).Color);
+                Assert.Equal(failed, texts.Any(block => block.Text == "Failed"));
+                Assert.DoesNotContain(texts, block => block.Text is "Completed" or "Running" or "60.0s" || block.Text!.Contains("Raw child result"));
+                Assert.DoesNotContain(header.GetVisualDescendants().OfType<Icon>(), icon => icon.Classes.Contains("disclosure"));
+                Assert.Empty(view.GetVisualDescendants().OfType<SelectableTextBlock>());
+                Assert.InRange(header.Bounds.Height, 27, 29);
+                AssertWithin(header, view);
+                foreach (var control in header.GetVisualDescendants().OfType<Control>().Where(control => control.IsEffectivelyVisible && control is TextBlock or Icon))
+                    AssertWithin(control, header);
+                Assert.True(view.Scroller.Extent.Width <= view.Scroller.Viewport.Width);
+                Assert.Equal(item.AccessibleText, Avalonia.Automation.AutomationProperties.GetName(header));
+            }
         }
         finally
         {

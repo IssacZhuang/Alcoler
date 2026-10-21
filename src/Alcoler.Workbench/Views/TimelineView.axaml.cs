@@ -242,6 +242,16 @@ public partial class TimelineView : UserControl
         }
     }
 
+    private async void OnAgentRowClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: AgentCallItemViewModel { Activity: { } activity } }
+            && TopLevel.GetTopLevel(this) is MainWindow { DataContext: WorkbenchViewModel workbench })
+        {
+            await workbench.OpenStatusActivityAsync(activity);
+            e.Handled = true;
+        }
+    }
+
     private void OnToolRowClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: ToolCallItemViewModel item })

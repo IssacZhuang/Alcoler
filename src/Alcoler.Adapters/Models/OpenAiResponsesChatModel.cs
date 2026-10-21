@@ -18,10 +18,16 @@ public sealed class OpenAiResponsesChatModel(
     HttpClient httpClient,
     OpenAiResponsesModelOptions options,
     ModelProperties? properties = null,
-    string? providerId = null) : IChatModel
+    string? providerId = null,
+    Func<CancellationToken, ValueTask<string>>? accessTokenSource = null) : IChatModel
 {
     private const int DefaultMaxTokens = 32768;
     private readonly ModelProperties _requestProperties = properties ?? new ModelProperties();
+    // ChatGPT account access: the bearer token is resolved per request because it
+    // expires and rotates; options.ApiKey is only a placeholder for the static path.
+    private readonly Func<CancellationToken, ValueTask<string>>? _accessTokenSource = accessTokenSource;
+
+    private bool IsAccount => _accessTokenSource is not null;
 
     public ModelDescriptor Descriptor { get; } = new(providerId ?? "openai-responses", options.Model, options.Model,
         properties ?? new ModelProperties(ContextWindowTokens: 128_000, DefaultMaxOutputTokens: DefaultMaxTokens));
@@ -32,7 +38,22 @@ public sealed class OpenAiResponsesChatModel(
     {
         HttpRequestMessage? built = null;
         ModelFailure? failure = null;
-        try { built = BuildRequest(request); }
+        var apiKey = options.ApiKey;
+        if (_accessTokenSource is { } resolveToken)
+        {
+            try { apiKey = await resolveToken(cancellationToken).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failure = new ModelFailure(ModelFailureKind.AuthenticationFailed, ex.Message,
+                    Phase: ModelFailurePhase.RequestSetup);
+            }
+            if (failure is not null)
+            {
+                yield return new ModelStreamFailed(failure);
+                yield break;
+            }
+        }
+        try { built = BuildRequest(request, apiKey: apiKey); }
         catch (ArgumentException ex) { failure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message, Phase: ModelFailurePhase.RequestSetup); }
         if (failure is not null)
         {
@@ -86,8 +107,18 @@ public sealed class OpenAiResponsesChatModel(
 
     public bool SupportsNonStreamingGeneration => true;
 
-    public ValueTask<IReadOnlyList<ModelStreamEvent>> GenerateAsync(ModelRequest request, CancellationToken cancellationToken) =>
-        ModelHttpGeneration.SendAsync(httpClient, () => BuildRequest(request, stream: false), DecodeGeneration, cancellationToken);
+    public async ValueTask<IReadOnlyList<ModelStreamEvent>> GenerateAsync(ModelRequest request, CancellationToken cancellationToken)
+    {
+        if (!IsAccount)
+        {
+            return await ModelHttpGeneration.SendAsync(httpClient, () => BuildRequest(request, stream: false), DecodeGeneration, cancellationToken);
+        }
+        // The account channel requires streaming; non-streaming callers get the stream aggregated locally.
+        List<ModelStreamEvent> events = [];
+        await foreach (var e in StreamAsync(request, cancellationToken).ConfigureAwait(false))
+            events.Add(e);
+        return events;
+    }
 
     private static IReadOnlyList<ModelStreamEvent> DecodeGeneration(JsonElement root)
     {
@@ -103,7 +134,7 @@ public sealed class OpenAiResponsesChatModel(
         return new ResponsesStreamState().Dispatch(JsonSerializer.SerializeToElement(new { type, response = root }), type).ToList();
     }
 
-    private HttpRequestMessage BuildRequest(ModelRequest request, bool stream = true)
+    private HttpRequestMessage BuildRequest(ModelRequest request, bool stream = true, string? apiKey = null)
     {
         var normalized = ReasoningHistoryNormalizer.Normalize(
             request.Messages, keepReasoning: true, Descriptor.Properties.SupportsImage, Descriptor);
@@ -216,11 +247,13 @@ public sealed class OpenAiResponsesChatModel(
                 ["parameters"] = ModelRequestOptions.ToolSchema(t.InputSchema, Descriptor.Properties),
             }).ToArray();
         var body = ModelRequestOptions.Encode(payload, _requestProperties, request.Options, "max_output_tokens", DefaultMaxTokens);
+        if (IsAccount)
+            body = OpenAiResponsesAccountShaping.Shape(body);
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, options.ResponsesUrl)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
-        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? options.ApiKey);
         httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
         return httpRequest;
     }

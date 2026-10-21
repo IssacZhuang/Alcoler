@@ -159,6 +159,21 @@
     <Style Selector="Button.toolRow:focus-visible controls|Icon.disclosure">
       <Setter Property="Opacity" Value="1" />
     </Style>
+    <Style Selector="TextBlock.agentType">
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerAgentGeneral}" />
+    </Style>
+    <Style Selector="TextBlock.agentType.explore">
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerAgentExplore}" />
+    </Style>
+    <Style Selector="Button.agentRow.running TextBlock.agentLabel">
+      <Style.Animations>
+        <Animation Duration="0:0:4" IterationCount="INFINITE" Easing="SineEaseInOut">
+          <KeyFrame Cue="0%"><Setter Property="Opacity" Value="0.5" /></KeyFrame>
+          <KeyFrame Cue="50%"><Setter Property="Opacity" Value="1" /></KeyFrame>
+          <KeyFrame Cue="100%"><Setter Property="Opacity" Value="0.5" /></KeyFrame>
+        </Animation>
+      </Style.Animations>
+    </Style>
     <Style Selector="TextBlock.toolStatus">
       <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
@@ -295,6 +310,27 @@
                                                  IsVisible="{Binding MarkdownText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                   <Rectangle Classes="streamingCaret" HorizontalAlignment="Left" IsVisible="{Binding IsStreaming}" />
                 </StackPanel>
+              </DataTemplate>
+
+              <DataTemplate x:DataType="vm:AgentCallItemViewModel">
+                <Button Classes="toolRow agentRow" Classes.running="{Binding IsRunning}" Margin="0,0,0,4"
+                        Click="OnAgentRowClick" ToolTip.Tip="{Binding ToolTipText}"
+                        AutomationProperties.Name="{Binding AccessibleText}">
+                  <Grid ColumnDefinitions="16,Auto,Auto,Auto,*,Auto" ColumnSpacing="8" MinWidth="0">
+                    <controls:Icon Classes="conversationIcon"
+                                   Data="M12 8V4H8M5 8h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2ZM9 13v2M15 13v2M1 13v4M23 13v4M9 18h6" />
+                    <TextBlock Grid.Column="1" Classes="agentLabel" Text="SubAgent" FontSize="14" FontWeight="Medium"
+                               VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextTertiary}" />
+                    <TextBlock Grid.Column="2" Classes="agentType" Classes.explore="{Binding IsExplore}"
+                               Text="{Binding AgentType}" ToolTip.Tip="{Binding AgentType}" FontFamily="{DynamicResource AlcolerFontMonospace}"
+                               FontSize="14" FontWeight="Medium" MaxWidth="144" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="3" Text="·" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextTertiary}" />
+                    <TextBlock Grid.Column="4" Text="{Binding Title}" FontSize="14" TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextTertiary}" />
+                    <TextBlock Grid.Column="5" Classes="toolStatus error" Text="{Binding StatusText}"
+                               IsVisible="{Binding HasError}" VerticalAlignment="Center" ToolTip.Tip="{Binding ToolTipText}" />
+                  </Grid>
+                </Button>
               </DataTemplate>
 
               <DataTemplate x:DataType="vm:ToolCallItemViewModel">
