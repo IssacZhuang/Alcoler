@@ -73,6 +73,7 @@ public sealed class TestHarness : IAsyncDisposable
             WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
             DefaultModel = new ModelSelection("scripted", "test-model"),
             TodoStore = todoStore,
+            SubagentOutputRoot = Path.Combine(root, "agent-output"),
         });
         return runtime;
     }
@@ -119,6 +120,7 @@ public sealed class TestHarness : IAsyncDisposable
             WorkspaceFactory = workspaceRoot => new WorkspaceToolEnvironment(workspaceRoot, artifacts),
             DefaultModel = new ModelSelection("scripted", "test-model"),
             TodoStore = todoStore,
+            SubagentOutputRoot = Path.Combine(Root, "agent-output"),
         };
         runtime = new AgentRuntime(transform?.Invoke(options) ?? options);
         return runtime;

@@ -36,8 +36,8 @@ public static class BackgroundJobNotifications
 
     /// <summary>
     /// local_agent task notification per ZCode runtime-task/notification.ts (formatLocalAgentTaskNotification):
-    /// no output-file, summary "Agent {type} task \"{desc}\" {status}.", usage carries tool_uses and
-    /// duration_ms when available.
+    /// output-file follows tool-use-id when a transcript path is supplied, summary
+    /// "Agent {type} task \"{desc}\" {status}.", usage carries tool_uses and duration_ms when available.
     /// </summary>
     public static string FormatLocalAgentCompleted(
         string taskId,
@@ -48,7 +48,8 @@ public static class BackgroundJobNotifications
         string? error = null,
         int? toolUses = null,
         int? durationMs = null,
-        string? toolUseId = null)
+        string? toolUseId = null,
+        string? outputFile = null)
     {
         var summary = $"Agent {agentType} task \"{description}\" {status}.";
         if (string.Equals(status, "failed", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(error))
@@ -61,6 +62,8 @@ public static class BackgroundJobNotifications
         };
         if (!string.IsNullOrEmpty(toolUseId))
             lines.Add($"<tool-use-id>{EscapeXml(toolUseId)}</tool-use-id>");
+        if (!string.IsNullOrEmpty(outputFile))
+            lines.Add($"<output-file>{EscapeXml(outputFile)}</output-file>");
         lines.Add($"<status>{EscapeXml(status)}</status>");
         lines.Add($"<summary>{EscapeXml(summary)}</summary>");
         if (result is not null)

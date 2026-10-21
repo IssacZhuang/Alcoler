@@ -14,7 +14,12 @@ public sealed record SubagentRequest(
     string? WorkspaceRoot = null,
     ToolCallId? ParentToolCallId = null);
 
-public sealed record SubagentHandle(SubagentId Id, SessionId ChildSessionId, string Description, bool Background);
+public sealed record SubagentHandle(
+    SubagentId Id,
+    SessionId ChildSessionId,
+    string Description,
+    bool Background,
+    string? OutputFile = null);
 
 public enum SubagentStatus
 {
@@ -31,7 +36,8 @@ public sealed record SubagentState(
     SubagentStatus Status,
     string? ResultSummary,
     DateTimeOffset StartedAt,
-    DateTimeOffset? EndedAt);
+    DateTimeOffset? EndedAt,
+    string? OutputFile = null);
 
 public sealed record SubagentResult(SubagentState State, string Output, int? ToolUseCount = null);
 

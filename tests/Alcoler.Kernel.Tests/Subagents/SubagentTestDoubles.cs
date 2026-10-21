@@ -45,6 +45,8 @@ internal sealed class FakeChildSession
 
     public int ToolUseCount { get; set; }
 
+    public string? OutputFile { get; set; }
+
     public bool ReadOutputThrows { get; set; }
 
     public List<string> SubmittedPrompts { get; } = [];
@@ -57,7 +59,8 @@ internal sealed class FakeChildSession
         _completion.Task,
         ReadFinalOutputAsync,
         () => Task.FromResult(ToolUseCount),
-        StopAsync);
+        StopAsync,
+        OutputFile);
 
     public void Complete() => _completion.TrySetResult();
 

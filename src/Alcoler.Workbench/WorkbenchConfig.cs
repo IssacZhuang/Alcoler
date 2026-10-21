@@ -132,4 +132,6 @@ public static class WorkbenchDataPaths
     public static string DatabasePath => Path.Combine(Root, "db", "db.sqlite");
 
     public static string ArtifactsPath => Path.Combine(Root, "artifacts");
+
+    public static string ExecPath => Path.Combine(Root, "exec");
 }

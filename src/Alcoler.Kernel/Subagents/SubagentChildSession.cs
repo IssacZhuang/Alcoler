@@ -16,7 +16,8 @@ public sealed record SubagentChildSession(
     Task Completion,
     Func<Task<string?>> ReadFinalOutputAsync,
     Func<Task<int>> ReadToolUseCountAsync,
-    Func<CancellationToken, ValueTask> StopAsync);
+    Func<CancellationToken, ValueTask> StopAsync,
+    string? OutputFile = null);
 
 /// <summary>
 /// Creates the child session runtime for one subagent run; SubagentService never constructs

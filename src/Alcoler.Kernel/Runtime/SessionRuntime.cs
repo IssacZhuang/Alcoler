@@ -80,6 +80,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly FileReadState _fileReads = new();
     private readonly ShellSessionState _shell;
     private readonly BackgroundJobService _backgroundJobs;
+    private readonly ISubagentTasks? _subagentTasks;
     private readonly SessionAuxModelClient _auxModel;
     private readonly SkillContentProvider _skills;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
@@ -129,6 +130,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _sessionCommands = new RuntimeSessionCommands(this);
         _shell = new ShellSessionState(record.WorkspaceRoot, record.Shell);
         _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync);
+        _subagentTasks = deps.Tools.Tools.OfType<ISubagentTasks>().FirstOrDefault();
         _auxModel = new SessionAuxModelClient(() => _record.ModelSelection ?? deps.Options.DefaultModel, deps.ResolveModel);
         _skills = new SkillContentProvider(record.WorkspaceRoot);
         _lastActivityUtc = deps.Clock.GetUtcNow();
@@ -1103,7 +1105,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private ToolExecutionContext CreateToolExecutionContext(ToolCall call) =>
         new(_record.Id, _record.WorkspaceRoot, call.Input, _deps.Workspace, _deps.Clock,
             _sessionCommands, _fileReads, _shell, _backgroundJobs, _auxModel, _skills, _broker,
-            call.Id);
+            call.Id, Subagents: _subagentTasks);
 
     private async ValueTask HandleToolNotificationAsync(TurnId turnId, ToolExecutionNotification notification)
     {

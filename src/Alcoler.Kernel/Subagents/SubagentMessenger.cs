@@ -12,7 +12,8 @@ public sealed record SubagentChannel(
     AgentRuntime Runtime,
     Func<ValueTask>? BeforeResumeAsync = null,
     Func<string, string?, ToolCallId?, CancellationToken, ValueTask>? ResumeAsync = null,
-    Func<SubagentStatus>? ReadStatus = null)
+    Func<SubagentStatus>? ReadStatus = null,
+    string? OutputFile = null)
 {
     internal SemaphoreSlim DeliveryLock { get; } = new(1, 1);
 

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Tools;
@@ -15,7 +16,9 @@ public sealed class TaskOutputTool : ITool
     internal const int MaxTimeoutMs = 600_000;
     internal const int DefaultOutputLength = 32_000;
     private const int PollIntervalMs = 100;
+    private const int MaxOutputFileBytes = 8 * 1024 * 1024;
     private const string TaskType = "local_bash";
+    private const string SubagentTaskType = "local_agent";
 
     public ToolContract Contract { get; } = new(
         "TaskOutput",
@@ -66,7 +69,7 @@ public sealed class TaskOutputTool : ITool
 
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
-        if (context.BackgroundJobs is not { } jobs)
+        if (context.BackgroundJobs is null && context.Subagents is null)
             return ToolExecutionResult.Text(
                 "Background job service is not configured for TaskOutput",
                 isError: true);
@@ -75,9 +78,13 @@ public sealed class TaskOutputTool : ITool
         if (string.IsNullOrEmpty(taskId))
             return ToolExecutionResult.Text("Task ID is required", isError: true);
 
-        var job = jobs.Find(new BackgroundJobId(taskId));
+        var job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
         if (job is null)
+        {
+            if (context.Subagents is { } subagents)
+                return await ReadSubagentAsync(subagents, taskId, context, cancellationToken).ConfigureAwait(false);
             return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
+        }
 
         var block = ReadBool(context.Input, "block", defaultValue: true);
         var timeoutMs = Math.Clamp(ReadInt(context.Input, "timeout") ?? DefaultTimeoutMs, 0, MaxTimeoutMs);
@@ -91,7 +98,7 @@ public sealed class TaskOutputTool : ITool
                     return ToolExecutionResult.Text(FormatResult("timeout", job));
                 await Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken)
                     .ConfigureAwait(false);
-                job = jobs.Find(new BackgroundJobId(taskId));
+                job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
                 if (job is null)
                     return ToolExecutionResult.Text(FormatResult("timeout", null));
             }
@@ -101,6 +108,98 @@ public sealed class TaskOutputTool : ITool
             return ToolExecutionResult.Text(FormatResult("not_ready", job));
         return ToolExecutionResult.Text(FormatResult("success", job));
     }
+
+    private static async ValueTask<ToolExecutionResult> ReadSubagentAsync(
+        ISubagentTasks subagents,
+        string taskId,
+        ToolExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var block = ReadBool(context.Input, "block", defaultValue: true);
+        var timeoutMs = Math.Clamp(ReadInt(context.Input, "timeout") ?? DefaultTimeoutMs, 0, MaxTimeoutMs);
+        var task = subagents.Find(taskId);
+        if (task is null)
+            return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
+
+        if (block)
+        {
+            var deadline = context.Clock.GetUtcNow() + TimeSpan.FromMilliseconds(timeoutMs);
+            while (task.Status == SubagentStatus.Running)
+            {
+                if (context.Clock.GetUtcNow() >= deadline)
+                    return ToolExecutionResult.Text(FormatSubagentResult("timeout", task));
+                await Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken)
+                    .ConfigureAwait(false);
+                task = subagents.Find(taskId);
+                if (task is null)
+                    return ToolExecutionResult.Text(FormatSubagentResult("timeout", null));
+            }
+        }
+
+        if (task.Status == SubagentStatus.Running)
+            return ToolExecutionResult.Text(FormatSubagentResult("not_ready", task));
+        var text = FormatSubagentResult("success", task);
+        subagents.TryMarkNotified(taskId);
+        return ToolExecutionResult.Text(text);
+    }
+
+    internal static string FormatSubagentResult(string retrievalStatus, SubagentTaskInfo? task)
+    {
+        var blocks = new List<string> { $"<retrieval_status>{retrievalStatus}</retrieval_status>" };
+        if (task is not null)
+        {
+            blocks.Add($"<task_id>{Escape(task.Id.Value)}</task_id>");
+            blocks.Add($"<task_type>{SubagentTaskType}</task_type>");
+            blocks.Add($"<status>{SubagentStatusText(task.Status)}</status>");
+            var output = ReadSubagentOutput(task);
+            if (output.Trim().Length > 0)
+                blocks.Add($"<output>\n{output.TrimEnd()}\n</output>");
+            if (!string.IsNullOrEmpty(task.Error))
+                blocks.Add($"<error>{Escape(task.Error)}</error>");
+        }
+
+        return string.Join("\n\n", blocks);
+    }
+
+    private static string ReadSubagentOutput(SubagentTaskInfo task)
+    {
+        var output = task.Result;
+        if (string.IsNullOrWhiteSpace(output) && task.OutputFile is { } file)
+            output = ReadOutputTail(file);
+        if (string.IsNullOrWhiteSpace(output))
+            return string.Empty;
+        return task.OutputFile is { } outputPath ? TruncateTail(output, outputPath) : output;
+    }
+
+    private static string ReadOutputTail(string outputPath)
+    {
+        try
+        {
+            using var stream = new FileStream(outputPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var start = Math.Max(0L, stream.Length - MaxOutputFileBytes);
+            var buffer = new byte[stream.Length - start];
+            stream.Seek(start, SeekOrigin.Begin);
+            stream.ReadExactly(buffer);
+            var text = Encoding.UTF8.GetString(buffer);
+            return start > 0 ? $"[{start / 1024}KB of earlier output omitted]\n{text}" : text;
+        }
+        catch (IOException)
+        {
+            return string.Empty;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string SubagentStatusText(SubagentStatus status) => status switch
+    {
+        SubagentStatus.Running => "running",
+        SubagentStatus.Completed => "completed",
+        SubagentStatus.Failed => "failed",
+        _ => "stopped",
+    };
 
     internal static string FormatResult(string retrievalStatus, BackgroundJobInfo? job)
     {

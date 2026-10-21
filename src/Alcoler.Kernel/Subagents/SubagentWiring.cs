@@ -9,6 +9,7 @@ using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Prompts;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tools;
+using Microsoft.Extensions.Logging;
 
 namespace Alcoler.Kernel.Subagents;
 
@@ -27,20 +28,30 @@ public static class SubagentWiring
 
     /// <param name="runtime">Lazy because the tool is registered on the runtime it resolves.</param>
     /// <param name="messenger">When set, children register here so SendMessage can reach them.</param>
-    public static SubagentTool CreateTool(Func<AgentRuntime> runtime, SubagentMessenger? messenger = null) =>
-        new(
-            new SubagentService((id, request, ct) => CreateChildAsync(runtime(), id, request, ct, messenger)),
-            NotifyParentOfBackgroundCompletionAsync(runtime));
+    public static SubagentTool CreateTool(Func<AgentRuntime> runtime, SubagentMessenger? messenger = null)
+    {
+        var tasks = new SubagentTaskRegistry();
+        return new(
+            new SubagentService((id, request, ct) => CreateChildAsync(runtime(), id, request, ct, messenger, tasks)),
+            NotifyParentOfBackgroundCompletionAsync(runtime, tasks),
+            () => runtime().Options.Tools.Any(tool => tool.Contract.Name is "Read" or "Bash"),
+            tasks);
+    }
 
-    // Child output is delivered inline; Alcoler has no per-agent transcript output file.
     private static Func<SubagentRequest, SubagentResult, ValueTask> NotifyParentOfBackgroundCompletionAsync(
-        Func<AgentRuntime> runtime) =>
-        (request, result) =>
+        Func<AgentRuntime> runtime,
+        SubagentTaskRegistry? tasks = null) =>
+        async (request, result) =>
         {
+            if (tasks is not null && tasks.Find(result.State.Id.Value)?.Notified == true)
+            {
+                return;
+            }
+
             var parent = runtime().GetSession(request.ParentSessionId);
             if (parent is null)
             {
-                return ValueTask.CompletedTask;
+                return;
             }
 
             var status = SubagentTool.BackgroundStatus(result.State.Status);
@@ -48,6 +59,8 @@ public static class SubagentWiring
                 0,
                 (int)Math.Round((result.State.EndedAt.GetValueOrDefault() - result.State.StartedAt).TotalMilliseconds));
             var output = result.Output.Trim();
+            var outputFile = new SubagentArtifacts(ResolveArtifactsRoot(runtime()))
+                .GetOutputFile(request.ParentSessionId, result.State.Id);
             var body = BackgroundJobNotifications.FormatLocalAgentCompleted(
                 result.State.Id.Value,
                 status,
@@ -57,9 +70,14 @@ public static class SubagentWiring
                 error: result.State.Status == SubagentStatus.Failed && output.Length > 0 ? output : null,
                 toolUses: result.ToolUseCount,
                 durationMs: durationMs,
-                toolUseId: request.ParentToolCallId?.Value);
-            return parent.EnqueueTaskNotificationAsync(body);
+                toolUseId: request.ParentToolCallId?.Value,
+                outputFile: outputFile);
+            await parent.EnqueueTaskNotificationAsync(body).ConfigureAwait(false);
+            tasks?.TryMarkNotified(result.State.Id.Value);
         };
+
+    private static string ResolveArtifactsRoot(AgentRuntime runtime) =>
+        runtime.Options.SubagentOutputRoot ?? Path.Combine(Path.GetTempPath(), "alcoler-agents");
 
     /// <summary>
     /// ZCode removes ExitPlanMode from every child (no plan-approval surface below the parent);
@@ -87,9 +105,12 @@ public static class SubagentWiring
         SubagentId id,
         SubagentRequest request,
         CancellationToken ct,
-        SubagentMessenger? messenger = null)
+        SubagentMessenger? messenger = null,
+        SubagentTaskRegistry? tasks = null)
     {
         var options = runtime.Options;
+        var artifacts = new SubagentArtifacts(ResolveArtifactsRoot(runtime));
+        var logger = options.Logging?.CreateLogger(typeof(SubagentWiring).FullName!);
         var parentRuntime = runtime.GetSession(request.ParentSessionId);
         var parentRecord = parentRuntime is null
             ? await options.Store.GetSessionAsync(request.ParentSessionId, ct).ConfigureAwait(false)
@@ -154,14 +175,80 @@ public static class SubagentWiring
         var previousToolUses = 0;
         string? finalOutput = null;
         var description = string.IsNullOrWhiteSpace(request.Description) ? request.Prompt : request.Description;
+        var agentType = request.AgentType ?? SubagentPrompts.GeneralPurposeAgentType;
+        var outputFile = artifacts.GetOutputFile(request.ParentSessionId, id);
+        var startedAt = options.Clock.GetUtcNow();
         var state = new SubagentState(
             id,
             handle.Id,
             description,
             SubagentStatus.Running,
             null,
-            options.Clock.GetUtcNow(),
-            null);
+            startedAt,
+            null,
+            OutputFile: outputFile);
+
+        async ValueTask StopChildAsync(CancellationToken token) =>
+            await childRuntime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), handle.Id, 0), token)
+                .ConfigureAwait(false);
+
+        tasks?.Register(
+            new SubagentTaskInfo(
+                id,
+                handle.Id,
+                agentType,
+                description,
+                request.Prompt,
+                outputFile,
+                SubagentStatus.Running,
+                Result: null,
+                Error: null,
+                ToolUses: null,
+                startedAt,
+                EndedAt: null),
+            StopChildAsync);
+
+        void WriteTerminalArtifacts(SubagentState terminalState, string output)
+        {
+            var endedAt = terminalState.EndedAt ?? options.Clock.GetUtcNow();
+            switch (terminalState.Status)
+            {
+                case SubagentStatus.Completed:
+                    artifacts.WriteCompleted(
+                        id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
+                        description, request.Prompt, root, output,
+                        Math.Max(0, (int)Math.Round((endedAt - terminalState.StartedAt).TotalMilliseconds)),
+                        ReadToolUseCount(childRuntime, handle.Id),
+                        terminalState.StartedAt, endedAt);
+                    break;
+                case SubagentStatus.Failed:
+                    artifacts.WriteFailed(
+                        id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
+                        description, request.Prompt, root, output, terminalState.StartedAt, endedAt);
+                    break;
+                default:
+                    artifacts.WriteStopped(
+                        id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
+                        description, request.Prompt, root, terminalState.StartedAt, endedAt);
+                    break;
+            }
+        }
+
+        if (request.Background)
+        {
+            try
+            {
+                artifacts.WriteRunning(
+                    id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
+                    description, request.Prompt, root, startedAt, startedAt);
+            }
+            catch
+            {
+                await childRuntime.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+
         child.TurnFinished += async (_, outcome) =>
         {
             var initialRun = Interlocked.Increment(ref completedRuns) == 1;
@@ -184,11 +271,27 @@ public static class SubagentWiring
                 finalOutput = output;
                 terminal = terminal with { ResultSummary = string.IsNullOrWhiteSpace(output) ? null : output[..Math.Min(output.Length, 200)] };
                 state = terminal;
+                tasks?.Update(id, info => info with
+                {
+                    Status = terminal.Status,
+                    Result = terminal.Status == SubagentStatus.Completed ? output : null,
+                    Error = terminal.Status == SubagentStatus.Failed ? output : null,
+                    ToolUses = ReadToolUseCount(childRuntime, handle.Id),
+                    EndedAt = terminal.EndedAt,
+                });
+                try
+                {
+                    WriteTerminalArtifacts(terminal, output);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(ex, "Writing subagent artifacts for {SubagentId} failed", id.Value);
+                }
                 if (parentRuntime is not null)
                     await parentRuntime.EmitSubagentStateAsync(terminal, started: false).ConfigureAwait(false);
                 if (!initialRun)
                 {
-                    await NotifyParentOfBackgroundCompletionAsync(() => runtime)(runRequest,
+                    await NotifyParentOfBackgroundCompletionAsync(() => runtime, tasks)(runRequest,
                         new SubagentResult(terminal, output,
                             ReadToolUseCount(childRuntime, handle.Id) - previousToolUses)).ConfigureAwait(false);
                 }
@@ -235,8 +338,23 @@ public static class SubagentWiring
                         StartedAt = options.Clock.GetUtcNow(),
                         EndedAt = null,
                     };
+                    var previousTask = tasks?.Find(id.Value);
+                    tasks?.Update(id, info => info with
+                    {
+                        Description = state.Description,
+                        Status = SubagentStatus.Running,
+                        Result = null,
+                        Error = null,
+                        ToolUses = null,
+                        StartedAt = state.StartedAt,
+                        EndedAt = null,
+                    }, resetNotified: true);
                     try
                     {
+                        artifacts.WriteRunning(
+                            id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
+                            description, request.Prompt, root, state.StartedAt, state.StartedAt,
+                            resumedAt: state.StartedAt, resumedFromToolCallId: toolCallId);
                         if (parentRuntime is not null)
                             await parentRuntime.EmitSubagentStateAsync(state, started: false).ConfigureAwait(false);
                         await SubmitPromptAsync(childRuntime, handle.Id, prompt, token).ConfigureAwait(false);
@@ -245,12 +363,15 @@ public static class SubagentWiring
                     {
                         state = previousState;
                         runRequest = previousRequest;
+                        if (previousTask is not null)
+                            tasks?.Restore(id, previousTask);
                         if (parentRuntime is not null)
                             await parentRuntime.EmitSubagentStateAsync(state, started: false).ConfigureAwait(false);
                         throw;
                     }
                 },
-                ReadStatus: () => state.Status));
+                ReadStatus: () => state.Status,
+                OutputFile: outputFile));
         }
         if (parentRuntime is not null)
             await parentRuntime.EmitSubagentStateAsync(state, started: true).ConfigureAwait(false);
@@ -261,8 +382,8 @@ public static class SubagentWiring
             finished.Task,
             () => Task.FromResult(finalOutput),
             () => Task.FromResult(ReadToolUseCount(childRuntime, handle.Id)),
-            async token => await childRuntime.SubmitAsync(
-                new StopCommand(StrongId.NewCommandId(), handle.Id, 0), token));
+            StopChildAsync,
+            OutputFile: outputFile);
     }
 
     private static async ValueTask SubmitPromptAsync(

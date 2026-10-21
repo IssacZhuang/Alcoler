@@ -35,7 +35,8 @@ public sealed record ToolExecutionContext(
     IAuxModelClient? AuxModel = null,
     ISkillContentProvider? Skills = null,
     IUserInteractionPort? Interactions = null,
-    ToolCallId? ToolCallId = null);
+    ToolCallId? ToolCallId = null,
+    ISubagentTasks? Subagents = null);
 
 public sealed record ToolExecutionResult(
     IReadOnlyList<ToolResultBlock> Content,

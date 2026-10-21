@@ -1,5 +1,6 @@
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Subagents;
 
 namespace Alcoler.Contracts.Tools;
 
@@ -87,6 +88,37 @@ public interface IBackgroundJobService
     BackgroundJobInfo? Find(BackgroundJobId id);
 
     bool Stop(BackgroundJobId id);
+}
+
+public sealed record SubagentTaskInfo(
+    SubagentId Id,
+    SessionId ChildSessionId,
+    string AgentType,
+    string Description,
+    string Prompt,
+    string? OutputFile,
+    SubagentStatus Status,
+    string? Result,
+    string? Error,
+    int? ToolUses,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? EndedAt)
+{
+    public bool Notified { get; init; }
+}
+
+/// <summary>
+/// Runtime view of local_agent tasks so TaskOutput/TaskStop can address foreground and
+/// background subagent runs by agent id, and a consumed terminal result can suppress the
+/// duplicate background completion notification.
+/// </summary>
+public interface ISubagentTasks
+{
+    SubagentTaskInfo? Find(string taskId);
+
+    bool TryMarkNotified(string taskId);
+
+    ValueTask<bool> TryStopAsync(string taskId, CancellationToken cancellationToken);
 }
 
 public sealed record AuxModelRequest(string SystemPrompt, string UserPrompt, int MaxOutputTokens);

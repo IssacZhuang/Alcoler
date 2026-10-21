@@ -42,6 +42,8 @@ public sealed record AgentRuntimeOptions
 
     public string? ShellName { get; init; }
 
+    public string? SubagentOutputRoot { get; init; }
+
     public Func<ShellEnvironment?, ShellEnvironment>? ResolveShell { get; init; }
 
     internal Func<ShellEnvironment?, string>? CustomSystemPromptFactory { get; init; }

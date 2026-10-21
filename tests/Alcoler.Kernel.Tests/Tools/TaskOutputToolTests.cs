@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
 using Xunit;
 
@@ -263,8 +265,15 @@ public class TaskOutputToolTests
     {
         var notification = BackgroundJobNotifications.FormatLocalAgentCompleted(
             "sub_a", "completed", "Explore", "find & review", "a < b", toolUses: 2, durationMs: 10,
-            toolUseId: "call_\"<&");
+            toolUseId: "call_\"<&", outputFile: @"C:\root\sess_parent\sub_a\output.txt");
         Assert.Contains("<tool-use-id>call_&quot;&lt;&amp;</tool-use-id>", notification);
+        Assert.Contains("<output-file>C:\\root\\sess_parent\\sub_a\\output.txt</output-file>", notification);
+        Assert.True(
+            notification.IndexOf("<tool-use-id>", StringComparison.Ordinal)
+            < notification.IndexOf("<output-file>", StringComparison.Ordinal));
+        Assert.True(
+            notification.IndexOf("<output-file>", StringComparison.Ordinal)
+            < notification.IndexOf("<status>", StringComparison.Ordinal));
         Assert.Contains("<result>a &lt; b</result>", notification);
         Assert.Contains("<usage><tool_uses>2</tool_uses><duration_ms>10</duration_ms></usage>", notification);
 
@@ -292,14 +301,175 @@ public class TaskOutputToolTests
         Assert.Equal(toolUseId, jobs.Find(started.Id)!.ToolUseId);
     }
 
-    private static ToolExecutionContext Context(TempWorkspace workspace, BackgroundJobService jobs, string json) =>
+    [Fact]
+    public async Task Subagent_Running_BlockFalse_ReturnsNotReady_WithoutNotifying()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var tool = new TaskOutputTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent", "block": false}""", registry),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var text = result.SingleText();
+        Assert.Contains("<retrieval_status>not_ready</retrieval_status>", text);
+        Assert.Contains("<task_type>local_agent</task_type>", text);
+        Assert.Contains("<status>running</status>", text);
+        Assert.DoesNotContain("<exit_code>", text);
+        var found = registry.Find(info.Id.Value);
+        Assert.NotNull(found);
+        Assert.False(found.Notified);
+    }
+
+    [Fact]
+    public async Task Subagent_Completed_ReturnsResultAndMarksNotified()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Completed, result: "child result");
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var tool = new TaskOutputTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent", "block": false}""", registry),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var text = result.SingleText();
+        Assert.Contains("<retrieval_status>success</retrieval_status>", text);
+        Assert.Contains("<task_id>sub_agent</task_id>", text);
+        Assert.Contains("<task_type>local_agent</task_type>", text);
+        Assert.Contains("<status>completed</status>", text);
+        Assert.Contains("<output>\nchild result\n</output>", text);
+        Assert.DoesNotContain("<exit_code>", text);
+        Assert.DoesNotContain("<error>", text);
+        var found = registry.Find(info.Id.Value);
+        Assert.NotNull(found);
+        Assert.True(found.Notified);
+    }
+
+    [Fact]
+    public async Task Subagent_CompletedWithoutResult_ReadsOutputFile()
+    {
+        using var workspace = new TempWorkspace();
+        var outputFile = Path.Combine(workspace.Root, "subagent-output.txt");
+        await File.WriteAllTextAsync(outputFile, "file result");
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Completed, outputFile: outputFile);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var tool = new TaskOutputTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent", "block": false}""", registry),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("<output>\nfile result\n</output>", result.SingleText());
+    }
+
+    [Fact]
+    public async Task Subagent_LongOutputFile_TruncatesTailWithFullPathPointer()
+    {
+        using var workspace = new TempWorkspace();
+        var outputFile = Path.Combine(workspace.Root, "big-agent.txt");
+        var head = new string('h', 45_000);
+        var tail = new string('t', 40_000);
+        await File.WriteAllTextAsync(outputFile, head + tail);
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Completed, outputFile: outputFile);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var tool = new TaskOutputTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent", "block": false}""", registry),
+            CancellationToken.None);
+
+        var text = result.SingleText();
+        Assert.Contains($"[Truncated. Full output: {outputFile}]", text);
+        Assert.DoesNotContain("hhhh", text);
+        Assert.Contains("tttt", text);
+    }
+
+    [Fact]
+    public async Task Subagent_BlockTrue_WaitsForTerminalStatus()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var tool = new TaskOutputTool();
+        var query = tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent", "block": true, "timeout": 10000}""", registry),
+            CancellationToken.None);
+
+        await Task.Delay(150);
+        Assert.False(query.IsCompleted);
+        registry.Update(info.Id, current => current with
+        {
+            Status = SubagentStatus.Completed,
+            Result = "late result",
+            EndedAt = DateTimeOffset.UtcNow,
+        });
+        var result = await query;
+
+        var text = result.SingleText();
+        Assert.Contains("<retrieval_status>success</retrieval_status>", text);
+        Assert.Contains("<status>completed</status>", text);
+        Assert.Contains("late result", text);
+        var found = registry.Find(info.Id.Value);
+        Assert.NotNull(found);
+        Assert.True(found.Notified);
+    }
+
+    [Fact]
+    public async Task NoServiceConfigured_ReportsConfigurationError()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new TaskOutputTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent", "block": false}"""),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal("Background job service is not configured for TaskOutput", result.SingleText());
+    }
+
+    private static SubagentTaskInfo SubagentInfo(
+        SubagentStatus status,
+        string? result = null,
+        string? outputFile = null) =>
+        new(
+            new SubagentId("sub_agent"),
+            new SessionId("sess_child"),
+            "general-purpose",
+            "explore the workspace",
+            "explore",
+            outputFile,
+            status,
+            result,
+            Error: null,
+            ToolUses: null,
+            DateTimeOffset.UtcNow,
+            status == SubagentStatus.Running ? null : DateTimeOffset.UtcNow);
+
+    private static ToolExecutionContext Context(
+        TempWorkspace workspace,
+        BackgroundJobService? jobs,
+        string json,
+        ISubagentTasks? subagents = null) =>
         new(
             new SessionId("sess_test"),
             workspace.Root,
             JsonDocument.Parse(json).RootElement.Clone(),
             workspace.Workspace,
             TimeProvider.System,
-            BackgroundJobs: jobs);
+            BackgroundJobs: jobs,
+            Subagents: subagents);
 
     private static async Task WaitForStatusAsync(BackgroundJobService jobs, BackgroundJobId id, BackgroundJobStatus status)
     {

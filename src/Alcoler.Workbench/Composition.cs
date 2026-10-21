@@ -67,6 +67,7 @@ public static class Composition
     {
         Directory.CreateDirectory(Path.GetDirectoryName(WorkbenchDataPaths.DatabasePath)!);
         Directory.CreateDirectory(WorkbenchDataPaths.ArtifactsPath);
+        Directory.CreateDirectory(WorkbenchDataPaths.ExecPath);
 
         var store = new SqliteSessionStore(WorkbenchDataPaths.DatabasePath);
         await store.InitializeAsync(ct);
@@ -110,6 +111,7 @@ public static class Composition
             SessionTitleGenerationEnabled = true,
             TodoStore = todoStore,
             GitSnapshotProvider = GitSnapshotCollector.Collect,
+            SubagentOutputRoot = WorkbenchDataPaths.ExecPath,
             ResolveShell = snapshot => ShellResolver.ResolveEnvironment(
                 shellPreference is null ? config.IntegratedTerminalShell : shellPreference(), snapshot),
         });

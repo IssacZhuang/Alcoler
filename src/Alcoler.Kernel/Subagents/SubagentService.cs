@@ -42,7 +42,8 @@ public sealed class SubagentService : ISubagentPort
         var description = DescriptionOf(request);
         TrackStarted(id, child.ChildSessionId, description);
         _ = NotifyInBackgroundAsync(id, child, request, onCompleted, cancellationToken);
-        return new SubagentHandle(id, child.ChildSessionId, description, Background: true);
+        return new SubagentHandle(
+            id, child.ChildSessionId, description, Background: true, OutputFile: child.OutputFile);
     }
 
     // Runs detached from any caller; nothing thrown here may ever reach an unobserved task.

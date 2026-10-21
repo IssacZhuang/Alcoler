@@ -69,10 +69,24 @@ public class SubagentEndToEndTests
         var notice = snapshot.Rows.OfType<SystemNoticeRow>().Single(r => r.Kind == "subagent");
         Assert.Contains("Completed", notice.Text);
 
+        var finishedState = Assert.IsType<SubagentState>(notice.Subagent);
+        Assert.NotNull(finishedState.OutputFile);
+        Assert.Equal(Path.Combine(harness.Root, "agent-output", session.Id.Value, finishedState.Id.Value, "output.txt"),
+            finishedState.OutputFile);
+        Assert.Equal(ChildAnswer, File.ReadAllText(finishedState.OutputFile!));
+        Assert.Equal(File.ReadAllBytes(finishedState.OutputFile!),
+            File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(finishedState.OutputFile!)!, "task.output")));
+        using (var metadata = JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(Path.GetDirectoryName(finishedState.OutputFile!)!, "metadata.json"))))
+        {
+            Assert.Equal("completed", metadata.RootElement.GetProperty("status").GetString());
+            Assert.Equal(finishedState.Id.Value, metadata.RootElement.GetProperty("agentId").GetString());
+        }
+
         Assert.Contains(snapshot.Rows, r => r is AssistantMessageRow a
             && a.Parts.OfType<TextPart>().Any(p => p.Text.Contains("All done.")));
 
-        var childId = Assert.IsType<SubagentState>(notice.Subagent).ChildSessionId;
+        var childId = finishedState.ChildSessionId;
         await runtime.DisposeAsync();
         await using var reopened = harness.BuildRuntime();
         var sessions = await reopened.ListSessionsAsync(harness.Root, 10, CancellationToken.None);

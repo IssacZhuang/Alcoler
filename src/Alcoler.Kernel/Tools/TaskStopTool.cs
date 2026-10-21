@@ -2,6 +2,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Tools;
@@ -13,6 +14,7 @@ namespace Alcoler.Kernel.Tools;
 public sealed class TaskStopTool : ITool
 {
     internal const string TaskType = "local_bash";
+    internal const string SubagentTaskType = "local_agent";
 
     private static readonly JsonSerializerOptions ResultJsonOptions = new()
     {
@@ -58,38 +60,62 @@ public sealed class TaskStopTool : ITool
     public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
         ValueTask.FromResult(input);
 
-    public ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
+    public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
-        if (context.BackgroundJobs is not { } jobs)
-            return ValueTask.FromResult(ToolExecutionResult.Text(
+        if (context.BackgroundJobs is null && context.Subagents is null)
+            return ToolExecutionResult.Text(
                 "Background job service is not configured for TaskStop",
-                isError: true));
+                isError: true);
 
         var taskId = ReadId(context.Input, "task_id") ?? ReadId(context.Input, "shell_id");
         if (string.IsNullOrEmpty(taskId))
-            return ValueTask.FromResult(ToolExecutionResult.Text(
+            return ToolExecutionResult.Text(
                 "Missing required parameter: task_id",
-                isError: true));
+                isError: true);
 
-        var job = jobs.Find(new BackgroundJobId(taskId));
-        if (job is null)
-            return ValueTask.FromResult(ToolExecutionResult.Text(
-                $"No task found with ID: {taskId}",
-                isError: true));
-        if (job.Status != BackgroundJobStatus.Running || !jobs.Stop(job.Id))
-            return ValueTask.FromResult(ToolExecutionResult.Text(
-                $"Task {taskId} is not running (status: {StatusText(job.Status)})",
-                isError: true));
+        var job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
+        if (job is not null)
+        {
+            if (job.Status != BackgroundJobStatus.Running || !context.BackgroundJobs!.Stop(job.Id))
+                return ToolExecutionResult.Text(
+                    $"Task {taskId} is not running (status: {StatusText(job.Status)})",
+                    isError: true);
+            return ToolExecutionResult.Text(FormatSuccess(job.Id.Value, job.Description, TaskType));
+        }
 
+        if (context.Subagents is { } subagents)
+        {
+            var task = subagents.Find(taskId);
+            if (task is null)
+                return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
+            if (task.Status != SubagentStatus.Running
+                || !await subagents.TryStopAsync(taskId, cancellationToken).ConfigureAwait(false))
+            {
+                var current = subagents.Find(taskId);
+                if (current is null)
+                    return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
+                return ToolExecutionResult.Text(
+                    $"Task {taskId} is not running (status: {SubagentStatusText(current.Status)})",
+                    isError: true);
+            }
+
+            return ToolExecutionResult.Text(FormatSuccess(task.Id.Value, task.Description, SubagentTaskType));
+        }
+
+        return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
+    }
+
+    private static string FormatSuccess(string taskId, string description, string taskType)
+    {
         var payload = new JsonObject
         {
-            ["message"] = $"Successfully stopped task: {job.Id.Value} ({job.Description})",
-            ["task_id"] = job.Id.Value,
-            ["task_type"] = TaskType,
+            ["message"] = $"Successfully stopped task: {taskId} ({description})",
+            ["task_id"] = taskId,
+            ["task_type"] = taskType,
         };
-        if (!string.IsNullOrEmpty(job.Description))
-            payload["command"] = job.Description;
-        return ValueTask.FromResult(ToolExecutionResult.Text(payload.ToJsonString(ResultJsonOptions)));
+        if (!string.IsNullOrEmpty(description))
+            payload["command"] = description;
+        return payload.ToJsonString(ResultJsonOptions);
     }
 
     private static string? ReadId(JsonElement input, string name) =>
@@ -104,6 +130,14 @@ public sealed class TaskStopTool : ITool
         BackgroundJobStatus.Failed => "failed",
         BackgroundJobStatus.Stopped => "stopped",
         _ => status.ToString().ToLowerInvariant(),
+    };
+
+    private static string SubagentStatusText(SubagentStatus status) => status switch
+    {
+        SubagentStatus.Running => "running",
+        SubagentStatus.Completed => "completed",
+        SubagentStatus.Failed => "failed",
+        _ => "stopped",
     };
 
     private static JsonElement ParseSchema(string rawJson) =>

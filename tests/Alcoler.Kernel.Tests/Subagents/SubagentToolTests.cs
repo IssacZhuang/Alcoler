@@ -114,6 +114,7 @@ public class SubagentToolTests
             duration_ms: 1500</usage>
             """,
             execution.SingleText());
+        Assert.DoesNotContain("output_file", execution.SingleText());
         Assert.Equal("research", execution.DisplaySummary);
 
         Assert.Empty(port.BackgroundRequests);
@@ -192,10 +193,12 @@ public class SubagentToolTests
     }
 
     [Fact]
-    public async Task Execute_Background_StartsSubagentAndReturnsLaunchText()
+    public async Task Execute_Background_StartsSubagentAndReturnsLaunchTextWithLocator()
     {
         using var workspace = new TempWorkspace();
-        var handle = new SubagentHandle(StrongId.NewSubagentId(), StrongId.NewSessionId(), "watch logs", Background: true);
+        var outputFile = Path.Combine(workspace.Root, "agent-output", "sess_test", "sub_test", "output.txt");
+        var handle = new SubagentHandle(
+            StrongId.NewSubagentId(), StrongId.NewSessionId(), "watch logs", Background: true, OutputFile: outputFile);
         var port = new FakeSubagentPort { BackgroundHandle = handle };
         var tool = new SubagentTool(port);
 
@@ -210,6 +213,8 @@ public class SubagentToolTests
             agentId: {handle.Id.Value} (internal ID - do not mention to user. Use SendMessage with to: '{handle.Id.Value}' to continue this agent.)
             The agent is working in the background. You will be notified automatically when it completes.
             Do not duplicate this agent's work - avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.
+            output_file: {outputFile}
+            Do NOT Read or tail this file via the shell tool. If the user asks for progress, say the agent is still running; you'll get a completion notification.
             """,
             execution.SingleText());
         Assert.Equal("watch", execution.DisplaySummary);
@@ -220,6 +225,52 @@ public class SubagentToolTests
         Assert.Equal("watch the logs", request.Prompt);
         Assert.True(request.Background);
         await sink(SubagentTestResults.Completed());
+    }
+
+    [Fact]
+    public async Task Execute_Background_WithoutReadCapability_ReturnsFallbackInstructions()
+    {
+        using var workspace = new TempWorkspace();
+        var outputFile = Path.Combine(workspace.Root, "agent-output", "sess_test", "sub_test", "output.txt");
+        var handle = new SubagentHandle(
+            StrongId.NewSubagentId(), StrongId.NewSessionId(), "watch logs", Background: true, OutputFile: outputFile);
+        var port = new FakeSubagentPort { BackgroundHandle = handle };
+        var tool = new SubagentTool(port, canReadOutputFile: () => false);
+
+        var execution = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"prompt": "watch the logs", "description": "watch", "run_in_background": true}"""),
+            CancellationToken.None);
+
+        Assert.Equal(
+            $"""
+            Async agent launched successfully.
+            agentId: {handle.Id.Value} (internal ID - do not mention to user. Use SendMessage with to: '{handle.Id.Value}' to continue this agent.)
+            The agent is working in the background. You will be notified automatically when it completes.
+            Briefly tell the user what you launched and end your response. Do not generate any other text - agent results will arrive in a subsequent message.
+            """,
+            execution.SingleText());
+        Assert.DoesNotContain("output_file", execution.SingleText());
+        Assert.DoesNotContain("Do NOT Read or tail", execution.SingleText());
+    }
+
+    [Fact]
+    public async Task Execute_Background_WithoutOutputFile_ReturnsFallbackInstructions()
+    {
+        using var workspace = new TempWorkspace();
+        var handle = new SubagentHandle(
+            StrongId.NewSubagentId(), StrongId.NewSessionId(), "watch logs", Background: true);
+        var port = new FakeSubagentPort { BackgroundHandle = handle };
+        var tool = new SubagentTool(port);
+
+        var execution = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"prompt": "watch the logs", "description": "watch", "run_in_background": true}"""),
+            CancellationToken.None);
+
+        Assert.DoesNotContain("output_file", execution.SingleText());
+        Assert.DoesNotContain("Do not duplicate this agent's work", execution.SingleText());
+        Assert.EndsWith(
+            "Briefly tell the user what you launched and end your response. Do not generate any other text - agent results will arrive in a subsequent message.",
+            execution.SingleText());
     }
 
     [Fact]

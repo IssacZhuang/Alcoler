@@ -247,6 +247,7 @@ internal sealed class ShellSnapshotFixture(string root, SqliteSessionStore store
             WorkspaceFactory = workspace => new WorkspaceToolEnvironment(workspace, artifacts),
             DefaultModel = new ModelSelection(model.Descriptor.ProviderId, model.Descriptor.ModelId),
             ShellName = "legacy override",
+            SubagentOutputRoot = Path.Combine(Root, "agent-output"),
             ResolveShell = resolve,
         });
         return runtime;

@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
 using Xunit;
 
@@ -115,14 +117,96 @@ public class TaskStopToolTests
         Assert.DoesNotContain("\"required\"", schema);
     }
 
-    private static ToolExecutionContext Context(TempWorkspace workspace, BackgroundJobService jobs, string json) =>
+    [Fact]
+    public async Task Subagent_Running_StopsAndReturnsLocalAgentPayload()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        var stopped = false;
+        registry.Register(info, _ =>
+        {
+            stopped = true;
+            return ValueTask.CompletedTask;
+        });
+        var tool = new TaskStopTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent"}""", registry),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(
+            """{"message":"Successfully stopped task: sub_agent (explore the workspace)","task_id":"sub_agent","task_type":"local_agent","command":"explore the workspace"}""",
+            result.SingleText());
+        Assert.True(stopped);
+    }
+
+    [Fact]
+    public async Task Subagent_Terminal_ReportsNotRunning()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var stopped = false;
+        registry.Register(SubagentInfo(SubagentStatus.Completed), _ =>
+        {
+            stopped = true;
+            return ValueTask.CompletedTask;
+        });
+        var tool = new TaskStopTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent"}""", registry),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal("Task sub_agent is not running (status: completed)", result.SingleText());
+        Assert.False(stopped);
+    }
+
+    [Fact]
+    public async Task Subagent_Unknown_ReportsNotFound()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var tool = new TaskStopTool();
+
+        var result = await tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_missing"}""", registry),
+            CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal("No task found with ID: sub_missing", result.SingleText());
+    }
+
+    private static SubagentTaskInfo SubagentInfo(SubagentStatus status) =>
+        new(
+            new SubagentId("sub_agent"),
+            new SessionId("sess_child"),
+            "general-purpose",
+            "explore the workspace",
+            "explore",
+            OutputFile: null,
+            status,
+            Result: null,
+            Error: null,
+            ToolUses: null,
+            DateTimeOffset.UtcNow,
+            status == SubagentStatus.Running ? null : DateTimeOffset.UtcNow);
+
+    private static ToolExecutionContext Context(
+        TempWorkspace workspace,
+        BackgroundJobService? jobs,
+        string json,
+        ISubagentTasks? subagents = null) =>
         new(
             new SessionId("sess_test"),
             workspace.Root,
             JsonDocument.Parse(json).RootElement.Clone(),
             workspace.Workspace,
             TimeProvider.System,
-            BackgroundJobs: jobs);
+            BackgroundJobs: jobs,
+            Subagents: subagents);
 
     private static async Task WaitForStatusAsync(BackgroundJobService jobs, BackgroundJobId id, BackgroundJobStatus status)
     {

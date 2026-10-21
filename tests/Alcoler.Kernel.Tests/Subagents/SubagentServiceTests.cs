@@ -163,7 +163,8 @@ public class SubagentServiceTests
     [Fact]
     public async Task StartBackgroundAsync_ReturnsHandleImmediately_ThenNotifiesSinkOnceCompleted()
     {
-        var factory = new FakeSubagentFactory();
+        const string outputFile = @"C:\root\sess_parent\sub_logwatch\output.txt";
+        var factory = new FakeSubagentFactory(_ => new FakeChildSession { OutputFile = outputFile });
         var service = new SubagentService(factory.ToFactory(), new FixedTimeProvider(Now));
         var sinkDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
@@ -184,6 +185,7 @@ public class SubagentServiceTests
         Assert.True(handle.Background);
         Assert.Equal("log watch", handle.Description);
         Assert.Equal(child.ChildSessionId, handle.ChildSessionId);
+        Assert.Equal(outputFile, handle.OutputFile);
 
         var running = service.ActiveStates.Single();
         Assert.Equal(handle.Id, running.Id);

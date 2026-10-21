@@ -60,8 +60,11 @@ Sources: `src/Alcoler.Adapters/Tools/ReadTool.cs`, `src/Alcoler.Adapters/Tools/B
 - AskUserQuestion supports single-select previews, side-by-side presentation, and answer annotations in the Workbench.
 - Child-to-parent coordinator messaging is available. Busy child messages use Guide delivery; resumed children receive raw input.
 - Background notifications carry tool-use correlation and represent lost state and optional real exit codes without inventing an exit code for cancellation.
+- Every subagent keeps a per-agent artifact directory (`<SubagentOutputRoot>/<parentSessionId>/<agentId>/`, `~/.alcoler/exec` in the Workbench, the system temp directory by default) containing `output.txt` (final text / error / fixed stopped sentence), a byte-identical `task.output`, and `metadata.json` with the full lineage (agent, child session, parent session and tool call, agent type, description, prompt, status, timestamps, usage counts, resume markers). Background launches write running metadata before starting; terminal turns write completed/failed/stopped artifacts; SendMessage resume rewrites running metadata with `resumedAt`/`resumedFromToolCallId`.
+- The output-file locator is surfaced on the reference's model-visible faces: the background launch result (`output_file:` plus the do-not-read guard, only when the parent's tool set contains Read or Bash, with the fallback end-your-response text otherwise), the background completion notification (`<output-file>`), and the SendMessage resume result (`Output: ...`). Foreground results intentionally carry no locator. Subagent started/changed events carry the output file path.
+- TaskOutput and TaskStop address subagent runs (foreground and background) by agent id through a runtime task registry: `local_agent` projections prefer the in-memory result and fall back to an 8 MiB tail read of the output file with a 32,000-character truncation pointer, and stopping a running agent routes through the same cancel pipeline that writes stopped artifacts and the stopped notification. A successful terminal TaskOutput read marks the task notified, suppressing the duplicate background completion notification; SendMessage resume re-enables notification. A failed resume restores the previous terminal registry entry.
 
-Sources: `src/Alcoler.Kernel/Tools/AskUserQuestionTool.cs`, `src/Alcoler.Workbench/ViewModel/PendingInteractionViewModel.cs`, `src/Alcoler.Kernel/Subagents/RespondToCoordinatorTool.cs`, `src/Alcoler.Kernel/Subagents/SubagentWiring.cs`, `src/Alcoler.Kernel/Tools/BackgroundJobNotifications.cs`.
+Sources: `src/Alcoler.Kernel/Tools/AskUserQuestionTool.cs`, `src/Alcoler.Workbench/ViewModel/PendingInteractionViewModel.cs`, `src/Alcoler.Kernel/Subagents/RespondToCoordinatorTool.cs`, `src/Alcoler.Kernel/Subagents/SubagentWiring.cs`, `src/Alcoler.Kernel/Subagents/SubagentArtifacts.cs`, `src/Alcoler.Kernel/Subagents/SubagentTaskRegistry.cs`, `src/Alcoler.Kernel/Tools/BackgroundJobNotifications.cs`, `src/Alcoler.Kernel/Tools/TaskOutputTool.cs`, `src/Alcoler.Kernel/Tools/TaskStopTool.cs`.
 
 ### 1.6 Grep search engine
 
@@ -114,19 +117,7 @@ Long-task effect: reduced ability to intervene while a slow build or test is run
 
 Sources: `src/Alcoler.Adapters/Tools/BashTool.cs`, `src/Alcoler.Contracts/Commands/ConversationCommands.cs`.
 
-### 2.4 Per-subagent transcript locator
-
-**Priority: Medium for complex multi-agent verification; low for simple delegation.**
-
-Parents normally receive the child's final assistant text, not its full tool transcript. Background completion places that result in a notification whose body is truncated at 120,000 characters before the truncation marker and system prefix are added; this is not a strict total-envelope limit. There is no per-agent transcript file pointer comparable to the reference.
-
-Child sessions still share durable storage, and live observation exists; this is not loss of child history. Bash background jobs already have output-file pointers and should not be confused with this gap.
-
-Long-task effect: investigating a questionable child conclusion requires less direct navigation through child-session facilities. That can increase duplicate investigation or reliance on an insufficiently checked conclusion. The benefit of a locator is on-demand evidence retrieval, not injecting every child's complete transcript into the parent's context.
-
-Sources: `src/Alcoler.Kernel/Subagents/SubagentWiring.cs`, `src/Alcoler.Kernel/Tools/BackgroundJobNotifications.cs`, `src/Alcoler.Contracts/Projections/IAgentRuntime.cs`.
-
-### 2.5 Branch-generation filtering for stale notifications
+### 2.4 Branch-generation filtering for stale notifications
 
 **Priority: Conditional. Required before adding history rewind or branching.**
 
@@ -136,7 +127,7 @@ Long-task effect: no current cross-branch failure has been established. If histo
 
 Sources: `src/Alcoler.Kernel/Runtime/SessionRuntime.cs`, `src/Alcoler.Contracts/Commands/ConversationCommands.cs`.
 
-### 2.6 Structured sources for ReadSessionContext
+### 2.5 Structured sources for ReadSessionContext
 
 **Priority: Medium for cross-session continuation and auditing; low for ordinary continuous execution.**
 
@@ -146,7 +137,7 @@ Long-task effect: after resumption, a claim in a historical summary is harder to
 
 Source: `src/Alcoler.Kernel/Tools/ReadSessionContextTool.cs`.
 
-### 2.7 Other compatibility adaptations
+### 2.6 Other compatibility adaptations
 
 - Normalized model events do not retain all raw response-start and indexed provider content-block provenance. Compaction commit/fallback decisions use normalized block-end/tool-ready events rather than an identical raw provider event contract. Edge-case equivalence is therefore bounded by adapter normalization.
 - Concrete supported reasoning fields are modeled explicitly; there is no arbitrary provider-options bag. New provider-specific features need explicit contract/adapter support rather than automatic passthrough.
@@ -159,17 +150,18 @@ These are compatibility boundaries, not evidence of a universal long-task regres
 
 ### 3.1 Last completed alignment checkpoint
 
-The completed alignment run reported:
+The per-subagent artifact/locator alignment run (2026-10-21) reported:
 
 | Check | Result |
 | --- | --- |
 | Solution build | 0 warnings, 0 errors |
-| Kernel tests | 1,278 passed, 0 failed |
-| Workbench tests | 503 passed, 0 failed |
+| Kernel tests | 1,345 passed, 4 failed (environmental) |
+| Kernel tests excluding the affected class | 1,304 passed, 0 failed |
+| Workbench tests | 516 passed, 0 failed |
 | Browser tests | 18 passed, 1 skipped, 0 failed |
 | CRLF-aware whitespace check | Passed |
 
-The skipped browser test requires installed Playwright browsers. It is not a successful real-browser smoke test.
+The four failing kernel tests are cmd-dialect BashToolTests shell-fixture tests. They were reproduced failing identically on a clean HEAD full-suite run of the same host, pass when run in isolation, and the host carries leaked shell/testhost processes from earlier sessions; they are environmental flakiness, not a regression of this checkpoint. The skipped browser test requires installed Playwright browsers. It is not a successful real-browser smoke test.
 
 A separate memory probe on the final alignment binaries reported 110.2 MB working set after one 400-turn session with 800 timeline rows, and 117.7 MB after ten resident sessions totaling 850 turns, with 15.2 MB managed memory at that point. These are kernel test-process measurements, not complete Avalonia desktop measurements or cross-machine guarantees.
 
@@ -189,7 +181,7 @@ These are validation limits, not known architectural failures. Scripted regressi
 1. Close Grep's residual gaps: native-engine delivery beyond win-x64 (source builds or additional prebuilts) and `head_limit` early exit without breaking deterministic ordering. Evidence supplied by the model on the delivered build now comes from real ripgrep semantics.
 2. Compare real long tasks with the same model and repository, including repeated search, compaction, stream interruption, delegation, and session resumption. Use failures to distinguish harness effects from model variation.
 3. Bound extreme image decode resources and validate the actual target-platform desktop/AOT artifacts.
-4. Add on-demand child-transcript navigation and structured historical sources where complex delegation or cross-session verification warrants them.
+4. Add structured historical sources where complex delegation or cross-session verification warrants them; on-demand child-transcript navigation is covered by the per-agent artifacts and `local_agent` task queries.
 5. Add manual foreground-to-background control as a product feature; implement branch-generation filtering before exposing history branching.
 
 The remaining differences should not be described either as proof of a defective core loop or as uniformly cosmetic. Grep directly affects evidence acquisition; the other gaps are mostly conditional reliability, control, traceability, and verification concerns.

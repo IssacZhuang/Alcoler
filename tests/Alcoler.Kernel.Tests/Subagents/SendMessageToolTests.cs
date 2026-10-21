@@ -47,7 +47,9 @@ public class SendMessageToolTests
         var messenger = new SubagentMessenger();
         var parent = new SessionId("sess_parent");
         var agentId = StrongId.NewSubagentId();
-        messenger.Register(parent, new SubagentChannel(agentId, childSession.Id, "probe child", childRuntime));
+        var outputFile = Path.Combine(harness.Root, "agent-output", parent.Value, agentId.Value, "output.txt");
+        messenger.Register(parent, new SubagentChannel(
+            agentId, childSession.Id, "probe child", childRuntime, OutputFile: outputFile));
 
         using var childProjection = childRuntime.Subscribe(childSession.Id);
         await WaitForPhaseAsync(childProjection, TurnPhase.Idle);
@@ -58,7 +60,9 @@ public class SendMessageToolTests
             CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Contains("was stopped (completed); resumed it in the background with your message", result.SingleText());
+        Assert.Equal(
+            $"Agent \"{agentId.Value}\" was stopped (completed); resumed it in the background with your message. You'll be notified when it finishes. Output: {outputFile}",
+            result.SingleText());
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (childProjection.Snapshot() is var snapshot &&

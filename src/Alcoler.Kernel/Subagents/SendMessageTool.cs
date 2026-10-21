@@ -94,7 +94,8 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
 
             var resultText = busy
                 ? $"Message {commandId.Value} was sent to its active turn for local agent {channel.Id.Value}."
-                : $"Agent \"{channel.Id.Value}\" was stopped ({previousStatus}); resumed it in the background with your message. You'll be notified when it finishes.";
+                : $"Agent \"{channel.Id.Value}\" was stopped ({previousStatus}); resumed it in the background with your message. You'll be notified when it finishes."
+                    + (channel.OutputFile is { } outputFile ? $" Output: {outputFile}" : string.Empty);
             return ToolExecutionResult.Text(resultText, displaySummary: summary);
         }
         finally

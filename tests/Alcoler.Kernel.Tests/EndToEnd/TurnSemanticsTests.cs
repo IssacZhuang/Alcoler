@@ -9,6 +9,7 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Xunit;
@@ -829,7 +830,24 @@ public class TurnSemanticsTests
             });
 
             Assert.Contains("<task-notification>", notification!.Content, StringComparison.Ordinal);
-            Assert.DoesNotContain("<output-file>", notification.Content, StringComparison.Ordinal);
+            var state = Assert.Single(projection.Snapshot().Rows.OfType<SystemNoticeRow>()
+                .Select(row => row.Subagent).OfType<SubagentState>());
+            var artifactDirectory = Path.Combine(root, "agent-output", session.Id.Value, state.Id.Value);
+            var outputFile = Path.Combine(artifactDirectory, "output.txt");
+            var taskOutputFile = Path.Combine(artifactDirectory, "task.output");
+            var metadataFile = Path.Combine(artifactDirectory, "metadata.json");
+            Assert.Equal(outputFile, state.OutputFile);
+            Assert.True(File.Exists(outputFile));
+            Assert.True(File.Exists(taskOutputFile));
+            Assert.True(File.Exists(metadataFile));
+            Assert.Equal("child done", File.ReadAllText(outputFile));
+            Assert.Equal(File.ReadAllText(outputFile), File.ReadAllText(taskOutputFile));
+            Assert.Contains($"<output-file>{outputFile}</output-file>", notification.Content, StringComparison.Ordinal);
+            using var metadata = JsonDocument.Parse(File.ReadAllText(metadataFile));
+            Assert.Equal("completed", metadata.RootElement.GetProperty("status").GetString());
+            Assert.Equal("call-1", metadata.RootElement.GetProperty("parentToolUseId").GetString());
+            Assert.Equal(state.Id.Value, metadata.RootElement.GetProperty("agentId").GetString());
+            Assert.Equal(session.Id.Value, metadata.RootElement.GetProperty("parentSessionId").GetString());
             // The summary is XML-escaped per the reference's escapeXml, so quotes arrive as &quot;.
             Assert.Contains("Agent general-purpose task &quot;counting&quot; completed.", notification.Content, StringComparison.Ordinal);
             Assert.Contains("<result>child done</result>", notification.Content, StringComparison.Ordinal);
