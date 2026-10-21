@@ -649,7 +649,7 @@ public class ConversationViewModelTests
     }
 
     [Fact]
-    public async Task ThoughtLevelChange_SubmitsSwitchModelWithReasoningLevel()
+    public async Task ThoughtLevelChange_IsLocalUntilNextSend()
     {
         var (viewModel, runtime, store) = Create();
         var selection = new Alcoler.Contracts.Models.ModelSelection("anthropic", "claude-x");
@@ -660,9 +660,14 @@ public class ConversationViewModelTests
 
         viewModel.ThoughtLevel = "high";
 
-        var command = Assert.IsType<SwitchModelCommand>(Assert.Single(runtime.Submitted));
-        Assert.Equal("high", command.Selection.Options?.ReasoningLevel);
-        Assert.Equal("claude-x", command.Selection.ModelId);
+        Assert.Empty(runtime.Submitted);
+        Assert.Equal("high", viewModel.CurrentSelection!.Options!.ReasoningLevel);
+        viewModel.Composer.Draft = "Use the selected reasoning";
+        await viewModel.SendAsync();
+
+        var command = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
+        Assert.Equal("high", command.ModelSelection!.Options?.ReasoningLevel);
+        Assert.Equal("claude-x", command.ModelSelection.ModelId);
         store.Dispose();
     }
 
@@ -683,12 +688,18 @@ public class ConversationViewModelTests
             Assert.Empty(runtime.Submitted);
 
             viewModel.ThoughtLevel = "high";
-            var changed = Assert.IsType<SwitchModelCommand>(Assert.Single(runtime.Submitted));
-            Assert.Equal(4096, changed.Selection.Options!.MaxOutputTokens);
-            Assert.Equal("high", changed.Selection.Options.ReasoningLevel);
+            Assert.Empty(runtime.Submitted);
+            Assert.Equal(4096, viewModel.CurrentSelection!.Options!.MaxOutputTokens);
+            Assert.Equal("high", viewModel.CurrentSelection.Options.ReasoningLevel);
 
             await viewModel.SwitchModelAsync(viewModel.ApplyThoughtLevel(selection));
-            Assert.Equal(4096, viewModel.CurrentSelection!.Options!.MaxOutputTokens);
+            viewModel.ThoughtLevel = "unsupported";
+            Assert.Equal("high", viewModel.ThoughtLevel);
+            viewModel.Composer.Draft = "Next submission";
+            await viewModel.SendAsync();
+            var command = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
+            Assert.Equal(4096, command.ModelSelection!.Options!.MaxOutputTokens);
+            Assert.Equal("high", command.ModelSelection.Options.ReasoningLevel);
         }
     }
 
@@ -735,6 +746,41 @@ public class ConversationViewModelTests
             Assert.Equal(restored, viewModel.CurrentSelection);
             Assert.Equal("high", viewModel.ThoughtLevel);
             Assert.Empty(runtime.Submitted);
+        }
+    }
+
+    [Fact]
+    public async Task SelectedModel_SurvivesHigherRevisionSnapshotsAndRejectedSend()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var choice = new ModelChoice("selected", "next-model", "Next model",
+                new Alcoler.Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"]));
+            viewModel.ConfigureModel(choice, useDefaultReasoning: true);
+            await viewModel.SwitchModelAsync(viewModel.ApplyThoughtLevel(choice.Selection));
+            var expected = viewModel.CurrentSelection;
+            var notifications = 0;
+            viewModel.ModelSelectionSubmitted += (_, _) => notifications++;
+            runtime.RejectNextCommand = true;
+            viewModel.Composer.Draft = "Retry this";
+            await viewModel.SendAsync();
+            store.SetRevision(10);
+            var stale = TestSnapshots.State(modelSelection: new Alcoler.Contracts.Models.ModelSelection("old", "old-model"));
+            viewModel.ApplyUpdate(new ProjectionUpdate(20, stale, [new StatePatched(stale)], Reset: true));
+
+            Assert.Equal(expected, viewModel.CurrentSelection);
+            Assert.Equal("high", viewModel.ThoughtLevel);
+            Assert.Equal(0, notifications);
+            runtime.RejectNextCommand = false;
+            await viewModel.SendAsync();
+            store.SetRevision(30);
+            viewModel.ApplyUpdate(new ProjectionUpdate(40, stale, [new StatePatched(stale)], Reset: false));
+
+            Assert.Equal(expected, viewModel.CurrentSelection);
+            Assert.Equal(1, notifications);
+            Assert.All(runtime.Submitted, command => Assert.Equal(expected, Assert.IsType<SendTextCommand>(command).ModelSelection));
         }
     }
 

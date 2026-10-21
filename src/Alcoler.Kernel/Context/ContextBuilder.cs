@@ -275,7 +275,7 @@ public static class ContextBuilder
                     break;
                 case FilePart file when file.ProviderReady:
                     if (TryHydrateImage(file.ArtifactUri, file.MimeType, media) is { } fileImage)
-                        images.Add(fileImage);
+                        blocks.Add(fileImage);
                     else
                         blocks.Add(new InputTextBlock($"[media file: {file.FileName ?? file.ArtifactUri}]"));
                     break;

@@ -285,9 +285,11 @@ public sealed class ProjectionBuilder
     private void ApplyUserMessage(ConversationMessage message, List<RowOp> ops)
     {
         var text = string.Join("\n", message.Parts.OfType<TextPart>().Select(p => p.Text));
-        if (text.Length > 0)
+        var images = message.Parts.OfType<FilePart>()
+            .Where(part => part.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (text.Length > 0 || images.Length > 0)
         {
-            Append(new UserMessageRow(message.Id.Value, text, message.CreatedAt), ops);
+            Append(new UserMessageRow(message.Id.Value, text, message.CreatedAt, images.Length > 0 ? images : null), ops);
         }
 
         foreach (var toolResult in message.Parts.OfType<ToolResultPart>())

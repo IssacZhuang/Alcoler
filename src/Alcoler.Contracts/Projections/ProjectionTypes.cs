@@ -82,7 +82,8 @@ public abstract record ConversationRow(string RowId);
 public sealed record UserMessageRow(
     string RowId,
     string Text,
-    DateTimeOffset At) : ConversationRow(RowId);
+    DateTimeOffset At,
+    IReadOnlyList<FilePart>? Images = null) : ConversationRow(RowId);
 
 public sealed record AssistantMessageRow(
     string RowId,

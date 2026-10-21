@@ -215,6 +215,22 @@ public class TurnSemanticsTests
         }
     }
 
+    private static async Task<ConversationSnapshot> WaitForProjectionAsync(
+        IConversationProjection projection, Func<ConversationSnapshot, bool> condition)
+    {
+        var snapshot = projection.Snapshot();
+        if (condition(snapshot))
+            return snapshot;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var _ in projection.Deltas(timeout.Token))
+        {
+            snapshot = projection.Snapshot();
+            if (condition(snapshot))
+                return snapshot;
+        }
+        throw new InvalidOperationException("Projection ended before the expected state was observed.");
+    }
+
     [Fact]
     public async Task TextOnlyStep_WithExplicitGuides_ContinuesSameTurn()
     {
@@ -289,6 +305,116 @@ public class TurnSemanticsTests
         Assert.Equal(MessageSource.RealUser, canonicalGuide.Source);
         Assert.Equal("guide now", Assert.Single(canonicalGuide.Parts.OfType<TextPart>()).Text);
         Assert.Contains("The user sent a new message while you were working:", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(SendTextDelivery.Queue)]
+    [InlineData(SendTextDelivery.Guide)]
+    public async Task PendingImageOnlyInput_PreservesArtifactAndReachesItsModelRequest(SendTextDelivery delivery)
+    {
+        const string png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        await using var harness = ScriptedCallHarness.Create(
+            ToolCall("Gate", new { }), Text("active answer"), Text("queued answer"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var command = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "", Delivery: delivery,
+            Images: [new("image/png", png)]);
+        Assert.True((await runtime.SubmitAsync(command, CancellationToken.None)).Accepted);
+        var queuedSnapshot = await WaitForProjectionAsync(projection,
+            snapshot => snapshot.State.Queue.Any(input => input.CommandId == command.CommandId));
+        var queued = Assert.Single(queuedSnapshot.State.Queue);
+        var artifact = Assert.Single(queued.Images!);
+        Assert.Equal(command.CommandId, queued.CommandId);
+        Assert.Equal(delivery, queued.Delivery);
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        var durable = Assert.Single(events.Select(entry => entry.Event).OfType<InputQueuedEvent>()).Input;
+        Assert.Equal(artifact, Assert.Single(durable.Images!));
+        Assert.DoesNotContain(png, Contracts.Serialization.AlcolerJson.Serialize(durable), StringComparison.Ordinal);
+        release.TrySetResult();
+        var expectedReply = delivery == SendTextDelivery.Queue ? "queued answer" : "active answer";
+        var completed = await WaitForProjectionAsync(projection, snapshot => snapshot.State.Phase == TurnPhase.Idle
+            && snapshot.Rows.OfType<AssistantMessageRow>().Any(row => !row.IsStreaming
+                && row.Parts.OfType<TextPart>().Any(part => part.Text == expectedReply)));
+        Assert.Equal(delivery == SendTextDelivery.Queue ? 3 : 2, harness.Model.Requests.Count);
+        Assert.Empty(harness.Model.Requests[0].Messages.SelectMany(message => message.Content).OfType<InputImageBlock>());
+        if (delivery == SendTextDelivery.Queue)
+            Assert.Empty(harness.Model.Requests[1].Messages.SelectMany(message => message.Content).OfType<InputImageBlock>());
+        var imageMessage = Assert.Single(harness.Model.Requests[^1].Messages,
+            message => message.Content.OfType<InputImageBlock>().Any());
+        Assert.Equal(png, Assert.Single(imageMessage.Content.OfType<InputImageBlock>()).Base64Data);
+        if (delivery == SendTextDelivery.Guide)
+            Assert.Contains("The user sent a new message while you were working:",
+                Assert.Single(imageMessage.Content.OfType<InputTextBlock>()).Text, StringComparison.Ordinal);
+        var message = Assert.Single(await store.LoadMessagesAsync(session.Id, CancellationToken.None),
+            stored => stored.Message.Parts.OfType<FilePart>().Any()).Message;
+        Assert.Equal(artifact, Assert.Single(message.Parts.OfType<FilePart>()));
+        Assert.Equal(delivery == SendTextDelivery.Guide ? MessagePresentation.UserSteer : null, message.Presentation);
+        Assert.Empty(completed.State.Queue);
+        await runtime.DisposeAsync();
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var replay = resumed.Subscribe(session.Id);
+        Assert.Empty(replay.Snapshot().State.Queue);
+        Assert.Equal(artifact, Assert.Single(replay.Snapshot().Rows.OfType<UserMessageRow>()
+            .SelectMany(row => row.Images ?? [])));
+    }
+
+    [Fact]
+    public async Task Resume_RestoresCancelledPendingImageQueueAndDeliversOldestBeforeNewInput()
+    {
+        const string png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        await using var harness = ScriptedCallHarness.Create(
+            ToolCall("Gate", new { }), Text("queued image seen"), Text("fresh answered"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var selection = new ModelSelection("scripted", "test-model", new ModelCallOptions(MaxOutputTokens: 1234));
+        var command = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "", Mode: PermissionMode.Plan,
+            ModelSelection: selection, Delivery: SendTextDelivery.Guide, Images: [new("image/png", png)]);
+        Assert.True((await runtime.SubmitAsync(command, CancellationToken.None)).Accepted);
+        var queuedSnapshot = await WaitForProjectionAsync(projection,
+            snapshot => snapshot.State.Queue.Any(input => input.CommandId == command.CommandId));
+        var artifact = Assert.Single(Assert.Single(queuedSnapshot.State.Queue).Images!);
+        await runtime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+        await WaitForProjectionAsync(projection, snapshot => snapshot.State.Phase == TurnPhase.Idle);
+        await runtime.DisposeAsync();
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var replay = resumed.Subscribe(session.Id);
+        var restored = Assert.Single(replay.Snapshot().State.Queue);
+        Assert.Equal(command.CommandId, restored.CommandId);
+        Assert.Equal(artifact, Assert.Single(restored.Images!));
+        Assert.Equal(PermissionMode.Plan, restored.Mode);
+        Assert.Equal(selection, restored.ModelSelection);
+        Assert.Equal(SendTextDelivery.Guide, restored.Delivery);
+        Assert.Single(harness.Model.Requests);
+        Assert.True((await resumed.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
+            "fresh input"), CancellationToken.None)).Accepted);
+        var completed = await WaitForProjectionAsync(replay, snapshot => snapshot.State.Phase == TurnPhase.Idle
+            && snapshot.Rows.OfType<AssistantMessageRow>().Any(row => !row.IsStreaming
+                && row.Parts.OfType<TextPart>().Any(part => part.Text == "fresh answered")));
+        Assert.Equal(3, harness.Model.Requests.Count);
+        var imageRequest = harness.Model.Requests[1];
+        Assert.Equal(png, Assert.Single(imageRequest.Messages.SelectMany(message => message.Content).OfType<InputImageBlock>()).Base64Data);
+        Assert.Equal(1234, imageRequest.Options.MaxOutputTokens);
+        Assert.Contains("Plan mode is active.", RequestTexts(imageRequest), StringComparison.Ordinal);
+        Assert.DoesNotContain("fresh input", RequestTexts(imageRequest), StringComparison.Ordinal);
+        Assert.Contains("fresh input", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
+        Assert.Empty(completed.State.Queue);
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Equal(command.CommandId, events.Select(entry => entry.Event).OfType<TurnStartedEvent>().ElementAt(1).CommandId);
     }
 
     [Fact]

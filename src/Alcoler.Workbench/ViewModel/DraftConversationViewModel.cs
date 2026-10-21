@@ -9,15 +9,18 @@ public sealed partial class DraftConversationViewModel : ObservableObject, IComp
 {
     private readonly Func<DraftConversationViewModel, Task> _send;
     private ModelSelection? _selection;
+    private ModelChoice? _configuredModel;
+    private bool _configuringModel;
 
     public DraftConversationViewModel(string workspaceRoot, ModelChoice? model, Func<DraftConversationViewModel, Task> send)
     {
         WorkspaceRoot = workspaceRoot;
+        Composer.ConfigureWorkspace(workspaceRoot);
         _send = send;
         if (model is not null)
         {
-            _selection = model.Selection;
             ConfigureModel(model);
+            RestoreModelSelection(ApplyThoughtLevel(model.Selection));
         }
     }
 
@@ -37,7 +40,11 @@ public sealed partial class DraftConversationViewModel : ObservableObject, IComp
 
     public bool HasQueuedInput => false;
 
-    public ModelSelection? Selection => _selection is { } selection ? ApplyThoughtLevel(selection) : null;
+    public ModelSelection? CurrentSelection => _selection;
+
+    public ModelSelection? Selection => CurrentSelection;
+
+    public event Action<ModelSelection>? ModelSelectionChanged;
 
     internal SessionId? CreatedSessionId { get; set; }
 
@@ -63,9 +70,27 @@ public sealed partial class DraftConversationViewModel : ObservableObject, IComp
 
     public Task SwitchModelAsync(ModelSelection selection)
     {
-        _selection = selection;
-        ModelText = $"{selection.ProviderId}/{selection.ModelId}";
+        RestoreModelSelection(selection);
+        ModelSelectionChanged?.Invoke(_selection!);
         return Task.CompletedTask;
+    }
+
+    internal void RestoreModelSelection(ModelSelection selection)
+    {
+        _selection = _configuredModel is { } model && model.ProviderId == selection.ProviderId && model.ModelId == selection.ModelId
+            ? model.NormalizeSelection(selection) : selection;
+        _configuringModel = true;
+        try
+        {
+            ThoughtLevel = _selection.Options?.ReasoningLevel ?? "off";
+        }
+        finally
+        {
+            _configuringModel = false;
+        }
+        ModelText = $"{selection.ProviderId}/{selection.ModelId}";
+        OnPropertyChanged(nameof(CurrentSelection));
+        OnPropertyChanged(nameof(Selection));
     }
 
     public ModelSelection ApplyThoughtLevel(ModelSelection selection) => selection with
@@ -78,11 +103,42 @@ public sealed partial class DraftConversationViewModel : ObservableObject, IComp
 
     public void ConfigureModel(ModelChoice choice, bool useDefaultReasoning = false)
     {
-        ThoughtLevels = choice.Properties?.ReasoningLevels ?? [];
-        if (useDefaultReasoning || !ThoughtLevels.Contains(ThoughtLevel))
+        _configuredModel = choice;
+        _configuringModel = true;
+        try
         {
-            ThoughtLevel = (useDefaultReasoning ? ThoughtLevels.LastOrDefault() : ThoughtLevels.FirstOrDefault()) ?? "off";
+            ThoughtLevels = choice.Properties?.ReasoningLevels ?? [];
+            if (useDefaultReasoning || !ThoughtLevels.Contains(ThoughtLevel))
+            {
+                ThoughtLevel = (useDefaultReasoning ? ThoughtLevels.LastOrDefault() : ThoughtLevels.FirstOrDefault()) ?? "off";
+            }
         }
-        ModelText = $"{choice.ProviderId}/{choice.ModelId}";
+        finally
+        {
+            _configuringModel = false;
+        }
+        if (_selection is { } selection && selection.ProviderId == choice.ProviderId && selection.ModelId == choice.ModelId)
+        {
+            var normalized = ApplyThoughtLevel(choice.NormalizeSelection(selection));
+            if (normalized != selection)
+            {
+                RestoreModelSelection(normalized);
+                ModelSelectionChanged?.Invoke(normalized);
+            }
+        }
+    }
+
+    partial void OnThoughtLevelChanged(string value)
+    {
+        if (_configuringModel || _selection is not { } selection)
+            return;
+        if (_configuredModel is not null && !ThoughtLevels.Contains(value))
+        {
+            _configuringModel = true;
+            ThoughtLevel = selection.Options?.ReasoningLevel ?? "off";
+            _configuringModel = false;
+            return;
+        }
+        _ = SwitchModelAsync(ApplyThoughtLevel(selection));
     }
 }

@@ -7,6 +7,11 @@ using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
+using Avalonia;
+using Avalonia.Headless.XUnit;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
+using Avalonia.Skia;
 using Xunit;
 
 namespace Alcoler.Workbench.Tests;
@@ -455,6 +460,287 @@ public sealed class DraftConversationLifecycleTests
         Assert.Equal(PermissionMode.Plan, workbench.Draft.Composer.Mode);
         Assert.Contains("Storage unavailable", workbench.Banner);
     }
+
+    [Fact]
+    public async Task ModelChoices_PersistImmediatelyPerWorkspaceAndSessionAcrossRestart()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-model-selection-{Guid.NewGuid():N}.json");
+        var firstRoot = Path.Combine(Path.GetTempPath(), "alcoler-model-first");
+        var secondRoot = Path.Combine(Path.GetTempPath(), "alcoler-model-second");
+        var sessionId = StrongId.NewSessionId();
+        var runtime = new FakeAgentRuntime();
+        runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State(modelSelection: new ModelSelection("custom", "first"))));
+        var config = SelectionConfig();
+        config.Save(path);
+        try
+        {
+            using (var workbench = new WorkbenchViewModel(runtime, _scheduler, config,
+                saveComposer: composer => (WorkbenchConfig.LoadOrDefault(path) with { Composer = composer }).Save(path)))
+            {
+                workbench.ShowNewTask(firstRoot);
+                var choice = workbench.ModelChoices.Single(model => model.ModelId == "second");
+                workbench.Draft!.ConfigureModel(choice, useDefaultReasoning: true);
+                await workbench.Draft.SwitchModelAsync(workbench.Draft.ApplyThoughtLevel(choice.Selection));
+                workbench.Draft.ThoughtLevel = "medium";
+                var draftSelection = WorkbenchConfig.LoadOrDefault(path).Composer!.ModelSelections![firstRoot][WorkbenchComposerConfig.DraftSessionKey];
+                Assert.Equal("second", draftSelection.ModelId);
+                Assert.Equal("medium", draftSelection.Options!.ReasoningLevel);
+                Assert.Null(WorkbenchConfig.LoadOrDefault(path).Composer!.RecentModelSelections);
+                await workbench.OpenSessionAsync(sessionId);
+                await ApplyInitialProjectionAsync();
+                Assert.Equal(firstRoot, workbench.Active!.WorkspaceRoot);
+                Assert.Equal("first", workbench.Active.CurrentSelection!.ModelId);
+                workbench.Active.ConfigureModel(choice, useDefaultReasoning: true);
+                await workbench.Active.SwitchModelAsync(workbench.Active.ApplyThoughtLevel(choice.Selection));
+                workbench.Active.ThoughtLevel = "low";
+                var saved = WorkbenchConfig.LoadOrDefault(path).Composer!;
+                Assert.Equal("low", saved.ModelSelections![firstRoot][sessionId.Value].Options!.ReasoningLevel);
+                Assert.Equal("medium", saved.ModelSelections[firstRoot][WorkbenchComposerConfig.DraftSessionKey].Options!.ReasoningLevel);
+                workbench.ShowNewTask(secondRoot);
+                Assert.Equal("first", workbench.Draft!.CurrentSelection!.ModelId);
+                workbench.Draft.ThoughtLevel = "low";
+                Assert.Empty(runtime.Submitted);
+            }
+            using var restarted = new WorkbenchViewModel(runtime, _scheduler, WorkbenchConfig.LoadOrDefault(path));
+            restarted.ShowNewTask(firstRoot + Path.DirectorySeparatorChar);
+            Assert.Equal("medium", restarted.Draft!.CurrentSelection!.Options!.ReasoningLevel);
+            await restarted.OpenSessionAsync(sessionId);
+            await ApplyInitialProjectionAsync();
+            Assert.Equal("second", restarted.Active!.CurrentSelection!.ModelId);
+            Assert.Equal("low", restarted.Active.ThoughtLevel);
+            restarted.ShowNewTask(secondRoot.ToUpperInvariant());
+            Assert.Equal("first", restarted.Draft!.CurrentSelection!.ModelId);
+            Assert.Equal("low", restarted.Draft.ThoughtLevel);
+            Assert.Empty(runtime.Submitted);
+            Assert.Equal(config.DefaultModel, WorkbenchConfig.LoadOrDefault(path).DefaultModel);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task ModelSaveFailure_KeepsLocalSelectionAndSurfacesError()
+    {
+        using var workbench = new WorkbenchViewModel(new DraftRuntime(), _scheduler, SelectionConfig(),
+            saveComposer: _ => throw new IOException("Model configuration unavailable"));
+        var choice = workbench.ModelChoices.Single(model => model.ModelId == "second");
+        workbench.Draft!.ConfigureModel(choice, useDefaultReasoning: true);
+
+        await workbench.Draft.SwitchModelAsync(workbench.Draft.ApplyThoughtLevel(choice.Selection));
+
+        Assert.Equal("second", workbench.Draft.CurrentSelection!.ModelId);
+        Assert.Equal("high", workbench.Draft.ThoughtLevel);
+        Assert.Contains("Model configuration unavailable", workbench.Banner);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcceptedSelection_SeedsOnlyItsWorkspace_AndPreservesNewerUnsentChoice(bool rejected)
+    {
+        var gate = new TaskCompletionSource<CommandAck>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new DraftRuntime { SubmitHandler = _ => new ValueTask<CommandAck>(gate.Task) };
+        WorkbenchComposerConfig? saved = null;
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, SelectionConfig(), saveComposer: composer => saved = composer);
+        var draft = workbench.Draft!;
+        var root = draft.WorkspaceRoot;
+        var second = workbench.ModelChoices.Single(model => model.ModelId == "second");
+        draft.ConfigureModel(second, useDefaultReasoning: true);
+        await draft.SwitchModelAsync(draft.ApplyThoughtLevel(second.Selection));
+        draft.Composer.Draft = "Capture selected model";
+        var sending = draft.SendAsync();
+        await ApplyInitialProjectionAsync();
+        var first = workbench.ModelChoices.Single(model => model.ModelId == "first");
+        workbench.Active!.ConfigureModel(first, useDefaultReasoning: true);
+        await workbench.Active.SwitchModelAsync(workbench.Active.ApplyThoughtLevel(first.Selection));
+        var command = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
+        Assert.Equal("second", command.ModelSelection!.ModelId);
+        gate.SetResult(rejected ? CommandAck.Rejected(command.CommandId, 2, "No") : CommandAck.AcceptedAt(command.CommandId, 2));
+        await sending;
+
+        Assert.Equal("first", workbench.Active.CurrentSelection!.ModelId);
+        Assert.Equal("first", saved!.ModelSelections![root][runtime.LastSessionId.Value].ModelId);
+        Assert.False(saved.ModelSelections[root].ContainsKey(WorkbenchComposerConfig.DraftSessionKey));
+        Assert.Equal(rejected ? null : "second", saved.RecentModelSelections?.GetValueOrDefault(root)?.ModelId);
+        workbench.ShowNewTask(root);
+        Assert.Equal(rejected ? "first" : "second", workbench.Draft!.CurrentSelection!.ModelId);
+        workbench.ShowNewTask(Path.Combine(Path.GetTempPath(), "alcoler-recent-other"));
+        Assert.Equal("first", workbench.Draft!.CurrentSelection!.ModelId);
+        workbench.ShowNewTask(root);
+        await workbench.OpenSessionAsync(runtime.LastSessionId);
+        _scheduler.RunPending();
+        Assert.Equal("first", workbench.Active!.CurrentSelection!.ModelId);
+    }
+
+    [Fact]
+    public void SavedModelOptions_AreValidatedAgainstEnabledCatalogAndFallback()
+    {
+        var root = DocumentViewModel.NormalizeWorkspaceRoot(Environment.CurrentDirectory);
+        var unavailable = new ModelSelection("custom", "disabled", new ModelCallOptions("invalid", -1));
+        var invalidOptions = new ModelSelection("custom", "second", new ModelCallOptions("removed", -20));
+        var selections = new Dictionary<string, IReadOnlyDictionary<string, ModelSelection>>
+        {
+            [root] = new Dictionary<string, ModelSelection> { [WorkbenchComposerConfig.DraftSessionKey] = invalidOptions },
+        };
+        var composer = new WorkbenchComposerConfig(ModelSelections: selections,
+            RecentModelSelections: new Dictionary<string, ModelSelection> { [root] = unavailable });
+        using (var workbench = new WorkbenchViewModel(new DraftRuntime(), _scheduler, SelectionConfig() with { Composer = composer }))
+        {
+            Assert.Equal("second", workbench.Draft!.CurrentSelection!.ModelId);
+            Assert.Equal("low", workbench.Draft.ThoughtLevel);
+            Assert.Null(workbench.Draft.CurrentSelection.Options!.MaxOutputTokens);
+        }
+        selections[root] = new Dictionary<string, ModelSelection> { [WorkbenchComposerConfig.DraftSessionKey] = unavailable };
+        using var fallback = new WorkbenchViewModel(new DraftRuntime(), _scheduler, SelectionConfig() with { Composer = composer });
+        Assert.Equal("first", fallback.Draft!.CurrentSelection!.ModelId);
+        Assert.Equal("high", fallback.Draft.ThoughtLevel);
+    }
+
+    [Fact]
+    public async Task AcceptedSessionSelection_RefreshesUnusedWorkspaceDraftWithoutReplacingEditedDraft()
+    {
+        var runtime = new DraftRuntime();
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, SelectionConfig());
+        var root = workbench.Draft!.WorkspaceRoot;
+        var existingDraft = workbench.Draft;
+        var handle = await workbench.NewSessionAsync(root);
+        await ApplyInitialProjectionAsync();
+        var choice = workbench.ModelChoices.Single(model => model.ModelId == "second");
+        workbench.Active!.ConfigureModel(choice, useDefaultReasoning: true);
+        await workbench.Active.SwitchModelAsync(workbench.Active.ApplyThoughtLevel(choice.Selection));
+        workbench.Active.Composer.Draft = "Use second";
+        await workbench.Active.SendAsync();
+        workbench.ShowNewTask(root);
+        Assert.Same(existingDraft, workbench.Draft);
+        Assert.Equal("second", workbench.Draft!.CurrentSelection!.ModelId);
+        workbench.Draft.Composer.Draft = "Unsent draft";
+        await workbench.OpenSessionAsync(handle.Id);
+        _scheduler.RunPending();
+        choice = workbench.ModelChoices.Single(model => model.ModelId == "first");
+        workbench.Active!.ConfigureModel(choice, useDefaultReasoning: true);
+        await workbench.Active.SwitchModelAsync(workbench.Active.ApplyThoughtLevel(choice.Selection));
+        workbench.Active.Composer.Draft = "Use first";
+        await workbench.Active.SendAsync();
+        workbench.ShowNewTask(root);
+        Assert.Equal("second", workbench.Draft!.CurrentSelection!.ModelId);
+        Assert.Equal("Unsent draft", workbench.Draft.Composer.Draft);
+    }
+
+    [Fact]
+    public async Task LateOlderAcknowledgement_DoesNotReplaceMoreRecentWorkspaceSelection()
+    {
+        var olderAck = new TaskCompletionSource<CommandAck>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var count = 0;
+        var runtime = new DraftRuntime
+        {
+            SubmitHandler = command => ++count == 1 ? new ValueTask<CommandAck>(olderAck.Task)
+                : ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 2)),
+        };
+        WorkbenchComposerConfig? saved = null;
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, SelectionConfig(), saveComposer: composer => saved = composer);
+        var root = workbench.Draft!.WorkspaceRoot;
+        workbench.Draft.Composer.Draft = "Older first choice";
+        var sending = workbench.Draft.SendAsync();
+        await ApplyInitialProjectionAsync();
+        var secondSession = await workbench.NewSessionAsync(root);
+        await ApplyInitialProjectionAsync();
+        var choice = workbench.ModelChoices.Single(model => model.ModelId == "second");
+        workbench.Active!.ConfigureModel(choice, useDefaultReasoning: true);
+        await workbench.Active.SwitchModelAsync(workbench.Active.ApplyThoughtLevel(choice.Selection));
+        workbench.Active.Composer.Draft = "Newer accepted choice";
+        await workbench.Active.SendAsync();
+        olderAck.SetResult(CommandAck.AcceptedAt(runtime.Submitted[0].CommandId, 3));
+        await sending;
+
+        Assert.Equal(secondSession.Id, workbench.Active.SessionId);
+        Assert.Equal("second", saved!.RecentModelSelections![root].ModelId);
+        workbench.ShowNewTask(root);
+        Assert.Equal("second", workbench.Draft!.CurrentSelection!.ModelId);
+    }
+
+    [AvaloniaFact]
+    public async Task ImagesOnlySend_RejectionRetainsCapturedImages_ThenAcceptanceClearsOnlySubmittedImages()
+    {
+        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(Avalonia.Media.GlyphRun).TypeHandle);
+        using var scope = AvaloniaLocator.EnterScope();
+        SkiaPlatform.Initialize();
+        using var bitmap = new WriteableBitmap(new PixelSize(2, 2), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
+        using var payload = new MemoryStream();
+        bitmap.Save(payload);
+        var bytes = payload.ToArray();
+        using var first = ComposerImageAttachment.FromBytes(bytes, "image/png", "first.png");
+        using var newer = ComposerImageAttachment.FromBytes(bytes, "image/png", "newer.png");
+        var accepted = new TaskCompletionSource<CommandAck>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var submissions = 0;
+        var runtime = new DraftRuntime
+        {
+            SubmitHandler = command => ++submissions == 1
+                ? ValueTask.FromResult(CommandAck.Rejected(command.CommandId, 1, "Rejected image for test"))
+                : new ValueTask<CommandAck>(accepted.Task),
+        };
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, SelectionConfig());
+        var draft = workbench.Draft!;
+        draft.Composer.AddAttachments([first]);
+
+        await draft.SendAsync();
+        await ApplyInitialProjectionAsync();
+
+        var rejected = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
+        Assert.Equal(string.Empty, rejected.Text);
+        Assert.Equal(bytes, Convert.FromBase64String(Assert.Single(rejected.Images!).Base64Data));
+        Assert.Same(first, Assert.Single(workbench.Active!.Composer.Attachments));
+        await workbench.OpenSessionAsync(runtime.LastSessionId);
+        _scheduler.RunPending();
+        var sending = workbench.Active!.SendAsync();
+        workbench.Active.Composer.AddAttachments([newer]);
+        var captured = Assert.IsType<SendTextCommand>(runtime.Submitted[1]);
+        Assert.Single(captured.Images!);
+        accepted.SetResult(CommandAck.AcceptedAt(captured.CommandId, 2));
+        await sending;
+
+        Assert.Same(newer, Assert.Single(workbench.Active.Composer.Attachments));
+        Assert.False(File.Exists(first.PayloadPath));
+        workbench.ShowNewTask();
+        Assert.True(File.Exists(newer.PayloadPath));
+        await workbench.OpenSessionAsync(runtime.LastSessionId);
+        _scheduler.RunPending();
+        Assert.Same(newer, Assert.Single(workbench.Active!.Composer.Attachments));
+        workbench.Dispose();
+        Assert.False(File.Exists(newer.PayloadPath));
+    }
+
+    [AvaloniaFact]
+    public async Task AttachmentSnapshotFailure_KeepsDraftAndResetsSendLockWithoutCreatingSession()
+    {
+        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(Avalonia.Media.GlyphRun).TypeHandle);
+        using var scope = AvaloniaLocator.EnterScope();
+        SkiaPlatform.Initialize();
+        using var bitmap = new WriteableBitmap(new PixelSize(2, 2), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
+        using var payload = new MemoryStream();
+        bitmap.Save(payload);
+        var attachment = ComposerImageAttachment.FromBytes(payload.ToArray(), "image/png", "broken.png");
+        var runtime = new DraftRuntime();
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, SelectionConfig());
+        var draft = workbench.Draft!;
+        draft.Composer.AddAttachments([attachment]);
+        draft.Composer.Draft = "Keep this message";
+        attachment.Dispose();
+
+        await draft.SendAsync();
+
+        Assert.Empty(runtime.Created);
+        Assert.Empty(runtime.Submitted);
+        Assert.Equal("Keep this message", draft.Composer.Draft);
+        Assert.False(draft.Composer.IsSending);
+        Assert.NotNull(draft.Banner);
+    }
+
+    private static WorkbenchConfig SelectionConfig() => new([
+        new WorkbenchProviderConfig("openai-compatible", "https://example.test/v1", "key", [
+            new WorkbenchModelConfig("first", ReasoningLevels: ["low", "high"]),
+            new WorkbenchModelConfig("second", ReasoningLevels: ["low", "medium", "high"]),
+            new WorkbenchModelConfig("disabled", Enabled: false),
+        ], Id: "custom"),
+    ], new WorkbenchDefaultModelConfig("custom", "first"));
 
     private WorkbenchViewModel Create(DraftRuntime runtime) => new(runtime, _scheduler,
         new WorkbenchConfig([

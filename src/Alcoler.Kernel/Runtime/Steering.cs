@@ -18,9 +18,9 @@ internal static class Steering
     private const string UserSteerSuffix =
         "This is how Alcoler surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.";
 
-    public static string? ValidateInput(string text)
+    public static string? ValidateInput(string text, bool hasImages = false)
     {
-        if (text.Trim().Length == 0)
+        if (!hasImages && string.IsNullOrWhiteSpace(text))
             return EmptyInputReason;
         if (MeasureUtf8Bytes(text) > MaxSteerInputBytes)
             return InputTooLargeReason;

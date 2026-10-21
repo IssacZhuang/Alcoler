@@ -11,6 +11,29 @@ namespace Alcoler.Kernel.Tests.Models;
 
 public class OpenAiResponsesChatModelTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Request_SerializesUserImagesAsInputImages(bool withText)
+    {
+        var handler = Handler("""{"type":"response.completed","response":{"output":[]}}""");
+        var model = new OpenAiResponsesChatModel(new HttpClient(handler), new("test", "key", "https://test/v1"),
+            new ModelProperties(SupportsImage: true));
+        List<ModelContentBlock> content = withText ? [new InputTextBlock("caption")] : [];
+        content.Add(new InputImageBlock("image/png", "aW1hZ2U="));
+        await Collect(model, new ModelRequest([new(MessageRole.User, content)], [], new()));
+        using var body = JsonDocument.Parse(Assert.Single(handler.RequestBodies)!);
+        var message = Assert.Single(body.RootElement.GetProperty("input").EnumerateArray());
+        Assert.Equal("user", message.GetProperty("role").GetString());
+        var blocks = message.GetProperty("content");
+        Assert.Equal(withText ? 2 : 1, blocks.GetArrayLength());
+        if (withText)
+            Assert.Equal("caption", blocks[0].GetProperty("text").GetString());
+        var image = blocks[blocks.GetArrayLength() - 1];
+        Assert.Equal("input_image", image.GetProperty("type").GetString());
+        Assert.Equal("data:image/png;base64,aW1hZ2U=", image.GetProperty("image_url").GetString());
+    }
+
     [Fact]
     public async Task StreamingTextReasoningToolsAndCachedUsage_AreDecodedOnce()
     {

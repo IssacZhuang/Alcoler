@@ -17,6 +17,21 @@ namespace Alcoler.Workbench.ViewModel;
 public sealed record ModelChoice(string ProviderId, string ModelId, string Display, ModelProperties? Properties = null)
 {
     public ModelSelection Selection => new(ProviderId, ModelId);
+
+    internal ModelSelection NormalizeSelection(ModelSelection selection)
+    {
+        var options = selection.Options ?? new ModelCallOptions();
+        var levels = Properties?.ReasoningLevels ?? [];
+        return selection with
+        {
+            Options = options with
+            {
+                ReasoningLevel = options.ReasoningLevel is { } level && levels.Contains(level)
+                    ? level : levels.FirstOrDefault(),
+                MaxOutputTokens = options.MaxOutputTokens is > 0 ? options.MaxOutputTokens : null,
+            },
+        };
+    }
 }
 
 public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
@@ -29,6 +44,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private ShellEnvironment? _shellPreference;
     private WorkbenchComposerConfig _composerConfig;
     private readonly Dictionary<ComposerViewModel, Action<PermissionMode>> _modeObservers = [];
+    private readonly Dictionary<IComposerHost, Action<ModelSelection>> _selectionObservers = [];
+    private readonly Dictionary<string, long> _recentSubmissionSequences = new(StringComparer.OrdinalIgnoreCase);
+    private long _submissionSequence;
     private readonly IAsyncDisposable? _ownedResource;
     private readonly IUiScheduler _scheduler;
     private readonly ISessionActivityRuntime? _activities;
@@ -278,7 +296,12 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         CloseActive();
         foreach (var (composer, observer) in _modeObservers)
             composer.ModeSelected -= observer;
+        foreach (var composer in _modeObservers.Keys)
+            composer.ClearAttachments();
         _modeObservers.Clear();
+        foreach (var (host, observer) in _selectionObservers)
+            host.ModelSelectionChanged -= observer;
+        _selectionObservers.Clear();
         _hub.Dispose();
         Terminal?.Dispose();
         Documents.PropertyChanged -= OnDocumentsPropertyChanged;
@@ -306,13 +329,25 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         {
             return;
         }
+        if (!_sessionRoots.ContainsKey(sessionId))
+        {
+            var summaries = await _runtime.ListSessionsAsync(null, 200, CancellationToken.None);
+            foreach (var summary in summaries)
+                _sessionRoots[summary.Id] = summary.WorkspaceRoot;
+            if (navigation != _navigationVersion)
+                return;
+        }
+        var workspaceRoot = _sessionRoots.GetValueOrDefault(sessionId) ?? CurrentWorkspaceRoot;
+        _sessionRoots.TryAdd(sessionId, workspaceRoot);
         CloseActive();
         Draft = null;
         var store = _hub.Acquire(sessionId);
         _sessionDrafts.TryGetValue(sessionId, out var saved);
         var savedText = saved?.Composer.Draft;
         var savedMode = saved?.Composer.Mode;
-        var conversation = new ConversationViewModel(_runtime, store, saved?.Composer);
+        var conversation = new ConversationViewModel(_runtime, store, saved?.Composer, ModelChoices,
+            WorkbenchModelCatalog.DefaultSelection(_config)) { WorkspaceRoot = workspaceRoot };
+        conversation.Composer.ConfigureWorkspace(workspaceRoot);
         conversation.ApplyUpdate(new ProjectionUpdate(0, store.State, [], Reset: true, ResetRows: store.Rows));
         if (saved is not null)
         {
@@ -328,10 +363,15 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 UnsentText = saved.UnsentText;
             }
         }
+        if (GetSavedSelection(workspaceRoot, sessionId.Value) is { } persistedSelection)
+            conversation.RestoreModelSelection(persistedSelection);
         if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
             conversation.RestorePendingMode(pendingMode);
         ObserveMode(conversation.Composer, () => sessionId);
+        ObserveSelection(conversation, () => sessionId.Value);
         conversation.ModeSubmitted += mode => ClearSubmittedMode(sessionId, mode);
+        conversation.NextSubmissionSequence = () => ++_submissionSequence;
+        conversation.ModelSelectionSubmitted += (selection, sequence) => RecordAcceptedSelection(workspaceRoot, sessionId, selection, sequence);
         Active = conversation;
         Sidebar.SetActive(sessionId);
         Sidebar.SyncRunningState(sessionId, _activities?.GetSessionActivity(sessionId));
@@ -379,22 +419,108 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     private DraftConversationViewModel GetOrCreateDraft(string root)
     {
-        root = Path.GetFullPath(root);
+        root = DocumentViewModel.NormalizeWorkspaceRoot(root);
         if (_drafts.TryGetValue(root, out var draft))
         {
+            if (GetSavedSelection(root, WorkbenchComposerConfig.DraftSessionKey) is null
+                && string.IsNullOrEmpty(draft.Composer.Draft) && !draft.Composer.IsSending
+                && !draft.Composer.HasAttachments && GetNewDraftSelection(root) is { } recent)
+            {
+                if (FindModel(recent) is { } model)
+                    draft.ConfigureModel(model);
+                draft.RestoreModelSelection(recent);
+            }
             return draft;
         }
-        var selection = WorkbenchModelCatalog.DefaultSelection(_config);
+        var selection = GetSavedSelection(root, WorkbenchComposerConfig.DraftSessionKey) ?? GetNewDraftSelection(root);
         draft = new DraftConversationViewModel(root, FindModel(selection), SendDraftAsync);
         draft.Composer.RestoreMode(_composerConfig.DefaultMode);
+        if (selection is not null)
+            draft.RestoreModelSelection(selection);
         var observedDraft = draft;
         ObserveMode(draft.Composer, () => observedDraft.CreatedSessionId);
-        if (selection?.Options?.ReasoningLevel is { } reasoning)
-        {
-            draft.ThoughtLevel = reasoning;
-        }
+        ObserveSelection(draft, () => observedDraft.CreatedSessionId?.Value ?? WorkbenchComposerConfig.DraftSessionKey);
         _drafts[root] = draft;
         return draft;
+    }
+
+    private ModelSelection? ValidateSelection(ModelSelection? selection) => FindModel(selection) is { } choice
+        ? choice.NormalizeSelection(selection!) : WorkbenchModelCatalog.DefaultSelection(_config);
+
+    private ModelSelection? GetSavedSelection(string root, string sessionKey)
+    {
+        var workspace = _composerConfig.ModelSelections?.FirstOrDefault(pair =>
+            string.Equals(pair.Key, DocumentViewModel.NormalizeWorkspaceRoot(root), StringComparison.OrdinalIgnoreCase)).Value;
+        return workspace?.TryGetValue(sessionKey, out var selection) == true ? ValidateSelection(selection) : null;
+    }
+
+    private ModelSelection? GetNewDraftSelection(string root)
+    {
+        var recent = _composerConfig.RecentModelSelections?.FirstOrDefault(pair =>
+            string.Equals(pair.Key, DocumentViewModel.NormalizeWorkspaceRoot(root), StringComparison.OrdinalIgnoreCase)).Value;
+        return ValidateSelection(recent);
+    }
+
+    private void ObserveSelection(IComposerHost host, Func<string> sessionKey)
+    {
+        Action<ModelSelection> observer = selection => SaveModelSelection(host.WorkspaceRoot, sessionKey(), selection);
+        _selectionObservers[host] = observer;
+        host.ModelSelectionChanged += observer;
+    }
+
+    private void UnobserveSelection(IComposerHost host)
+    {
+        if (_selectionObservers.Remove(host, out var observer))
+            host.ModelSelectionChanged -= observer;
+    }
+
+    private Dictionary<string, IReadOnlyDictionary<string, ModelSelection>> CopyModelSelections() =>
+        new(_composerConfig.ModelSelections ?? new Dictionary<string, IReadOnlyDictionary<string, ModelSelection>>(),
+            StringComparer.OrdinalIgnoreCase);
+
+    private void SaveModelSelection(string root, string sessionKey, ModelSelection selection)
+    {
+        if (ValidateSelection(selection) is not { } validated)
+            return;
+        root = DocumentViewModel.NormalizeWorkspaceRoot(root);
+        var workspaces = CopyModelSelections();
+        var sessions = new Dictionary<string, ModelSelection>(workspaces.GetValueOrDefault(root) ?? new Dictionary<string, ModelSelection>())
+        {
+            [sessionKey] = validated,
+        };
+        workspaces[root] = sessions;
+        SaveComposerConfig(_composerConfig with { ModelSelections = workspaces });
+    }
+
+    private void TransferDraftSelection(DraftConversationViewModel draft, SessionId sessionId)
+    {
+        var root = draft.WorkspaceRoot;
+        var workspaces = CopyModelSelections();
+        var sessions = new Dictionary<string, ModelSelection>(workspaces.GetValueOrDefault(root) ?? new Dictionary<string, ModelSelection>());
+        sessions.Remove(WorkbenchComposerConfig.DraftSessionKey);
+        if (ValidateSelection(draft.CurrentSelection) is { } selection)
+            sessions[sessionId.Value] = selection;
+        workspaces[root] = sessions;
+        SaveComposerConfig(_composerConfig with { ModelSelections = workspaces });
+    }
+
+    private void RecordAcceptedSelection(string root, SessionId sessionId, ModelSelection selection, long sequence)
+    {
+        if (ValidateSelection(selection) is not { } validated)
+            return;
+        root = DocumentViewModel.NormalizeWorkspaceRoot(root);
+        var recent = new Dictionary<string, ModelSelection>(
+            _composerConfig.RecentModelSelections ?? new Dictionary<string, ModelSelection>(), StringComparer.OrdinalIgnoreCase);
+        if (!_recentSubmissionSequences.TryGetValue(root, out var acceptedSequence) || sequence >= acceptedSequence)
+        {
+            _recentSubmissionSequences[root] = sequence;
+            recent[root] = validated;
+        }
+        var workspaces = CopyModelSelections();
+        var sessions = new Dictionary<string, ModelSelection>(workspaces.GetValueOrDefault(root) ?? new Dictionary<string, ModelSelection>());
+        sessions.TryAdd(sessionId.Value, validated);
+        workspaces[root] = sessions;
+        SaveComposerConfig(_composerConfig with { ModelSelections = workspaces, RecentModelSelections = recent });
     }
 
     private void ObserveMode(ComposerViewModel composer, Func<SessionId?> sessionId)
@@ -441,7 +567,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
-            Banner = $"Could not save conversation mode. {exception.Message}";
+            Banner = $"Could not save composer settings. {exception.Message}";
         }
     }
 
@@ -462,6 +588,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         var text = draft.Composer.Draft;
         var mode = draft.Composer.Mode;
         var selection = draft.Selection;
+        var submissionSequence = ++_submissionSequence;
         var navigation = _navigationVersion;
         draft.Composer.IsSending = true;
         draft.Banner = null;
@@ -470,10 +597,12 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         var submitting = false;
         try
         {
+            var images = draft.Composer.SnapshotImages();
             var handle = await _runtime.CreateSessionAsync(
                 new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection), CancellationToken.None);
             createdId = handle.Id;
             draft.CreatedSessionId = handle.Id;
+            TransferDraftSelection(draft, handle.Id);
             SavePendingMode(handle.Id, draft.Composer.Mode);
             _sessionRoots[handle.Id] = handle.WorkspaceRoot;
             var draftOwnerId = GetDraftDocumentOwnerId(draft);
@@ -491,6 +620,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             {
                 _drafts.Remove(draft.WorkspaceRoot);
             }
+            UnobserveSelection(draft);
             if (navigation == _navigationVersion && ReferenceEquals(Draft, draft))
             {
                 await OpenSessionAsync(handle.Id);
@@ -498,13 +628,16 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             submitting = true;
             var revision = _runtime.TryObserve(handle.Id)?.Snapshot().Revision ?? 0;
             var ack = await _runtime.SubmitAsync(new SendTextCommand(
-                StrongId.NewCommandId(), handle.Id, revision, text, mode, selection), CancellationToken.None);
+                StrongId.NewCommandId(), handle.Id, revision, text, mode, selection, Images: images), CancellationToken.None);
             if (ack.Accepted)
             {
                 ClearSubmittedMode(handle.Id, mode);
                 if (Active?.SessionId == handle.Id)
                     Active.AcknowledgeMode(mode);
-                draft.Composer.ClearIfSendable(text);
+                if (selection is not null)
+                    RecordAcceptedSelection(draft.WorkspaceRoot, handle.Id, selection, submissionSequence);
+                draft.Composer.RecordSent(text);
+                draft.Composer.ClearIfSendable(text, images);
             }
             else
             {
@@ -551,7 +684,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 workspaceRoot,
                 title,
                 _composerConfig.DefaultMode,
-                WorkbenchModelCatalog.DefaultSelection(_config)),
+                GetNewDraftSelection(workspaceRoot)),
             CancellationToken.None);
         _sessionRoots[handle.Id] = workspaceRoot;
         await OpenSessionAsync(handle.Id);
@@ -689,6 +822,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         var sessionId = Active.SessionId;
         _sessionDrafts[sessionId] = new SessionDraft(Active.Composer, Active.CurrentSelection, Active.Banner,
             _sessionDrafts.GetValueOrDefault(sessionId)?.UnsentText);
+        UnobserveSelection(Active);
         Active.Dispose();
         Active = null;
         _hub.Release(sessionId);

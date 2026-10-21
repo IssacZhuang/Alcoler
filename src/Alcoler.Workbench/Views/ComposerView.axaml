@@ -3,6 +3,7 @@
              xmlns:converters="using:Alcoler.Workbench.Converters"
              xmlns:events="using:Alcoler.Contracts.Events"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
+             xmlns:local="using:Alcoler.Workbench"
              xmlns:controls="using:Alcoler.Workbench.Controls"
              x:Class="Alcoler.Workbench.Views.ComposerView"
              x:DataType="vm:IComposerHost"
@@ -36,7 +37,7 @@
     <Style Selector="Button.modePicker.fullAccess controls|Icon.icon">
       <Setter Property="Stroke" Value="{DynamicResource AlcolerWarning}" />
     </Style>
-    <Style Selector="ComboBox.toolbarPicker">
+    <Style Selector="Button.toolbarPicker">
       <Setter Property="Height" Value="28" />
       <Setter Property="MinHeight" Value="0" />
       <Setter Property="Padding" Value="6,0" />
@@ -77,17 +78,50 @@
               Background="{DynamicResource AlcolerInput}"
               BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
               CornerRadius="16" Padding="12">
-        <Grid RowDefinitions="Auto,Auto" RowSpacing="12">
-          <TextBox x:Name="InputBox" Grid.Row="0" Classes="bare"
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="12">
+          <Border x:Name="SkillPanel" Grid.Row="0" IsVisible="False" MaxHeight="220"
+                  Background="{DynamicResource AlcolerSurface}" CornerRadius="8" Padding="4">
+            <ListBox x:Name="SkillSuggestions" SelectionMode="Single" MaxHeight="212">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="local:ComposerSkillEntry">
+                  <StackPanel Spacing="2" Margin="4">
+                    <TextBlock Text="{Binding Name}" FontSize="13" />
+                    <TextBlock Text="{Binding Description}" FontSize="12" MaxWidth="560"
+                               TextTrimming="CharacterEllipsis" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Border>
+          <ItemsControl Grid.Row="1" ItemsSource="{Binding Composer.Attachments}" IsVisible="{Binding Composer.HasAttachments}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:ComposerImageAttachment">
+                <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="8" Padding="4" Margin="0,0,6,6">
+                  <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="4">
+                    <Image Source="{Binding Thumbnail}" Width="72" Height="56" Stretch="UniformToFill" ToolTip.Tip="{Binding Name}" />
+                    <Button Grid.Column="1" Classes="icon toolbarAction" VerticalAlignment="Top" Click="OnRemoveImageClick" ToolTip.Tip="Remove image">
+                      <controls:Icon Classes="icon small" Data="M6 6l12 12 M18 6 6 18" />
+                    </Button>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <TextBox x:Name="InputBox" Grid.Row="2" Classes="bare"
                    Text="{Binding Composer.Draft, Mode=TwoWay}"
                    Watermark="Ask anything..."
                    AcceptsReturn="True" TextWrapping="Wrap"
                    MinHeight="40" MaxHeight="160" VerticalContentAlignment="Top"
                    FontSize="13" />
 
-          <Grid x:Name="ComposerToolbar" Grid.Row="1" ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="6" Height="28">
+          <TextBlock Grid.Row="3" Text="{Binding Composer.InputError}" IsVisible="{Binding !!Composer.InputError}"
+                     Foreground="{DynamicResource AlcolerWarning}" FontSize="12" TextWrapping="Wrap" />
+          <Grid x:Name="ComposerToolbar" Grid.Row="4" ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="6" Height="28">
             <Button x:Name="ModeSelector" Classes="modePicker" Classes.fullAccess="{Binding Composer.IsFullAccess}"
-                    ToolTip.Tip="Permissions for the next message" VerticalAlignment="Center">
+                    ToolTip.Tip="Permissions for the next message" VerticalAlignment="Center" AutomationProperties.Name="Permissions">
               <StackPanel Orientation="Horizontal" Spacing="4">
                 <controls:Icon Classes="icon" Data="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z M9 12l2 2 4-4" />
                 <TextBlock Classes="modeLabel" Text="{Binding Composer.ModeLabel}" FontSize="13" VerticalAlignment="Center" />
@@ -110,30 +144,35 @@
               </Button.Flyout>
             </Button>
 
-            <ComboBox x:Name="ModelSelector" Grid.Column="3" Classes="ghost toolbarPicker"
-                      MinWidth="40" MaxWidth="240" HorizontalAlignment="Right" HorizontalContentAlignment="Stretch"
-                      PlaceholderText="{Binding ModelText}" ToolTip.Tip="{Binding ModelText}"
-                      SelectionChanged="OnModelSelected">
-              <ComboBox.ItemTemplate>
-                <DataTemplate x:DataType="vm:ModelChoice">
-                  <TextBlock Text="{Binding Display}" TextTrimming="CharacterEllipsis" />
-                </DataTemplate>
-              </ComboBox.ItemTemplate>
-            </ComboBox>
+            <Button x:Name="ModelSelector" Grid.Column="3" Classes="ghost toolbarPicker"
+                    MinWidth="40" MaxWidth="240" HorizontalAlignment="Right" ToolTip.Tip="{Binding ModelText}"
+                    Click="OnModelPickerClick" AutomationProperties.Name="Choose model">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <TextBlock x:Name="ModelLabel" Text="{Binding ModelText}" MaxWidth="210" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
+              </StackPanel>
+              <Button.Flyout><MenuFlyout Placement="TopEdgeAlignedLeft" /></Button.Flyout>
+            </Button>
 
             <controls:ContextUsageView x:Name="ContextUsageHost" Grid.Column="2" DataContext="{Binding ContextUsage}"
                                        VerticalAlignment="Center" />
             <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-              <ComboBox x:Name="ThoughtLevelSelector" Classes="ghost toolbarPicker" MinWidth="66" MaxWidth="90"
-                        ToolTip.Tip="Reasoning effort" ItemsSource="{Binding ThoughtLevels}" IsVisible="{Binding !!ThoughtLevels.Count}"
-                        SelectedItem="{Binding ThoughtLevel, Mode=TwoWay}" />
+              <Button x:Name="ThoughtLevelSelector" Classes="ghost toolbarPicker" MinWidth="66" MaxWidth="112"
+                      ToolTip.Tip="Reasoning effort (Ctrl+T)" IsVisible="{Binding !!ThoughtLevels.Count}" Click="OnThoughtPickerClick" AutomationProperties.Name="Reasoning effort">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <controls:Icon Classes="icon small" Data="M12 18V5 M12 5C8 0 3 4 5 8 1 10 3 15 6 15c-1 5 5 7 6 3 M12 5c4-5 9-1 7 3 4 2 2 7-1 7 1 5-5 7-6 3" />
+                  <TextBlock Text="{Binding ThoughtLevel}" FontSize="13" VerticalAlignment="Center" />
+                  <controls:Icon x:Name="ThoughtChevron" Classes="icon small" Data="{StaticResource AlcolerIconChevronDown}" />
+                </StackPanel>
+                <Button.Flyout><MenuFlyout Placement="TopEdgeAlignedLeft" /></Button.Flyout>
+              </Button>
               <Button x:Name="StopButton" Classes="icon toolbarAction"
                       IsVisible="{Binding Composer.ShowStop}" Click="OnStopClick" ToolTip.Tip="Stop">
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSquare}"
                       Stroke="{DynamicResource AlcolerTextPrimary}" Fill="{DynamicResource AlcolerTextPrimary}" />
               </Button>
               <Button x:Name="SendButton" Classes="primary icon toolbarAction"
-                      IsVisible="{Binding !Composer.ShowStop}" IsEnabled="{Binding Composer.CanSend}" Click="OnSendClick" ToolTip.Tip="{Binding Composer.SendHint}">
+                      IsVisible="{Binding !Composer.ShowStop}" IsEnabled="{Binding Composer.CanSend}" Click="OnSendClick" ToolTip.Tip="{Binding Composer.SendHint}" AutomationProperties.Name="Send message">
                 <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconArrowUp}" />
               </Button>
             </StackPanel>

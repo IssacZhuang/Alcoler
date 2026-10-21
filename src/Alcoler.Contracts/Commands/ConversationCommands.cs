@@ -30,7 +30,8 @@ public sealed record SendTextCommand(
     string Text,
     PermissionMode? Mode = null,
     ModelSelection? ModelSelection = null,
-    SendTextDelivery Delivery = SendTextDelivery.Queue) : ConversationCommand(CommandId, SessionId, BaseRevision);
+    SendTextDelivery Delivery = SendTextDelivery.Queue,
+    IReadOnlyList<InputImageBlock>? Images = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record StopCommand(
     CommandId CommandId,

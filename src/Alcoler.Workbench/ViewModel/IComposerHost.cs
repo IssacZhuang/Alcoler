@@ -8,6 +8,12 @@ public interface IComposerHost : INotifyPropertyChanged
 {
     ComposerViewModel Composer { get; }
 
+    string WorkspaceRoot { get; }
+
+    ModelSelection? CurrentSelection { get; }
+
+    event Action<ModelSelection>? ModelSelectionChanged;
+
     string ModelText { get; }
 
     IReadOnlyList<string> ThoughtLevels { get; }

@@ -34,6 +34,29 @@ public class OpenAiCompatibleChatModelTests
 
     private static HttpResponseMessage SseResponse(string body) => SegmentedStream.ToResponse(body, segmentSize: 11);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Request_SerializesUserImagesAsDataUrls(bool withText)
+    {
+        var handler = new RecordingHandler((_, _) => SseResponse("data: [DONE]\n\n"));
+        var model = new OpenAiCompatibleChatModel(new HttpClient(handler),
+            new("gpt-test", "sk-test", "https://unit.test/api"), new ModelProperties(SupportsImage: true));
+        List<ModelContentBlock> content = withText ? [new InputTextBlock("caption")] : [];
+        content.Add(new InputImageBlock("image/png", "aW1hZ2U="));
+        await CollectAsync(model, new ModelRequest([new(MessageRole.User, content)], [], new()));
+        using var body = JsonDocument.Parse(Assert.Single(handler.RequestBodies)!);
+        var message = Assert.Single(body.RootElement.GetProperty("messages").EnumerateArray());
+        Assert.Equal("user", message.GetProperty("role").GetString());
+        var blocks = message.GetProperty("content");
+        Assert.Equal(withText ? 2 : 1, blocks.GetArrayLength());
+        if (withText)
+            Assert.Equal("caption", blocks[0].GetProperty("text").GetString());
+        var image = blocks[blocks.GetArrayLength() - 1];
+        Assert.Equal("image_url", image.GetProperty("type").GetString());
+        Assert.Equal("data:image/png;base64,aW1hZ2U=", image.GetProperty("image_url").GetProperty("url").GetString());
+    }
+
     [Fact]
     public async Task Request_ReplaysReasoningContent_WithoutAnthropicSignatureRepair()
     {

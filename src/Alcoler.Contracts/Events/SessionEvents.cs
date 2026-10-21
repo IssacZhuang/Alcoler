@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
@@ -117,7 +118,14 @@ public sealed record CompactBoundaryAppliedEvent(CompactBoundary Boundary) : Ses
 
 public sealed record MicrocompactAppliedEvent(IReadOnlyList<PartId> ClearedParts, int EstimatedTokensSaved) : SessionEvent;
 
-public sealed record QueuedInput(CommandId CommandId, string Text, DateTimeOffset QueuedAt);
+public sealed record QueuedInput(
+    CommandId CommandId,
+    string Text,
+    DateTimeOffset QueuedAt,
+    IReadOnlyList<FilePart>? Images = null,
+    PermissionMode? Mode = null,
+    ModelSelection? ModelSelection = null,
+    SendTextDelivery Delivery = SendTextDelivery.Queue);
 
 public sealed record InputQueuedEvent(QueuedInput Input) : SessionEvent;
 

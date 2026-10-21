@@ -15,9 +15,17 @@ public abstract partial class TimelineItemViewModel : ObservableObject
 
 public sealed partial class UserMessageItemViewModel : TimelineItemViewModel
 {
-    public UserMessageItemViewModel(string rowId, string text) : base(rowId) => Text = text;
+    public UserMessageItemViewModel(string rowId, string text, IReadOnlyList<FilePart>? images = null) : base(rowId)
+    {
+        Text = text;
+        Images = images ?? [];
+    }
 
     public string Text { get; }
+
+    public IReadOnlyList<FilePart> Images { get; }
+
+    public bool HasImages => Images.Count > 0;
 }
 
 public sealed partial class AssistantMessageItemViewModel : TimelineItemViewModel
@@ -207,7 +215,7 @@ public static class TimelineItemFactory
 {
     public static TimelineItemViewModel? Create(ConversationRow row) => row switch
     {
-        UserMessageRow user => new UserMessageItemViewModel(user.RowId, user.Text),
+        UserMessageRow user => new UserMessageItemViewModel(user.RowId, user.Text, user.Images),
         AssistantMessageRow assistant => CreateAssistant(assistant),
         ToolCallRow tool => CreateTool(tool),
         SystemNoticeRow notice => new SystemNoticeItemViewModel(notice.RowId, notice.Kind, notice.Text),

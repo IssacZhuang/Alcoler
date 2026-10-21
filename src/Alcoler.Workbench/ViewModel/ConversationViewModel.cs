@@ -26,11 +26,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private readonly IAgentRuntime _runtime;
     private readonly ProjectionStore _store;
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
+    private readonly IReadOnlyList<ModelChoice>? _modelChoices;
+    private readonly ModelSelection? _defaultSelection;
+    private bool _hasLocalSelection;
 
-    public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store, ComposerViewModel? composer = null)
+    public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store, ComposerViewModel? composer = null,
+        IReadOnlyList<ModelChoice>? modelChoices = null, ModelSelection? defaultSelection = null)
     {
         _runtime = runtime;
         _store = store;
+        _modelChoices = modelChoices;
+        _defaultSelection = defaultSelection;
         Composer = composer ?? new ComposerViewModel();
         SessionId = store.SessionId;
         Status = new ConversationStatusViewModel(SessionId, runtime);
@@ -48,6 +54,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     public ModelSelection? CurrentSelection => _currentSelection;
 
     public event Action<PermissionMode>? ModeSubmitted;
+
+    public event Action<ModelSelection>? ModelSelectionChanged;
+
+    public event Action<ModelSelection, long>? ModelSelectionSubmitted;
+
+    internal Func<long>? NextSubmissionSequence { get; set; }
 
     private bool _restoredMode;
     private bool _restoredComposer;
@@ -247,18 +259,9 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     {
         if (_restoredComposer && _store.Revision > _restoredRevision)
             _restoredComposer = false;
-        _applyingState = true;
-        try
+        if (!_hasLocalSelection)
         {
-            if (!_restoredComposer)
-            {
-                _currentSelection = state.ModelSelection;
-                ThoughtLevel = state.ModelSelection?.Options?.ReasoningLevel ?? "off";
-            }
-        }
-        finally
-        {
-            _applyingState = false;
+            SetModelSelection(state.ModelSelection, local: false);
         }
         Title = state.Title;
         if (!_restoredMode && !_restoredComposer && Composer.Mode == Mode)
@@ -314,15 +317,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             return;
         }
         var text = Composer.Draft;
+        var selection = CurrentSelection;
+        var submissionSequence = NextSubmissionSequence?.Invoke() ?? 0;
         var mode = Composer.IsTurnActive ? (PermissionMode?)null : Composer.Mode;
         Composer.IsSending = true;
         try
         {
+            var images = Composer.SnapshotImages();
             // Queued input must not mutate the active turn's permission policy.
-            var restoredSelection = _restoredComposer ? _currentSelection : null;
             _restoredComposer = false;
             var ack = await SubmitAsync(new SendTextCommand(
-                StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: restoredSelection, Mode: mode));
+                StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: selection, Mode: mode, Images: images));
             if (ack.Accepted)
             {
                 if (mode is { } submittedMode)
@@ -330,12 +335,19 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                     AcknowledgeMode(submittedMode);
                     ModeSubmitted?.Invoke(submittedMode);
                 }
-                Composer.ClearIfSendable(text);
+                if (selection is not null)
+                    ModelSelectionSubmitted?.Invoke(selection, submissionSequence);
+                Composer.RecordSent(text);
+                Composer.ClearIfSendable(text, images);
             }
             else
             {
                 Banner = ack.RejectionReason ?? "Input was rejected";
             }
+        }
+        catch (Exception exception)
+        {
+            Banner = $"Delivery could not be confirmed. Your message has been kept; check this conversation before sending again. {exception.Message}";
         }
         finally
         {
@@ -369,17 +381,43 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         _restoredRevision = _store.Revision;
         Composer.Draft = draft;
         RestorePendingMode(mode);
+        RestoreModelSelection(selection);
+    }
+
+    internal void RestoreModelSelection(ModelSelection? selection) => SetModelSelection(selection, local: true);
+
+    private void SetModelSelection(ModelSelection? selection, bool local)
+    {
+        _hasLocalSelection |= local && selection is not null;
+        if (_modelChoices is { Count: > 0 })
+        {
+            var choice = _modelChoices.FirstOrDefault(model => model.ProviderId == selection?.ProviderId && model.ModelId == selection.ModelId);
+            if (choice is null)
+            {
+                selection = _defaultSelection ?? _modelChoices[0].Selection;
+                choice = _modelChoices.First(model => model.ProviderId == selection.ProviderId && model.ModelId == selection.ModelId);
+            }
+            _configuredModel = choice;
+            selection = choice.NormalizeSelection(selection!);
+        }
+        else if (_configuredModel is { } configured && configured.ProviderId == selection?.ProviderId && configured.ModelId == selection.ModelId)
+        {
+            selection = configured.NormalizeSelection(selection);
+        }
         _applyingState = true;
         try
         {
             _currentSelection = selection;
+            if (_configuredModel is { } model && model.ProviderId == selection?.ProviderId && model.ModelId == selection.ModelId)
+                ThoughtLevels = model.Properties?.ReasoningLevels ?? [];
             ThoughtLevel = selection?.Options?.ReasoningLevel ?? "off";
-            ModelText = selection is null ? "default model" : $"{selection.ProviderId}/{selection.ModelId}";
         }
         finally
         {
             _applyingState = false;
         }
+        ModelText = selection is null ? "default model" : $"{selection.ProviderId}/{selection.ModelId}";
+        OnPropertyChanged(nameof(CurrentSelection));
     }
 
     public void ConfigureModel(ModelChoice choice, bool useDefaultReasoning = false)
@@ -396,6 +434,16 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             _applyingState = false;
         }
+        if (_currentSelection is { } selection && selection.ProviderId == choice.ProviderId && selection.ModelId == choice.ModelId)
+        {
+            var normalized = ApplyThoughtLevel(choice.NormalizeSelection(selection));
+            if (normalized != selection)
+            {
+                SetModelSelection(normalized, local: useDefaultReasoning);
+                if (_hasLocalSelection)
+                    ModelSelectionChanged?.Invoke(normalized);
+            }
+        }
     }
 
     public ModelSelection ApplyThoughtLevel(ModelSelection selection) => selection with
@@ -408,27 +456,24 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     partial void OnThoughtLevelChanged(string value)
     {
-        if (_applyingState || _currentSelection is not { } selection
-            || (_configuredModel is not null && !ThoughtLevels.Contains(value)))
+        if (_applyingState || _currentSelection is not { } selection)
+            return;
+        if (_configuredModel is not null && !ThoughtLevels.Contains(value))
         {
+            _applyingState = true;
+            ThoughtLevel = selection.Options?.ReasoningLevel ?? "off";
+            _applyingState = false;
             return;
         }
         _ = SwitchModelAsync(ApplyThoughtLevel(selection));
     }
 
-    public async Task SwitchModelAsync(ModelSelection selection)
+    public Task SwitchModelAsync(ModelSelection selection)
     {
-        _restoredComposer = false;
-        var ack = await SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), SessionId, _store.Revision, selection));
-        if (ack.Accepted)
-        {
-            _currentSelection = selection;
-            ModelText = $"{selection.ProviderId}/{selection.ModelId}";
-        }
-        else
-        {
-            Banner = ack.RejectionReason ?? "Model selection was rejected";
-        }
+        RestoreModelSelection(selection);
+        if (_currentSelection is not null)
+            ModelSelectionChanged?.Invoke(_currentSelection);
+        return Task.CompletedTask;
     }
 
     public async Task ResolvePermissionAsync(PermissionDecision decision)

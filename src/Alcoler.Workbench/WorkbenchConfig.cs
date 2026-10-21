@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Tools;
 
@@ -45,7 +46,12 @@ public sealed record WorkbenchDefaultModelConfig(string ProviderId, string Model
 
 public sealed record WorkbenchComposerConfig(
     PermissionMode DefaultMode = PermissionMode.Build,
-    IReadOnlyDictionary<string, PermissionMode>? PendingSessionModes = null);
+    IReadOnlyDictionary<string, PermissionMode>? PendingSessionModes = null,
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, ModelSelection>>? ModelSelections = null,
+    IReadOnlyDictionary<string, ModelSelection>? RecentModelSelections = null)
+{
+    public const string DraftSessionKey = "__draft__";
+}
 
 public sealed record WorkbenchMcpServerConfig(
     string Name,

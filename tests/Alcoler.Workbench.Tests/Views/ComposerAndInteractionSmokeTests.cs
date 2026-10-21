@@ -34,25 +34,31 @@ public class ComposerAndInteractionSmokeTests
         public required ProjectionStore Store { get; init; }
         public required Window Window { get; init; }
         public required UserControl View { get; init; }
+        public required string TempRoot { get; init; }
+        public required ComposerPromptHistory History { get; init; }
 
         public void Dispose()
         {
             Window.Close();
             ViewModel.Dispose();
             Store.Dispose();
+            Directory.Delete(TempRoot, recursive: true);
         }
     }
 
-    private static Harness Show<TView>(ConversationState? initialState = null) where TView : UserControl, new()
+    private static Harness Show<TView>(ConversationState? initialState = null, WorkbenchViewModel? workbench = null) where TView : UserControl, new()
     {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "alcoler-composer-view-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var history = new ComposerPromptHistory(Path.Combine(tempRoot, "prompt-history.json"));
         var runtime = new FakeAgentRuntime();
         var sessionId = new SessionId(Guid.NewGuid().ToString("N"));
         var state = initialState ?? TestSnapshots.State();
         var projection = runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], state));
         var store = new ProjectionStore(() => projection, sessionId, InlineUiScheduler.Instance, state);
-        var viewModel = new ConversationViewModel(runtime, store);
+        var viewModel = new ConversationViewModel(runtime, store, new ComposerViewModel(history)) { WorkspaceRoot = tempRoot };
         var view = new TView { DataContext = viewModel };
-        var window = new Window { Content = view };
+        var window = new Window { Content = view, DataContext = workbench };
         window.Show();
         return new Harness
         {
@@ -61,6 +67,8 @@ public class ComposerAndInteractionSmokeTests
             Store = store,
             Window = window,
             View = view,
+            TempRoot = tempRoot,
+            History = history,
         };
     }
 
@@ -377,18 +385,48 @@ public class ComposerAndInteractionSmokeTests
     {
         using var harness = Show<ComposerView>();
         await PumpAsync();
-        var picker = FindNamed<ComboBox>(harness.View, "ThoughtLevelSelector");
+        var picker = FindNamed<Button>(harness.View, "ThoughtLevelSelector");
         Assert.False(picker.IsVisible);
+        Assert.Null(picker.Flyout);
         harness.ViewModel.ConfigureModel(new ModelChoice("test", "reasoning", "Reasoning",
             new Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"])));
         await PumpAsync();
         Assert.True(picker.IsVisible);
-        Assert.Equal(new[] { "low", "high" }, picker.Items.Cast<string>());
+        var menu = Assert.IsType<MenuFlyout>(picker.Flyout);
+        Assert.True(FindNamed<Workbench.Controls.Icon>(harness.View, "ThoughtChevron").IsVisible);
+        Assert.Equal(new[] { "low", "high" }, menu.Items.OfType<MenuItem>().Select(item => item.Header));
+        Assert.True(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "low")).IsChecked);
+
+        picker.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "high"))
+            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        await PumpAsync();
+        Assert.Equal("high", harness.ViewModel.ThoughtLevel);
+        Assert.True(FindNamed<TextBox>(harness.View, "InputBox").IsFocused);
+
+        harness.ViewModel.ConfigureModel(new ModelChoice("test", "fixed", "Fixed",
+            new Contracts.Models.ModelProperties(ReasoningLevels: ["medium"])));
+        await PumpAsync();
+        Assert.True(picker.IsVisible);
+        Assert.False(FindNamed<Workbench.Controls.Icon>(harness.View, "ThoughtChevron").IsVisible);
+        Assert.Null(picker.Flyout);
+        Assert.Equal("medium", harness.ViewModel.ThoughtLevel);
+
         harness.ViewModel.ConfigureModel(new ModelChoice("test", "plain", "Plain", new Contracts.Models.ModelProperties()));
         await PumpAsync();
         Assert.False(picker.IsVisible);
+        Assert.Null(picker.Flyout);
         Assert.Empty(harness.Runtime.Submitted);
     }
+
+    private static WorkbenchViewModel ModelWorkbench() => new(new FakeAgentRuntime(), InlineUiScheduler.Instance,
+        new WorkbenchConfig([
+            new WorkbenchProviderConfig("openai-compatible", "https://example.invalid/v1", null,
+                [new WorkbenchModelConfig("reasoning", SupportsImage: true, ReasoningLevels: ["low", "high"])],
+                Id: "test", Name: "Test provider"),
+            new WorkbenchProviderConfig("openai-compatible", "https://other.invalid/v1", null,
+                [new WorkbenchModelConfig("plain", ReasoningLevels: [])], Id: "other", Name: "Other provider"),
+        ]));
 
     [AvaloniaFact]
     public async Task Composer_ExplicitModelChoice_UsesHighestReasoningWithoutChangingHydrationDefaults()
@@ -396,11 +434,12 @@ public class ComposerAndInteractionSmokeTests
         foreach (var draftHost in new[] { false, true })
         foreach (var previousLevel in new[] { "off", "low" })
         {
-            using var harness = Show<ComposerView>();
+            using var workbench = ModelWorkbench();
+            using var harness = Show<ComposerView>(workbench: workbench);
             IComposerHost host;
             if (draftHost)
             {
-                host = new DraftConversationViewModel(Environment.CurrentDirectory, null, _ => Task.CompletedTask)
+                host = new DraftConversationViewModel(harness.TempRoot, null, _ => Task.CompletedTask)
                 {
                     ThoughtLevel = previousLevel,
                 };
@@ -413,26 +452,366 @@ public class ComposerAndInteractionSmokeTests
                     new Contracts.Models.ModelSelection("old", "old-model",
                         new Contracts.Models.ModelCallOptions(ReasoningLevel: previousLevel)));
             }
-            var choice = new ModelChoice("test", "reasoning", "Reasoning",
-                new Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"]));
+            var choice = workbench.ModelChoices.Single(model => model.ModelId == "reasoning");
             host.ConfigureModel(choice);
             Assert.Equal("low", host.ThoughtLevel);
             Assert.Empty(harness.Runtime.Submitted);
-            var picker = FindNamed<ComboBox>(harness.View, "ModelSelector");
-            picker.ItemsSource = new[] { choice };
+            await PrepareQuestionAsync(harness);
+            var picker = FindNamed<Button>(harness.View, "ModelSelector");
+            await ClickAsync(harness, picker);
+            var menu = Assert.IsType<MenuFlyout>(picker.Flyout);
+            Assert.True(menu.IsOpen);
+            var provider = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Test provider"));
+            var model = provider.Items.OfType<MenuItem>().Single(item => item.Tag is ModelChoice candidate && candidate == choice);
+            var header = Assert.IsType<StackPanel>(model.Header);
+            Assert.Contains(header.Children.OfType<TextBlock>(), text => text.Text == "Vision");
 
-            picker.SelectedItem = choice;
+            model.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             await PumpAsync();
 
             Assert.Equal("high", host.ThoughtLevel);
-            if (draftHost)
-                Assert.Equal("high", ((DraftConversationViewModel)host).Selection!.Options!.ReasoningLevel);
-            else
+            Assert.Equal("test", host.CurrentSelection!.ProviderId);
+            Assert.Equal("reasoning", host.CurrentSelection.ModelId);
+            Assert.Equal("high", host.CurrentSelection.Options!.ReasoningLevel);
+            Assert.Empty(harness.Runtime.Submitted);
+            Assert.True(FindNamed<TextBox>(harness.View, "InputBox").IsFocused);
+            await ClickAsync(harness, picker);
+            Assert.True(menu.IsOpen);
+            provider = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Test provider"));
+            Assert.True(provider.IsChecked);
+            Assert.True(provider.Items.OfType<MenuItem>().Single(item => item.Tag is ModelChoice selected && selected == choice).IsChecked);
+            Assert.False(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Other provider")).IsChecked);
+            Assert.Equal("Manage models", menu.Items.OfType<MenuItem>().Last().Header);
+            menu.Hide();
+
+            if (!draftHost)
             {
-                var command = Assert.IsType<Contracts.Commands.SwitchModelCommand>(Assert.Single(harness.Runtime.Submitted));
-                Assert.Equal("reasoning", command.Selection.ModelId);
-                Assert.Equal("high", command.Selection.Options!.ReasoningLevel);
+                host.Composer.Draft = "send selected model";
+                FindNamed<Button>(harness.View, "SendButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                await PumpAsync();
+                var command = Assert.IsType<Contracts.Commands.SendTextCommand>(Assert.Single(harness.Runtime.Submitted));
+                Assert.Equal(host.CurrentSelection, command.ModelSelection);
+                Assert.Equal("send selected model", command.Text);
             }
+        }
+    }
+
+    [AvaloniaTheory]
+    [Xunit.InlineData(PhysicalKey.ArrowUp)]
+    [Xunit.InlineData(PhysicalKey.ArrowDown)]
+    public async Task Composer_HistoryKeyboardStartsAtNewestClampsOldestAndRestoresEmpty(PhysicalKey firstKey)
+    {
+        using var harness = Show<ComposerView>();
+        harness.ViewModel.Composer.RecordSent("oldest");
+        harness.ViewModel.Composer.RecordSent("newest");
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+
+        await PressAsync(harness, firstKey);
+        Assert.Equal("newest", input.Text);
+        await PressAsync(harness, PhysicalKey.ArrowUp);
+        Assert.Equal("oldest", input.Text);
+        await PressAsync(harness, PhysicalKey.ArrowUp);
+        Assert.Equal("oldest", input.Text);
+        await PressAsync(harness, PhysicalKey.ArrowDown);
+        Assert.Equal("newest", input.Text);
+        await PressAsync(harness, PhysicalKey.ArrowDown);
+        Assert.Equal(string.Empty, input.Text);
+        Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Equal(["oldest", "newest"], harness.History.GetEntries(harness.TempRoot));
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_HistoryTypingExitsBrowsingAndDoesNotOverwriteANonemptyDraft()
+    {
+        using var harness = Show<ComposerView>();
+        harness.ViewModel.Composer.RecordSent("oldest");
+        harness.ViewModel.Composer.RecordSent("newest");
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        await PressAsync(harness, PhysicalKey.ArrowUp);
+        Assert.Equal("newest", input.Text);
+
+        harness.Window.KeyTextInput(" edited");
+        await PumpAsync();
+        await PressAsync(harness, PhysicalKey.ArrowUp);
+        Assert.Equal("newest edited", input.Text);
+        await PressAsync(harness, PhysicalKey.ArrowDown);
+        Assert.Equal("newest edited", input.Text);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_MultilineArrowsPreserveTextAndShiftEnterInsertsANewline()
+    {
+        using var harness = Show<ComposerView>();
+        harness.ViewModel.Composer.RecordSent("history must not replace draft");
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        input.Text = "first line\nsecond line";
+        input.CaretIndex = input.Text.Length;
+
+        await PressAsync(harness, PhysicalKey.ArrowUp);
+        Assert.Equal("first line\nsecond line", input.Text);
+        await PressAsync(harness, PhysicalKey.ArrowDown);
+        Assert.Equal("first line\nsecond line", input.Text);
+        input.CaretIndex = input.Text.Length;
+        await PressAsync(harness, PhysicalKey.Enter, RawInputModifiers.Shift);
+        Assert.Equal("first line\nsecond line\n", input.Text!.Replace("\r\n", "\n"));
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    private static string WriteComposerSkill(Harness harness, string name = "demo")
+    {
+        var root = Path.Combine(harness.TempRoot, "skill-workspace");
+        var directory = Path.Combine(root, ".alcoler", "skills", name);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "SKILL.md"), $"---\nname: {name}\ndescription: A test composer skill.\n---\nFollow test skill instructions.");
+        harness.ViewModel.WorkspaceRoot = root;
+        return root;
+    }
+
+    [AvaloniaTheory]
+    [Xunit.InlineData(PhysicalKey.Enter)]
+    [Xunit.InlineData(PhysicalKey.Tab)]
+    public async Task Composer_SlashSkillCompletionReplacesTokenWithoutSending(PhysicalKey completionKey)
+    {
+        using var harness = Show<ComposerView>();
+        var root = WriteComposerSkill(harness);
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        harness.Window.KeyTextInput("/demo");
+        await PumpAsync();
+        var panel = FindNamed<Border>(harness.View, "SkillPanel");
+        var suggestions = FindNamed<ListBox>(harness.View, "SkillSuggestions");
+        Assert.True(panel.IsVisible);
+        Assert.Contains(suggestions.Items.OfType<ComposerSkillEntry>(), entry => entry.Name == "demo"
+            && entry.Path == Path.Combine(root, ".alcoler", "skills", "demo", "SKILL.md"));
+        suggestions.SelectedItem = suggestions.Items.OfType<ComposerSkillEntry>().Single(entry => entry.Name == "demo");
+
+        await PressAsync(harness, completionKey);
+
+        Assert.Equal("/demo ", input.Text);
+        Assert.Equal("/demo ", harness.ViewModel.Composer.Draft);
+        Assert.False(panel.IsVisible);
+        Assert.True(input.IsFocused);
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Empty(harness.History.GetEntries(root));
+
+        harness.Window.KeyTextInput("inspect this workspace");
+        await PressAsync(harness, PhysicalKey.Enter);
+        var command = Assert.IsType<Contracts.Commands.SendTextCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("/demo inspect this workspace", command.Text);
+        Assert.DoesNotContain("<command-name>", command.Text);
+        Assert.Equal([command.Text], harness.History.GetEntries(root));
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_SlashSuggestionPointerClickPreservesInputAndDoesNotSubmit()
+    {
+        using var harness = Show<ComposerView>();
+        var root = WriteComposerSkill(harness, "alcoler-pointer-a");
+        WriteComposerSkill(harness, "alcoler-pointer-b");
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        input.Text = "Before /alcoler-pointer-\nAfter";
+        input.CaretIndex = "Before /alcoler-pointer-".Length;
+        input.SelectionStart = input.CaretIndex;
+        input.SelectionEnd = input.CaretIndex;
+        await PrepareQuestionAsync(harness);
+        var panel = FindNamed<Border>(harness.View, "SkillPanel");
+        var suggestions = FindNamed<ListBox>(harness.View, "SkillSuggestions");
+        Assert.True(panel.IsVisible);
+        Assert.Equal("alcoler-pointer-a", Assert.IsType<ComposerSkillEntry>(suggestions.SelectedItem).Name);
+        var item = suggestions.GetVisualDescendants().OfType<ListBoxItem>()
+            .Single(candidate => candidate.DataContext is ComposerSkillEntry { Name: "alcoler-pointer-b" });
+        Assert.True(item.IsVisible);
+        Assert.True(item.Bounds.Width > 0 && item.Bounds.Height > 0);
+
+        await ClickAsync(harness, item);
+
+        Assert.Equal("Before /alcoler-pointer-b \nAfter", input.Text);
+        Assert.Equal(input.Text, harness.ViewModel.Composer.Draft);
+        Assert.Equal("Before /alcoler-pointer-b ".Length, input.CaretIndex);
+        Assert.True(input.IsFocused);
+        Assert.False(panel.IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Empty(harness.History.GetEntries(root));
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_SlashSkillKeyboardNavigationAndEscapeDoNotSubmit()
+    {
+        using var harness = Show<ComposerView>();
+        WriteComposerSkill(harness, "alcoler-test-a");
+        WriteComposerSkill(harness, "alcoler-test-b");
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        harness.Window.KeyTextInput("/alcoler-test-");
+        await PumpAsync();
+        var suggestions = FindNamed<ListBox>(harness.View, "SkillSuggestions");
+        var panel = FindNamed<Border>(harness.View, "SkillPanel");
+        Assert.True(panel.IsVisible);
+        Assert.Equal("alcoler-test-a", Assert.IsType<ComposerSkillEntry>(suggestions.SelectedItem).Name);
+        await PressAsync(harness, PhysicalKey.ArrowDown);
+        Assert.Equal("alcoler-test-b", Assert.IsType<ComposerSkillEntry>(suggestions.SelectedItem).Name);
+        await PressAsync(harness, PhysicalKey.ArrowUp);
+        Assert.Equal("alcoler-test-a", Assert.IsType<ComposerSkillEntry>(suggestions.SelectedItem).Name);
+
+        await PressAsync(harness, PhysicalKey.Escape);
+
+        Assert.False(panel.IsVisible);
+        Assert.Equal("/alcoler-test-", input.Text);
+        Assert.True(input.IsFocused);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_SlashCompletionAfterWhitespacePreservesSurroundingText()
+    {
+        using var harness = Show<ComposerView>();
+        WriteComposerSkill(harness);
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        input.Text = "Before\n/demo preserve this suffix";
+        input.CaretIndex = "Before\n/demo".Length;
+        input.SelectionStart = input.CaretIndex;
+        input.SelectionEnd = input.CaretIndex;
+        await PumpAsync();
+        var panel = FindNamed<Border>(harness.View, "SkillPanel");
+        var suggestions = FindNamed<ListBox>(harness.View, "SkillSuggestions");
+        Assert.True(panel.IsVisible);
+        suggestions.SelectedItem = suggestions.Items.OfType<ComposerSkillEntry>().Single(entry => entry.Name == "demo");
+
+        await PressAsync(harness, PhysicalKey.Tab);
+
+        Assert.StartsWith("Before\n/demo ", input.Text);
+        Assert.EndsWith("preserve this suffix", input.Text);
+        Assert.Equal(input.Text, harness.ViewModel.Composer.Draft);
+        Assert.False(panel.IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaTheory]
+    [Xunit.InlineData("https://demo.example/path")]
+    [Xunit.InlineData("https://example.test/demo")]
+    [Xunit.InlineData("folder/demo")]
+    [Xunit.InlineData("/demo/path")]
+    public async Task Composer_UrlsAndPathsDoNotOpenSlashSuggestions(string text)
+    {
+        using var harness = Show<ComposerView>();
+        WriteComposerSkill(harness);
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        harness.Window.KeyTextInput(text);
+        await PumpAsync();
+
+        Assert.Equal(text, input.Text);
+        Assert.False(FindNamed<Border>(harness.View, "SkillPanel").IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_HistoryRecallOfSlashTokenDoesNotReopenSuggestions()
+    {
+        using var harness = Show<ComposerView>();
+        WriteComposerSkill(harness);
+        harness.ViewModel.Composer.RecordSent("/demo");
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+
+        await PressAsync(harness, PhysicalKey.ArrowUp);
+
+        Assert.Equal("/demo", input.Text);
+        Assert.False(FindNamed<Border>(harness.View, "SkillPanel").IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_ControlTCyclesSupportedReasoningLocallyAndWraps()
+    {
+        using var harness = Show<ComposerView>();
+        var choice = new ModelChoice("test", "reasoning", "Reasoning",
+            new Contracts.Models.ModelProperties(ReasoningLevels: ["off", "low", "high"]));
+        harness.ViewModel.ConfigureModel(choice);
+        await harness.ViewModel.SwitchModelAsync(harness.ViewModel.ApplyThoughtLevel(choice.Selection));
+        await PrepareQuestionAsync(harness);
+        FindNamed<TextBox>(harness.View, "InputBox").Focus();
+
+        foreach (var expected in new[] { "low", "high", "off" })
+        {
+            await PressAsync(harness, PhysicalKey.T, RawInputModifiers.Control);
+            Assert.Equal(expected, harness.ViewModel.ThoughtLevel);
+            Assert.Equal(expected, harness.ViewModel.CurrentSelection!.Options!.ReasoningLevel);
+        }
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_ImeCompositionDoesNotSubmitOrCycleReasoning()
+    {
+        using var harness = Show<ComposerView>();
+        harness.ViewModel.ConfigureModel(new ModelChoice("test", "reasoning", "Reasoning",
+            new Contracts.Models.ModelProperties(ReasoningLevels: ["low", "high"])));
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        harness.ViewModel.Composer.Draft = "draft ";
+        var presenter = Assert.Single(input.GetVisualDescendants().OfType<TextPresenter>());
+        presenter.PreeditText = "composition";
+
+        await PressAsync(harness, PhysicalKey.Enter);
+        await PressAsync(harness, PhysicalKey.T, RawInputModifiers.Control);
+        await PressAsync(harness, PhysicalKey.Escape);
+
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Equal("low", harness.ViewModel.ThoughtLevel);
+        presenter.PreeditText = null;
+        harness.ViewModel.Composer.Draft = string.Empty;
+        input.CaretIndex = 0;
+        harness.Window.KeyTextInput("Committed message");
+        await PressAsync(harness, PhysicalKey.Enter);
+        var command = Assert.IsType<Contracts.Commands.SendTextCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("Committed message", command.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_ClipboardTextPasteUsesControlVAndReplacesSelection()
+    {
+        using var harness = Show<ComposerView>();
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        input.Text = "abcdefgh";
+        input.CaretIndex = 6;
+        input.SelectionStart = 2;
+        input.SelectionEnd = 6;
+        var clipboard = Assert.IsAssignableFrom<Avalonia.Input.Platform.IClipboard>(harness.Window.Clipboard);
+        await clipboard.SetTextAsync("pasted text");
+        try
+        {
+            await PressAsync(harness, PhysicalKey.V, RawInputModifiers.Control);
+            await PumpAsync();
+            await PumpAsync();
+
+            Assert.Equal("abpasted textgh", input.Text);
+            Assert.Equal(input.Text, harness.ViewModel.Composer.Draft);
+            Assert.Empty(harness.ViewModel.Composer.Attachments);
+            Assert.Empty(harness.Runtime.Submitted);
+        }
+        finally
+        {
+            await clipboard.ClearAsync();
         }
     }
 

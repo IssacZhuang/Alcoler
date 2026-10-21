@@ -1,3 +1,4 @@
+using System.Buffers.Text;
 using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Commands;
@@ -63,6 +64,9 @@ public sealed record SessionRuntimeDeps(
 public sealed class SessionRuntime : IAsyncDisposable
 {
     private const int StreamRecoveryMaxRetries = 10;
+    private const int MaxInputImages = 8;
+    private const int MaxInputImageBytes = 20 * 1024 * 1024;
+    private const int MaxInputImageBase64Characters = (MaxInputImageBytes + 2) / 3 * 4;
     // ZCode DEFAULT_NORMAL_REQUEST_MAX_OUTPUT_TOKENS; only used when the model declares none.
     private const int DefaultRequestMaxOutputTokens = 32_000;
     // ZCode session-history-hydrator INTERRUPTED_TOOL_RESULT.
@@ -205,7 +209,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             switch (command)
             {
                 case SendTextCommand sendText:
-                    return HandleSendText(sendText);
+                    return await HandleSendTextAsync(sendText, ct).ConfigureAwait(false);
 
                 case StopCommand stop:
                     _turnCts?.Cancel();
@@ -255,16 +259,21 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
     }
 
-    private CommandAck HandleSendText(SendTextCommand sendText)
+    private async Task<CommandAck> HandleSendTextAsync(SendTextCommand sendText, CancellationToken ct)
     {
-        if (Steering.ValidateInput(sendText.Text) is { } rejection)
+        sendText = sendText with { Text = sendText.Text ?? string.Empty };
+        var images = sendText.Images?.ToArray();
+        var rejection = Steering.ValidateInput(sendText.Text, images is { Length: > 0 }) ?? ValidateImages(images);
+        if (rejection is not null)
         {
             return CommandAck.Rejected(sendText.CommandId, Revision, rejection);
         }
 
+        var files = await StoreInputImagesAsync(images, ct).ConfigureAwait(false);
+        var input = new PendingTurnInput(sendText with { Images = null }, null, files);
         if (_turnMachine.IsBusy)
         {
-            EnqueueInput(new PendingTurnInput(sendText, null));
+            await EnqueueInputAsync(input).ConfigureAwait(false);
             BumpRevision();
             return CommandAck.AcceptedAt(sendText.CommandId, Revision);
         }
@@ -273,26 +282,76 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             // Inputs held by a cancelled/failed turn keep FIFO: the newcomer queues behind and
             // the oldest pending input drives the next turn.
-            EnqueueInput(new PendingTurnInput(sendText, null));
+            await EnqueueInputAsync(input).ConfigureAwait(false);
             StartTurnFor(DequeueOldestInput()!);
         }
         else
         {
-            StartTurnFor(new PendingTurnInput(sendText, null));
+            StartTurnFor(input);
         }
 
         BumpRevision();
         return CommandAck.AcceptedAt(sendText.CommandId, Revision);
     }
 
-    private void EnqueueInput(PendingTurnInput input)
+    private static string? ValidateImages(IReadOnlyList<InputImageBlock>? images)
     {
-        _pendingInputs.Enqueue(input);
+        if (images is null)
+            return null;
+        if (images.Count > MaxInputImages)
+            return "too_many_images";
+        foreach (var image in images)
+        {
+            if (image is null || ImageExtension(image.MimeType) is null)
+                return "unsupported_image_mime_type";
+            if (image.Base64Data is null || image.Base64Data.Length == 0)
+                return "invalid_image_base64";
+            if (image.Base64Data.Length > MaxInputImageBase64Characters)
+                return "image_too_large";
+            if (!Base64.IsValid(image.Base64Data, out var decodedLength) || decodedLength == 0)
+                return "invalid_image_base64";
+            if (decodedLength > MaxInputImageBytes)
+                return "image_too_large";
+        }
+        return null;
+    }
+
+    private static string? ImageExtension(string? mimeType) => mimeType?.ToLowerInvariant() switch
+    {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => null,
+    };
+
+    private async Task<IReadOnlyList<FilePart>?> StoreInputImagesAsync(
+        IReadOnlyList<InputImageBlock>? images, CancellationToken ct)
+    {
+        if (images is not { Count: > 0 })
+            return null;
+        var files = new List<FilePart>(images.Count);
+        for (var index = 0; index < images.Count; index++)
+        {
+            var image = images[index];
+            var artifact = await _deps.Artifacts.SaveAsync(_record.Id,
+                $"image-{index + 1}.{ImageExtension(image.MimeType)}", image.MimeType.ToLowerInvariant(),
+                Convert.FromBase64String(image.Base64Data), ct).ConfigureAwait(false);
+            files.Add(new FilePart(StrongId.NewPartId(), artifact.Uri, artifact.MimeType, artifact.FileName));
+        }
+        return files;
+    }
+
+    private async Task EnqueueInputAsync(PendingTurnInput input)
+    {
         if (input.Command is { } command)
         {
-            _ = EmitAsync(new InputQueuedEvent(new QueuedInput(command.CommandId, command.Text, _deps.Clock.GetUtcNow())), persist: true);
+            await EmitAsync(new InputQueuedEvent(new QueuedInput(command.CommandId, command.Text,
+                _deps.Clock.GetUtcNow(), input.Images, command.Mode, command.ModelSelection, command.Delivery)),
+                persist: true).ConfigureAwait(false);
             BumpRevision();
         }
+        _pendingInputs.Enqueue(input);
     }
 
     private PendingTurnInput? DequeueOldestInput()
@@ -418,11 +477,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
             var openingMessage = input.NotificationBody is { } notificationBody
                 ? BuildNotificationMessage(notificationBody)
-                : new ConversationMessage(
-                    StrongId.NewMessageId(),
-                    MessageRole.User,
-                    [new TextPart(StrongId.NewPartId(), command!.Text)],
-                    _deps.Clock.GetUtcNow(), Source: MessageSource.RealUser);
+                : BuildUserMessage(input);
             await CommitMessageAsync(openingMessage).ConfigureAwait(false);
             AppendDateReminder();
 
@@ -571,7 +626,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     // requested, every queued task notification (batched into a single message).
     private async Task<(bool Steered, bool Notified)> DrainBoundaryAsync(bool drainNotifications, CancellationToken turnCt)
     {
-        SendTextCommand? steer = null;
+        PendingTurnInput? steer = null;
         List<string>? notificationBodies = null;
         await _commandLock.WaitAsync(turnCt).ConfigureAwait(false);
         try
@@ -585,7 +640,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 {
                     if (steer is null && command.Delivery == SendTextDelivery.Guide)
                     {
-                        steer = command;
+                        steer = next;
                         _ = EmitAsync(new InputDequeuedEvent(command.CommandId), persist: true);
                     }
                     else
@@ -623,13 +678,9 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         if (steer is not null)
         {
-            await ApplyInputIntentAsync(steer).ConfigureAwait(false);
-            _consumedGuideSelection = steer.ModelSelection;
-            await CommitMessageAsync(new ConversationMessage(
-                StrongId.NewMessageId(),
-                MessageRole.User,
-                [new TextPart(StrongId.NewPartId(), steer.Text)],
-                _deps.Clock.GetUtcNow(), Source: MessageSource.RealUser, Presentation: MessagePresentation.UserSteer)).ConfigureAwait(false);
+            await ApplyInputIntentAsync(steer.Command!).ConfigureAwait(false);
+            _consumedGuideSelection = steer.Command!.ModelSelection;
+            await CommitMessageAsync(BuildUserMessage(steer, MessagePresentation.UserSteer)).ConfigureAwait(false);
         }
 
         return (steer is not null, notificationBodies is { Count: > 0 });
@@ -693,6 +744,19 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             await handler(this).ConfigureAwait(false);
         }
+    }
+
+    private ConversationMessage BuildUserMessage(PendingTurnInput input, MessagePresentation? presentation = null)
+    {
+        var parts = new List<MessagePart>();
+        if (!string.IsNullOrWhiteSpace(input.Command!.Text))
+            parts.Add(new TextPart(StrongId.NewPartId(), input.Command.Text));
+        else if (presentation == MessagePresentation.UserSteer)
+            parts.Add(new TextPart(StrongId.NewPartId(), "[Attached images]"));
+        if (input.Images is { } images)
+            parts.AddRange(images);
+        return new ConversationMessage(StrongId.NewMessageId(), MessageRole.User, parts,
+            _deps.Clock.GetUtcNow(), Source: MessageSource.RealUser, Presentation: presentation);
     }
 
     private ConversationMessage BuildNotificationMessage(string prefixedBody) =>
@@ -1607,6 +1671,29 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             EmitForReplay(sessionEvent);
         }
+        var queuedInputs = new Dictionary<CommandId, (long Sequence, QueuedInput Input)>();
+        foreach (var entry in durable)
+        {
+            switch (entry.Event)
+            {
+                case InputQueuedEvent queued:
+                    queuedInputs[queued.Input.CommandId] = (entry.Sequence, queued.Input);
+                    break;
+                case InputDequeuedEvent dequeued:
+                    queuedInputs.Remove(dequeued.CommandId);
+                    break;
+                case InputDiscardedEvent discarded:
+                    queuedInputs.Remove(discarded.CommandId);
+                    break;
+            }
+        }
+        foreach (var (_, queued) in queuedInputs.Values.OrderBy(entry => entry.Sequence))
+        {
+            var command = new SendTextCommand(queued.CommandId, _record.Id, 0, queued.Text,
+                queued.Mode, queued.ModelSelection, queued.Delivery);
+            _pendingInputs.Enqueue(new PendingTurnInput(command, null, queued.Images));
+            EmitForReplay(new InputQueuedEvent(queued));
+        }
         _history.AppendRange(messages.Select(m => m.Message).ToList());
         _titleAttempted = messages.Any(message => IsRealUserTurn(message.Message));
         await RepairDanglingToolCallsAsync(messages).ConfigureAwait(false);
@@ -1718,7 +1805,8 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     // A pending turn input is either a real user command or a task notification body that
     // already carries the system-notification prefix.
-    private sealed record PendingTurnInput(SendTextCommand? Command, string? NotificationBody);
+    private sealed record PendingTurnInput(
+        SendTextCommand? Command, string? NotificationBody, IReadOnlyList<FilePart>? Images = null);
 
     // Runs on the turn task inside tool execution; the command lock is free at that point,
     // so a mode switch submits like any other client command. Base revision 0 always passes
