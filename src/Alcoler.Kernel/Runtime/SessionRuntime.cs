@@ -35,6 +35,10 @@ public sealed class SessionRuntimeOptions
 
     public string? ShellName { get; init; }
 
+    public Func<ShellEnvironment?, ShellEnvironment>? ResolveShell { get; init; }
+
+    internal Func<ShellEnvironment?, string>? CustomSystemPromptFactory { get; init; }
+
     public GitSnapshot? GitSnapshot { get; init; }
 
     public ModelSelection? DefaultModel { get; init; }
@@ -87,6 +91,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private Task _turnTask = Task.CompletedTask;
     private Task _titleTask = Task.CompletedTask;
     private bool _titleAttempted;
+    private bool _shellInitialized;
     private CancellationTokenSource? _turnCts;
     private readonly Queue<PendingTurnInput> _pendingInputs = new();
     private TokenUsage? _lastProviderUsage;
@@ -122,7 +127,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _toolExecutor = new ToolCallExecutor(deps.Tools, _permissions, _ => _permissions.Mode);
         _toolRunner = new ToolBatchRunner(scheduler, _toolExecutor);
         _sessionCommands = new RuntimeSessionCommands(this);
-        _shell = new ShellSessionState(record.WorkspaceRoot);
+        _shell = new ShellSessionState(record.WorkspaceRoot, record.Shell);
         _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync);
         _auxModel = new SessionAuxModelClient(() => _record.ModelSelection ?? deps.Options.DefaultModel, deps.ResolveModel);
         _skills = new SkillContentProvider(record.WorkspaceRoot);
@@ -157,6 +162,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     public long Revision => Volatile.Read(ref _revision);
 
     public bool IsTurnActive => _turnMachine.IsBusy;
+
+    internal ShellEnvironment? Shell => _shell.Environment ?? _record.Shell;
 
     internal string? LastTurnError { get; private set; }
 
@@ -404,6 +411,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             var model = _deps.ResolveModel(selection);
             var options = selection.Options ?? new ModelCallOptions();
             model.ValidateOptions(options);
+            await EnsureShellAsync(turnCt).ConfigureAwait(false);
             await EmitAsync(new TurnStartedEvent(turnId, command?.CommandId ?? StrongId.NewCommandId()), persist: true).ConfigureAwait(false);
 
             var openingMessage = input.NotificationBody is { } notificationBody
@@ -1161,6 +1169,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (!CompactionSelector.HasEnoughMessagesToCompact(plan.Selection.ToSummarize))
             return false;
 
+        await EnsureShellAsync(ct).ConfigureAwait(false);
         var maxAttempts = trigger == CompactTrigger.Auto ? CompactPolicy.AutoCompactMaxAttempts : 1;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -1376,7 +1385,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         IReadOnlyList<ConversationMessage> history, ModelCallOptions options, IChatModel? model = null,
         CancellationToken cancellationToken = default)
     {
-        var custom = _deps.Options.CustomSystemPrompt;
+        var custom = _deps.Options.CustomSystemPromptFactory?.Invoke(Shell) ?? _deps.Options.CustomSystemPrompt;
         var currentDate = EnvironmentSections.FormatLocalIsoDate(_deps.Clock.GetLocalNow().LocalDateTime);
         var media = await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
         var skillsListing = _deps.Tools.VisibleContracts.Any(tool => tool.Name == "Skill")
@@ -1458,7 +1467,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             _record.WorkspaceRoot,
             _isGitRepository,
             RuntimeEnvironmentFacts.Platform,
-            _deps.Options.ShellName ?? RuntimeEnvironmentFacts.Shell,
+            Shell?.Name ?? _deps.Options.ShellName ?? RuntimeEnvironmentFacts.Shell,
             RuntimeEnvironmentFacts.OsVersion,
             model?.Descriptor.ProviderId,
             model?.Descriptor.ModelId)));
@@ -1518,6 +1527,23 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             await _deps.Store.AppendDurableEventsAsync([sequenced], _sessionCts.Token).ConfigureAwait(false);
         }
+    }
+
+    private async Task EnsureShellAsync(CancellationToken ct)
+    {
+        if (_shellInitialized)
+            return;
+
+        var environment = _deps.Options.ResolveShell?.Invoke(_record.Shell) ?? _record.Shell;
+        if (environment is not null)
+        {
+            if (environment != _record.Shell)
+            {
+                await PersistRecordAsync(ct, record => record with { Shell = environment }).ConfigureAwait(false);
+            }
+            _shell.SetEnvironment(environment);
+        }
+        _shellInitialized = true;
     }
 
     private async Task PersistRecordAsync(CancellationToken ct, Func<SessionRecord, SessionRecord> update)

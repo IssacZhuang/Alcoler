@@ -42,6 +42,10 @@ public sealed record AgentRuntimeOptions
 
     public string? ShellName { get; init; }
 
+    public Func<ShellEnvironment?, ShellEnvironment>? ResolveShell { get; init; }
+
+    internal Func<ShellEnvironment?, string>? CustomSystemPromptFactory { get; init; }
+
     public Func<string, GitSnapshot?>? GitSnapshotProvider { get; init; }
 
     public string? SkillsListing { get; init; }
@@ -84,7 +88,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             now,
             now,
             ParentSessionId: options.ParentSessionId,
-            TitleSource: options.Title is null ? SessionTitleSource.Default : SessionTitleSource.Custom);
+            TitleSource: options.Title is null ? SessionTitleSource.Default : SessionTitleSource.Custom,
+            Shell: options.Shell);
         await _options.Store.UpsertSessionAsync(record, cancellationToken).ConfigureAwait(false);
         await CreateRuntimeAsync(record, isNewSession: true).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
@@ -124,6 +129,9 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 
     public IConversationProjection? TryObserve(SessionId sessionId) =>
         _sessions.TryGetValue(sessionId, out var runtime) ? runtime.CreateProjection() : null;
+
+    public ShellEnvironment? GetSessionShell(SessionId sessionId) =>
+        !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime) ? runtime.Shell : null;
 
     public IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId) =>
         !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime)
@@ -169,7 +177,9 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             {
                 AgentInstructions = RenderAgentInstructions(record.WorkspaceRoot),
                 CustomSystemPrompt = _options.CustomSystemPrompt,
+                CustomSystemPromptFactory = _options.CustomSystemPromptFactory,
                 ShellName = _options.ShellName,
+                ResolveShell = _options.ResolveShell,
                 GitSnapshot = _options.GitSnapshotProvider?.Invoke(record.WorkspaceRoot),
                 SkillsListing = _options.SkillsListing,
                 DefaultModel = _options.DefaultModel,

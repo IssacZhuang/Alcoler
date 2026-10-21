@@ -9,6 +9,7 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
+using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Workbench.Terminal;
 using Alcoler.Workbench.Ui;
@@ -270,6 +271,51 @@ public sealed class WorkbenchViewModelTests : IDisposable
         Assert.Equal(root, terminal.StartedFrom);
         Assert.Equal((83, 19), (terminal.Buffer.Cols, terminal.Buffer.Rows));
         await WaitUntilAsync(() => !git.IsLoading, scheduler);
+    }
+
+    [Fact]
+    public async Task SameWorkspace_DifferentSessionShellsReplaceTerminalWithoutReplacingGitPane()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var shells = Alcoler.Adapters.Tools.ShellResolver.AvailableShells();
+        var cmd = shells.First(shell => shell.Dialect == ShellDialect.Cmd);
+        var bash = shells.FirstOrDefault(shell => shell.Dialect == ShellDialect.GitBash);
+        if (bash is null)
+            return;
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store);
+        var first = await runtime.CreateSessionAsync(new SessionOptions(_root, Shell: cmd), CancellationToken.None);
+        var second = await runtime.CreateSessionAsync(new SessionOptions(_root, Shell: bash), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(first.Id);
+        var firstTerminal = workbench.Terminal;
+        var git = workbench.GitPane;
+
+        await workbench.OpenSessionAsync(second.Id);
+
+        Assert.NotSame(firstTerminal, workbench.Terminal);
+        Assert.Same(git, workbench.GitPane);
+        await WaitUntilAsync(() => git is { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
+    public void ApplySettings_PublishesLiveShellPreferenceWithoutMutatingOriginalConfig()
+    {
+        var original = new WorkbenchConfig([]);
+        WorkbenchConfig? published = null;
+        using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance,
+            original, applySettings: config => published = config);
+        var selected = new ShellEnvironment(@"C:\Windows\System32\cmd.exe", ShellDialect.Cmd);
+        var updated = original with { IntegratedTerminalShell = selected };
+
+        workbench.ApplySettings(updated);
+
+        Assert.Same(updated, published);
+        Assert.Null(original.IntegratedTerminalShell);
+        Assert.Empty(workbench.ModelChoices);
     }
 
     [Fact]

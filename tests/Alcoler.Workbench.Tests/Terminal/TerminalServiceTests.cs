@@ -1,3 +1,5 @@
+using Alcoler.Adapters.Tools;
+using Alcoler.Contracts.Tools;
 using Alcoler.Workbench.Terminal;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
@@ -62,6 +64,74 @@ public class TerminalServiceTests
             output.Append(chunk);
             firstChunk.TrySetResult();
         }
+    }
+
+    [Theory]
+    [InlineData(ShellDialect.Cmd)]
+    [InlineData(ShellDialect.GitBash)]
+    public async Task SelectedWindowsShell_SpawnsAndExecutesDialectSpecificCommand(ShellDialect dialect)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var shell = ShellResolver.AvailableShells().FirstOrDefault(candidate => candidate.Dialect == dialect);
+        if (shell is null)
+            return;
+        using var service = new PortaPtyTerminalService(() => shell.FileName);
+        var output = new LockFreeAppend();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.OutputReceived += (_, text) =>
+        {
+            output.Append(text);
+            ready.TrySetResult();
+        };
+        try
+        {
+            await service.StartAsync(Path.GetTempPath(), 120, 30, CancellationToken.None);
+            await ready.Task.WaitAsync(WaitLimit);
+            var marker = "shell_probe_" + Guid.NewGuid().ToString("N");
+            var command = dialect == ShellDialect.Cmd
+                ? $"set \"ALCOLER_PTY_PROBE={marker}\"\recho %ALCOLER_PTY_PROBE%"
+                : $"ALCOLER_PTY_PROBE={marker}; printf '\\n%s\\n' \"$ALCOLER_PTY_PROBE\"";
+            await service.WriteAsync(command + "\r", CancellationToken.None);
+            Assert.True(await WaitForAsync(() =>
+            {
+                var buffer = new TerminalBuffer(120, 30);
+                buffer.ApplyTokens(new VtParser().Feed(output.Text));
+                return Enumerable.Range(0, buffer.Rows)
+                    .Any(row => new string(buffer.GetRow(row).Select(cell => cell.Char).ToArray()).Trim() == marker);
+            }), output.Text);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Service_UsesSelectedShellAtStartAndDoesNotChangeRunningProcess()
+    {
+        var selected = "selected-shell";
+        var resolutions = 0;
+        PtyOptions? observed = null;
+        using var service = new PortaPtyTerminalService((options, _) =>
+        {
+            observed = options;
+            return Task.FromResult<IPtyConnection>(new FakePtyConnection());
+        }, () =>
+        {
+            resolutions++;
+            return selected;
+        });
+
+        await service.StartAsync(Path.GetTempPath(), 80, 24, CancellationToken.None);
+        selected = "next-shell";
+        Assert.Equal("selected-shell", observed!.App);
+        Assert.Equal(1, resolutions);
+        await service.StopAsync();
+        await service.StartAsync(Path.GetTempPath(), 80, 24, CancellationToken.None);
+        Assert.Equal("next-shell", observed!.App);
+        Assert.Equal(2, resolutions);
+        await service.StopAsync();
     }
 
     [Fact]

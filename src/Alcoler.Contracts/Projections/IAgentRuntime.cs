@@ -55,4 +55,6 @@ public interface IAgentRuntime : IAsyncDisposable
     IConversationProjection Subscribe(SessionId sessionId);
 
     IConversationProjection? TryObserve(SessionId sessionId);
+
+    ShellEnvironment? GetSessionShell(SessionId sessionId) => null;
 }

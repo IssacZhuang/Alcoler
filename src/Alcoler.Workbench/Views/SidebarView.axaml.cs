@@ -70,15 +70,20 @@ public partial class SidebarView : UserControl
             return;
         }
         ThemeSelector.Apply(saved.Theme);
+        viewModel.ApplySettings(saved);
         if (ProvidersChanged(current, saved))
         {
             viewModel.Banner = "Settings saved. Restart Alcoler to apply provider and MCP changes.";
         }
+        else if (current.IntegratedTerminalShell != saved.IntegratedTerminalShell)
+        {
+            viewModel.Banner = "Shell preference saved. It applies to new sessions; existing sessions keep their shell.";
+        }
     }
 
-    private static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
-        JsonSerializer.Serialize(before with { Theme = "dark" }, WorkbenchConfig.JsonOptions)
-        != JsonSerializer.Serialize(after with { Theme = "dark" }, WorkbenchConfig.JsonOptions);
+    internal static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
+        JsonSerializer.Serialize(before with { Theme = "dark", IntegratedTerminalShell = null }, WorkbenchConfig.JsonOptions)
+        != JsonSerializer.Serialize(after with { Theme = "dark", IntegratedTerminalShell = null }, WorkbenchConfig.JsonOptions);
 
     private async void OnRefreshClick(object? sender, RoutedEventArgs e)
     {

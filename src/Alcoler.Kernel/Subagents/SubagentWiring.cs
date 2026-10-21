@@ -91,19 +91,24 @@ public static class SubagentWiring
     {
         var options = runtime.Options;
         var parentRuntime = runtime.GetSession(request.ParentSessionId);
+        var parentRecord = parentRuntime is null
+            ? await options.Store.GetSessionAsync(request.ParentSessionId, ct).ConfigureAwait(false)
+            : null;
         var root = request.WorkspaceRoot
             ?? parentRuntime?.WorkspaceRoot
+            ?? parentRecord?.WorkspaceRoot
             ?? throw new InvalidOperationException(
-                $"parent session {request.ParentSessionId} is not resident; subagents need a WorkspaceRoot");
+                $"parent session {request.ParentSessionId} was not found; subagents need a WorkspaceRoot");
+        var inheritedShell = parentRuntime?.Shell ?? parentRecord?.Shell;
 
         var selection = request.ModelSelection ?? options.DefaultModel;
-        var childSystemPrompt = SubagentPrompts.BuildChildSystemPrompt(
+        string BuildChildPrompt(ShellEnvironment? shell) => SubagentPrompts.BuildChildSystemPrompt(
             request.AgentType,
             new SubagentEnvironmentFacts(
                 root,
                 RuntimeEnvironmentFacts.IsGitRepository(root),
                 RuntimeEnvironmentFacts.Platform,
-                options.ShellName ?? RuntimeEnvironmentFacts.Shell,
+                shell?.Name ?? options.ShellName ?? RuntimeEnvironmentFacts.Shell,
                 RuntimeEnvironmentFacts.OsVersion,
                 selection?.ProviderId,
                 selection?.ModelId));
@@ -129,14 +134,15 @@ public static class SubagentWiring
             Clock = options.Clock,
             DefaultModel = selection,
             AgentInstructions = options.AgentInstructions,
-            CustomSystemPrompt = childSystemPrompt,
+            CustomSystemPromptFactory = BuildChildPrompt,
             ShellName = options.ShellName,
+            ResolveShell = options.ResolveShell,
             GitSnapshotProvider = options.GitSnapshotProvider,
         });
 
         var handle = await childRuntime.CreateSessionAsync(
             new SessionOptions(root, request.Description, PermissionMode.Yolo, request.ModelSelection,
-                ParentSessionId: request.ParentSessionId),
+                ParentSessionId: request.ParentSessionId, Shell: inheritedShell),
             ct);
 
         runtime.RegisterSubagentRuntime(request.ParentSessionId, handle.Id, childRuntime);

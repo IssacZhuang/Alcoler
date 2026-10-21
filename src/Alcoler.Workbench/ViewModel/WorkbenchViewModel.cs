@@ -9,6 +9,8 @@ using CommunityToolkit.Mvvm.Input;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Tools;
+using Alcoler.Adapters.Tools;
 
 namespace Alcoler.Workbench.ViewModel;
 
@@ -23,6 +25,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private readonly SessionProjectionHub _hub;
     private readonly WorkbenchConfig _config;
     private readonly Action<WorkbenchComposerConfig>? _saveComposer;
+    private readonly Action<WorkbenchConfig>? _applySettings;
+    private ShellEnvironment? _shellPreference;
     private WorkbenchComposerConfig _composerConfig;
     private readonly Dictionary<ComposerViewModel, Action<PermissionMode>> _modeObservers = [];
     private readonly IAsyncDisposable? _ownedResource;
@@ -37,6 +41,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private string? _focusedWorkspaceRoot;
     private long _navigationVersion;
     private string? _paneRoot;
+    private ShellEnvironment? _paneShell;
     private bool _terminalAutoStarted;
     private bool _disposed;
 
@@ -46,11 +51,14 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         WorkbenchConfig config,
         IAsyncDisposable? ownedResource = null,
         BrowserPaneViewModel? browserPane = null,
-        Action<WorkbenchComposerConfig>? saveComposer = null)
+        Action<WorkbenchComposerConfig>? saveComposer = null,
+        Action<WorkbenchConfig>? applySettings = null)
     {
         _runtime = runtime;
         _config = config;
         _saveComposer = saveComposer;
+        _applySettings = applySettings;
+        _shellPreference = config.IntegratedTerminalShell;
         var composerConfig = config.Composer ?? new WorkbenchComposerConfig();
         _composerConfig = composerConfig with
         {
@@ -84,6 +92,19 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public WorkbenchProviderConfig? FindProvider(string id) =>
         _config.Providers.FirstOrDefault(provider => provider.EffectiveId == id);
+
+    public void ApplySettings(WorkbenchConfig config)
+    {
+        _shellPreference = config.IntegratedTerminalShell;
+        _applySettings?.Invoke(config);
+    }
+
+    private Func<string> TerminalShellResolver()
+    {
+        var sessionId = Active?.SessionId;
+        return () => ShellResolver.ResolveEnvironment(_shellPreference,
+            sessionId is { } id ? _runtime.GetSessionShell(id) : null).FileName;
+    }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ComposerHost))]
@@ -183,7 +204,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task OpenTerminalDocumentAsync()
     {
-        var terminal = new TerminalPaneViewModel(CurrentWorkspaceRoot, scheduler: _scheduler);
+        var terminal = new TerminalPaneViewModel(CurrentWorkspaceRoot, scheduler: _scheduler,
+            resolveShell: TerminalShellResolver());
         OpenDocument(new DocumentViewModel($"terminal:{Guid.NewGuid():N}", "terminal", "Terminal",
             "M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5", terminal, CurrentWorkspaceRoot, CurrentDocumentOwnerId));
         try
@@ -631,10 +653,14 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     private void EnsurePanes(string root)
     {
-        if (Terminal is null || !string.Equals(_paneRoot, root, StringComparison.OrdinalIgnoreCase))
+        var shell = ShellResolver.ResolveEnvironment(_shellPreference,
+            Active is { } active ? _runtime.GetSessionShell(active.SessionId) : null);
+        if (Terminal is null || !string.Equals(_paneRoot, root, StringComparison.OrdinalIgnoreCase) || _paneShell != shell)
         {
             Terminal?.Dispose();
-            Terminal = new TerminalPaneViewModel(root, scheduler: _scheduler);
+            Terminal = new TerminalPaneViewModel(root, scheduler: _scheduler,
+                resolveShell: TerminalShellResolver());
+            _paneShell = shell;
             _terminalAutoStarted = false;
             if (IsTerminalVisible)
             {

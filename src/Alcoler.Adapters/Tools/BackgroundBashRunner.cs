@@ -24,6 +24,7 @@ internal sealed class BashProcessSession : IDisposable
     private Task _stdoutPump = Task.CompletedTask;
     private Task _stderrPump = Task.CompletedTask;
     private string? _capturedCwd;
+    private string? _cwdCaptureScript;
     private bool _owned = true;
     private bool _limitExceeded;
 
@@ -49,7 +50,8 @@ internal sealed class BashProcessSession : IDisposable
         string? outputFilePath,
         long persistedLimit = MaxPersistedBytes,
         Func<string, Stream>? openOutput = null,
-        Encoding? legacyEncoding = null)
+        Encoding? legacyEncoding = null,
+        bool? isPosix = null)
     {
         var startInfo = new ProcessStartInfo(shell.FileName)
         {
@@ -61,15 +63,31 @@ internal sealed class BashProcessSession : IDisposable
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
-        startInfo.ArgumentList.Add(shell.Arguments);
-        var isPosix = Path.GetFileNameWithoutExtension(shell.FileName) is "bash" or "sh" or "zsh" or "dash";
-        var script = captureCwd ? WrapWithCwdCapture(command) : command;
-        startInfo.ArgumentList.Add(isPosix ? "exec 2>&1; " + script : script);
+        var posix = isPosix ?? IsPosixShell(shell);
         legacyEncoding ??= BashOutputDecoder.ResolveWindowsLegacyEncoding();
         var session = new BashProcessSession(new Process { StartInfo = startInfo }, captureCwd,
             ResolveInlineLimit(Environment.GetEnvironmentVariable("BASH_MAX_OUTPUT_LENGTH")), persistedLimit, openOutput);
         try
         {
+            if (posix)
+            {
+                startInfo.ArgumentList.Add(shell.Arguments);
+                startInfo.ArgumentList.Add("exec 2>&1; " + (captureCwd ? WrapWithCwdCapture(command) : command));
+            }
+            else
+            {
+                var script = command;
+                if (captureCwd)
+                {
+                    session._cwdCaptureScript = Path.Combine(Path.GetTempPath(), $"alcoler-cwd-{Guid.NewGuid():N}.cmd");
+                    File.WriteAllText(session._cwdCaptureScript,
+                        $"@set \"__alcoler_rc=%errorlevel%\"\r\n@setlocal DisableDelayedExpansion\r\n@<nul set /p \"={CwdMarker}%CD%\"\r\n@exit /b %__alcoler_rc%\r\n",
+                        Encoding.Default);
+                    script = $"({command}) & \"{session._cwdCaptureScript}\"";
+                }
+                // CMD parses the raw /c tail; ArgumentList applies CRT quoting that changes embedded quotes.
+                startInfo.Arguments = $"/d /s {shell.Arguments} \"{script}\"";
+            }
             if (outputFilePath is not null)
                 session.OpenOutputFile(outputFilePath);
             session._process.Start();
@@ -83,6 +101,10 @@ internal sealed class BashProcessSession : IDisposable
             throw;
         }
     }
+
+    internal static bool IsPosixShell(ShellSpec shell) =>
+        !string.Equals(Path.GetFileNameWithoutExtension(shell.FileName), "cmd", StringComparison.OrdinalIgnoreCase)
+        && shell.Arguments == "-c";
 
     internal static int ResolveInlineLimit(string? value)
     {
@@ -118,6 +140,7 @@ internal sealed class BashProcessSession : IDisposable
         await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         await Task.WhenAll(_stdoutPump, _stderrPump).WaitAsync(cancellationToken).ConfigureAwait(false);
         CloseOutputFile();
+        DeleteCwdCaptureScript();
         return _limitExceeded ? 1 : _process.ExitCode;
     }
 
@@ -264,6 +287,7 @@ internal sealed class BashProcessSession : IDisposable
         finally
         {
             CloseOutputFile();
+            DeleteCwdCaptureScript();
             _process.Dispose();
         }
     }
@@ -281,6 +305,20 @@ internal sealed class BashProcessSession : IDisposable
         CloseOutputFile();
         if (OutputPath is not null)
             File.Delete(OutputPath);
+    }
+
+    private void DeleteCwdCaptureScript()
+    {
+        if (_cwdCaptureScript is null)
+            return;
+        try
+        {
+            File.Delete(_cwdCaptureScript);
+            _cwdCaptureScript = null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     private void CloseOutputFile()
@@ -314,6 +352,7 @@ internal sealed class BashProcessSession : IDisposable
         finally
         {
             CloseOutputFile();
+            DeleteCwdCaptureScript();
             _process.Dispose();
         }
     }

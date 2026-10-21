@@ -32,7 +32,9 @@ public static class Composition
             webSearch = new WebSearchTool(braveKey);
             extraTools.Add(webSearch);
         }
-        var runtime = await BuildRuntimeAsync(config, ct, mcp, extraTools);
+        var currentConfig = config;
+        var runtime = await BuildRuntimeAsync(config, ct, mcp, extraTools,
+            () => Volatile.Read(ref currentConfig).IntegratedTerminalShell);
         var workbench = new WorkbenchViewModel(
             runtime,
             AvaloniaUiScheduler.Instance,
@@ -50,7 +52,8 @@ public static class Composition
                 using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 return Avalonia.Media.Imaging.Bitmap.DecodeToWidth(stream, 1280);
             }),
-            saveComposer: composer => (WorkbenchConfig.LoadOrDefault() with { Composer = composer }).Save());
+            saveComposer: composer => (WorkbenchConfig.LoadOrDefault() with { Composer = composer }).Save(),
+            applySettings: saved => Volatile.Write(ref currentConfig, saved));
         await workbench.RefreshFromRuntimeAsync();
         return workbench;
     }
@@ -59,7 +62,8 @@ public static class Composition
         WorkbenchConfig config,
         CancellationToken ct,
         McpServerManager? mcp = null,
-        IReadOnlyList<ITool>? extraTools = null)
+        IReadOnlyList<ITool>? extraTools = null,
+        Func<ShellEnvironment?>? shellPreference = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(WorkbenchDataPaths.DatabasePath)!);
         Directory.CreateDirectory(WorkbenchDataPaths.ArtifactsPath);
@@ -106,6 +110,8 @@ public static class Composition
             SessionTitleGenerationEnabled = true,
             TodoStore = todoStore,
             GitSnapshotProvider = GitSnapshotCollector.Collect,
+            ResolveShell = snapshot => ShellResolver.ResolveEnvironment(
+                shellPreference is null ? config.IntegratedTerminalShell : shellPreference(), snapshot),
         });
         return runtime;
     }

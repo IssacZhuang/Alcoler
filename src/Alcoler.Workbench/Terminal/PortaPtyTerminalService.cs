@@ -1,5 +1,5 @@
-using System.Runtime.InteropServices;
 using System.Text;
+using Alcoler.Adapters.Tools;
 using Porta.Pty;
 
 namespace Alcoler.Workbench.Terminal;
@@ -15,6 +15,7 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
 
     private readonly object _lifecycleGate = new();
     private readonly Func<PtyOptions, CancellationToken, Task<IPtyConnection>> _spawnAsync;
+    private readonly Func<string> _resolveShell;
     private IPtyConnection? _connection;
     private CancellationTokenSource? _readCancellation;
     private Task? _readLoop;
@@ -27,13 +28,15 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
 
     private bool _exited;
 
-    public PortaPtyTerminalService() : this(PtyProvider.SpawnAsync)
+    public PortaPtyTerminalService(Func<string>? resolveShell = null) : this(PtyProvider.SpawnAsync, resolveShell)
     {
     }
 
-    internal PortaPtyTerminalService(Func<PtyOptions, CancellationToken, Task<IPtyConnection>> spawnAsync)
+    internal PortaPtyTerminalService(Func<PtyOptions, CancellationToken, Task<IPtyConnection>> spawnAsync,
+        Func<string>? resolveShell = null)
     {
         _spawnAsync = spawnAsync;
+        _resolveShell = resolveShell ?? ResolveShell;
     }
 
     public async Task StartAsync(string workingDirectory, int cols, int rows, CancellationToken cancellationToken)
@@ -44,7 +47,7 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
             throw new InvalidOperationException("Terminal is already running.");
         }
 
-        var shell = ResolveShell();
+        var shell = _resolveShell();
         var options = new PtyOptions
         {
             Name = "Alcoler",
@@ -196,41 +199,7 @@ public sealed class PortaPtyTerminalService : IPtyTerminalService
         Exited?.Invoke(this, connection.ExitCode);
     }
 
-    internal static string ResolveShell()
-    {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            return FindOnPath("pwsh.exe")
-                ?? FindOnPath("powershell.exe")
-                ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
-        }
-
-        var shell = Environment.GetEnvironmentVariable("SHELL");
-        return string.IsNullOrWhiteSpace(shell) ? "/bin/sh" : shell;
-    }
-
-    private static string? FindOnPath(string fileName)
-    {
-        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            try
-            {
-                var candidate = Path.Combine(directory, fileName);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-            catch (ArgumentException)
-            {
-            }
-        }
-
-        return fileName == "powershell.exe"
-            ? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.System),
-                "WindowsPowerShell", "v1.0", "powershell.exe")
-            : null;
-    }
+    internal static string ResolveShell() => OperatingSystem.IsWindows()
+        ? ShellResolver.ResolveEnvironment().FileName
+        : Environment.GetEnvironmentVariable("SHELL") is { Length: > 0 } shell ? shell : "/bin/sh";
 }

@@ -25,6 +25,137 @@ public class BashToolTests
         Assert.Equal("hello", result.SingleText());
     }
 
+    [Theory]
+    [InlineData(ShellDialect.Cmd)]
+    [InlineData(ShellDialect.GitBash)]
+    public async Task SessionShell_OverridesConstructor_ForBuiltinsPipelinesAndErrors(ShellDialect dialect)
+    {
+        var environment = InstalledWindowsShell(dialect);
+        if (environment is null)
+            return;
+        using var workspace = new TempWorkspace();
+        var shell = new ShellSessionState(workspace.Root, environment);
+        var tool = new BashTool(new ShellSpec("unused-fallback-shell", "-c"));
+        var builtin = dialect == ShellDialect.Cmd ? "echo selected-cmd" : "printf 'selected-posix'";
+        var pipeline = dialect == ShellDialect.Cmd ? "echo pipeline | findstr pipeline" : "printf 'pipeline' | cat";
+        var failure = dialect == ShellDialect.Cmd ? "cmd /d /c exit 7" : "false";
+
+        var result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command = builtin }), shell), CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal(dialect == ShellDialect.Cmd ? "selected-cmd" : "selected-posix", result.SingleText());
+        result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command = pipeline }), shell), CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal("pipeline", result.SingleText());
+        result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command = failure }), shell), CancellationToken.None);
+        Assert.True(result.IsError);
+        Assert.StartsWith(dialect == ShellDialect.Cmd ? "Exit code 7" : "Exit code 1", result.SingleText());
+    }
+
+    [Theory]
+    [InlineData(ShellDialect.Cmd)]
+    [InlineData(ShellDialect.GitBash)]
+    public async Task SessionShell_CapturesSpacesCwd_AndStartsExplicitBackgroundInIt(ShellDialect dialect)
+    {
+        var environment = InstalledWindowsShell(dialect);
+        if (environment is null)
+            return;
+        using var workspace = new TempWorkspace();
+        var subdirectory = Path.Combine(workspace.Root, "space ! and & directory");
+        Directory.CreateDirectory(subdirectory);
+        var shell = new ShellSessionState(workspace.Root, environment);
+        var tool = new BashTool(new ShellSpec("unused-fallback-shell", "-c"));
+        var command = dialect == ShellDialect.Cmd ? "cd /d \"space ! and & directory\"" : "cd 'space ! and & directory'";
+        var result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command }), shell), CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal(subdirectory, shell.CurrentDirectory, ignoreCase: true);
+        Assert.Equal("", result.SingleText());
+
+        var jobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
+        command = dialect == ShellDialect.Cmd
+            ? "echo cmd-background>\"background proof.txt\" & cd"
+            : "printf 'posix-background' > 'background proof.txt'; pwd";
+        result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command, run_in_background = true }), shell, jobs: jobs), CancellationToken.None);
+        Assert.False(result.IsError);
+        var job = Assert.Single(jobs.List());
+        await WaitForJobCompletionAsync(jobs, job.Id);
+        Assert.Equal(0, jobs.Find(job.Id)!.ExitCode);
+        Assert.Equal(dialect == ShellDialect.Cmd ? "cmd-background" : "posix-background",
+            (await File.ReadAllTextAsync(Path.Combine(subdirectory, "background proof.txt"))).Trim());
+        var output = await File.ReadAllTextAsync(job.OutputPath!);
+        Assert.Contains("space ! and & directory", output);
+        Assert.DoesNotContain(BashProcessSession.CwdMarker, output);
+        Assert.Equal(subdirectory, shell.CurrentDirectory, ignoreCase: true);
+
+        result = await tool.ExecuteAsync(workspace.ContextFor("""{"command":"cd .."}""", shell), CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal(workspace.Root, shell.CurrentDirectory, ignoreCase: true);
+        result = await tool.ExecuteAsync(workspace.ContextFor("""{"command":"cd .."}""", shell), CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal(workspace.Root, shell.CurrentDirectory, ignoreCase: true);
+        Assert.Contains($"Shell cwd was reset to {workspace.Root}", result.SingleText());
+    }
+
+    [Fact]
+    public async Task CmdFallback_PreservesQuotedExecutableAndForLoopSyntax()
+    {
+        var environment = InstalledWindowsShell(ShellDialect.Cmd);
+        if (environment is null)
+            return;
+        using var workspace = new TempWorkspace();
+        var tool = new BashTool(new ShellSpec(environment.FileName, "/c"));
+        var command = $"\"{environment.FileName}\" /d /c echo quoted-executable";
+        var result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command })), CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal("quoted-executable", result.SingleText());
+        result = await tool.ExecuteAsync(workspace.ContextFor("""{"command":"for %i in (one two) do @echo %i"}"""), CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal("one\ntwo", result.SingleText().Replace("\r\n", "\n"));
+        Assert.DoesNotContain(BashProcessSession.CwdMarker, result.SingleText());
+    }
+
+    [Fact]
+    public async Task SameTool_ConcurrentCmdAndGitBashSessions_UseIndependentForegroundAndBackgroundShells()
+    {
+        var cmd = InstalledWindowsShell(ShellDialect.Cmd);
+        var bash = InstalledWindowsShell(ShellDialect.GitBash);
+        if (cmd is null || bash is null)
+            return;
+        using var workspace = new TempWorkspace();
+        var cmdDirectory = Path.Combine(workspace.Root, "cmd session");
+        var bashDirectory = Path.Combine(workspace.Root, "bash session");
+        Directory.CreateDirectory(cmdDirectory);
+        Directory.CreateDirectory(bashDirectory);
+        var cmdState = new ShellSessionState(cmdDirectory, cmd);
+        var bashState = new ShellSessionState(bashDirectory, bash);
+        var tool = new BashTool(new ShellSpec("unused-fallback-shell", "-c"));
+        var results = await Task.WhenAll(
+            tool.ExecuteAsync(workspace.ContextFor("""{"command":"echo %COMSPEC%"}""", cmdState), CancellationToken.None).AsTask(),
+            tool.ExecuteAsync(workspace.ContextFor("""{"command":"printf '%s' \"$BASH_VERSION\""}""", bashState), CancellationToken.None).AsTask());
+        Assert.All(results, result => Assert.False(result.IsError));
+        Assert.EndsWith("cmd.exe", results[0].SingleText(), StringComparison.OrdinalIgnoreCase);
+        Assert.Matches(@"^\d+\.\d+", results[1].SingleText());
+        Assert.Equal(cmdDirectory, cmdState.CurrentDirectory, ignoreCase: true);
+        Assert.Equal(bashDirectory, bashState.CurrentDirectory, ignoreCase: true);
+
+        var cmdJobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
+        var bashJobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
+        results = await Task.WhenAll(
+            tool.ExecuteAsync(workspace.ContextFor("""{"command":"echo %COMSPEC%","run_in_background":true}""", cmdState, jobs: cmdJobs), CancellationToken.None).AsTask(),
+            tool.ExecuteAsync(workspace.ContextFor("""{"command":"printf '%s' \"$BASH_VERSION\"","run_in_background":true}""", bashState, jobs: bashJobs), CancellationToken.None).AsTask());
+        Assert.All(results, result => Assert.False(result.IsError));
+        var cmdJob = Assert.Single(cmdJobs.List());
+        var bashJob = Assert.Single(bashJobs.List());
+        await Task.WhenAll(WaitForJobCompletionAsync(cmdJobs, cmdJob.Id), WaitForJobCompletionAsync(bashJobs, bashJob.Id));
+        Assert.Equal(0, cmdJobs.Find(cmdJob.Id)!.ExitCode);
+        Assert.Equal(0, bashJobs.Find(bashJob.Id)!.ExitCode);
+        Assert.EndsWith("cmd.exe", (await File.ReadAllTextAsync(cmdJob.OutputPath!)).Trim(), StringComparison.OrdinalIgnoreCase);
+        Assert.Matches(@"^\d+\.\d+", await File.ReadAllTextAsync(bashJob.OutputPath!));
+    }
+
+    private static ShellEnvironment? InstalledWindowsShell(ShellDialect dialect) => OperatingSystem.IsWindows()
+        ? ShellResolver.AvailableShells().FirstOrDefault(shell => shell.Dialect == dialect)
+        : null;
+
     [Fact]
     public async Task NonZeroExitCode_MarksErrorResult_WithExitCodeHeader()
     {

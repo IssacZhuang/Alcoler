@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Contracts.Sessions;
 
@@ -17,7 +18,8 @@ public sealed record SessionOptions(
     string? Title = null,
     PermissionMode PermissionMode = PermissionMode.Build,
     ModelSelection? ModelSelection = null,
-    SessionId? ParentSessionId = null);
+    SessionId? ParentSessionId = null,
+    ShellEnvironment? Shell = null);
 
 public sealed record SessionHandle(
     SessionId Id,

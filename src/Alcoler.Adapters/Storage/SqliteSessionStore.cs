@@ -10,13 +10,14 @@ using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Tools;
 using Microsoft.Data.Sqlite;
 
 namespace Alcoler.Adapters.Storage;
 
 public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDisposable
 {
-    private const int SchemaVersion = 3;
+    private const int SchemaVersion = 4;
 
     private static readonly (int Version, string Sql)[] Migrations =
     [
@@ -57,6 +58,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         ),
         (2, "ALTER TABLE session ADD COLUMN parent_session_id TEXT NULL;"),
         (3, "ALTER TABLE session ADD COLUMN title_source TEXT NOT NULL DEFAULT 'legacy';"),
+        (4, "ALTER TABLE session ADD COLUMN shell_json TEXT NULL;"),
     ];
 
     private readonly string _databasePath;
@@ -123,9 +125,9 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.CommandText = """
                 INSERT OR REPLACE INTO session
                     (id, workspace_root, title, permission_mode, model_selection_json,
-                     created_at, updated_at, branch_json, is_archived, parent_session_id, title_source)
+                     created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json)
                 VALUES ($id, $workspace_root, $title, $permission_mode, $model_selection_json,
-                        $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source)
+                        $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source, $shell_json)
                 """;
             command.Parameters.AddWithValue("$id", record.Id.Value);
             command.Parameters.AddWithValue("$workspace_root", record.WorkspaceRoot);
@@ -140,6 +142,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.Parameters.AddWithValue("$is_archived", record.IsArchived);
             command.Parameters.AddWithValue("$parent_session_id", (object?)record.ParentSessionId?.Value ?? DBNull.Value);
             command.Parameters.AddWithValue("$title_source", record.TitleSource.ToString());
+            command.Parameters.AddWithValue("$shell_json", record.Shell is null ? DBNull.Value : AlcolerJson.Serialize(record.Shell));
             command.ExecuteNonQuery();
         }, cancellationToken);
     }
@@ -165,7 +168,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT workspace_root, title, permission_mode, model_selection_json,
-                       created_at, updated_at, branch_json, is_archived, parent_session_id, title_source
+                       created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json
                 FROM session
                 WHERE id = $id
                 """;
@@ -667,7 +670,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         ReadBranch(reader),
         reader.GetBoolean(reader.GetOrdinal("is_archived")),
         ReadParentSessionId(reader),
-        ReadTitleSource(reader));
+        ReadTitleSource(reader),
+        DeserializeOptional<ShellEnvironment>(reader, "shell_json"));
 
     private static SessionSummary ReadSummary(SqliteDataReader reader) => new(
         new SessionId(reader.GetString(reader.GetOrdinal("id"))),

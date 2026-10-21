@@ -156,8 +156,10 @@ public partial class SettingsDialog : Window
         ProvidersPanel.IsVisible = section == "providers";
         McpPanel.IsVisible = section == "mcp";
         AppearancePanel.IsVisible = section == "appearance";
+        RuntimePanel.IsVisible = section == "runtime";
         SectionTitle.Text = section switch
         {
+            "runtime" => "Runtime",
             "appearance" => "Appearance",
             "mcp" => "MCP servers",
             _ => "Model providers",

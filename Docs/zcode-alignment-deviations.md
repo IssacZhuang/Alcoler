@@ -1,109 +1,185 @@
-# ZCode Alignment: Remaining Deviations
+# ZCode Alignment: Status and Remaining Deviations
 
-- Status: Complete for phases 1-4 (tools, context management, runtime recovery, turn-loop semantics). This file records every remaining behavioral deviation from the ZCode reference that survived acceptance review.
-- Date: 2026-10-20
-- Reference: `C:\Projects\ZCode` (behavioral reference only)
-- Baseline at time of writing: kernel tests 990/990, workbench tests 471/471, solution builds clean.
+- Status: The identified output-affecting alignment changes are implemented. The remaining differences below are architectural adaptations, product gaps, or verification limits, not a claim of identical engineering performance.
+- Reviewed: 2026-10-21
+- Reference: `C:\Projects\ZCode`, the modified ZCode implementation, treated as read-only.
+- Scope: Runtime loop, tools, prompts, context management, provider replay and recovery, subagents, and interaction behavior.
 
-Everything not listed here was verified verbatim-equivalent during acceptance (tool result texts, guard messages, matcher strategies, exit-code semantics, envelopes, limits, retry/classifier semantics, thinking replay, media pipeline, reminder/continuation prompts, steering and queue semantics, notification channel, plan-mode cadence, and anomaly warnings).
+The modified reference implementation takes precedence over earlier descriptions of its behavior. Passing scripted tests does not establish byte-for-byte equivalence, equal real-model task success rates, or correctness on untested platforms.
 
-## 1. High impact
+## 1. Implemented Alignment
 
-### 1.1 Prompt-too-long reselect direction
+The following items were previously listed as missing or divergent and must no longer be treated as open gaps.
 
-- Alcoler: `src/Alcoler.Kernel/Context/CompactionSelector.cs` (`ReselectForPromptTooLong`) drops the **oldest** groups from `ToSummarize` and keeps summarizing newer ones.
-- ZCode: `apps/zcode-cli/packages/core/src/runtime/helpers/compact-selection.ts` moves **recent** groups out of the summarization set and preserves them verbatim, driven by the declared token gap.
-- Effect: after repeated overflow retries, Alcoler permanently loses the oldest context while ZCode loses mid-conversation detail but keeps the most recent exchanges verbatim. Different memory retention under compaction pressure.
-- Risk of change: high; interacts with the compaction retry loop and persisted boundaries. Needs a dedicated design pass with new tests.
+### 1.1 Runtime loop and streaming recovery
 
-### 1.2 Thinking-signature repair scope
+- Normal input uses Queue delivery; explicit Guide input can join the active turn. Pending input does not silently change an executing model step. Guide text remains raw in canonical history, with its provider presentation tracked separately.
+- Output continuation prompts are request-local, bounded, and do not consume queued input between truncated steps.
+- Eligible safe, read-only tools can start during streaming. Tool-call IDs are deduplicated, and completed early executions are reused rather than run again.
+- Recovery preserves accepted tool calls and matching results as an anchor, discards uncommitted partial output, and emits recovery events. Text-only partial failures retry without adding partial history.
+- Handler cancellation and deadlines do not wait indefinitely for an uncooperative handler. Result-derived stop behavior prevents later tool groups from executing.
+- Background notifications do not release user input held after a failed or cancelled turn. Canonical tool declarations preserve existing early-execution status and output.
 
-- Alcoler: `src/Alcoler.Kernel/Runtime/ThinkingSignatureRecovery.cs` + `SessionRuntime.StripReasoningHistoryAsync`. On a narrow signature-rejection 400 match, strips **all** reasoning parts from **all** assistant messages, for any provider, and **rewrites persisted history**.
-- ZCode: `packages/adapters/src/model/reasoning-history-normalization.ts`. Strips only signed/redacted reasoning blocks, only for the Anthropic provider kind, only on the request copy, with one extra attempt outside the retry budget.
-- Structural passes are aligned: `src/Alcoler.Adapters/Models/ReasoningHistoryNormalizer.cs` removes reasoning-only assistants, trailing reasoning, and whitespace-only assistants (merging adjacent user messages), repairs empty assistants with `"(no content)"`, and downgrades images for models without image support — all on the per-request copy.
-- Still missing: signed-only stripping (`ReasoningPart` does not expose signature/redaction info, so the distinction is not expressible), cross-model reasoning removal (no per-part model origin is persisted; recovery stays reactive via signature-rejection), and `redacted_thinking` capture in the Anthropic stream state.
-- Effect: Alcoler loses more reasoning context on repair than necessary and can hit avoidable 400s after model switches.
+Sources: `src/Alcoler.Kernel/Runtime/SessionRuntime.cs`, `src/Alcoler.Kernel/Runtime/StreamingToolCoordinator.cs`, `src/Alcoler.Kernel/Runtime/TurnRequestEntries.cs`, `src/Alcoler.Kernel/Runtime/ProjectionBuilder.cs`, `src/Alcoler.Kernel/Tools/ToolCallExecutor.cs`.
 
-## 2. Medium impact
+### 1.2 Context management and compaction
 
-### 2.1 No image transcoder
+- Automatic/reactive prompt-too-long reselection moves recent groups into the verbatim preserved tail. Manual retries use a separate bounded oldest-group truncation policy.
+- The summary prompt, resume instruction, token-estimation rules, and microcompaction eligibility follow the modified reference.
+- Summary requests retain structured history and media. Eligible stream failures before committed content can fall back to actual non-streaming generation, not another streaming request presented as a fallback.
+- Media-size failure permits one request-local retry with image placeholders. Canonical and durable media are unchanged; repeated media failure does not multiply through generic automatic retries.
+- Recent-read reminders are newest-first and retain the original Read offset and limit. Compaction persistence precedes in-memory replacement and recent-read clearing.
+- Todo reminders are durable model-only messages, matching the reference. Mode/date/anomaly reminders remain in canonical in-memory history; continuation prompts remain request-local. The previous claim that all reference reminders were request-only was incorrect.
 
-- Alcoler: `src/Alcoler.Adapters/Tools/ReadTool.cs` accepts images up to 20 MB input / 5 MB base64 and rejects anything larger.
-- ZCode: `read-image.ts` resizes and recompresses oversized images (max dimension 2000, ~3.75 MB base64 target) so they still fit.
-- Effect: very large screenshots are rejected instead of downscaled; the user must resize externally. A managed-image resize (System.Drawing on Windows is not cross-platform) would need a new dependency or a hand-rolled codec path.
+Sources: `src/Alcoler.Kernel/Context/CompactionSelector.cs`, `src/Alcoler.Kernel/Context/CompactionPlanner.cs`, `src/Alcoler.Kernel/Context/CompactSummaryModelRunner.cs`, `src/Alcoler.Kernel/Context/SummarizationPrompt.cs`, `src/Alcoler.Kernel/History/MessageHistory.cs`.
 
-### 2.2 ReadSessionContext uses local lexical scoring
+### 1.3 Provider replay and repair
 
-- Alcoler: `src/Alcoler.Kernel/Tools/ReadSessionContextTool.cs` scores messages locally (query tokens plus CJK bigrams).
-- ZCode: `packages/core/src/session-context/read-session-context.ts` may wait on a lite/auxiliary model for extraction and builds chunk-based selection.
-- Deliberate: keeps the tool deterministic and cheap. Handoff strategy and not-found semantics are aligned.
+- Signed, redacted, and encrypted reasoning metadata are represented and retained. Assistant provider/model origin is recorded for new messages.
+- Anthropic signature repair is scoped to signed/redacted reasoning in a request copy, with one extra physical request per logical request scope. It does not delete durable reasoning history.
+- OpenAI Responses encrypted reasoning is replayed. Anthropic tool-result images are nested in tool-result content where supported.
+- Anthropic, OpenAI-compatible, and OpenAI Responses adapters implement actual non-streaming generation. Failure metadata distinguishes request setup from response-body failures and retains HTTP/context-overflow information needed by recovery.
 
-### 2.3 SendMessage scope and wrapper adaptations
+Sources: `src/Alcoler.Contracts/Conversation/ConversationMessage.cs`, `src/Alcoler.Contracts/Models/IChatModel.cs`, `src/Alcoler.Contracts/Models/ModelStreamEvents.cs`, `src/Alcoler.Adapters/Models/ReasoningHistoryNormalizer.cs`, `src/Alcoler.Adapters/Models/AnthropicChatModel.cs`, `src/Alcoler.Adapters/Models/OpenAiCompatibleChatModel.cs`, `src/Alcoler.Adapters/Models/OpenAiResponsesChatModel.cs`.
 
-- Alcoler: `src/Alcoler.Kernel/Subagents/SendMessageTool.cs`, scoped to parent-to-background-child only. Busy wrapper says "The parent session sent a message..." where ZCode's coordinator steer says "The coordinator sent a message..." (Alcoler's child prompts never define a "coordinator"). A resumed child receives the raw message as its next prompt, matching ZCode, but the resume result text drops ZCode's stopped-status and per-agent output-file pointer (Alcoler has no per-agent output file; completion is delivered via the background-job notification).
-- Child-to-parent messaging is not supported (the Task tool returns the child's final output directly). Documented design decision.
+### 1.4 Tools and skills
 
-## 3. Low impact / cosmetic
+- Read resizes and recompresses images using SkiaSharp. Range-specific read state and freshness/digest guards distinguish usable reads from token-truncated views.
+- Bash supports timeout environment overrides, launch-time background execution, eligible timeout-driven background execution, bounded capture, direct output persistence, a 5 GiB persisted-output cap, and a UTF-8-safe bounded tail after persistence failure.
+- The POSIX/Git Bash path merges stdout and stderr at the shell boundary. Windows decoding uses UTF-8 first with legacy-code-page fallback. The non-POSIX cmd fallback does not guarantee the same merged-stream ordering.
+- The extra generic 60,000-character runtime tool-result truncation was removed. Tools own their output limits and artifact envelopes.
+- The reference's normal persisted Bash envelope uses binary byte units and a first-2,000-character preview. Its previous description as a decimal-unit mismatch was incorrect.
+- WebFetch supports the preapproved markdown path and the reference's missing-auxiliary-model error behavior.
+- ReadSessionContext supports auxiliary-model extraction, chunk selection, synthesis, and local fallback; it is no longer lexical-only.
+- Skills reload dynamically, support directory-variable expansion and a 100,000-byte body limit, and retain compatible runtime input forms. Task resolves as an alias for Agent.
 
-### 3.1 AskUserQuestion: no Preview feature
+Sources: `src/Alcoler.Adapters/Tools/ReadTool.cs`, `src/Alcoler.Adapters/Tools/BashTool.cs`, `src/Alcoler.Adapters/Tools/BackgroundBashRunner.cs`, `src/Alcoler.Adapters/Tools/WebFetchTool.cs`, `src/Alcoler.Kernel/Tools/ReadSessionContextTool.cs`, `src/Alcoler.Kernel/Tools/SkillTool.cs`, `src/Alcoler.Kernel/Tools/ToolRegistry.cs`.
 
-- Alcoler: `src/Alcoler.Kernel/Tools/AskUserQuestionTool.cs` omits the "Preview feature:" description block and the `preview` option schema field.
-- Reason: the Avalonia workbench does not render previews; advertising them would produce dead output. All other schema strings and answer texts are verbatim.
+### 1.5 Questions, subagents, and notifications
 
-### 3.2 Skill tool guidance and variable expansion
+- AskUserQuestion supports single-select previews, side-by-side presentation, and answer annotations in the Workbench.
+- Child-to-parent coordinator messaging is available. Busy child messages use Guide delivery; resumed children receive raw input.
+- Background notifications carry tool-use correlation and represent lost state and optional real exit codes without inventing an exit code for cancellation.
 
-- Alcoler: `src/Alcoler.Kernel/Tools/SkillTool.cs` drops the plugin-namespaced-skill form (`plugin:skill`) and the built-in-CLI-command guidance (neither concept exists in Alcoler), and rephrases the "already loaded" bullet.
-- No `${CLAUDE_SKILL_DIR}`/`${ZCODE_SKILL_DIR}`-style base-directory variable expansion in skill bodies. Skill discovery scans `.alcoler/skills` with workspace-level shadowing of user-level skills.
-- The skills listing section is rendered once per session creation; ZCode re-renders it per prompt build, so mid-session skill-file changes are not picked up until the next session.
+Sources: `src/Alcoler.Kernel/Tools/AskUserQuestionTool.cs`, `src/Alcoler.Workbench/ViewModel/PendingInteractionViewModel.cs`, `src/Alcoler.Kernel/Subagents/RespondToCoordinatorTool.cs`, `src/Alcoler.Kernel/Subagents/SubagentWiring.cs`, `src/Alcoler.Kernel/Tools/BackgroundJobNotifications.cs`.
 
-### 3.3 Bash tool details
+## 2. Remaining Differences and Long-Task Impact
 
-- No `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` env overrides; effective timeout clamps at 1ms lower bound where ZCode has none.
-- No user-manual-background text ("Command was manually backgrounded by user with ID: ..."); no tail-direction 30KB inline preview; no `killProcessOnPersistedLimit` machinery.
-- Persisted-output byte formatting is 1024-based with one decimal ("43.9KB") vs ZCode's 1000-based ("45 KB").
-- Alcoler adds a second 60,000-char tool-result budget with a `[Tool output truncated by resultBudget]` marker that ZCode does not have.
+### 2.1 Grep search semantics and execution boundaries
 
-### 3.4 WebFetch fallback path
+**Priority: High. Directly affects model evidence, repeated-search cost, and context noise.**
 
-- No preapproved-URL markdown direct-return path. When no aux model is configured, Alcoler returns a 5,000-char raw preview with an explanatory note where ZCode throws "Model is not configured for WebFetch prompt processing". The aux prompt itself is now the ZCode single-user-message format, verbatim.
+- Alcoler uses .NET Regex rather than ripgrep. Common patterns work, but advanced expressions, Unicode behavior, and glob syntax are not guaranteed equivalent.
+- The current file walker includes hidden files and excludes version-control directories and reparse points, but does not implement `.gitignore` / `.ignore` rules. The reference's default ripgrep path enables hidden files without disabling ignore rules.
+- Content search enumerates candidates, reads files, and accumulates matches before pagination. A small `head_limit` limits returned results, not necessarily the work performed.
+- Regex matching has no explicit per-match timeout. An outer tool deadline does not guarantee immediate interruption of a running synchronous match.
 
-### 3.5 Token estimator CJK weighting
+Long-task effect: repeated searches can include ignored dependencies, generated files, or build output, displacing useful source matches and consuming extra calls, latency, and context. Incorrect target selection is a possible downstream consequence, not an observed failure established by the current tests. Large-repository performance and pathological-pattern behavior need targeted measurement.
 
-- `src/Alcoler.Kernel/Context/TokenEstimator.cs` double-weights CJK Extension-A and fullwidth forms; ZCode weights U+4E00-9FFF only. Estimates for CJK-heavy content run slightly high, occasionally triggering read partial-view or persisted-output paths earlier than ZCode would.
+Narrowing path/glob can reduce exposure. Bash can use native `rg` when installed, but that is a workaround, not equivalent built-in behavior. Do not assume the custom glob matcher supports all ripgrep exclusion syntax.
 
-### 3.6 Compact summarization prompt structure
+Sources: `src/Alcoler.Adapters/Tools/GrepTool.cs`, `src/Alcoler.Adapters/Tools/FileSearchSupport.cs`, `src/Alcoler.Kernel/Tools/ToolCallExecutor.cs`.
 
-- `src/Alcoler.Kernel/Context/SummarizationPrompt.cs` covers the same nine topics but uses its own markdown-sections format with mandatory verbatim quoting of user messages; ZCode uses the classic `<analysis>`/`<summary>` tag discipline. The continuation header, truncation marker, and "Recent messages are preserved verbatim." suffix are aligned.
-- ZCode's `suppressFollowup` resume instruction (reactive compaction: "Continue the conversation from where it left off without asking the user any further questions...") is not injected; Alcoler's turn loop just re-invokes the model after compaction.
+### 2.2 Image transformation and extreme decode size
 
-### 3.7 Background-job notification details
+**Priority: Medium for resource safety; usually low for ordinary code-only tasks.**
 
-- `src/Alcoler.Kernel/Tools/BackgroundJobNotifications.cs` has no `<tool-use-id>` field, appends ": {error}" for failures without an exit code where ZCode stays bare, and has no "lost" state. Prefix, XML shape, and summary wording ("completed (exit code N)", "failed with exit code N", "was stopped") are aligned.
+SkiaSharp replaces the reference's Jimp pipeline. Input is limited to 20 MiB and the output's longest dimension to 2,000 pixels. The nominal byte gates allow 3.75 MiB of encoded image data and 5 MiB of base64, but the additional 25,000-token gate at 0.125 tokens per base64 byte is stricter: the effective output ceiling is 200,000 base64 bytes, or approximately 150,000 encoded-image bytes. Describing this as a 3.75 MB base64 target would be incorrect.
 
-### 3.8 Tool-name adaptations (intentional)
+Compression details and transformed pixels are not byte-identical to Jimp; dense screenshot text may differ in clarity. This alone does not establish worse model vision performance. Visual comparison should exercise the effective token-derived compression threshold, not only nominal byte limits.
 
-- "Wasted call — file unchanged since your last **ReadFile**" (ZCode: Read); background-start texts reference ReadFile. Kept "no need to Read it back" verbatim in edit/write freshness suffixes. Behaviorally neutral renaming.
-- The "Task" alias for the Agent tool is not registered; only "Agent" resolves.
+Scaled decoding is requested where supported, but codec behavior determines whether a source-sized native bitmap is still needed. There is no independent decoded-pixel cap, and cancellation does not immediately interrupt native decode. A small compressed file can therefore require much more native memory than its file size suggests. No out-of-memory incident has been established; the reference's decode-first path is not inherently immune either.
 
-### 3.9 Media replay placement
+Long-task effect: usually negligible for source-code work, but repeated or extremely large image inputs can create latency and memory peaks. The useful follow-up is extreme-input resource hardening and visual tests, not switching libraries solely for implementation identity.
 
-- Alcoler: hydrated tool-result images are projected into a followup user message for every provider (`ContextBuilder.Project`), so image content always arrives as its own user turn.
-- ZCode: Anthropic requests carry images inside the `tool_result` content array; other providers get the followup-message shape.
-- Effect: Anthropic sees the same bytes in a slightly different structural position. No behavioral difference in practice.
+Source: `src/Alcoler.Adapters/Tools/ReadTool.cs`.
 
-### 3.10 OpenAI Responses reasoning replay
+### 2.3 Manual promotion of a running foreground task
 
-- Alcoler drops reasoning history for OpenAI Responses requests (`ReasoningHistoryNormalizer` with `keepReasoning: false`); ZCode replays encrypted reasoning content (`encrypted_content`) for Responses-capable models. ZCO1-style reasoning continuity across steps is lost; text and tool-call continuity are unaffected.
+**Priority: Low for model reasoning; relevant to long-command user control.**
 
-### 3.11 Runtime reminders are persisted
+Launch-time background execution and eligible timeout-driven conversion already exist. The missing capability is a user command/UI action that promotes the same already-running foreground operation to the background immediately.
 
-- Todo and plan-mode reminders are committed as provider-visible synthetic user messages, where ZCode injects them into the request copy only (its counters still derive from persisted history).
-- Consequence: reminder text stays in Alcoler's persisted context (and UI transcript) rather than vanishing after the request. This is forced by Alcoler's history-mirrors-store model and is strictly more durable, but consumes slightly more context tokens than ZCode.
+Long-task effect: reduced ability to intervene while a slow build or test is running. This is not absence of background execution, and it does not imply timeout always kills the process.
 
-### 3.12 Stream-recovery observability
+Sources: `src/Alcoler.Adapters/Tools/BashTool.cs`, `src/Alcoler.Contracts/Commands/ConversationCommands.cs`.
 
-- Stream recovery (discard partial, fresh retry, max 10/turn, growing idle timeout) matches ZCode, but no observability events are emitted for recoveries and discarded partials are not persisted; ZCode surfaces these through its telemetry pipeline.
+### 2.4 Per-subagent transcript locator
 
-### 3.13 Grep regex dialect note
+**Priority: Medium for complex multi-agent verification; low for simple delegation.**
 
-- Alcoler's Grep uses .NET regex; ZCode uses ripgrep. Match semantics agree for common patterns, and the tool description states the .NET dialect explicitly rather than quoting ZCode's ripgrep wording.
+Parents normally receive the child's final assistant text, not its full tool transcript. Background completion places that result in a notification whose body is truncated at 120,000 characters before the truncation marker and system prefix are added; this is not a strict total-envelope limit. There is no per-agent transcript file pointer comparable to the reference.
+
+Child sessions still share durable storage, and live observation exists; this is not loss of child history. Bash background jobs already have output-file pointers and should not be confused with this gap.
+
+Long-task effect: investigating a questionable child conclusion requires less direct navigation through child-session facilities. That can increase duplicate investigation or reliance on an insufficiently checked conclusion. The benefit of a locator is on-demand evidence retrieval, not injecting every child's complete transcript into the parent's context.
+
+Sources: `src/Alcoler.Kernel/Subagents/SubagentWiring.cs`, `src/Alcoler.Kernel/Tools/BackgroundJobNotifications.cs`, `src/Alcoler.Contracts/Projections/IAgentRuntime.cs`.
+
+### 2.5 Branch-generation filtering for stale notifications
+
+**Priority: Conditional. Required before adding history rewind or branching.**
+
+The reference associates background notifications with branch generations and discards stale-branch results. Alcoler has session disposal and queue/cancellation protections, but no equivalent branch-generation contract. Its current public commands do not expose the corresponding full rewind/branch workflow.
+
+Long-task effect: no current cross-branch failure has been established. If history branching or another explicit result-invalidation workflow is introduced, a task from an abandoned branch must not later enter the active branch as valid evidence. Design the filtering with that feature, rather than assuming cancellation alone supplies it.
+
+Sources: `src/Alcoler.Kernel/Runtime/SessionRuntime.cs`, `src/Alcoler.Contracts/Commands/ConversationCommands.cs`.
+
+### 2.6 Structured sources for ReadSessionContext
+
+**Priority: Medium for cross-session continuation and auditing; low for ordinary continuous execution.**
+
+Text extraction and synthesis are implemented. Local source text includes message identifiers and timestamps, and extraction input contains chunk/message ranges. The final auxiliary-model text need not preserve them, and the tool lacks a stable structured references/selected-ranges/counts contract.
+
+Long-task effect: after resumption, a claim in a historical summary is harder to map reliably back to its original messages for checking. Source navigation, coverage checks, and automated evaluation are less direct. This does not prove poorer summary content: the reference's model-facing formatter also primarily presents text rather than its complete structured references.
+
+Source: `src/Alcoler.Kernel/Tools/ReadSessionContextTool.cs`.
+
+### 2.7 Other compatibility adaptations
+
+- Normalized model events do not retain all raw response-start and indexed provider content-block provenance. Compaction commit/fallback decisions use normalized block-end/tool-ready events rather than an identical raw provider event contract. Edge-case equivalence is therefore bounded by adapter normalization.
+- Concrete supported reasoning fields are modeled explicitly; there is no arbitrary provider-options bag. New provider-specific features need explicit contract/adapter support rather than automatic passthrough.
+- Legacy messages without known provider/model origin remain unknown. New origin metadata cannot retroactively establish where old reasoning came from.
+- Local skill roots and workspace shadowing are intentional. Guidance for nonexistent CLI commands is not advertised.
+
+These are compatibility boundaries, not evidence of a universal long-task regression. They matter when using the corresponding provider feature, legacy history, or skill layout.
+
+## 3. Validation Evidence and Limits
+
+### 3.1 Last completed alignment checkpoint
+
+The completed alignment run reported:
+
+| Check | Result |
+| --- | --- |
+| Solution build | 0 warnings, 0 errors |
+| Kernel tests | 1,278 passed, 0 failed |
+| Workbench tests | 503 passed, 0 failed |
+| Browser tests | 18 passed, 1 skipped, 0 failed |
+| CRLF-aware whitespace check | Passed |
+
+The skipped browser test requires installed Playwright browsers. It is not a successful real-browser smoke test.
+
+A separate memory probe on the final alignment binaries reported 110.2 MB working set after one 400-turn session with 800 timeline rows, and 117.7 MB after ten resident sessions totaling 850 turns, with 15.2 MB managed memory at that point. These are kernel test-process measurements, not complete Avalonia desktop measurements or cross-machine guarantees.
+
+This is a historical checkpoint, not a claim that later workspace changes or this documentation update reran the suites.
+
+### 3.2 Evidence still missing
+
+- No configured real-provider engineering comparison was run. The real-provider smoke test returns early when configuration is absent; green suite counts must not be interpreted as real-model execution.
+- No same-model, same-task, same-repository comparison establishes equivalent long-task success rates, recovery quality, or context retention.
+- Native desktop interaction and steady-state memory were not measured end to end. Headless Workbench tests do not replace that evidence.
+- Native AOT publication and non-Windows execution were not validated in that checkpoint.
+
+These are validation limits, not known architectural failures. Scripted regression coverage is necessary, but cannot prove real-model engineering parity.
+
+## 4. Long-Task Priorities
+
+1. Align or harden Grep's file-selection rules, search cost, and regex execution bounds. This is the clearest remaining direct difference in evidence supplied to the model.
+2. Compare real long tasks with the same model and repository, including repeated search, compaction, stream interruption, delegation, and session resumption. Use failures to distinguish harness effects from model variation.
+3. Bound extreme image decode resources and validate the actual target-platform desktop/AOT artifacts.
+4. Add on-demand child-transcript navigation and structured historical sources where complex delegation or cross-session verification warrants them.
+5. Add manual foreground-to-background control as a product feature; implement branch-generation filtering before exposing history branching.
+
+The remaining differences should not be described either as proof of a defective core loop or as uniformly cosmetic. Grep directly affects evidence acquisition; the other gaps are mostly conditional reliability, control, traceability, and verification concerns.

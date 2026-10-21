@@ -44,6 +44,8 @@ public interface IShellSessionState
 {
     string CurrentDirectory { get; }
 
+    ShellEnvironment? Environment => null;
+
     void SetCurrentDirectory(string path);
 }
 

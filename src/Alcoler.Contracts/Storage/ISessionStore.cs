@@ -4,6 +4,7 @@ using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Sessions;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Contracts.Storage;
 
@@ -22,7 +23,8 @@ public sealed record SessionRecord(
     SessionBranch? Branch = null,
     bool IsArchived = false,
     SessionId? ParentSessionId = null,
-    SessionTitleSource TitleSource = SessionTitleSource.Custom);
+    SessionTitleSource TitleSource = SessionTitleSource.Custom,
+    ShellEnvironment? Shell = null);
 
 public sealed record StoredMessage(long Sequence, ConversationMessage Message);
 

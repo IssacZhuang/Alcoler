@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Workbench;
 
@@ -58,7 +59,8 @@ public sealed record WorkbenchConfig(
     IReadOnlyList<WorkbenchMcpServerConfig>? McpServers = null,
     string Theme = "dark",
     string? BraveApiKey = null,
-    WorkbenchComposerConfig? Composer = null)
+    WorkbenchComposerConfig? Composer = null,
+    ShellEnvironment? IntegratedTerminalShell = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

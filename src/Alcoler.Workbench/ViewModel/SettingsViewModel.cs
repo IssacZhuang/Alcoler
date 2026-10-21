@@ -1,11 +1,15 @@
 using System.Collections.ObjectModel;
 using System.Text;
+using Alcoler.Adapters.Tools;
+using Alcoler.Contracts.Tools;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
 namespace Alcoler.Workbench.ViewModel;
 
 public sealed record ProviderApiFormat(string Kind, string Label);
+
+public sealed record ShellChoice(string Label, ShellEnvironment? Environment = null);
 
 public sealed partial class ProviderViewModel : ObservableObject
 {
@@ -140,8 +144,22 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly WorkbenchConfig _config;
 
     public SettingsViewModel(WorkbenchConfig config)
+        : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows())
+    {
+    }
+
+    internal SettingsViewModel(WorkbenchConfig config, IReadOnlyList<ShellEnvironment> shells, bool isWindows)
     {
         _config = config;
+        SupportsShellSelection = isWindows;
+        var choices = new List<ShellChoice> { new("Auto (Git Bash, then CMD)") };
+        choices.AddRange(shells.Select(shell => new ShellChoice(
+            shell.Dialect == ShellDialect.Cmd ? "CMD" : shell.Name, shell)));
+        if (config.IntegratedTerminalShell is { } savedShell
+            && !choices.Any(choice => choice.Environment == savedShell))
+            choices.Add(new ShellChoice($"{savedShell.Name} (saved; Auto if unavailable)", savedShell));
+        ShellChoices = choices;
+        SelectedShell = choices.FirstOrDefault(choice => choice.Environment == config.IntegratedTerminalShell) ?? choices[0];
         Theme = config.Theme == Light ? Light : Dark;
         foreach (var provider in config.Providers ?? [])
         {
@@ -180,6 +198,13 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public ObservableCollection<McpServerViewModel> McpServers { get; } = [];
 
     public IReadOnlyList<string> ThemeChoices { get; } = [Dark, Light];
+
+    public bool SupportsShellSelection { get; }
+
+    public IReadOnlyList<ShellChoice> ShellChoices { get; }
+
+    [ObservableProperty]
+    private ShellChoice? _selectedShell;
 
     [ObservableProperty]
     private ProviderViewModel? _selectedProvider;
@@ -285,6 +310,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         Providers = Providers.Select(ToProviderConfig).ToList(),
         McpServers = McpServers.Select(ToMcpServerConfig).ToList(),
         Theme = Theme,
+        IntegratedTerminalShell = SupportsShellSelection ? SelectedShell?.Environment : _config.IntegratedTerminalShell,
     };
 
     private static WorkbenchProviderConfig ToProviderConfig(ProviderViewModel provider) => provider.ToConfig();

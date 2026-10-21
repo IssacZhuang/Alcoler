@@ -17,7 +17,6 @@ public sealed class BashTool : ITool, IToolInputPolicy
     internal const int MaxTimeoutMs = 600_000;
 
     private readonly ShellSpec _shell;
-    private readonly bool _isPosixShell;
     private readonly BashTimeoutPolicy _timeouts;
     private readonly Func<string, Stream>? _openOutput;
 
@@ -30,8 +29,6 @@ public sealed class BashTool : ITool, IToolInputPolicy
         _shell = shell;
         _openOutput = openOutput;
         _timeouts = timeouts ?? BashTimeoutPolicy.FromEnvironment(Environment.GetEnvironmentVariable);
-        var shellName = Path.GetFileNameWithoutExtension(shell.FileName);
-        _isPosixShell = shellName is "bash" or "sh" or "zsh" or "dash";
         Contract = CreateContract(_timeouts);
         Metadata = new(
             ReadOnly: false,
@@ -118,18 +115,22 @@ public sealed class BashTool : ITool, IToolInputPolicy
         var description = ToolInput.StringOrNull(context.Input, "description");
         var runInBackground = ToolInput.BoolOrDefault(context.Input, "run_in_background", false);
         var workingDirectory = context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
+        var environment = context.Shell?.Environment;
+        var shell = environment is null ? _shell : new ShellSpec(environment.FileName, environment.Arguments);
+        var isPosix = environment?.IsPosix ?? BashProcessSession.IsPosixShell(shell);
 
         if (runInBackground)
-            return StartExplicitBackground(context, command, description, workingDirectory);
+            return StartExplicitBackground(context, shell, isPosix, command, description, workingDirectory);
 
         var trackedReads = context.FileReads?.TrackedReads() ?? [];
         using var session = BashProcessSession.Start(
-            _shell,
+            shell,
             command,
             workingDirectory,
-            captureCwd: _isPosixShell,
+            captureCwd: true,
             outputFilePath: CreateBackgroundOutputPath(context),
-            openOutput: _openOutput);
+            openOutput: _openOutput,
+            isPosix: isPosix);
 
         var exitCode = 0;
         var timedOut = false;
@@ -176,6 +177,8 @@ public sealed class BashTool : ITool, IToolInputPolicy
 
     private ToolExecutionResult StartExplicitBackground(
         ToolExecutionContext context,
+        ShellSpec shell,
+        bool isPosix,
         string command,
         string? description,
         string workingDirectory)
@@ -186,7 +189,8 @@ public sealed class BashTool : ITool, IToolInputPolicy
                 isError: true);
 
         var outputPath = CreateBackgroundOutputPath(context);
-        var session = BashProcessSession.Start(_shell, command, workingDirectory, captureCwd: false, outputPath, openOutput: _openOutput);
+        var session = BashProcessSession.Start(shell, command, workingDirectory, captureCwd: false, outputPath,
+            openOutput: _openOutput, isPosix: isPosix);
         BackgroundJobInfo info;
         try
         {
@@ -269,13 +273,13 @@ public sealed class BashTool : ITool, IToolInputPolicy
         return ToolExecutionResult.Text(content, isError: providerError);
     }
 
-    private string? DecideCwd(
+    private static string? DecideCwd(
         ToolExecutionContext context,
         BashProcessSession session,
         int exitCode,
         bool timedOut)
     {
-        if (timedOut || exitCode != 0 || !_isPosixShell || context.Shell is null)
+        if (timedOut || exitCode != 0 || context.Shell is null)
             return null;
         if (!session.TryExtractCapturedCwd(out var captured))
             return null;

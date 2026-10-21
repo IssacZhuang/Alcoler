@@ -8,6 +8,7 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Contracts.Serialization;
 
@@ -39,6 +40,7 @@ namespace Alcoler.Contracts.Serialization;
 [JsonSerializable(typeof(ConversationRow))]
 [JsonSerializable(typeof(RowOp))]
 [JsonSerializable(typeof(ConversationState))]
+[JsonSerializable(typeof(ShellEnvironment))]
 [JsonSerializable(typeof(SessionRecord))]
 [JsonSerializable(typeof(StoredMessage))]
 [JsonSerializable(typeof(SessionSummary))]

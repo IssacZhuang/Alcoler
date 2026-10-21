@@ -151,6 +151,13 @@
             <TextBlock Text="Model providers" />
           </StackPanel>
         </RadioButton>
+        <RadioButton x:Name="RuntimeTab" Classes="settingsTab" GroupName="SettingsSection"
+                     Tag="runtime" IsCheckedChanged="OnSectionChanged" IsVisible="{Binding SupportsShellSelection}">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <controls:Icon Classes="icon" Data="M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5" />
+            <TextBlock Text="Runtime" />
+          </StackPanel>
+        </RadioButton>
         <TextBlock Classes="description" Text="Agent capabilities" Margin="10,24,0,4" />
         <RadioButton x:Name="McpTab" Classes="settingsTab" GroupName="SettingsSection"
                      Tag="mcp" IsCheckedChanged="OnSectionChanged">
@@ -412,6 +419,31 @@
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+
+          <ScrollViewer x:Name="RuntimePanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="24">
+              <TextBlock Classes="sectionTitle" Text="Runtime" />
+              <Border Background="{DynamicResource AlcolerCard}" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+                      CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16">
+                <Grid ColumnDefinitions="*,224" ColumnSpacing="16">
+                  <StackPanel Spacing="4" VerticalAlignment="Center">
+                    <TextBlock Classes="fieldLabel" Text="Integrated terminal shell" />
+                    <TextBlock Classes="description"
+                               Text="Applies to new sessions only. On Windows, Bash uses this shell. Auto prefers Git Bash and falls back to cmd.exe." />
+                  </StackPanel>
+                  <ComboBox x:Name="ShellPicker" Grid.Column="1" ItemsSource="{Binding ShellChoices}"
+                            SelectedItem="{Binding SelectedShell, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                            VerticalAlignment="Center" AutomationProperties.Name="Integrated terminal shell">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ShellChoice">
+                        <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Environment.FileName}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </Grid>
+              </Border>
             </StackPanel>
           </ScrollViewer>
 

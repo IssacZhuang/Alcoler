@@ -9,6 +9,7 @@ using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Subagents;
+using Alcoler.Contracts.Tools;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -29,8 +30,8 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         await using var connection = OpenRawConnection();
         Assert.Equal("wal", ExecuteScalar(connection, "PRAGMA journal_mode;"));
-        Assert.Equal(3L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
-        Assert.Equal(3L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
+        Assert.Equal(4L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
+        Assert.Equal(4L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         using var column = connection.CreateCommand();
         column.CommandText = "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('session') WHERE name = 'title_source'";
         using var reader = column.ExecuteReader();
@@ -38,6 +39,95 @@ public sealed class SqliteSessionStoreTests : IDisposable
         Assert.Equal("TEXT", reader.GetString(0));
         Assert.Equal(1L, reader.GetInt64(1));
         Assert.Equal("'legacy'", reader.GetString(2));
+    }
+
+    [Theory]
+    [InlineData(ShellDialect.Cmd, @"C:\Windows\System32\cmd.exe")]
+    [InlineData(ShellDialect.GitBash, @"D:\Portable Git\bin\bash.exe")]
+    [InlineData(ShellDialect.Posix, "/bin/sh")]
+    public async Task Shell_RoundTripsAcrossUpsertAndRestart_AndCanBeCleared(ShellDialect dialect, string fileName)
+    {
+        var environment = new ShellEnvironment(fileName, dialect);
+        var record = NewRecord() with { Shell = environment, ParentSessionId = StrongId.NewSessionId(), TitleSource = SessionTitleSource.Generated };
+        await using (var store = await NewInitializedStoreAsync())
+        {
+            await store.UpsertSessionAsync(record, CancellationToken.None);
+            Assert.Equal(record, await store.GetSessionAsync(record.Id, CancellationToken.None));
+            await using var connection = OpenRawConnection();
+            Assert.Equal(AlcolerJson.Serialize(environment), ExecuteScalar(connection, "SELECT shell_json FROM session"));
+        }
+
+        await using (var store = await NewInitializedStoreAsync())
+        {
+            var restored = Assert.IsType<SessionRecord>(await store.GetSessionAsync(record.Id, CancellationToken.None));
+            Assert.Equal(record, restored);
+            await store.UpsertSessionAsync(restored with { Shell = null }, CancellationToken.None);
+        }
+
+        await using var reopened = await NewInitializedStoreAsync();
+        Assert.Equal(record with { Shell = null }, await reopened.GetSessionAsync(record.Id, CancellationToken.None));
+        await using var raw = OpenRawConnection();
+        Assert.Equal(DBNull.Value, ExecuteScalar(raw, "SELECT shell_json FROM session"));
+    }
+
+    [Fact]
+    public async Task Shell_NullLegacyRecordsAndJsonRemainUnselected()
+    {
+        var record = NewRecord();
+        await using var store = await NewInitializedStoreAsync();
+        await store.UpsertSessionAsync(record, CancellationToken.None);
+        Assert.Null((await store.GetSessionAsync(record.Id, CancellationToken.None))!.Shell);
+        var payload = System.Text.Json.Nodes.JsonNode.Parse(AlcolerJson.Serialize(record))!.AsObject();
+        payload.Remove("shell");
+        Assert.Equal(record, AlcolerJson.Deserialize<SessionRecord>(payload.ToJsonString()));
+    }
+
+    [Fact]
+    public async Task Initialize_VersionThree_AddsNullableShellAndRetainsExistingMetadata()
+    {
+        var branch = new SessionBranch(new MessageId("msg_cut"), [new MessageId("msg_kept")]);
+        var record = NewRecord(title: "Retain generated title", branch: branch, isArchived: true) with
+        {
+            ParentSessionId = StrongId.NewSessionId(),
+            PermissionMode = PermissionMode.Plan,
+            TitleSource = SessionTitleSource.Generated,
+        };
+        CreateVersionTwoDatabase([record], [(record.Id, [NewMessage("Do not backfill this title")])]);
+        using (var connection = OpenRawConnection())
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                ALTER TABLE session ADD COLUMN title_source TEXT NOT NULL DEFAULT 'legacy';
+                UPDATE session SET title_source = 'Generated';
+                INSERT INTO schema_version VALUES (3);
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        await using (var store = await NewInitializedStoreAsync())
+        {
+            AssertMetadata(Assert.IsType<SessionRecord>(await store.GetSessionAsync(record.Id, CancellationToken.None)));
+            Assert.Single(await store.LoadMessagesAsync(record.Id, CancellationToken.None));
+        }
+        await using var reopened = await NewInitializedStoreAsync();
+        AssertMetadata(Assert.IsType<SessionRecord>(await reopened.GetSessionAsync(record.Id, CancellationToken.None)));
+        await using var raw = OpenRawConnection();
+        Assert.Equal(4L, ExecuteScalar(raw, "SELECT MAX(version) FROM schema_version"));
+        using var column = raw.CreateCommand();
+        column.CommandText = "SELECT type, \"notnull\" FROM pragma_table_info('session') WHERE name = 'shell_json'";
+        using var reader = column.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal("TEXT", reader.GetString(0));
+        Assert.Equal(0L, reader.GetInt64(1));
+
+        void AssertMetadata(SessionRecord loaded)
+        {
+            Assert.Equal(record with { Branch = null }, loaded with { Branch = null });
+            Assert.NotNull(loaded.Branch);
+            Assert.Equal(branch.CutAfterMessageId, loaded.Branch.CutAfterMessageId);
+            Assert.Equal(branch.KeptMessageIds, loaded.Branch.KeptMessageIds);
+            Assert.Null(loaded.Shell);
+        }
     }
 
     [Fact]
@@ -306,7 +396,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         foreach (var record in expected)
             Assert.Equal(record, await reopened.GetSessionAsync(record.Id, CancellationToken.None));
         await using var connection = OpenRawConnection();
-        Assert.Equal(3L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(4L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
         Assert.Equal(0L, ExecuteScalar(connection, "SELECT COUNT(*) FROM session WHERE title_source = 'legacy'"));
     }
 

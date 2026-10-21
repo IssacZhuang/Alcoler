@@ -36,10 +36,11 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
     public TerminalPaneViewModel(
         string startedFrom,
         IPtyTerminalService? service = null,
-        IUiScheduler? scheduler = null)
+        IUiScheduler? scheduler = null,
+        Func<string>? resolveShell = null)
     {
         StartedFrom = startedFrom;
-        _service = service ?? new PortaPtyTerminalService();
+        _service = service ?? new PortaPtyTerminalService(resolveShell);
         _scheduler = scheduler ?? AvaloniaUiScheduler.Instance;
         Buffer = new TerminalBuffer(PortaPtyTerminalService.DefaultCols, PortaPtyTerminalService.DefaultRows);
         _service.OutputReceived += OnOutputReceived;
