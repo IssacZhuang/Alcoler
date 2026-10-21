@@ -92,16 +92,28 @@ jobs:
       - name: Fetch official ripgrep
         # ripgrep 14.1.1 ships no aarch64-pc-windows-msvc archive; win-arm64
         # gets the library only and Bash sessions degrade to no rg shim.
-        if: matrix.rg-archive != ''
+        if: matrix.rg-archive
         shell: pwsh
         run: |
+          $ProgressPreference = 'SilentlyContinue'
           $archive = '${{ matrix.rg-archive }}'
+          $dest = "staging/tools/ripgrep/${{ matrix.rid }}/${{ matrix.rg-name }}"
           Invoke-WebRequest -Uri "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$archive" -OutFile rg-download
-          New-Item -ItemType Directory -Force rg-extract | Out-Null
-          if ($archive.EndsWith('.zip')) { Expand-Archive rg-download rg-extract } else { tar -xzf rg-download -C rg-extract }
-          New-Item -ItemType Directory -Force -Path "staging/tools/ripgrep/${{ matrix.rid }}" | Out-Null
-          $rgDir = (Get-ChildItem rg-extract -Directory | Select-Object -First 1).FullName
-          Copy-Item (Join-Path $rgDir '${{ matrix.rg-name }}') "staging/tools/ripgrep/${{ matrix.rid }}/"
+          New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+          if ($archive.EndsWith('.zip')) {
+            # Expand-Archive fails on this zip's completion-script entries; extract the single binary instead.
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path rg-download))
+            try {
+              $entry = $zip.Entries | Where-Object { $_.Name -eq '${{ matrix.rg-name }}' } | Select-Object -First 1
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $PWD $dest), $true)
+            } finally { $zip.Dispose() }
+          } else {
+            New-Item -ItemType Directory -Force rg-extract | Out-Null
+            tar -xzf rg-download -C rg-extract
+            $rgDir = (Get-ChildItem rg-extract -Directory | Select-Object -First 1).FullName
+            Copy-Item (Join-Path $rgDir '${{ matrix.rg-name }}') $dest
+          }
 
       - name: Verify staged binaries
         shell: bash
