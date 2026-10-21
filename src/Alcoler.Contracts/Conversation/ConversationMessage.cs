@@ -31,7 +31,9 @@ public sealed record ReasoningPart(
 
 public sealed record ToolCallPart(PartId Id, ToolCallId ToolCallId, string ToolName, System.Text.Json.JsonElement Input) : MessagePart(Id);
 
-public sealed record ToolResultPart(PartId Id, ToolCallId ToolCallId, IReadOnlyList<ToolResultBlock> Content, bool IsError = false) : MessagePart(Id);
+// StructuredOutput is a tool-defined JSON side-channel persisted with the result; it must
+// never be mapped into provider payloads.
+public sealed record ToolResultPart(PartId Id, ToolCallId ToolCallId, IReadOnlyList<ToolResultBlock> Content, bool IsError = false, string? StructuredOutput = null) : MessagePart(Id);
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
 [JsonDerivedType(typeof(ToolResultText), "text")]
@@ -67,6 +69,7 @@ public enum MessageSource
     ModelAnomaly,
     LegacySynthetic,
     ResumeReferencedContext,
+    SessionReference,
 }
 
 public enum MessagePresentation

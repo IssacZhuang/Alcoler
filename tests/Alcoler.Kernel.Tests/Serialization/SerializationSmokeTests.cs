@@ -43,6 +43,26 @@ public class SerializationSmokeTests
     }
 
     [Fact]
+    public void ToolResultPart_StructuredOutput_RoundTripsAndReadsLegacyJsonWithoutIt()
+    {
+        var part = new ToolResultPart(
+            StrongId.NewPartId(), StrongId.NewToolCallId(), [new ToolResultText("content")],
+            StructuredOutput: """{"status":"success","messageCount":3}""");
+        var message = new ConversationMessage(StrongId.NewMessageId(), MessageRole.User, [part], DateTimeOffset.UtcNow);
+
+        var roundTripped = AlcolerJson.Deserialize<ConversationMessage>(AlcolerJson.Serialize(message));
+        Assert.Equal(part.StructuredOutput, Assert.IsType<ToolResultPart>(roundTripped!.Parts[0]).StructuredOutput);
+
+        var legacyJson = AlcolerJson.Serialize(message with
+        {
+            Parts = [part with { StructuredOutput = null }],
+        }).Replace(",\"structuredOutput\":null", "", StringComparison.Ordinal);
+        Assert.DoesNotContain("structuredOutput", legacyJson, StringComparison.Ordinal);
+        Assert.Null(Assert.IsType<ToolResultPart>(
+            AlcolerJson.Deserialize<ConversationMessage>(legacyJson)!.Parts[0]).StructuredOutput);
+    }
+
+    [Fact]
     public void SessionEvent_RoundTrips_WithDiscriminator()
     {
         SessionEvent sessionEvent = new ToolCallResultEvent(

@@ -1,7 +1,9 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
 
@@ -14,6 +16,8 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
     private const int MaxLiteInputChars = 80_000;
     private const int MaxChunkChars = 28_000;
     private const int MaxLiteChunks = 5;
+    private const int MaxResultBytes = 80_000;
+    private const string SessionIdPattern = "^sess_[A-Za-z0-9._-]+$";
     private const string NoRelevantContext = "NO_RELEVANT_CONTEXT";
     private const string ExtractionSystemPrompt = """
         You are the extraction model for the ReadSessionContext tool.
@@ -31,7 +35,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "sessionId": { "type": "string", "minLength": 1, "description": "Target Alcoler session id to read from persisted session history." },
+            "sessionId": { "type": "string", "pattern": "^sess_[A-Za-z0-9._-]+$", "description": "Target Alcoler session id to read from persisted session history." },
             "query": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "Focused natural-language description of the context needed from the target session." },
             "strategy": { "type": "string", "enum": ["relevant", "handoff"], "description": "Use relevant for focused retrieval, or handoff for a bounded continuation summary." },
             "maxTokens": { "type": "integer", "minimum": 1, "maximum": 12000, "description": "Approximate maximum tokens to return to the model." }
@@ -53,8 +57,12 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
         DefaultTimeoutMs: 300_000,
         MaxTimeoutMs: 300_000);
 
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
+    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken)
+    {
+        if (StringOrNull(input, "sessionId") is { } sessionId && !Regex.IsMatch(sessionId, SessionIdPattern))
+            return ValueTask.FromResult<ToolInputIssue?>(new ToolInputIssue("sessionId", "Session id must use the sess_* format."));
+        return ValueTask.FromResult<ToolInputIssue?>(null);
+    }
 
     public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
         ValueTask.FromResult(input);
@@ -67,45 +75,37 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
             return ToolExecutionResult.Text("sessionId and query are required", isError: true);
 
         var sessionId = ParseSessionId(rawId);
+        var strategy = StringOrNull(context.Input, "strategy") ?? "relevant";
         SessionRecord? record;
         IReadOnlyList<StoredMessage> stored;
         try
         {
             record = await store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
             if (record is null)
-                return ToolExecutionResult.Text($"Session {sessionId.Value} was not found.");
+                return Result(new ReadSessionContextSources(
+                    "not_found", sessionId.Value, null, null, null, strategy, query, "none", 0, 0, false, null, null),
+                    $"Session {sessionId.Value} was not found.");
             stored = await store.LoadMessagesAsync(sessionId, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            return ToolExecutionResult.Text($"ReadSessionContext failed for {sessionId.Value}.\nError: {ex.Message}\nFailed to read persisted session history.");
+            return Result(new ReadSessionContextSources(
+                "failed", sessionId.Value, null, null, null, strategy, query, "none", 0, 0, false, ex.Message, null),
+                $"ReadSessionContext failed for {sessionId.Value}.\nError: {ex.Message}\nFailed to read persisted session history.");
         }
 
-        var strategy = StringOrNull(context.Input, "strategy") ?? "relevant";
         var maxTokens = Math.Clamp(IntOrNull(context.Input, "maxTokens") ?? DefaultMaxTokens, 1, MaxMaxTokens);
         var budget = Math.Clamp(maxTokens * 4, 4_000, 48_000);
-        var terms = Tokenize(query);
-        var normalizedQuery = query.Trim().ToLowerInvariant();
-        var snippets = stored.Select((entry, index) => FormatSnippet(entry.Message, index))
-            .Where(static snippet => snippet is not null).Select(static snippet => snippet!)
-            .Select(snippet => snippet with
-            {
-                Score = Score(snippet.SearchText, terms)
-                    + (snippet.SearchText.Contains(normalizedQuery, StringComparison.Ordinal) ? 20 : 0)
-                    + snippet.Index / 10_000.0,
-            }).ToList();
-        var selected = SelectLocal(snippets, strategy, budget);
-        var local = FormatTranscript(record, selected, query, strategy,
-            strategy == "handoff" ? "Recent session handoff context" : "Relevant session context", budget);
-        var all = FormatTranscript(record, snippets, query, strategy, "Cleaned transcript", int.MaxValue);
-        var truncated = selected.Count < snippets.Count || all.Length > local.Length || all.Length > budget;
+        var material = BuildMaterial(record, stored, query, strategy, budget);
         var source = "local";
-        var content = local;
-        if (context.AuxModel is { } model && snippets.Count > 0)
+        var truncated = material.Truncated;
+        var content = material.LocalContent;
+        string? error = null;
+        if (context.AuxModel is { } model && material.ReadableMessageCount > 0)
         {
             try
             {
-                var extracted = await ExtractAsync(model, record, snippets, all, query, strategy, maxTokens, budget, cancellationToken)
+                var extracted = await ExtractAsync(model, record, material, query, strategy, maxTokens, budget, cancellationToken)
                     .ConfigureAwait(false);
                 if (extracted.Length > 0)
                 {
@@ -118,56 +118,74 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
                     truncated = true;
                 }
             }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
                 source = "fallback";
                 truncated = true;
+                error = ex.Message;
             }
         }
 
-        return ToolExecutionResult.Text($"ReadSessionContext returned {source} context for {sessionId.Value}.\n"
+        return Result(new ReadSessionContextSources(
+            "success", sessionId.Value, record.Title, record.WorkspaceRoot, null, strategy, query, source,
+            material.MessageCount, material.SelectedMessageCount, truncated, error, material.References),
+            $"ReadSessionContext returned {source} context for {sessionId.Value}.\n"
             + $"Title: {record.Title}\n" + (truncated ? "The returned context is truncated.\n" : "") + content);
     }
 
-    private static async ValueTask<string> ExtractAsync(IAuxModelClient model, SessionRecord record,
-        List<Snippet> snippets, string all, string query, string strategy, int maxTokens, int budget, CancellationToken token)
-    {
-        if (all.Length <= MaxLiteInputChars)
-            return await GenerateAsync(all, "full cleaned transcript", maxTokens).ConfigureAwait(false);
+    private static ToolExecutionResult Result(ReadSessionContextSources sources, string text, bool isError = false) =>
+        ToolExecutionResult.Text(FitToResultBudget(text), isError, structuredOutput: AlcolerJson.Serialize(sources));
 
-        var chunks = new List<List<Snippet>>();
-        var current = new List<Snippet>();
-        var chars = 0;
-        foreach (var snippet in snippets)
-        {
-            if (current.Count > 0 && chars + snippet.Content.Length > MaxChunkChars)
+    private sealed record Snippet(
+        int Index, string Content, string SearchText, ReadSessionContextReference Reference, double Score = 0);
+
+    private sealed record Chunk(
+        int Index, int StartMessageIndex, int EndMessageIndex, int MessageCount, string Content,
+        double Score, IReadOnlyList<ReadSessionContextReference> References);
+
+    private sealed record Material(
+        string AllContent, int AllContentChars, IReadOnlyList<Chunk> Chunks, IReadOnlyList<Chunk> SelectedChunks,
+        string LocalContent, int MessageCount, int ReadableMessageCount, int SelectedMessageCount,
+        IReadOnlyList<ReadSessionContextReference> References, bool Truncated);
+
+    private static Material BuildMaterial(SessionRecord record, IReadOnlyList<StoredMessage> stored, string query, string strategy, int budget)
+    {
+        var terms = Tokenize(query);
+        var normalizedQuery = query.Trim().ToLowerInvariant();
+        var snippets = stored.Select((entry, index) => FormatSnippet(entry.Message, index))
+            .Where(static snippet => snippet is not null).Select(static snippet => snippet!)
+            .Select(snippet => snippet with
             {
-                chunks.Add(current);
-                current = [];
-                chars = 0;
-            }
-            current.Add(snippet);
-            chars += snippet.Content.Length;
-        }
-        if (current.Count > 0)
-            chunks.Add(current);
-        var indexes = Enumerable.Range(0, chunks.Count).ToList();
-        if (chunks.Count > MaxLiteChunks)
-            indexes = strategy == "handoff"
-                ? indexes.TakeLast(MaxLiteChunks).ToList()
-                : indexes.OrderByDescending(index => chunks[index].Sum(snippet => snippet.Score))
-                    .ThenByDescending(static index => index).Take(MaxLiteChunks - 1)
-                    .Append(chunks.Count - 1).Distinct().Order().ToList();
+                Score = Score(snippet.SearchText, terms)
+                    + (snippet.SearchText.Contains(normalizedQuery, StringComparison.Ordinal) ? 20 : 0)
+                    + snippet.Index / 10_000.0,
+            }).ToList();
+        var all = FormatTranscript(record, snippets, query, strategy, "Cleaned transcript", int.MaxValue);
+        var chunks = BuildChunks(snippets);
+        var selectedChunks = SelectChunks(chunks, strategy);
+        var selected = SelectLocal(snippets, strategy, budget);
+        var local = FormatTranscript(record, selected, query, strategy,
+            strategy == "handoff" ? "Recent session handoff context" : "Relevant session context", budget);
+        return new(all, all.Length, chunks, selectedChunks, local, stored.Count, snippets.Count,
+            selected.Count, selected.Select(static snippet => snippet.Reference).ToList(),
+            selected.Count < snippets.Count || all.Length > local.Length || all.Length > budget);
+    }
+
+    private static async ValueTask<string> ExtractAsync(IAuxModelClient model, SessionRecord record,
+        Material material, string query, string strategy, int maxTokens, int budget, CancellationToken token)
+    {
+        if (material.AllContentChars <= MaxLiteInputChars)
+            return await GenerateAsync(material.AllContent, "full cleaned transcript", maxTokens).ConfigureAwait(false);
+
         var extracted = new List<string>();
-        foreach (var index in indexes)
+        foreach (var chunk in material.SelectedChunks)
         {
-            var chunk = chunks[index];
-            var material = $"# Transcript chunk {index + 1}\nMessages: {chunk[0].Index + 1}-{chunk[^1].Index + 1}\n"
-                + $"Readable messages in chunk: {chunk.Count}\n\n" + string.Join("\n\n---\n\n", chunk.Select(snippet => snippet.Content));
-            var result = await GenerateAsync(material, $"transcript chunk {index + 1}", Math.Clamp(maxTokens / 2, 800, 2_500))
+            var chunkMaterial = $"# Transcript chunk {chunk.Index + 1}\nMessages: {chunk.StartMessageIndex + 1}-{chunk.EndMessageIndex + 1}\n"
+                + $"Readable messages in chunk: {chunk.MessageCount}\n\n" + chunk.Content;
+            var result = await GenerateAsync(chunkMaterial, $"transcript chunk {chunk.Index + 1}", Math.Clamp(maxTokens / 2, 800, 2_500))
                 .ConfigureAwait(false);
             if (result.Length > 0)
-                extracted.Add($"## Chunk {index + 1}\n{result}");
+                extracted.Add($"## Chunk {chunk.Index + 1}\n{result}");
         }
         if (extracted.Count == 0)
             return "";
@@ -176,7 +194,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
             ? combined
             : await GenerateAsync(combined, "extracted chunk notes", maxTokens, synthesize: true).ConfigureAwait(false);
 
-        async ValueTask<string> GenerateAsync(string material, string label, int tokens, bool synthesize = false)
+        async ValueTask<string> GenerateAsync(string materialText, string label, int tokens, bool synthesize = false)
         {
             var instructions = (synthesize, strategy == "handoff") switch
             {
@@ -187,7 +205,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
             };
             var result = (await model.CompleteAsync(new(ExtractionSystemPrompt,
                 $"Target session: {record.Title} ({record.Id.Value})\nDirectory: {record.WorkspaceRoot}\nStrategy: {strategy}\nQuery: {query}\nMaterial: {label}\n\n"
-                + instructions + "\n\nTranscript material:\n" + Truncate(material, MaxLiteInputChars), tokens), token).ConfigureAwait(false)).Trim();
+                + instructions + "\n\nTranscript material:\n" + Truncate(materialText, MaxLiteInputChars), tokens), token).ConfigureAwait(false)).Trim();
             return result.Equals(NoRelevantContext, StringComparison.OrdinalIgnoreCase) ? "" : result;
         }
     }
@@ -197,8 +215,6 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
         var trimmed = raw.Trim();
         return new SessionId(trimmed.StartsWith("sess_", StringComparison.Ordinal) ? trimmed : $"sess_{trimmed}");
     }
-
-    private sealed record Snippet(int Index, string Content, string SearchText, double Score = 0);
 
     private static Snippet? FormatSnippet(ConversationMessage message, int index)
     {
@@ -219,7 +235,51 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
         if (body.Length == 0)
             return null;
         var role = message.Role == MessageRole.User ? "user" : "assistant";
-        return new(index, $"[{index + 1}] {role} {message.Id.Value}\ncreated: {message.CreatedAt:O}\n{body}", $"{role}\n{body}".ToLowerInvariant());
+        return new(index, $"[{index + 1}] {role} {message.Id.Value}\ncreated: {message.CreatedAt:O}\n{body}",
+            $"{role}\n{body}".ToLowerInvariant(), new ReadSessionContextReference(message.Id.Value, Index: index, Role: role));
+    }
+
+    private static List<Chunk> BuildChunks(List<Snippet> snippets)
+    {
+        var chunks = new List<Chunk>();
+        var current = new List<Snippet>();
+        var chars = 0;
+        foreach (var snippet in snippets)
+        {
+            if (current.Count > 0 && chars + snippet.Content.Length > MaxChunkChars)
+            {
+                chunks.Add(CreateChunk(chunks.Count, current));
+                current = [];
+                chars = 0;
+            }
+            current.Add(snippet);
+            chars += snippet.Content.Length;
+        }
+        if (current.Count > 0)
+            chunks.Add(CreateChunk(chunks.Count, current));
+        return chunks;
+
+        static Chunk CreateChunk(int index, List<Snippet> snippets) => new(
+            index,
+            snippets[0].Index,
+            snippets[^1].Index,
+            snippets.Count,
+            string.Join("\n\n---\n\n", snippets.Select(static snippet => snippet.Content)),
+            snippets.Sum(static snippet => snippet.Score),
+            snippets.Select(static snippet => snippet.Reference).ToList());
+    }
+
+    private static List<Chunk> SelectChunks(List<Chunk> chunks, string strategy)
+    {
+        if (chunks.Count <= MaxLiteChunks)
+            return chunks;
+        if (strategy == "handoff")
+            return chunks.TakeLast(MaxLiteChunks).ToList();
+        var selected = new Dictionary<int, Chunk>();
+        foreach (var chunk in chunks.OrderByDescending(static chunk => chunk.Score).ThenByDescending(static chunk => chunk.Index).Take(MaxLiteChunks - 1))
+            selected[chunk.Index] = chunk;
+        selected[chunks[^1].Index] = chunks[^1];
+        return selected.Values.OrderBy(static chunk => chunk.Index).ToList();
     }
 
     private static List<Snippet> SelectLocal(List<Snippet> snippets, string strategy, int budget)
@@ -254,8 +314,55 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
     private static string FormatTranscript(SessionRecord record, List<Snippet> snippets, string query, string strategy, string heading, int budget)
     {
         var header = $"# {heading}\nSession: {record.Title} ({record.Id.Value})\nDirectory: {record.WorkspaceRoot}\nStrategy: {strategy}\nQuery: {query}\n";
-        return Truncate(header + (snippets.Count == 0 ? "No readable transcript content was found in the target session."
-            : string.Join("\n\n---\n\n", snippets.Select(static snippet => snippet.Content))), budget);
+        if (snippets.Count == 0)
+            return header + "No readable transcript content was found in the target session.";
+
+        var remaining = budget == int.MaxValue ? null : (int?)Math.Max(0, budget - header.Length);
+        var body = new StringBuilder();
+        foreach (var snippet in snippets)
+        {
+            var next = (body.Length > 0 ? "\n\n---\n\n" : "") + snippet.Content;
+            if (remaining.HasValue && next.Length > remaining.Value)
+            {
+                if (remaining.Value > 200)
+                    body.Append(Truncate(next, remaining.Value));
+                break;
+            }
+            body.Append(next);
+            if (remaining.HasValue)
+                remaining -= next.Length;
+        }
+        return header + body;
+    }
+
+    private static string FitToResultBudget(string text)
+    {
+        var originalBytes = Encoding.UTF8.GetByteCount(text);
+        if (originalBytes <= MaxResultBytes)
+            return text;
+        var suffix = $"\n\n[Tool output truncated by resultBudget: originalBytes={originalBytes}, maxModelBytes={MaxResultBytes}, strategy=truncate]";
+        return FitStringToBytes(text, MaxResultBytes - Encoding.UTF8.GetByteCount(suffix)) + suffix;
+    }
+
+    private static string FitStringToBytes(string value, int maxBytes)
+    {
+        if (maxBytes <= 0)
+            return "";
+        if (Encoding.UTF8.GetByteCount(value) <= maxBytes)
+            return value;
+        var low = 0;
+        var high = value.Length;
+        while (low < high)
+        {
+            var mid = (low + high + 1) / 2;
+            if (Encoding.UTF8.GetByteCount(value[..mid]) <= maxBytes)
+                low = mid;
+            else
+                high = mid - 1;
+        }
+        if (low > 0 && low < value.Length && char.IsHighSurrogate(value[low - 1]))
+            low--;
+        return value[..low];
     }
 
     internal static List<string> Tokenize(string text)
@@ -292,7 +399,10 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
         return score;
     }
 
-    private static string Truncate(string text, int chars) => text.Length <= chars ? text : text[..Math.Max(0, chars - 18)] + "\n...[truncated]";
+    private static string Truncate(string text, int chars) =>
+        text.Length <= chars ? text
+            : chars <= 20 ? text[..chars]
+            : text[..Math.Max(0, chars - 18)] + "\n...[truncated]";
 
     private static string? StringOrNull(JsonElement input, string name) =>
         input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;

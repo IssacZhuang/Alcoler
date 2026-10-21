@@ -479,6 +479,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 ? BuildNotificationMessage(notificationBody)
                 : BuildUserMessage(input);
             await CommitMessageAsync(openingMessage).ConfigureAwait(false);
+            AppendSessionReferenceReminder(input);
             AppendDateReminder();
 
             var reactiveCompactAttempted = false;
@@ -1204,7 +1205,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (batch.Outcomes.Count == 0)
             return;
         var results = batch.Outcomes.Select(outcome => new ToolResultPart(
-            StrongId.NewPartId(), outcome.Call.Id, outcome.Result.Content, outcome.Result.IsError));
+            StrongId.NewPartId(), outcome.Call.Id, outcome.Result.Content, outcome.Result.IsError, outcome.Result.StructuredOutput));
         await CommitMessageAsync(new ConversationMessage(
             StrongId.NewMessageId(), MessageRole.User, [.. results], _deps.Clock.GetUtcNow())).ConfigureAwait(false);
     }
@@ -1571,6 +1572,15 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (_lastSeenLocalDate is not null && _lastSeenLocalDate != today)
             AppendInMemoryReminder(EnvironmentSections.DateChangeReminder(today), MessageSource.DateChange);
         _lastSeenLocalDate = today;
+    }
+
+    // Real user turns only: notification turns and mid-turn Guide input must not inject it.
+    private void AppendSessionReferenceReminder(PendingTurnInput input)
+    {
+        if (input.NotificationBody is not null || string.IsNullOrWhiteSpace(input.Command?.Text))
+            return;
+        if (SessionReferenceReminder.BuildBody(input.Command.Text) is { } body)
+            AppendInMemoryReminder(body, MessageSource.SessionReference);
     }
 
     private void AppendInMemoryReminder(string body, MessageSource source = MessageSource.RuntimeMode) =>

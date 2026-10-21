@@ -47,6 +47,8 @@ namespace Alcoler.Contracts.Serialization;
 [JsonSerializable(typeof(SessionOptions))]
 [JsonSerializable(typeof(SessionHandle))]
 [JsonSerializable(typeof(QueuedInput))]
+[JsonSerializable(typeof(ReadSessionContextReference))]
+[JsonSerializable(typeof(ReadSessionContextSources))]
 public sealed partial class AlcolerJsonContext : JsonSerializerContext;
 
 public static class AlcolerJson

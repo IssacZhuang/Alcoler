@@ -42,14 +42,16 @@ public sealed record ToolExecutionResult(
     IReadOnlyList<ToolResultBlock> Content,
     bool IsError = false,
     string? DisplaySummary = null,
-    bool StopTurnAfterResult = false)
+    bool StopTurnAfterResult = false,
+    string? StructuredOutput = null)
 {
     public static ToolExecutionResult Text(
         string text,
         bool isError = false,
         string? displaySummary = null,
-        bool stopTurnAfterResult = false) =>
-        new([new ToolResultText(text)], isError, displaySummary, stopTurnAfterResult);
+        bool stopTurnAfterResult = false,
+        string? structuredOutput = null) =>
+        new([new ToolResultText(text)], isError, displaySummary, stopTurnAfterResult, structuredOutput);
 }
 
 public interface ITool

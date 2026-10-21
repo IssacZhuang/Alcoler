@@ -77,6 +77,16 @@ Sources: `src/Alcoler.Kernel/Tools/AskUserQuestionTool.cs`, `src/Alcoler.Workben
 
 Sources: `src/Alcoler.Adapters.Native/alco-grep/`, `src/Alcoler.Adapters/Grep/`, `src/Alcoler.Adapters/Tools/GrepTool.cs`, `src/Alcoler.Adapters/Tools/ManagedGrepEngine.cs`, `src/Alcoler.Adapters/Tools/AlcoGrepEngine.cs`, `src/Alcoler.Adapters/Tools/RipgrepBinary.cs`, `src/Alcoler.Adapters/Tools/BackgroundBashRunner.cs`.
 
+### 1.7 Structured session sources for ReadSessionContext
+
+- Every execution path (success/not_found/failed, source local/lite/fallback/none) produces a structured sources payload with the reference contract's field names: status, sessionId, title, directory, strategy, query, source, messageCount, selectedMessageCount, truncated, error, and per-message references (`messageId`, `index`, `role`; `partId`/`reason` reserved). References and counts describe the local selection, matching the reference, not what the auxiliary model consumed.
+- The payload persists as a `ToolResultPart` JSON side-channel (`structuredOutput`) through `ToolExecutionResult` and tool-batch commit; it is serialized with the durable message and never enters provider payloads. The model-visible text is unchanged.
+- The material pipeline carries chunk records (start/end message index, count, score, references) mirroring `buildSessionContextMaterial`; the chunk labels fed to the auxiliary model come from the same structure.
+- The per-request `#sess_*` reminder is ported: real user turn input containing `#sess_*` (dot suffixes allowed) injects the referenced-session reminder before the date-change reminder as an in-memory canonical reminder; notification turns and mid-turn Guide input do not inject it, and it is not persisted or compaction-preserved.
+- Local transcript formatting now follows the reference budget walk (header-length subtraction, per-snippet fit, first overflowing snippet truncated in place when over 200 chars remain) and the reference `truncateText` semantics. Session ids are validated against `^sess_[A-Za-z0-9._-]+$` at the schema and input-validation layers. The final result text is capped at 80,000 UTF-8 bytes with the reference's resultBudget truncation suffix.
+
+Sources: `src/Alcoler.Kernel/Tools/ReadSessionContextTool.cs`, `src/Alcoler.Contracts/Tools/ReadSessionContextTypes.cs`, `src/Alcoler.Contracts/Conversation/ConversationMessage.cs`, `src/Alcoler.Contracts/Tools/ToolExecution.cs`, `src/Alcoler.Kernel/Runtime/SessionRuntime.cs`, `src/Alcoler.Kernel/Prompts/SessionReferenceReminder.cs`.
+
 ## 2. Remaining Differences and Long-Task Impact
 
 ### 2.1 Grep engine fallback and pagination cost
@@ -127,15 +137,17 @@ Long-task effect: no current cross-branch failure has been established. If histo
 
 Sources: `src/Alcoler.Kernel/Runtime/SessionRuntime.cs`, `src/Alcoler.Contracts/Commands/ConversationCommands.cs`.
 
-### 2.5 Structured sources for ReadSessionContext
+### 2.5 Structured sources for ReadSessionContext: residual adaptations
 
-**Priority: Medium for cross-session continuation and auditing; low for ordinary continuous execution.**
+**Priority: Low. The contract is implemented; the remaining differences are storage-shape adaptations, not missing structure.**
 
-Text extraction and synthesis are implemented. Local source text includes message identifiers and timestamps, and extraction input contains chunk/message ranges. The final auxiliary-model text need not preserve them, and the tool lacks a stable structured references/selected-ranges/counts contract.
+- The persisted structured payload is metadata-only: `content` is not duplicated into it, unlike the reference's raw tool output, which embeds content. The model-visible text block remains the single content carrier, so audit tooling must join the payload with the sibling text. Selected ranges are derivable from reference indexes; no separate ranges field exists, matching the reference output contract.
+- `path` is always null: the SQLite store has no per-session file path equivalent to the reference's session file path.
+- The Workbench does not yet render references/counts from the payload; the durable contract exists for auditing and future UI.
 
-Long-task effect: after resumption, a claim in a historical summary is harder to map reliably back to its original messages for checking. Source navigation, coverage checks, and automated evaluation are less direct. This does not prove poorer summary content: the reference's model-facing formatter also primarily presents text rather than its complete structured references.
+Long-task effect: none on model-visible behavior; the reference's formatter also omits references from model content. Cross-session auditing can now map a returned context back to its source messages via the persisted references.
 
-Source: `src/Alcoler.Kernel/Tools/ReadSessionContextTool.cs`.
+Sources: `src/Alcoler.Kernel/Tools/ReadSessionContextTool.cs`, `src/Alcoler.Contracts/Tools/ReadSessionContextTypes.cs`.
 
 ### 2.6 Other compatibility adaptations
 
@@ -167,6 +179,10 @@ A separate memory probe on the final alignment binaries reported 110.2 MB workin
 
 This is a historical checkpoint, not a claim that later workspace changes or this documentation update reran the suites.
 
+### 3.1.1 Structured session sources alignment run (2026-10-21)
+
+The ReadSessionContext structured-sources and `#sess_*` reminder run (section 1.7) reported: solution build 0 errors; kernel tests 1,380 passed, 0 failed; Workbench tests 617 passed with intermittent single-test failures in `DraftConversationLifecycleTests.UnsentSessionModes_SurviveRestartIndependently_WithoutChangingRuntimePolicy` and `DraftConversationSmokeTests.ModePicker_ClickSavesImmediately_AndNewWindowRestoresSelection` (permission mode reverting to Build). Those failures were reproduced at a similar rate (3 of 10 full-suite runs) on a clean HEAD worktree without these changes, pass consistently in isolation, and exercise only Workbench draft-mode persistence with a fake runtime; they are pre-existing flakiness, not a regression of this run.
+
 ### 3.2 Evidence still missing
 
 - No configured real-provider engineering comparison was run. The real-provider smoke test returns early when configuration is absent; green suite counts must not be interpreted as real-model execution.
@@ -181,7 +197,7 @@ These are validation limits, not known architectural failures. Scripted regressi
 1. Close Grep's residual gaps: native-engine delivery beyond win-x64 (source builds or additional prebuilts) and `head_limit` early exit without breaking deterministic ordering. Evidence supplied by the model on the delivered build now comes from real ripgrep semantics.
 2. Compare real long tasks with the same model and repository, including repeated search, compaction, stream interruption, delegation, and session resumption. Use failures to distinguish harness effects from model variation.
 3. Bound extreme image decode resources and validate the actual target-platform desktop/AOT artifacts.
-4. Add structured historical sources where complex delegation or cross-session verification warrants them; on-demand child-transcript navigation is covered by the per-agent artifacts and `local_agent` task queries.
+4. Surface the persisted ReadSessionContext structured references in the Workbench if auditing workflows need them; the durable contract, `#sess_*` reminder, and per-message references already exist, and on-demand child-transcript navigation is covered by the per-agent artifacts and `local_agent` task queries.
 5. Add manual foreground-to-background control as a product feature; implement branch-generation filtering before exposing history branching.
 
 The remaining differences should not be described either as proof of a defective core loop or as uniformly cosmetic. Grep directly affects evidence acquisition; the other gaps are mostly conditional reliability, control, traceability, and verification concerns.
