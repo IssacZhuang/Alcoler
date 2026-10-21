@@ -1,4 +1,9 @@
+using System.Text.Json;
+using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Subagents;
+using Alcoler.Kernel.Tests.Subagents;
 using Xunit;
 using Alcoler.Kernel.Tools;
 
@@ -38,6 +43,55 @@ public class ToolBatchRunnerTests
             Assert.False(outcome.CancelledByStop);
             Assert.Equal("done", outcome.Result.SingleText());
         });
+    }
+
+    [Fact]
+    public async Task ForegroundAgentCalls_AllStartBeforeAnyChildCompletes()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enteredCount = 0;
+        var service = new SubagentService((id, _, _) =>
+        {
+            return ValueTask.FromResult(new SubagentChildSession(
+                StrongId.NewSessionId(),
+                (_, _) =>
+                {
+                    if (Interlocked.Increment(ref enteredCount) == 4)
+                        entered.TrySetResult();
+                    return ValueTask.CompletedTask;
+                },
+                release.Task,
+                () => Task.FromResult<string?>(id.Value),
+                () => Task.FromResult(0),
+                _ => ValueTask.CompletedTask));
+        });
+        var agent = new SubagentTool(service);
+        var registry = new ToolRegistry([agent]);
+        var runner = new ToolBatchRunner(new ToolScheduler(registry),
+            new ToolCallExecutor(registry, new ScriptedPermissionGate()));
+        var calls = Enumerable.Range(0, 4).Select(i => new ScheduledToolCall(new ToolCall(
+            StrongId.NewToolCallId(), agent.Contract.Name,
+            JsonSerializer.SerializeToElement(new { prompt = $"task {i}", description = $"child {i}" })))).ToArray();
+        using var workspace = new TempWorkspace();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var execution = runner.ExecuteAsync(calls, workspace.ContextFactory(),
+            new NotificationCollector().Collect, timeout.Token);
+        try
+        {
+            await entered.Task.WaitAsync(timeout.Token);
+            Assert.False(execution.IsCompleted);
+            Assert.Equal(4, service.ActiveStates.Count);
+            Assert.All(service.ActiveStates, state => Assert.Equal(Contracts.Subagents.SubagentStatus.Running, state.Status));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        var result = await execution;
+        Assert.Equal(calls.Select(call => call.Call.Id), result.Outcomes.Select(outcome => outcome.Call.Id));
+        Assert.All(result.Outcomes, outcome => Assert.False(outcome.Result.IsError));
+        Assert.All(service.ActiveStates, state => Assert.Equal(Contracts.Subagents.SubagentStatus.Completed, state.Status));
     }
 
     [Fact]
@@ -88,6 +142,75 @@ public class ToolBatchRunnerTests
         Assert.True(result.Outcomes[1].Ran);
         Assert.False(result.Outcomes[1].CancelledByStop);
         Assert.Single(laterTool.ExecutedContexts);
+    }
+
+    [Fact]
+    public async Task ErrorResultTurnStop_CancelsRemainingGroupsAndNotifies()
+    {
+        var stopped = new FakeTool("Terminal", FakeToolMetadata.Serial(), execute: (_, _) =>
+            ValueTask.FromResult(ToolExecutionResult.Text("denied", isError: true, stopTurnAfterResult: true)));
+        var later = new FakeTool("Write", FakeToolMetadata.Serial());
+        var notifications = new NotificationCollector();
+        using var workspace = new TempWorkspace();
+
+        var result = await Runner(stopped, later).ExecuteAsync(
+            [new ScheduledToolCall(stopped.Call()), new ScheduledToolCall(later.Call())],
+            workspace.ContextFactory(), notifications.Collect, CancellationToken.None);
+
+        Assert.True(result.StoppedAfterResult);
+        Assert.True(result.Outcomes[0].Result.IsError);
+        Assert.False(result.Outcomes[1].Ran);
+        Assert.True(result.Outcomes[1].CancelledByStop);
+        Assert.True(result.Outcomes[1].Result.IsError);
+        Assert.Empty(later.ExecutedContexts);
+        Assert.Equal(2, notifications.Of<ToolExecutionResultNotification>().Count);
+        Assert.Single(notifications.Of<ToolExecutionStarted>());
+    }
+
+    [Fact]
+    public async Task DeniedPlanExit_StopsProductionBatchWithoutScheduledFlag()
+    {
+        var exit = new ExitPlanModeTool();
+        var later = new FakeTool("Write", FakeToolMetadata.Serial());
+        var registry = new ToolRegistry([exit, later]);
+        var runner = new ToolBatchRunner(new ToolScheduler(registry),
+            new ToolCallExecutor(registry, new ScriptedPermissionGate(Contracts.Permissions.PermissionDecision.Deny),
+                static _ => Contracts.Permissions.PermissionMode.Plan));
+        using var workspace = new TempWorkspace();
+
+        var result = await runner.ExecuteAsync(
+            [new ScheduledToolCall(new ToolCall(StrongId.NewToolCallId(), exit.Contract.Name,
+                JsonSerializer.SerializeToElement(new { plan = "Implement it." }))), new ScheduledToolCall(later.Call())],
+            workspace.ContextFactory(), new NotificationCollector().Collect, CancellationToken.None);
+
+        Assert.True(result.StoppedAfterResult);
+        Assert.True(result.Outcomes[0].Result.StopTurnAfterResult);
+        Assert.True(result.Outcomes[0].Result.IsError);
+        Assert.True(result.Outcomes[1].CancelledByStop);
+        Assert.Empty(later.ExecutedContexts);
+    }
+
+    [Fact]
+    public async Task CompletedOutcomes_AreNotRepeatedOrLostAfterStop()
+    {
+        var stop = new FakeTool("Terminal", FakeToolMetadata.Serial(), execute: (_, _) =>
+            ValueTask.FromResult(ToolExecutionResult.Text("stop", stopTurnAfterResult: true)));
+        var later = new FakeTool("Write", FakeToolMetadata.Serial());
+        var read = new FakeTool("Read");
+        var readCall = read.Call();
+        var preserved = new ToolBatchOutcome(readCall, ToolExecutionResult.Text("already read"),
+            TimeSpan.FromMilliseconds(10), Ran: true, CancelledByStop: false);
+        using var workspace = new TempWorkspace();
+
+        var result = await Runner(stop, later, read).ExecuteAsync(
+            [new ScheduledToolCall(stop.Call()), new ScheduledToolCall(later.Call()), new ScheduledToolCall(readCall)],
+            workspace.ContextFactory(), new NotificationCollector().Collect, CancellationToken.None, [preserved]);
+
+        Assert.True(result.StoppedAfterResult);
+        Assert.True(result.Outcomes[1].CancelledByStop);
+        Assert.Equal(preserved, result.Outcomes[2]);
+        Assert.Empty(read.ExecutedContexts);
+        Assert.Empty(later.ExecutedContexts);
     }
 
     [Fact]

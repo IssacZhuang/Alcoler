@@ -1,6 +1,7 @@
 using Alcoler.Adapters.Tools;
 using Alcoler.Kernel.Tools;
 using Xunit;
+using SkiaSharp;
 
 namespace Alcoler.Kernel.Tests.Tools;
 
@@ -52,7 +53,7 @@ public class ReadToolTests
             CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Equal("1\tone\n2\ttwo", result.SingleText());
+        Assert.Equal("0\tone\n1\ttwo", result.SingleText());
     }
 
     [Fact]
@@ -366,7 +367,7 @@ public class ReadToolTests
     }
 
     [Fact]
-    public async Task ImageOverBase64Budget_ReturnsError()
+    public async Task InvalidImage_ReturnsDecodeError()
     {
         using var workspace = new TempWorkspace();
         // 4 MB of raw bytes encode past the 5 MB base64 budget.
@@ -378,6 +379,80 @@ public class ReadToolTests
             CancellationToken.None);
 
         Assert.True(result.IsError);
-        Assert.Contains("too large", result.SingleText());
+        Assert.Equal("Unable to decode image data", result.SingleText());
+    }
+
+    [Theory]
+    [InlineData(3_000, 1_200, false)]
+    [InlineData(1_000, 1_000, true)]
+    public async Task OversizedImage_IsResizedAndRecompressedWithinModelBudget(int width, int height, bool noise)
+    {
+        using var workspace = new TempWorkspace();
+        using var bitmap = new SKBitmap(width, height);
+        if (noise)
+        {
+            var random = new Random(42);
+            var pixels = new SKColor[width * height];
+            for (var i = 0; i < pixels.Length; i++)
+                pixels[i] = new SKColor((byte)random.Next(256), (byte)random.Next(256), (byte)random.Next(256));
+            bitmap.Pixels = pixels;
+        }
+        else
+        {
+            bitmap.Erase(SKColors.Blue);
+        }
+        using var image = SKImage.FromBitmap(bitmap);
+        using var png = image.Encode(SKEncodedImageFormat.Png, 100);
+        await File.WriteAllBytesAsync(Path.Combine(workspace.Root, "large.png"), png.ToArray());
+
+        var result = await new ReadTool().ExecuteAsync(workspace.ContextFor("""{"file_path":"large.png"}"""), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var media = Assert.IsType<Alcoler.Contracts.Conversation.ToolResultMedia>(Assert.Single(result.Content));
+        Assert.Equal("image/jpeg", media.MimeType);
+        var output = await File.ReadAllBytesAsync(Path.Combine(workspace.Root, ".alcoler", "artifacts", "sess_test", media.FileName!));
+        using var decoded = SKBitmap.Decode(output);
+        Assert.InRange(Math.Max(decoded.Width, decoded.Height), 1, 2_000);
+        Assert.True(Math.Ceiling(Convert.ToBase64String(output).Length * 0.125) <= 25_000);
+        if (noise)
+            Assert.True(output.Length < png.Size);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FullRead_ContentUnchangedAfterTouch_AllowsEditOrWrite(bool write)
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "touch.txt");
+        await File.WriteAllTextAsync(path, "original");
+        var reads = new FileReadState();
+        await new ReadTool().ExecuteAsync(workspace.ContextFor("""{"file_path":"touch.txt"}""") with { FileReads = reads }, CancellationToken.None);
+        File.SetLastWriteTimeUtc(path, File.GetLastWriteTimeUtc(path).AddMinutes(1));
+        Alcoler.Contracts.Tools.ITool tool = write ? new WriteTool() : new EditTool();
+        var input = write ? """{"file_path":"touch.txt","content":"changed"}"""
+            : """{"file_path":"touch.txt","old_string":"original","new_string":"changed"}""";
+        var result = await tool.ExecuteAsync(workspace.ContextFor(input) with { FileReads = reads }, CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal("changed", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task ReadViewCache_IsRangeSpecific_AndExplicitRangeAuthorizesEdit()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "range.txt");
+        await File.WriteAllTextAsync(path, "first\nsecond\nthird");
+        var reads = new FileReadState();
+        var tool = new ReadTool();
+        var whole = workspace.ContextFor("""{"file_path":"range.txt"}""") with { FileReads = reads };
+        await tool.ExecuteAsync(whole, CancellationToken.None);
+        var range = workspace.ContextFor("""{"file_path":"range.txt","offset":2,"limit":1}""") with { FileReads = reads };
+        Assert.Equal("2\tsecond", (await tool.ExecuteAsync(range, CancellationToken.None)).SingleText());
+        Assert.Contains("Wasted call", (await tool.ExecuteAsync(range, CancellationToken.None)).SingleText());
+        var edited = await new EditTool().ExecuteAsync(workspace.ContextFor(
+            """{"file_path":"range.txt","old_string":"second","new_string":"changed"}""") with { FileReads = reads }, CancellationToken.None);
+        Assert.False(edited.IsError);
+        Assert.Equal("first\nchanged\nthird", await File.ReadAllTextAsync(path));
     }
 }

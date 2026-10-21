@@ -24,6 +24,8 @@ public static class BackgroundJobNotifications
             "<task-notification>",
             $"<task-id>{Escape(job.Id.Value)}</task-id>",
         };
+        if (job.ToolUseId is { } toolUseId)
+            lines.Add($"<tool-use-id>{Escape(toolUseId.Value)}</tool-use-id>");
         if (job.OutputPath is { } outputPath)
             lines.Add($"<output-file>{Escape(outputPath)}</output-file>");
         lines.Add($"<status>{NotificationStatus(job)}</status>");
@@ -45,7 +47,8 @@ public static class BackgroundJobNotifications
         string? result,
         string? error = null,
         int? toolUses = null,
-        int? durationMs = null)
+        int? durationMs = null,
+        string? toolUseId = null)
     {
         var summary = $"Agent {agentType} task \"{description}\" {status}.";
         if (string.Equals(status, "failed", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(error))
@@ -55,9 +58,11 @@ public static class BackgroundJobNotifications
         {
             "<task-notification>",
             $"<task-id>{EscapeXml(taskId)}</task-id>",
-            $"<status>{EscapeXml(status)}</status>",
-            $"<summary>{EscapeXml(summary)}</summary>",
         };
+        if (!string.IsNullOrEmpty(toolUseId))
+            lines.Add($"<tool-use-id>{EscapeXml(toolUseId)}</tool-use-id>");
+        lines.Add($"<status>{EscapeXml(status)}</status>");
+        lines.Add($"<summary>{EscapeXml(summary)}</summary>");
         if (result is not null)
             lines.Add($"<result>{EscapeXml(result)}</result>");
         if (error is not null)
@@ -71,7 +76,10 @@ public static class BackgroundJobNotifications
         if (usage.Count > 0)
             lines.Add($"<usage>{string.Concat(usage)}</usage>");
         lines.Add("</task-notification>");
-        return SystemNotificationPrefix + string.Join("\n", lines);
+        var body = string.Join("\n", lines);
+        if (body.Length > 120_000)
+            body = body[..120_000] + "\n[truncated]";
+        return SystemNotificationPrefix + body;
     }
 
     private static string NotificationStatus(BackgroundJobInfo job) => job.Status switch
@@ -93,7 +101,8 @@ public static class BackgroundJobNotifications
             BackgroundJobStatus.Stopped => $"{prefix} was stopped",
             BackgroundJobStatus.Failed when job.ExitCode is { } exitCode =>
                 $"{prefix} failed with exit code {exitCode}",
-            BackgroundJobStatus.Failed => $"{prefix} failed: {job.Error ?? "unknown error"}",
+            BackgroundJobStatus.Failed => $"{prefix} failed",
+            BackgroundJobStatus.Lost => $"{prefix} failed because its in-process state was lost",
             _ => $"{prefix} finished",
         };
     }

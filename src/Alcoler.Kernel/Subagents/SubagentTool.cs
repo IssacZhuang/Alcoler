@@ -94,7 +94,8 @@ public sealed class SubagentTool : ITool
             AgentType: StringOrNull(context.Input, "subagent_type"),
             Description: description,
             ModelSelection: null,
-            Background: background);
+            Background: background,
+            ParentToolCallId: context.ToolCallId);
 
         if (!background)
         {

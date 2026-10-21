@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.Workbench.ViewModel"
              xmlns:controls="using:Alcoler.Workbench.Controls"
+             xmlns:ct="using:ColorTextBlock.Avalonia"
              x:Class="Alcoler.Workbench.Views.QuestionCardView"
              x:DataType="vm:PendingInteractionViewModel">
   <UserControl.Styles>
@@ -98,7 +99,8 @@
             </StackPanel>
           </Grid>
 
-          <StackPanel Spacing="4" IsVisible="{Binding HasQuestions}">
+          <Grid x:Name="QuestionChoices" ColumnDefinitions="*,0" ColumnSpacing="12" IsVisible="{Binding HasQuestions}">
+            <StackPanel Spacing="4">
             <ItemsControl x:Name="QuestionOptions" ItemsSource="{Binding CurrentQuestion.Options}">
               <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate><StackPanel Spacing="4" /></ItemsPanelTemplate>
@@ -146,7 +148,24 @@
                          GotFocus="OnCustomGotFocus" />
               </Grid>
             </Border>
-          </StackPanel>
+            </StackPanel>
+            <Border x:Name="QuestionPreviewPanel" Grid.Column="1" IsVisible="{Binding HasPreviews}"
+                    MaxHeight="360" Padding="12" CornerRadius="8"
+                    Background="{DynamicResource AlcolerSurface}" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1">
+              <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                <controls:ConversationMarkdown x:Name="QuestionPreview" Markdown="{Binding ActivePreview}">
+                  <controls:ConversationMarkdown.Styles>
+                    <Style Selector="ct|CTextBlock">
+                      <Setter Property="FontFamily" Value="Consolas, JetBrains Mono" />
+                    </Style>
+                  </controls:ConversationMarkdown.Styles>
+                </controls:ConversationMarkdown>
+              </ScrollViewer>
+            </Border>
+          </Grid>
+          <TextBox x:Name="PreviewNotesInput" IsVisible="{Binding HasPreviews}" Watermark="Add notes about your selection..."
+                   Text="{Binding CurrentQuestion.PreviewNotes, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
+                   MinHeight="32" MaxHeight="100" />
           <TextBlock Text="No questions available." FontSize="14" IsVisible="{Binding !HasQuestions}"
                      Foreground="{DynamicResource AlcolerTextSecondary}" />
         </StackPanel>

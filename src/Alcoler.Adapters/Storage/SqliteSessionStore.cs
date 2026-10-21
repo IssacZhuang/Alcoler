@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
@@ -14,7 +16,7 @@ namespace Alcoler.Adapters.Storage;
 
 public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDisposable
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 3;
 
     private static readonly (int Version, string Sql)[] Migrations =
     [
@@ -53,6 +55,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             );
             """
         ),
+        (2, "ALTER TABLE session ADD COLUMN parent_session_id TEXT NULL;"),
+        (3, "ALTER TABLE session ADD COLUMN title_source TEXT NOT NULL DEFAULT 'legacy';"),
     ];
 
     private readonly string _databasePath;
@@ -119,9 +123,9 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.CommandText = """
                 INSERT OR REPLACE INTO session
                     (id, workspace_root, title, permission_mode, model_selection_json,
-                     created_at, updated_at, branch_json, is_archived)
+                     created_at, updated_at, branch_json, is_archived, parent_session_id, title_source)
                 VALUES ($id, $workspace_root, $title, $permission_mode, $model_selection_json,
-                        $created_at, $updated_at, $branch_json, $is_archived)
+                        $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source)
                 """;
             command.Parameters.AddWithValue("$id", record.Id.Value);
             command.Parameters.AddWithValue("$workspace_root", record.WorkspaceRoot);
@@ -134,9 +138,26 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.Parameters.AddWithValue("$branch_json",
                 record.Branch is null ? DBNull.Value : SerializeBranch(record.Branch));
             command.Parameters.AddWithValue("$is_archived", record.IsArchived);
+            command.Parameters.AddWithValue("$parent_session_id", (object?)record.ParentSessionId?.Value ?? DBNull.Value);
+            command.Parameters.AddWithValue("$title_source", record.TitleSource.ToString());
             command.ExecuteNonQuery();
         }, cancellationToken);
     }
+
+    public ValueTask<bool> TryUpdateSessionTitleAsync(
+        SessionId sessionId, string title, SessionTitleSource source, CancellationToken cancellationToken) =>
+        QueryAsync(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE session SET title = $title, title_source = $source
+                WHERE id = $id AND ($source = 'Custom' OR title_source <> 'Custom')
+                """;
+            command.Parameters.AddWithValue("$id", sessionId.Value);
+            command.Parameters.AddWithValue("$title", title);
+            command.Parameters.AddWithValue("$source", source.ToString());
+            return command.ExecuteNonQuery() > 0;
+        }, cancellationToken);
 
     public ValueTask<SessionRecord?> GetSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
         QueryAsync(connection =>
@@ -144,7 +165,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT workspace_root, title, permission_mode, model_selection_json,
-                       created_at, updated_at, branch_json, is_archived
+                       created_at, updated_at, branch_json, is_archived, parent_session_id, title_source
                 FROM session
                 WHERE id = $id
                 """;
@@ -164,9 +185,10 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT id, title, workspace_root, permission_mode, model_selection_json,
-                       created_at, updated_at, is_archived
+                       created_at, updated_at, is_archived, parent_session_id
                 FROM session
-                WHERE ($workspace_root IS NULL OR workspace_root = $workspace_root)
+                WHERE parent_session_id IS NULL
+                  AND ($workspace_root IS NULL OR workspace_root = $workspace_root)
                 ORDER BY updated_at DESC
                 LIMIT $limit
                 """;
@@ -435,6 +457,15 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 migrate.ExecuteNonQuery();
             }
 
+            if (version == 2)
+            {
+                BackfillSubagentParents(connection, transaction);
+            }
+            else if (version == 3)
+            {
+                BackfillSessionTitles(connection, transaction);
+            }
+
             using (var stamp = connection.CreateCommand())
             {
                 stamp.Transaction = transaction;
@@ -447,6 +478,184 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         transaction.Commit();
     }
 
+    private static void BackfillSubagentParents(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var query = connection.CreateCommand();
+        query.Transaction = transaction;
+        query.CommandText = """
+            SELECT session_id, payload_json
+            FROM durable_event
+            WHERE json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, '$."$type"') = 'subagent_started'
+            ORDER BY occurred_at, session_id, sequence
+            """;
+        using var reader = query.ExecuteReader();
+        using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = """
+            UPDATE session SET parent_session_id = $parent
+            WHERE id = $child AND parent_session_id IS NULL AND id <> $parent
+            """;
+        var parent = update.Parameters.Add("$parent", SqliteType.Text);
+        var child = update.Parameters.Add("$child", SqliteType.Text);
+        while (reader.Read())
+        {
+            SubagentStartedEvent? started;
+            try
+            {
+                started = AlcolerJson.Deserialize<SessionEvent>(reader.GetString(1)) as SubagentStartedEvent;
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+            if (started?.State is not { } state || string.IsNullOrWhiteSpace(state.ChildSessionId.Value))
+            {
+                continue;
+            }
+            parent.Value = reader.GetString(0);
+            child.Value = state.ChildSessionId.Value;
+            update.ExecuteNonQuery();
+        }
+    }
+
+    private static void BackfillSessionTitles(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var query = connection.CreateCommand();
+        query.Transaction = transaction;
+        query.CommandText = "SELECT id, workspace_root, title, parent_session_id FROM session ORDER BY id";
+        using var reader = query.ExecuteReader();
+        using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText = "UPDATE session SET title = $title, title_source = $source WHERE id = $id";
+        var id = update.Parameters.Add("$id", SqliteType.Text);
+        var title = update.Parameters.Add("$title", SqliteType.Text);
+        var source = update.Parameters.Add("$source", SqliteType.Text);
+        while (reader.Read())
+        {
+            var sessionId = reader.GetString(0);
+            var currentTitle = reader.GetString(2);
+            var titleSource = SessionTitleSource.Custom;
+            var workspaceName = Path.GetFileName(Path.TrimEndingDirectorySeparator(reader.GetString(1)));
+            if (reader.IsDBNull(3)
+                && (currentTitle == workspaceName || currentTitle == "New session")
+                && !HasDurableTitleChange(connection, transaction, sessionId))
+            {
+                var firstInputTitle = ReadFirstInputTitle(connection, transaction, sessionId);
+                titleSource = firstInputTitle is null ? SessionTitleSource.Default : SessionTitleSource.FirstInput;
+                currentTitle = firstInputTitle ?? currentTitle;
+            }
+
+            id.Value = sessionId;
+            title.Value = currentTitle;
+            source.Value = titleSource.ToString();
+            update.ExecuteNonQuery();
+        }
+    }
+
+    private static bool HasDurableTitleChange(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sessionId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT payload_json FROM durable_event WHERE session_id = $id ORDER BY sequence";
+        command.Parameters.AddWithValue("$id", sessionId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            try
+            {
+                if (AlcolerJson.Deserialize<SessionEvent>(reader.GetString(0)) is SessionTitleChangedEvent)
+                {
+                    return true;
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        return false;
+    }
+
+    private static string? ReadFirstInputTitle(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sessionId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT payload_json FROM message WHERE session_id = $id ORDER BY sequence";
+        command.Parameters.AddWithValue("$id", sessionId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            ConversationMessage? message;
+            try
+            {
+                message = AlcolerJson.Deserialize<ConversationMessage>(reader.GetString(0));
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (message is null || message.Role != MessageRole.User || message.Parts is null
+                || !(message.Source == MessageSource.RealUser
+                    || message.Source is null && !message.Parts.Any(part => part is ToolResultPart or AttachmentPart)))
+            {
+                continue;
+            }
+
+            if (message.Parts.OfType<TextPart>().Any(part =>
+                part.Text is not null && part.Text.AsSpan().TrimStart().StartsWith("<system-reminder>", StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            if (CompactTitle(message.Parts) is { } title)
+            {
+                return title;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? CompactTitle(IReadOnlyList<MessagePart> parts)
+    {
+        var title = new StringBuilder(61);
+        var pendingSpace = false;
+        foreach (var part in parts.OfType<TextPart>())
+        {
+            foreach (var character in part.Text.AsSpan())
+            {
+                if (char.IsWhiteSpace(character))
+                {
+                    pendingSpace = title.Length > 0;
+                    continue;
+                }
+
+                if (pendingSpace)
+                {
+                    title.Append(' ');
+                    pendingSpace = false;
+                }
+
+                title.Append(character);
+                if (title.Length > 60)
+                {
+                    return title.ToString(0, 57) + "...";
+                }
+            }
+
+            pendingSpace = title.Length > 0;
+        }
+
+        return title.Length == 0 ? null : title.ToString();
+    }
+
     private static SessionRecord ReadSessionRecord(SqliteDataReader reader, SessionId id) => new(
         id,
         reader.GetString(reader.GetOrdinal("workspace_root")),
@@ -456,7 +665,9 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         ParseUtcIso(reader.GetString(reader.GetOrdinal("created_at"))),
         ParseUtcIso(reader.GetString(reader.GetOrdinal("updated_at"))),
         ReadBranch(reader),
-        reader.GetBoolean(reader.GetOrdinal("is_archived")));
+        reader.GetBoolean(reader.GetOrdinal("is_archived")),
+        ReadParentSessionId(reader),
+        ReadTitleSource(reader));
 
     private static SessionSummary ReadSummary(SqliteDataReader reader) => new(
         new SessionId(reader.GetString(reader.GetOrdinal("id"))),
@@ -466,7 +677,18 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         DeserializeOptional<ModelSelection>(reader, "model_selection_json"),
         ParseUtcIso(reader.GetString(reader.GetOrdinal("created_at"))),
         ParseUtcIso(reader.GetString(reader.GetOrdinal("updated_at"))),
-        reader.GetBoolean(reader.GetOrdinal("is_archived")));
+        reader.GetBoolean(reader.GetOrdinal("is_archived")),
+        ReadParentSessionId(reader));
+
+    private static SessionTitleSource ReadTitleSource(SqliteDataReader reader) =>
+        Enum.TryParse<SessionTitleSource>(reader.GetString(reader.GetOrdinal("title_source")), out var source)
+            && Enum.IsDefined(source) ? source : SessionTitleSource.Custom;
+
+    private static SessionId? ReadParentSessionId(SqliteDataReader reader)
+    {
+        var ordinal = reader.GetOrdinal("parent_session_id");
+        return reader.IsDBNull(ordinal) ? null : new SessionId(reader.GetString(ordinal));
+    }
 
     private static T? DeserializeOptional<T>(SqliteDataReader reader, string column)
         where T : class

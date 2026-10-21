@@ -81,7 +81,8 @@ public class ContextUsageTests
     {
         await using var harness = TestHarness.Create(
             Reply("answer", new TokenUsage(ContextUsageTokens: 5000, CacheReadTokens: 4500)),
-            Reply("summary"), Reply("after compact"));
+            new ScriptStep.Events(new ModelTextDelta("summary"), new ModelTextEnded(), new ModelStreamFinished(ModelFinishReason.Stop)),
+            Reply("after compact"));
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);

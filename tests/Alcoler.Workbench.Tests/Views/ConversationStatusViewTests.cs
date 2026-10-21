@@ -312,6 +312,33 @@ public sealed class ConversationStatusViewTests
     }
 
     [AvaloniaFact]
+    public async Task FourAgents_RenderDistinctRows_AndMoveCompletedChildrenIntoEndedDirectory()
+    {
+        var agents = Enumerable.Range(1, 4).Select(index => Agent($"agent-{index}", "Independent review")).ToArray();
+        using var harness = new Harness(1400, agents);
+        await ToggleSectionAsync(harness.View, "AgentsSection");
+        Assert.Equal("4", harness.Model.AgentCountText);
+        foreach (var agent in agents)
+            Assert.True(ActivityButton(harness.View, agent.RowId).IsEffectivelyVisible);
+
+        Apply(harness.Model, agents.Take(3).Select(agent => (RowOp)new RowUpserted(agent with
+        {
+            Subagent = agent.Subagent! with { Status = SubagentStatus.Completed, EndedAt = StartedAt.AddMinutes(1) },
+        })).ToArray());
+        await RenderAsync(harness.Window);
+        Assert.Equal("1/4", harness.Model.AgentCountText);
+        Assert.Equal("agent-4", Assert.Single(harness.Model.Agents).RowId);
+        Assert.True(ActivityButton(harness.View, "agent-4").IsEffectivelyVisible);
+        Assert.Single(harness.View.GetVisualDescendants().OfType<Button>(),
+            button => button.Classes.Contains("activityRow") && button.IsEffectivelyVisible);
+        var endedButton = Named<Button>(harness.View, "EndedAgentsButton");
+        await ClickAsync(endedButton);
+        var directory = Assert.IsAssignableFrom<Control>(Assert.IsType<Flyout>(endedButton.Flyout).Content);
+        foreach (var agent in agents.Take(3))
+            Assert.True(ActivityButton(directory, agent.RowId).IsEffectivelyVisible);
+    }
+
+    [AvaloniaFact]
     public async Task TerminalAgentAndEndedAgentRows_ClickThroughWithStructuredActivityTargets()
     {
         using var harness = new Harness(1400, Terminal("terminal", "Build workbench"),

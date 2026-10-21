@@ -96,7 +96,7 @@ public sealed class EditTool : ITool
         {
             if (content.Trim().Length != 0)
                 return ToolExecutionResult.Text("Cannot create new file - file already exists.", isError: true);
-            if (FileReadGuards.ReadStateFailure(path, context) is { } createFailure)
+            if (FileReadGuards.ReadStateFailure(path, context, rawContent) is { } createFailure)
                 return createFailure;
             await WritePreservingLineEndingsAsync(path, rawContent, requestedNewString, cancellationToken).ConfigureAwait(false);
             context.FileReads?.RecordWrite(path);
@@ -108,7 +108,7 @@ public sealed class EditTool : ITool
                 "File is a Jupyter Notebook. Use the NotebookEdit to edit this file.",
                 isError: true);
 
-        if (FileReadGuards.ReadStateFailure(path, context) is { } failure)
+        if (FileReadGuards.ReadStateFailure(path, context, rawContent) is { } failure)
             return failure;
 
         var match = EditMatchers.FindEditMatch(content, oldString, replaceAll);

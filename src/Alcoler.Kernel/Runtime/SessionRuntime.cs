@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
@@ -16,6 +17,7 @@ using Alcoler.Kernel.History;
 using Alcoler.Kernel.Models;
 using Alcoler.Kernel.Permissions;
 using Alcoler.Kernel.Prompts;
+using Alcoler.Kernel.Skills;
 using Alcoler.Kernel.Tools;
 using Microsoft.Extensions.Logging;
 
@@ -36,6 +38,10 @@ public sealed class SessionRuntimeOptions
     public GitSnapshot? GitSnapshot { get; init; }
 
     public ModelSelection? DefaultModel { get; init; }
+
+    public bool SessionTitleGenerationEnabled { get; init; }
+
+    public TimeSpan SessionTitleGenerationTimeout { get; init; } = TimeSpan.FromSeconds(60);
 }
 
 public sealed record SessionRuntimeDeps(
@@ -53,7 +59,6 @@ public sealed record SessionRuntimeDeps(
 public sealed class SessionRuntime : IAsyncDisposable
 {
     private const int StreamRecoveryMaxRetries = 10;
-    private const int ReactiveCompactMaxRetries = 3;
     // ZCode DEFAULT_NORMAL_REQUEST_MAX_OUTPUT_TOKENS; only used when the model declares none.
     private const int DefaultRequestMaxOutputTokens = 32_000;
     // ZCode session-history-hydrator INTERRUPTED_TOOL_RESULT.
@@ -66,6 +71,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly SessionInteractionBroker _broker;
     private readonly PermissionService _permissions;
     private readonly ToolBatchRunner _toolRunner;
+    private readonly ToolCallExecutor _toolExecutor;
     private readonly RuntimeSessionCommands _sessionCommands;
     private readonly FileReadState _fileReads = new();
     private readonly ShellSessionState _shell;
@@ -73,11 +79,14 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly SessionAuxModelClient _auxModel;
     private readonly SkillContentProvider _skills;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
+    private readonly SemaphoreSlim _recordLock = new(1, 1);
     private readonly CancellationTokenSource _sessionCts = new();
 
     private SessionRecord _record;
     private long _revision;
     private Task _turnTask = Task.CompletedTask;
+    private Task _titleTask = Task.CompletedTask;
+    private bool _titleAttempted;
     private CancellationTokenSource? _turnCts;
     private readonly Queue<PendingTurnInput> _pendingInputs = new();
     private TokenUsage? _lastProviderUsage;
@@ -92,11 +101,14 @@ public sealed class SessionRuntime : IAsyncDisposable
     private int _consecutiveRapidRefills;
     private int _toolRoundsSinceCompact;
     private int _outputContinuationsThisTurn;
-    private bool _signatureRepairUsedThisTurn;
+    private int? _overflowTokenGap;
+    private ModelSelection? _consumedGuideSelection;
     private bool _planModeExitReminderPending;
     private int _streamRecoveriesThisTurn;
     private ToolCallAnomalyTracker _toolAnomalyThisTurn = new();
-    private readonly List<ModelInputMessage> _turnLocalRequestMessages = [];
+    private readonly TurnRequestEntries _turnLocalRequestMessages = new();
+    // -1 means no turn has finished yet in this session runtime.
+    private int _lastTurnOutcome = -1;
     private bool _disposed;
 
     private SessionRuntime(SessionRecord record, SessionRuntimeDeps deps)
@@ -107,8 +119,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         _broker = new SessionInteractionBroker(evt => EmitAsync(evt, persist: true), deps.Clock);
         _permissions = new PermissionService(_broker, deps.PermissionRules, record.PermissionMode);
         var scheduler = new ToolScheduler(deps.Tools);
-        var executor = new ToolCallExecutor(deps.Tools, _permissions, _ => _permissions.Mode);
-        _toolRunner = new ToolBatchRunner(scheduler, executor);
+        _toolExecutor = new ToolCallExecutor(deps.Tools, _permissions, _ => _permissions.Mode);
+        _toolRunner = new ToolBatchRunner(scheduler, _toolExecutor);
         _sessionCommands = new RuntimeSessionCommands(this);
         _shell = new ShellSessionState(record.WorkspaceRoot);
         _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync);
@@ -123,6 +135,12 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     public event Func<SessionRuntime, ValueTask>? TurnDrained;
 
+    public event Action<SessionRuntime>? TurnStarted;
+
+    public event Func<SessionRuntime, TurnOutcome, ValueTask>? TurnFinished;
+
+    public event Action<SessionRuntime, string>? TitleChanged;
+
     internal ValueTask EmitSubagentStateAsync(SubagentState state, bool started) =>
         EmitAsync(
             started
@@ -134,9 +152,21 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     public string WorkspaceRoot => _record.WorkspaceRoot;
 
+    public string Title => _record.Title;
+
     public long Revision => Volatile.Read(ref _revision);
 
     public bool IsTurnActive => _turnMachine.IsBusy;
+
+    internal string? LastTurnError { get; private set; }
+
+    internal TurnPhase Phase => _turnMachine.Phase;
+
+    internal SessionActivitySnapshot ActivitySnapshot()
+    {
+        var outcome = Volatile.Read(ref _lastTurnOutcome);
+        return new SessionActivitySnapshot(Phase, outcome < 0 ? null : (TurnOutcome)outcome);
+    }
 
     public static async Task<SessionRuntime> CreateAsync(SessionRecord record, SessionRuntimeDeps deps, CancellationToken ct, bool persistStartEvents = true)
     {
@@ -180,9 +210,9 @@ public sealed class SessionRuntime : IAsyncDisposable
                     return await HandleCompactAsync(compact, ct).ConfigureAwait(false);
 
                 case SetModeCommand setMode:
-                    _permissions.SetMode(setMode.Mode);
-                    _record = _record with { PermissionMode = setMode.Mode, UpdatedAt = _deps.Clock.GetUtcNow() };
-                    await PersistRecordAsync(ct).ConfigureAwait(false);
+                    SetPermissionMode(setMode.Mode);
+                    await PersistRecordAsync(ct,
+                        record => record with { PermissionMode = setMode.Mode, UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
                     await EmitAsync(new SessionModeChangedEvent(setMode.Mode), persist: true).ConfigureAwait(false);
                     BumpRevision();
                     return CommandAck.AcceptedAt(setMode.CommandId, Revision);
@@ -196,17 +226,14 @@ public sealed class SessionRuntime : IAsyncDisposable
                     {
                         return CommandAck.Rejected(switchModel.CommandId, Revision, ex.Message);
                     }
-                    _record = _record with { ModelSelection = switchModel.Selection, UpdatedAt = _deps.Clock.GetUtcNow() };
-                    await PersistRecordAsync(ct).ConfigureAwait(false);
+                    await PersistRecordAsync(ct,
+                        record => record with { ModelSelection = switchModel.Selection, UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
                     await EmitModelChangedAsync(switchModel.Selection).ConfigureAwait(false);
                     BumpRevision();
                     return CommandAck.AcceptedAt(switchModel.CommandId, Revision);
 
                 case RenameSessionCommand rename:
-                    _record = _record with { Title = rename.Title, UpdatedAt = _deps.Clock.GetUtcNow() };
-                    await PersistRecordAsync(ct).ConfigureAwait(false);
-                    await EmitAsync(new SessionTitleChangedEvent(rename.Title), persist: true).ConfigureAwait(false);
-                    BumpRevision();
+                    await SetTitleAsync(rename.Title, SessionTitleSource.Custom, ct).ConfigureAwait(false);
                     return CommandAck.AcceptedAt(rename.CommandId, Revision);
 
                 default:
@@ -224,12 +251,6 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (Steering.ValidateInput(sendText.Text) is { } rejection)
         {
             return CommandAck.Rejected(sendText.CommandId, Revision, rejection);
-        }
-
-        if (sendText.Mode is { } mode)
-        {
-            _permissions.SetMode(mode);
-            _record = _record with { PermissionMode = mode };
         }
 
         if (_turnMachine.IsBusy)
@@ -292,29 +313,20 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
     }
 
-    // Task notifications never enter the user-input queue as text: mid-turn they ride a
-    // dedicated channel drained at the model-step boundary; idle they start their own turn
-    // whose opening message is the wrapped notification.
+    // Task notifications cannot resume inputs held after cancellation or failure; only
+    // explicit user input may restart that queue.
     private async ValueTask SubmitTaskNotificationAsync(string prefixedBody)
     {
         await _commandLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            if (_turnMachine.IsBusy)
+            if (_turnMachine.IsBusy || _pendingInputs.Count > 0)
             {
                 _pendingInputs.Enqueue(new PendingTurnInput(null, prefixedBody));
                 return;
             }
 
-            if (_pendingInputs.Count > 0)
-            {
-                _pendingInputs.Enqueue(new PendingTurnInput(null, prefixedBody));
-                StartTurnFor(DequeueOldestInput()!);
-            }
-            else
-            {
-                StartTurnFor(new PendingTurnInput(null, prefixedBody));
-            }
+            StartTurnFor(new PendingTurnInput(null, prefixedBody));
         }
         finally
         {
@@ -372,6 +384,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         _turnCts = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token);
         var turnCts = _turnCts;
+        TurnStarted?.Invoke(this);
         _turnTask = RunTurnAsync(input, turnCts.Token);
     }
 
@@ -379,9 +392,13 @@ public sealed class SessionRuntime : IAsyncDisposable
     {
         var turnId = StrongId.NewTurnId();
         var holdQueue = false;
+        var outcome = TurnOutcome.Completed;
+        LastTurnError = null;
         try
         {
             var command = input.Command;
+            if (command is not null)
+                await ApplyInputIntentAsync(command).ConfigureAwait(false);
             var selection = command?.ModelSelection ?? _record.ModelSelection ?? _deps.Options.DefaultModel
                 ?? throw new InvalidOperationException("No model configured for session.");
             var model = _deps.ResolveModel(selection);
@@ -395,13 +412,14 @@ public sealed class SessionRuntime : IAsyncDisposable
                     StrongId.NewMessageId(),
                     MessageRole.User,
                     [new TextPart(StrongId.NewPartId(), command!.Text)],
-                    _deps.Clock.GetUtcNow());
+                    _deps.Clock.GetUtcNow(), Source: MessageSource.RealUser);
             await CommitMessageAsync(openingMessage).ConfigureAwait(false);
+            AppendDateReminder();
 
-            var outcome = TurnOutcome.Completed;
-            var reactiveCompactRetries = 0;
+            var reactiveCompactAttempted = false;
             _outputContinuationsThisTurn = 0;
-            _signatureRepairUsedThisTurn = false;
+            _overflowTokenGap = null;
+            _consumedGuideSelection = null;
             _streamRecoveriesThisTurn = 0;
             _toolAnomalyThisTurn = new ToolCallAnomalyTracker();
             _turnLocalRequestMessages.Clear();
@@ -409,22 +427,38 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 turnCt.ThrowIfCancellationRequested();
 
+                if (_consumedGuideSelection is { } guideSelection)
+                {
+                    model = _deps.ResolveModel(guideSelection);
+                    options = guideSelection.Options ?? new ModelCallOptions();
+                    _consumedGuideSelection = null;
+                }
                 var step = await RunModelStepAsync(turnId, model, options, turnCt).ConfigureAwait(false);
+                turnCt.ThrowIfCancellationRequested();
+                if (step == ModelStepOutcome.Stopped)
+                    break;
                 if (step == ModelStepOutcome.Finished)
                 {
                     // A text-only step is a continuable boundary: one queued user input
                     // extends the same turn instead of waiting for a new one.
-                    var (steered, _) = await DrainBoundaryAsync(drainNotifications: false).ConfigureAwait(false);
+                    var (steered, _) = await DrainBoundaryAsync(drainNotifications: false, turnCt).ConfigureAwait(false);
                     if (steered)
                     {
+                        _toolAnomalyThisTurn.ResetStreak();
+                        reactiveCompactAttempted = false;
                         continue;
                     }
                     break;
                 }
 
-                if (step == ModelStepOutcome.ContextOverflow && reactiveCompactRetries < ReactiveCompactMaxRetries)
+                if (step == ModelStepOutcome.ContextOverflow)
                 {
-                    reactiveCompactRetries++;
+                    if (reactiveCompactAttempted)
+                    {
+                        outcome = TurnOutcome.Failed;
+                        break;
+                    }
+                    reactiveCompactAttempted = true;
                     var rapidRefill = NextRapidRefillCount();
                     if (rapidRefill >= CompactPolicy.MaxConsecutiveRapidRefills)
                     {
@@ -434,7 +468,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                             CompactPolicy.RapidRefillToolTurnThreshold,
                             CompactPolicy.MaxConsecutiveRapidRefills));
                     }
-                    var compacted = await ExecuteCompactionAsync(CompactTrigger.Reactive, null, turnCt, model, options).ConfigureAwait(false);
+                    var compacted = await ExecuteCompactionAsync(CompactTrigger.Reactive, null, turnCt, model, options, _overflowTokenGap).ConfigureAwait(false);
                     if (!compacted)
                     {
                         outcome = TurnOutcome.Failed;
@@ -456,10 +490,16 @@ public sealed class SessionRuntime : IAsyncDisposable
                     break;
                 }
 
+                reactiveCompactAttempted = false;
+                if (step == ModelStepOutcome.ContinuedOutput)
+                {
+                    continue;
+                }
+
                 // The tool-result boundary: queued notifications and one queued user input
                 // join the running turn before the next model request.
-                var (boundarySteered, boundaryNotified) = await DrainBoundaryAsync(drainNotifications: true).ConfigureAwait(false);
-                if (boundaryNotified)
+                var (boundarySteered, boundaryNotified) = await DrainBoundaryAsync(drainNotifications: true, turnCt).ConfigureAwait(false);
+                if (boundaryNotified || boundarySteered)
                 {
                     _toolAnomalyThisTurn.ResetStreak();
                 }
@@ -469,16 +509,21 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 holdQueue = true;
             }
+            if (outcome == TurnOutcome.Failed)
+                await EmitAsync(new TurnFailedEvent(turnId, LastTurnError ?? "Model request failed."), persist: true).ConfigureAwait(false);
             await EmitAsync(new TurnCompletedEvent(turnId, outcome, _lastProviderUsage), persist: true).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             holdQueue = true;
-            await EmitAsync(new TurnCompletedEvent(turnId, TurnOutcome.Cancelled, _lastProviderUsage), persist: true).ConfigureAwait(false);
+            outcome = TurnOutcome.Cancelled;
+            await EmitAsync(new TurnCompletedEvent(turnId, outcome, _lastProviderUsage), persist: true).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             holdQueue = true;
+            outcome = TurnOutcome.Failed;
+            LastTurnError = ex.Message;
             _deps.Logger.LogError(ex, "Turn {TurnId} failed unexpectedly.", turnId);
             await EmitAsync(new TurnFailedEvent(turnId, ex.Message), persist: true).ConfigureAwait(false);
         }
@@ -495,6 +540,14 @@ public sealed class SessionRuntime : IAsyncDisposable
             _events.EvictTransientOlderThan(
                 _deps.Clock.GetUtcNow().AddSeconds(-SessionEventRetention.SealedTurnTransientGraceMs / 1000.0),
                 _events.LastSequence);
+            Volatile.Write(ref _lastTurnOutcome, (int)outcome);
+            if (TurnFinished is { } handlers)
+            {
+                foreach (Func<SessionRuntime, TurnOutcome, ValueTask> handler in handlers.GetInvocationList())
+                {
+                    await handler(this, outcome).ConfigureAwait(false);
+                }
+            }
             // Cancelled or failed turns hold pending inputs for an explicit user resume;
             // only a completed turn auto-drains the queue.
             if (!holdQueue)
@@ -506,20 +559,21 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     // Consumes at most one queued user input (one guide per model-step boundary) and, when
     // requested, every queued task notification (batched into a single message).
-    private async Task<(bool Steered, bool Notified)> DrainBoundaryAsync(bool drainNotifications)
+    private async Task<(bool Steered, bool Notified)> DrainBoundaryAsync(bool drainNotifications, CancellationToken turnCt)
     {
         SendTextCommand? steer = null;
         List<string>? notificationBodies = null;
-        await _commandLock.WaitAsync(_sessionCts.Token).ConfigureAwait(false);
+        await _commandLock.WaitAsync(turnCt).ConfigureAwait(false);
         try
         {
+            turnCt.ThrowIfCancellationRequested();
             List<PendingTurnInput>? held = null;
             while (_pendingInputs.Count > 0)
             {
                 var next = _pendingInputs.Dequeue();
                 if (next.Command is { } command)
                 {
-                    if (steer is null)
+                    if (steer is null && command.Delivery == SendTextDelivery.Guide)
                     {
                         steer = command;
                         _ = EmitAsync(new InputDequeuedEvent(command.CommandId), persist: true);
@@ -559,14 +613,41 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         if (steer is not null)
         {
+            await ApplyInputIntentAsync(steer).ConfigureAwait(false);
+            _consumedGuideSelection = steer.ModelSelection;
             await CommitMessageAsync(new ConversationMessage(
                 StrongId.NewMessageId(),
                 MessageRole.User,
-                [new TextPart(StrongId.NewPartId(), Steering.FormatUserSteer(steer.Text))],
-                _deps.Clock.GetUtcNow())).ConfigureAwait(false);
+                [new TextPart(StrongId.NewPartId(), steer.Text)],
+                _deps.Clock.GetUtcNow(), Source: MessageSource.RealUser, Presentation: MessagePresentation.UserSteer)).ConfigureAwait(false);
         }
 
         return (steer is not null, notificationBodies is { Count: > 0 });
+    }
+
+    private void SetPermissionMode(PermissionMode mode)
+    {
+        if (_permissions.Mode == PermissionMode.Plan && mode != PermissionMode.Plan)
+            _planModeExitReminderPending = true;
+        else if (mode == PermissionMode.Plan)
+            _planModeExitReminderPending = false;
+        _permissions.SetMode(mode);
+    }
+
+    private async Task ApplyInputIntentAsync(SendTextCommand command)
+    {
+        if (command.Mode is { } mode)
+        {
+            SetPermissionMode(mode);
+            await PersistRecordAsync(_sessionCts.Token, record => record with { PermissionMode = mode }).ConfigureAwait(false);
+            await EmitAsync(new SessionModeChangedEvent(mode), persist: true).ConfigureAwait(false);
+        }
+        if (command.ModelSelection is { } selection)
+        {
+            _deps.ResolveModel(selection).ValidateOptions(selection.Options ?? new ModelCallOptions());
+            await PersistRecordAsync(_sessionCts.Token, record => record with { ModelSelection = selection }).ConfigureAwait(false);
+            await EmitModelChangedAsync(selection).ConfigureAwait(false);
+        }
     }
 
     private async Task DrainQueueAsync()
@@ -609,7 +690,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             StrongId.NewMessageId(),
             MessageRole.User,
             [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.SystemReminder, SystemReminder.Wrap(prefixedBody), ProviderVisible: true)],
-            _deps.Clock.GetUtcNow());
+            _deps.Clock.GetUtcNow(), Source: MessageSource.TaskNotification);
 
     // Arrives on a thread-pool continuation; the notification channel routes it into the
     // pending-input queue while a turn is active or starts a notification turn when idle.
@@ -676,11 +757,14 @@ public sealed class SessionRuntime : IAsyncDisposable
             history = _history.Snapshot();
         }
 
-        await CommitRuntimeRemindersAsync(history).ConfigureAwait(false);
-        history = _history.Snapshot();
+        if (_outputContinuationsThisTurn == 0)
+        {
+            await CommitRuntimeRemindersAsync(history).ConfigureAwait(false);
+            history = _history.Snapshot();
+        }
 
         _turnMachine.TryTransition(TurnPhase.AwaitingModel);
-        var request = await AssembleContextAsync(history, initialRequest.Request.Options, model, turnCt).ConfigureAwait(false);
+        var request = await AssembleContextAsync(_turnLocalRequestMessages.Merge(history), initialRequest.Request.Options, model, turnCt).ConfigureAwait(false);
         var (requestTokens, source) = EstimateContextTokens(request, history);
         if (model.Descriptor.Properties.ContextWindowTokens is { } configuredContext)
         {
@@ -693,34 +777,48 @@ public sealed class SessionRuntime : IAsyncDisposable
             var maxOutput = estimatedAvailable <= 0 ? requestedMax : Math.Min(requestedMax, estimatedAvailable);
             request = request with { Request = request.Request with { Options = options with { MaxOutputTokens = maxOutput } } };
         }
-        request = AppendDateReminder(AppendTurnLocalEntries(request));
         await PublishContextUsageAsync(request, requestTokens, contextWindow, source).ConfigureAwait(false);
-        var requestAnchorIndex = history.Count - 1;
+        var requestAnchorIndex = history.Count;
 
-        var accumulator = await StreamModelStepAsync(turnId, model, request, turnCt).ConfigureAwait(false);
+        await using var streamingTools = new StreamingToolCoordinator(
+            _deps.Tools, _toolExecutor, _toolRunner,
+            (call, _) => ValueTask.FromResult(CreateToolExecutionContext(call)),
+            notification => HandleToolNotificationAsync(turnId, notification), turnCt);
+        var accumulator = await StreamModelStepAsync(turnId, model, request, streamingTools, turnCt).ConfigureAwait(false);
 
         _lastActivityUtc = _deps.Clock.GetUtcNow();
 
         if (accumulator.Failure is { } failure)
         {
+            if (streamingTools.HasAcceptedCalls && !turnCt.IsCancellationRequested
+                && _streamRecoveriesThisTurn < StreamRecoveryMaxRetries)
+            {
+                _streamRecoveriesThisTurn++;
+                await EmitAsync(new StreamRecoveryEvent(StreamRecoveryPhase.AnchorSelected, _streamRecoveriesThisTurn), persist: false).ConfigureAwait(false);
+                var recoveredBatch = await streamingTools.RecoverAsync(accumulator.ToolCalls).ConfigureAwait(false);
+                var recoveredAssistant = new ConversationMessage(
+                    StrongId.NewMessageId(), MessageRole.Assistant,
+                    [.. streamingTools.AcceptedCalls.Select(call => new ToolCallPart(
+                        StrongId.NewPartId(), call.Id, call.Name, call.Input))],
+                    _deps.Clock.GetUtcNow(), model.Descriptor.ProviderId, model.Descriptor.ModelId);
+                await CommitMessageAsync(recoveredAssistant).ConfigureAwait(false);
+                await CommitToolBatchAsync(recoveredBatch).ConfigureAwait(false);
+                _toolRoundsSinceCompact++;
+                _outputContinuationsThisTurn = 0;
+                await EmitAsync(new StreamRecoveryEvent(StreamRecoveryPhase.TailDiscarded, _streamRecoveriesThisTurn), persist: false).ConfigureAwait(false);
+                await EmitAsync(new StreamRecoveryEvent(StreamRecoveryPhase.RetryStarted, _streamRecoveriesThisTurn), persist: false).ConfigureAwait(false);
+                return recoveredBatch.StoppedAfterResult ? ModelStepOutcome.Stopped : ModelStepOutcome.ContinueWithTools;
+            }
+            LastTurnError = failure.Message;
             await EmitAsync(new ModelRequestFailedEvent(turnId, failure, 1), persist: false).ConfigureAwait(false);
             if (failure.Kind == ModelFailureKind.ContextOverflow)
             {
+                _overflowTokenGap = failure.DeclaredTokenGap;
                 return ModelStepOutcome.ContextOverflow;
-            }
-            // The request itself was rejected before any content; repairing history and
-            // retrying once per turn never consumes the stream-recovery budget.
-            if (!_signatureRepairUsedThisTurn
-                && !accumulator.HasBoundaryContent
-                && ThinkingSignatureRecovery.IsSignatureRejection(failure)
-                && await StripReasoningHistoryAsync().ConfigureAwait(false))
-            {
-                _signatureRepairUsedThisTurn = true;
-                return ModelStepOutcome.ContinueAfterHistoryRepair;
             }
             if (accumulator.HasBoundaryContent)
             {
-                await CommitPartialAssistantAsync(accumulator).ConfigureAwait(false);
+                await CommitPartialAssistantAsync(accumulator, model.Descriptor).ConfigureAwait(false);
                 return ModelStepOutcome.Failed;
             }
             return ModelStepOutcome.Failed;
@@ -737,7 +835,11 @@ public sealed class SessionRuntime : IAsyncDisposable
                     ? TokenEstimator.ProviderUsageSource : source, usage).ConfigureAwait(false);
         }
 
-        var assistant = accumulator.BuildAssistantMessage(_deps.Clock.GetUtcNow());
+        var assistant = accumulator.BuildAssistantMessage(_deps.Clock.GetUtcNow()) with
+        {
+            ProviderId = model.Descriptor.ProviderId,
+            ModelId = model.Descriptor.ModelId,
+        };
 
         // Output-limit truncation classifies first: even an empty truncated body continues,
         // and the empty body itself is never committed (ZCode includeEmptyAssistant: false).
@@ -746,6 +848,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             if (_outputContinuationsThisTurn >= OutputContinuation.MaxContinuationsPerTurn)
             {
+                LastTurnError = OutputContinuation.LimitExceededMessage;
                 await CommitMessageAsync(assistant).ConfigureAwait(false);
                 await EmitAsync(new ModelRequestFailedEvent(
                     turnId,
@@ -760,12 +863,15 @@ public sealed class SessionRuntime : IAsyncDisposable
                 await CommitMessageAsync(assistant).ConfigureAwait(false);
             // The Continue prompt is turn-request-local: later requests in this turn see
             // it, but it never lands in history or the store.
-            _turnLocalRequestMessages.Add(new ModelInputMessage(
-                MessageRole.User,
-                [new InputTextBlock(OutputContinuation.ContinuePromptText)]));
+            _turnLocalRequestMessages.AppendAfter(_history.Snapshot()[^1].Id, new ConversationMessage(
+                StrongId.NewMessageId(), MessageRole.User,
+                [new TextPart(StrongId.NewPartId(), OutputContinuation.ContinuePromptText)],
+                _deps.Clock.GetUtcNow()));
             _outputContinuationsThisTurn++;
             return ModelStepOutcome.ContinuedOutput;
         }
+
+        _outputContinuationsThisTurn = 0;
 
         if (assistant.Parts.Count == 0)
         {
@@ -778,12 +884,11 @@ public sealed class SessionRuntime : IAsyncDisposable
                 _turnMachine.TryTransition(TurnPhase.Completing);
                 return ModelStepOutcome.Finished;
             }
+            LastTurnError = "Model returned no text, no tool calls, and no usage before completing the turn.";
             await EmitAsync(
                 new ModelRequestFailedEvent(
                     turnId,
-                    new ModelFailure(
-                        ModelFailureKind.ProviderError,
-                        "Model returned no text, no tool calls, and no usage before completing the turn."),
+                    new ModelFailure(ModelFailureKind.ProviderError, LastTurnError),
                     1),
                 persist: false).ConfigureAwait(false);
             return ModelStepOutcome.Failed;
@@ -802,24 +907,14 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             if (_toolAnomalyThisTurn.Track(call.Name, call.Input) is { } warning)
             {
-                _turnLocalRequestMessages.Add(new ModelInputMessage(
-                    MessageRole.User,
-                    [new InputTextBlock(SystemReminder.Wrap(warning))]));
+                AppendInMemoryReminder(warning, MessageSource.ModelAnomaly);
             }
         }
 
         _toolRoundsSinceCompact++;
         _turnMachine.TryTransition(TurnPhase.ExecutingTools);
-        var toolBatch = await ExecuteToolCallsAsync(turnId, accumulator.ToolCalls, turnCt).ConfigureAwait(false);
-        if (toolBatch.Parts.Count > 0)
-        {
-            var resultsMessage = new ConversationMessage(
-                StrongId.NewMessageId(),
-                MessageRole.User,
-                [.. toolBatch.Parts],
-                _deps.Clock.GetUtcNow());
-            await CommitMessageAsync(resultsMessage).ConfigureAwait(false);
-        }
+        var toolBatch = await streamingTools.CompleteAsync(accumulator.ToolCalls).ConfigureAwait(false);
+        await CommitToolBatchAsync(toolBatch).ConfigureAwait(false);
 
         if (turnCt.IsCancellationRequested)
         {
@@ -830,18 +925,17 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         if (toolBatch.StoppedAfterResult)
         {
-            // A successful stop-turn tool result ends the turn after its batch: the
-            // committed results are the turn's final model-visible output.
+            // Stop requests apply to error results too; guides remain queued for a new turn.
             _toolRoundsSinceCompact = 0;
             _turnMachine.TryTransition(TurnPhase.Completing);
-            return ModelStepOutcome.Finished;
+            return ModelStepOutcome.Stopped;
         }
 
         return ModelStepOutcome.ContinueWithTools;
     }
 
     private async Task<ModelStepAccumulator> StreamModelStepAsync(
-        TurnId turnId, IChatModel model, AssembledContext request, CancellationToken turnCt)
+        TurnId turnId, IChatModel model, AssembledContext request, StreamingToolCoordinator streamingTools, CancellationToken turnCt)
     {
         var runnerBase = new ModelRunnerOptions();
         for (var attempt = 0; ; attempt++)
@@ -858,13 +952,16 @@ public sealed class SessionRuntime : IAsyncDisposable
                                    .WithCancellation(turnCt).ConfigureAwait(false))
                 {
                     await accumulator.ApplyAsync(streamEvent, evt => EmitAsync(evt, persist: false)).ConfigureAwait(false);
+                    if (streamEvent is ModelToolCallReady ready)
+                        await streamingTools.AcceptAsync(ready.ToolCall with { Name = ready.ToolCall.Name.Trim() }).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (turnCt.IsCancellationRequested)
             {
                 // A cancelled stream still owns its partial text: commit it before the
                 // cancellation surfaces as TurnCompleted(Cancelled).
-                await CommitPartialAssistantAsync(accumulator).ConfigureAwait(false);
+                await streamingTools.AbandonAsync().ConfigureAwait(false);
+                await CommitPartialAssistantAsync(accumulator, model.Descriptor).ConfigureAwait(false);
                 throw;
             }
 
@@ -873,15 +970,20 @@ public sealed class SessionRuntime : IAsyncDisposable
             // each recovery grows the idle timeout for the next attempt.
             if (accumulator.Failure is { IsRetryable: true }
                 && accumulator.HasBoundaryContent
+                && !streamingTools.HasAcceptedCalls
                 && _streamRecoveriesThisTurn < StreamRecoveryMaxRetries)
             {
                 _streamRecoveriesThisTurn++;
+                await EmitAsync(new StreamRecoveryEvent(StreamRecoveryPhase.AnchorSelected, _streamRecoveriesThisTurn), persist: false).ConfigureAwait(false);
+                await EmitAsync(new StreamRecoveryEvent(StreamRecoveryPhase.TailDiscarded, _streamRecoveriesThisTurn), persist: false).ConfigureAwait(false);
+                await EmitAsync(new StreamRecoveryEvent(StreamRecoveryPhase.RetryStarted, _streamRecoveriesThisTurn), persist: false).ConfigureAwait(false);
                 continue;
             }
 
             if (accumulator.Failure is not null
                 || accumulator.HasBoundaryContent
                 || accumulator.ToolCalls.Count > 0
+                || accumulator.FinishReason == ModelFinishReason.Length
                 || attempt >= EmptyCompletionRetry.MaxRetries
                 || !IsSuspiciousEmptyCompletion(accumulator))
             {
@@ -901,15 +1003,13 @@ public sealed class SessionRuntime : IAsyncDisposable
                 + (accumulator.Usage.CacheReadTokens ?? 0) + (accumulator.Usage.CacheWriteTokens ?? 0) == 0;
     }
 
-    // Runtime reminders commit as provider-visible synthetic user messages so they stay in
-    // every later request of the turn (and across restarts) instead of being request-local.
-    // Order follows the reference loop: plan-mode exit, plan-mode cadence, todo.
+    // Mode reminders live in canonical memory; only todo reminders are durable.
     private async Task CommitRuntimeRemindersAsync(IReadOnlyList<ConversationMessage> history)
     {
         if (_planModeExitReminderPending)
         {
             _planModeExitReminderPending = false;
-            await CommitSyntheticReminderAsync(RuntimeReminders.PlanModeExitReminder).ConfigureAwait(false);
+            AppendInMemoryReminder(RuntimeReminders.PlanModeExitReminder);
         }
 
         if (_permissions.Mode == PermissionMode.Plan)
@@ -918,7 +1018,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             if (!foundReminder || humanTurnsSince >= RuntimeReminders.TurnsBetweenAttachments)
             {
                 var attachmentIndex = CountPlanReminders(history) + 1;
-                await CommitSyntheticReminderAsync(RuntimeReminders.BuildModeReminder(attachmentIndex)).ConfigureAwait(false);
+                AppendInMemoryReminder(RuntimeReminders.BuildModeReminder(attachmentIndex));
             }
         }
 
@@ -965,7 +1065,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             StrongId.NewMessageId(),
             MessageRole.User,
             [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.SystemReminder, SystemReminder.Wrap(body), ProviderVisible: true)],
-            _deps.Clock.GetUtcNow())).ConfigureAwait(false);
+            _deps.Clock.GetUtcNow(), Source: MessageSource.TodoReminder)).ConfigureAwait(false);
     }
 
     private static (bool Found, int HumanTurnsSince) ScanPlanReminderCadence(IReadOnlyList<ConversationMessage> history)
@@ -985,111 +1085,58 @@ public sealed class SessionRuntime : IAsyncDisposable
     private static int CountPlanReminders(IReadOnlyList<ConversationMessage> history) =>
         history.Count(m => m.Parts.OfType<AttachmentPart>().Any(a => RuntimeReminders.IsPlanModeReminder(a.Content)));
 
-    // Real user turns are plain text inputs; steers, tool results, notifications, and
-    // synthetic reminders never count as human turns.
     private static bool IsRealUserTurn(ConversationMessage message) =>
         message.Role == MessageRole.User
-        && !message.Parts.Any(p => p is ToolResultPart)
-        && message.Parts.OfType<TextPart>().Any(t => !t.Text.StartsWith("<system-reminder>", StringComparison.Ordinal));
+        && (message.Source == MessageSource.RealUser
+            || message.Source is null
+            && !message.Parts.Any(p => p is ToolResultPart or AttachmentPart)
+            && message.Parts.OfType<TextPart>().Any());
 
-    private AssembledContext AppendTurnLocalEntries(AssembledContext request)
+    private ToolExecutionContext CreateToolExecutionContext(ToolCall call) =>
+        new(_record.Id, _record.WorkspaceRoot, call.Input, _deps.Workspace, _deps.Clock,
+            _sessionCommands, _fileReads, _shell, _backgroundJobs, _auxModel, _skills, _broker,
+            call.Id);
+
+    private async ValueTask HandleToolNotificationAsync(TurnId turnId, ToolExecutionNotification notification)
     {
-        if (_turnLocalRequestMessages.Count == 0)
-            return request;
-        return request with
+        switch (notification)
         {
-            Request = request.Request with
-            {
-                Messages = [.. request.Request.Messages, .. _turnLocalRequestMessages],
-            },
-        };
-    }
-
-    private async Task<bool> StripReasoningHistoryAsync()
-    {
-        var history = _history.Snapshot();
-        var stripped = ThinkingSignatureRecovery.StripReasoningParts(history);
-        if (ReferenceEquals(stripped, history))
-            return false;
-
-        _history.ReplaceAll(stripped);
-        _lastProviderUsage = null;
-        _usageAnchorIndex = -1;
-        await _deps.Store.ReplaceMessagesAsync(_record.Id, stripped, _sessionCts.Token).ConfigureAwait(false);
-        return true;
-    }
-
-    private sealed record ToolBatchCommit(IReadOnlyList<ToolResultPart> Parts, bool StoppedAfterResult);
-
-    private async Task<ToolBatchCommit> ExecuteToolCallsAsync(
-        TurnId turnId,
-        IReadOnlyList<ToolCall> calls,
-        CancellationToken turnCt)
-    {
-        var results = new List<ToolResultPart>();
-
-        var batch = await _toolRunner.ExecuteAsync(
-            [.. calls.Select(c => new ScheduledToolCall(c))],
-            (resolvedCall, ct) => ValueTask.FromResult(new ToolExecutionContext(
-                _record.Id,
-                _record.WorkspaceRoot,
-                resolvedCall.Input,
-                _deps.Workspace,
-                _deps.Clock,
-                _sessionCommands,
-                _fileReads,
-                _shell,
-                _backgroundJobs,
-                _auxModel,
-                _skills,
-                _broker)),
-            async notification =>
-            {
-                switch (notification)
+            case ToolExecutionStarted started:
+                await EmitAsync(new ToolCallStartedEvent(turnId, started.Call.Id, started.Call.Name, started.Call.Input), persist: false).ConfigureAwait(false);
+                break;
+            case ToolExecutionResultNotification result:
+                await EmitAsync(new ToolCallResultEvent(turnId, result.Call.Id, result.Call.Name, result.Result, result.Duration), persist: false).ConfigureAwait(false);
+                if (!result.Result.IsError
+                    && string.Equals(result.Call.Name, "Read", StringComparison.OrdinalIgnoreCase)
+                    && result.Result.Content.OfType<ToolResultText>().FirstOrDefault() is { } readText
+                    && result.Call.Input.TryGetProperty("file_path", out var pathElement)
+                    && pathElement.ValueKind == JsonValueKind.String
+                    && pathElement.GetString() is { } path)
                 {
-                    case ToolExecutionStarted started:
-                        await EmitAsync(new ToolCallStartedEvent(turnId, started.Call.Id, started.Call.Name, started.Call.Input), persist: false).ConfigureAwait(false);
-                        break;
-                    case ToolExecutionResultNotification result:
-                        await EmitAsync(
-                            new ToolCallResultEvent(turnId, result.Call.Id, result.Call.Name, result.Result, result.Duration),
-                            persist: false).ConfigureAwait(false);
-                        if (string.Equals(result.Call.Name, "Read", StringComparison.OrdinalIgnoreCase)
-                            && result.Result.Content.OfType<ToolResultText>().FirstOrDefault() is { } readText)
-                        {
-                            var path = result.Call.Input.TryGetProperty("file_path", out var pathElement) && pathElement.ValueKind == JsonValueKind.String
-                                ? pathElement.GetString()
-                                : null;
-                            if (path is not null)
-                            {
-                                _history.RecordFileRead(path, readText.Text, _deps.Clock.GetUtcNow());
-                            }
-                        }
-                        if (string.Equals(result.Call.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal)
-                            && !result.Result.IsError)
-                        {
-                            _planModeExitReminderPending = true;
-                        }
-                        break;
+                    var offset = result.Call.Input.TryGetProperty("offset", out var offsetElement)
+                        && offsetElement.ValueKind == JsonValueKind.Number && offsetElement.TryGetInt32(out var offsetValue)
+                        ? offsetValue : (int?)null;
+                    var limit = result.Call.Input.TryGetProperty("limit", out var limitElement)
+                        && limitElement.ValueKind == JsonValueKind.Number && limitElement.TryGetInt32(out var limitValue)
+                        ? limitValue : (int?)null;
+                    _history.RecordFileRead(path, readText.Text, _deps.Clock.GetUtcNow(), offset, limit);
                 }
-            },
-            turnCt).ConfigureAwait(false);
-
-        foreach (var outcome in batch.Outcomes)
-        {
-            var budgeted = ToolResultBudget.ApplyBudget(outcome.Result, ToolResultLimits.DefaultMaxInlineChars);
-            results.Add(new ToolResultPart(
-                StrongId.NewPartId(),
-                outcome.Call.Id,
-                budgeted.Content,
-                budgeted.IsError));
+                break;
         }
+    }
 
-        return new ToolBatchCommit(results, batch.StoppedAfterResult);
+    private async Task CommitToolBatchAsync(ToolBatchResult batch)
+    {
+        if (batch.Outcomes.Count == 0)
+            return;
+        var results = batch.Outcomes.Select(outcome => new ToolResultPart(
+            StrongId.NewPartId(), outcome.Call.Id, outcome.Result.Content, outcome.Result.IsError));
+        await CommitMessageAsync(new ConversationMessage(
+            StrongId.NewMessageId(), MessageRole.User, [.. results], _deps.Clock.GetUtcNow())).ConfigureAwait(false);
     }
 
     private async Task<bool> ExecuteCompactionAsync(CompactTrigger trigger, string? instructions, CancellationToken ct,
-        IChatModel? frozenModel = null, ModelCallOptions? frozenOptions = null)
+        IChatModel? frozenModel = null, ModelCallOptions? frozenOptions = null, int? declaredTokenGap = null)
     {
         var history = _history.Snapshot();
         var selection = _record.ModelSelection ?? _deps.Options.DefaultModel;
@@ -1109,100 +1156,138 @@ public sealed class SessionRuntime : IAsyncDisposable
             Tools: _deps.Tools.VisibleContracts,
             LastProviderUsage: _lastProviderUsage,
             AnchorIndex: _usageAnchorIndex,
-            ManualInstructions: instructions));
-        var compactionSelection = plan.Selection;
+            ManualInstructions: instructions,
+            DeclaredTokenGap: declaredTokenGap));
+        if (!CompactionSelector.HasEnoughMessagesToCompact(plan.Selection.ToSummarize))
+            return false;
 
-        var summaryText = new System.Text.StringBuilder();
-        ModelFailure? failure = null;
-        var promptTooLongRetries = 0;
-        while (true)
+        var maxAttempts = trigger == CompactTrigger.Auto ? CompactPolicy.AutoCompactMaxAttempts : 1;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            var rawRequest = CompactionPlanner.BuildSummaryRequest(compactionSelection, instructions);
-            var summaryLimit = Math.Min(CompactPolicy.SummaryMaxOutputTokens,
-                Math.Min(options.MaxOutputTokens ?? int.MaxValue, model.Descriptor.Properties.DefaultMaxOutputTokens ?? int.MaxValue));
-            summaryLimit = Math.Min(summaryLimit, Math.Max(1, contextWindow - TokenEstimator.EstimateRequestTokens(rawRequest) - 1000));
-            var summaryRequest = rawRequest with
-            {
-                Options = options with { MaxOutputTokens = summaryLimit },
-            };
-
-            summaryText.Clear();
-            failure = null;
+            var persisted = false;
             try
             {
-                await foreach (var streamEvent in ModelStreamRunner.RunAsync(
-                                   model,
-                                   summaryRequest,
-                                   new ModelRunnerOptions(),
-                                   ct).WithCancellation(ct).ConfigureAwait(false))
-                {
-                    switch (streamEvent)
-                    {
-                        case ModelTextDelta textDelta:
-                            summaryText.Append(textDelta.Delta);
-                            break;
-                        case ModelStreamFailed streamFailed:
-                            failure = streamFailed.Failure;
-                            break;
-                    }
-                }
+                var failure = await ApplyCompactionAttemptAsync(plan, history, instructions, model, options, contextWindow,
+                    () => persisted = true, ct).ConfigureAwait(false);
+                if (failure is null)
+                    return true;
+                LastTurnError = failure.Message;
+                if (!IsCompactRetryableFailure(failure))
+                    break;
             }
-            catch (OperationCanceledException)
+            catch (Exception exception)
             {
-                failure = new ModelFailure(ModelFailureKind.Cancelled, "compaction cancelled");
+                var failure = ModelFailureClassifier.FromException(exception, ct);
+                LastTurnError = failure.Message;
+                if (persisted)
+                    return true;
+                if (!IsCompactRetryableFailure(failure))
+                    break;
             }
+        }
 
-            // A summary request whose own prompt exceeds the window is retried over a
-            // truncated selection; other failures keep the circuit-breaker path below.
-            if (failure is { Kind: ModelFailureKind.ContextOverflow } overflow
-                && promptTooLongRetries < CompactPolicy.PromptTooLongMaxRetries)
+        _consecutiveCompactFailures++;
+        _deps.Logger.LogWarning("Compaction ({Trigger}) failed after {Failures} consecutive attempts.", trigger, _consecutiveCompactFailures);
+        return false;
+    }
+
+    private static bool IsCompactRetryableFailure(ModelFailure failure) =>
+        !CompactSummaryModelRunner.IsMediaSizeFailure(failure)
+        && (failure.IsRetryable || failure.Kind == ModelFailureKind.StreamProtocolError);
+
+    private async Task<ModelFailure?> ApplyCompactionAttemptAsync(CompactionPlan plan, IReadOnlyList<ConversationMessage> history,
+        string? instructions, IChatModel model, ModelCallOptions options, int contextWindow, Action markPersisted, CancellationToken ct)
+    {
+        var compactionSelection = plan.Selection;
+        var trigger = plan.Trigger;
+        var summaryText = string.Empty;
+        ModelFailure? failure = null;
+        var promptTooLongRetries = 0;
+        var stripMediaForSummary = false;
+        while (true)
+        {
+            var rawRequest = CompactionPlanner.BuildSummaryRequest(compactionSelection, instructions,
+                plan.ContextPrefixMessages, plan.SummaryModelRequest.Tools);
+            var summaryHistory = new List<ConversationMessage>(plan.ContextPrefixMessages);
+            if (compactionSelection.TruncationMarker is { } marker)
             {
-                var reselected = CompactionSelector.ReselectForPromptTooLong(history, compactionSelection, overflow.DeclaredTokenGap);
+                summaryHistory.Add(new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
+                    [new TextPart(StrongId.NewPartId(), marker)], _deps.Clock.GetUtcNow()));
+            }
+            summaryHistory.AddRange(compactionSelection.ToSummarize);
+            var summaryLimit = Math.Min(CompactPolicy.SummaryMaxOutputTokens,
+                model.Descriptor.Properties.DefaultMaxOutputTokens ?? DefaultRequestMaxOutputTokens);
+            var summaryOptions = options with { MaxOutputTokens = summaryLimit };
+            var summaryContext = await AssembleContextAsync(summaryHistory, summaryOptions, model, ct).ConfigureAwait(false);
+            var summaryRequest = rawRequest with
+            {
+                Messages = [.. summaryContext.Request.Messages, rawRequest.Messages[^1]],
+                Options = summaryOptions,
+            };
+            if (stripMediaForSummary)
+                summaryRequest = CompactSummaryModelRunner.ProjectMediaForRetry(summaryRequest);
+            var result = await CompactSummaryModelRunner.RunAsync(model, summaryRequest, ct).ConfigureAwait(false);
+            summaryText = result.Text;
+            failure = result.Failure;
+            if (failure is not null && failure.Kind != ModelFailureKind.Cancelled && !ct.IsCancellationRequested
+                && !stripMediaForSummary && CompactSummaryModelRunner.IsMediaSizeFailure(failure))
+            {
+                stripMediaForSummary = true;
+                continue;
+            }
+            if (failure is { Kind: ModelFailureKind.ContextOverflow } overflow)
+            {
+                var reselected = trigger == CompactTrigger.Manual
+                    ? CompactionSelector.TruncateForPromptTooLong(compactionSelection, overflow.DeclaredTokenGap, promptTooLongRetries)
+                    : CompactionSelector.ReselectForPromptTooLong(history, compactionSelection, overflow.DeclaredTokenGap, trigger);
                 if (!ReferenceEquals(reselected, compactionSelection))
                 {
                     compactionSelection = reselected;
                     promptTooLongRetries++;
                     continue;
                 }
+                failure = overflow with
+                {
+                    Message = "Conversation too long to compact automatically. Try /compact again after narrowing the active context.",
+                };
             }
             break;
         }
 
-        if (failure is not null || summaryText.Length == 0)
-        {
-            _consecutiveCompactFailures++;
-            _deps.Logger.LogWarning("Compaction ({Trigger}) failed after {Failures} consecutive attempts.", trigger, _consecutiveCompactFailures);
-            return false;
-        }
-
-        _consecutiveCompactFailures = 0;
-        _consecutiveRapidRefills = 0;
-        _toolRoundsSinceCompact = 0;
+        var formattedSummary = SummarizationPrompt.FormatSummary(summaryText);
+        if (failure is not null)
+            return failure;
+        if (formattedSummary.Length == 0)
+            return new ModelFailure(ModelFailureKind.ProviderError, "Failed to generate compact summary");
 
         plan = plan with { Selection = compactionSelection };
 
-        var summaryMessage = CompactionPlanner.CreateCompactSummaryMessage(summaryText.ToString());
+        var summaryMessage = CompactionPlanner.CreateCompactSummaryMessage(formattedSummary);
         var recentlyRead = _history.RecentReads()
-            .Select(r => (r.Path, r.Content))
+            .OrderByDescending(read => read.ReadAt)
             .ToList();
-        var attachments = CompactionPlanner.BuildRecentlyReadFilesAttachments(recentlyRead);
+        var attachments = CompactionPlanner.BuildRecentlyReadFilesAttachments(recentlyRead, plan.Selection.PreservedTail);
         var postCompact = CompactionPlanner.BuildPostCompactHistory(
             plan,
-            summaryText.ToString(),
+            formattedSummary,
             summaryMessage,
             plan.Selection.PreservedTail,
             attachments);
+        await _deps.Store.ReplaceMessagesAsync(_record.Id, postCompact.Messages, ct).ConfigureAwait(false);
+        markPersisted();
         _history.ReplaceAll(postCompact.Messages);
         _history.ClearRecentReads();
-        await _deps.Store.ReplaceMessagesAsync(_record.Id, postCompact.Messages, ct).ConfigureAwait(false);
+        _consecutiveCompactFailures = 0;
+        _consecutiveRapidRefills = 0;
+        _toolRoundsSinceCompact = 0;
         _lastProviderUsage = null;
         _usageAnchorIndex = -1;
         _contextUsage = null;
         await EmitAsync(new CompactBoundaryAppliedEvent(postCompact.Boundary), persist: true).ConfigureAwait(false);
-        var compactedContext = await AssembleContextAsync(postCompact.Messages, options, cancellationToken: ct).ConfigureAwait(false);
+        var compactedContext = await AssembleContextAsync(postCompact.Messages, options, model, ct).ConfigureAwait(false);
         await PublishContextUsageAsync(compactedContext, TokenEstimator.EstimateRequestTokens(compactedContext.Request),
             contextWindow, TokenEstimator.EstimateSource).ConfigureAwait(false);
-        return true;
+        return null;
     }
 
     private async Task CommitMessageAsync(ConversationMessage message)
@@ -1214,13 +1299,73 @@ public sealed class SessionRuntime : IAsyncDisposable
             ? new UserMessageCommittedEvent(message)
             : new AssistantMessageCommittedEvent(message);
         await EmitAsync(committed, persist: false).ConfigureAwait(false);
-        _record = _record with { UpdatedAt = _deps.Clock.GetUtcNow() };
-        await PersistRecordAsync(_sessionCts.Token).ConfigureAwait(false);
+        await PersistRecordAsync(_sessionCts.Token,
+            record => record with { UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
+        if (!_titleAttempted && IsRealUserTurn(message))
+            await InitializeTitleAsync(message).ConfigureAwait(false);
     }
 
-    private async Task CommitPartialAssistantAsync(ModelStepAccumulator accumulator)
+    private async Task InitializeTitleAsync(ConversationMessage message)
     {
-        var partial = accumulator.BuildPartialAssistantMessage(_deps.Clock.GetUtcNow());
+        _titleAttempted = true;
+        if (_record.ParentSessionId is not null || _record.TitleSource != SessionTitleSource.Default)
+            return;
+
+        var input = string.Join(" ", message.Parts.OfType<TextPart>().Select(part => part.Text));
+        await SetTitleAsync(SessionTitleGenerator.FirstInputTitle(input), SessionTitleSource.FirstInput, _sessionCts.Token)
+            .ConfigureAwait(false);
+        var normalized = SessionTitleGenerator.NormalizeInput(input);
+        if (_deps.Options.SessionTitleGenerationEnabled && _record.TitleSource == SessionTitleSource.FirstInput
+            && normalized.EnumerateRunes().Count() >= 10)
+            _titleTask = Task.Run(() => GenerateTitleAsync(normalized));
+    }
+
+    private async Task GenerateTitleAsync(string input)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token);
+        timeout.CancelAfter(_deps.Options.SessionTitleGenerationTimeout);
+        try
+        {
+            var title = await SessionTitleGenerator.GenerateAsync(_auxModel, input, timeout.Token).ConfigureAwait(false);
+            if (title is not null)
+                await SetTitleAsync(title, SessionTitleSource.Generated, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_sessionCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _deps.Logger.LogWarning(exception, "Session title generation failed for {SessionId}.", SessionId);
+        }
+    }
+
+    private async Task SetTitleAsync(string title, SessionTitleSource source, CancellationToken ct)
+    {
+        await _recordLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (source != SessionTitleSource.Custom && (_disposed || _record.TitleSource == SessionTitleSource.Custom))
+                return;
+            if (!await _deps.Store.TryUpdateSessionTitleAsync(SessionId, title, source, ct).ConfigureAwait(false))
+                return;
+            _record = _record with { Title = title, TitleSource = source };
+            await EmitAsync(new SessionTitleChangedEvent(title), persist: true).ConfigureAwait(false);
+            BumpRevision();
+            TitleChanged?.Invoke(this, title);
+        }
+        finally
+        {
+            _recordLock.Release();
+        }
+    }
+
+    private async Task CommitPartialAssistantAsync(ModelStepAccumulator accumulator, ModelDescriptor descriptor)
+    {
+        var partial = accumulator.BuildPartialAssistantMessage(_deps.Clock.GetUtcNow()) with
+        {
+            ProviderId = descriptor.ProviderId,
+            ModelId = descriptor.ModelId,
+        };
         if (partial.Parts.Count > 0)
         {
             await CommitMessageAsync(partial).ConfigureAwait(false);
@@ -1234,17 +1379,22 @@ public sealed class SessionRuntime : IAsyncDisposable
         var custom = _deps.Options.CustomSystemPrompt;
         var currentDate = EnvironmentSections.FormatLocalIsoDate(_deps.Clock.GetLocalNow().LocalDateTime);
         var media = await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
+        var skillsListing = _deps.Tools.VisibleContracts.Any(tool => tool.Name == "Skill")
+            ? _deps.Options.SkillsListing ?? SkillsListing.Render(new SkillsCatalog().Load(_record.WorkspaceRoot))
+            : null;
         return ContextBuilder.Assemble(new ContextAssemblyInput(
             CliPrefix: PromptTexts.CliPrefix,
             SystemStable: custom is { Length: > 0 } body ? "\n" + body.Trim() : _deps.Options.SystemPromptStable,
-            SystemDynamic: custom is { Length: > 0 } ? null : BuildDynamicSystemSections(model),
+            SystemDynamic: custom is { Length: > 0 } ? null : BuildDynamicSystemSections(model, skillsListing),
             AgentInstructions: _deps.Options.AgentInstructions,
-            SkillsListing: _deps.Options.SkillsListing,
+            SkillsListing: skillsListing,
             History: history,
             Tools: _deps.Tools.VisibleContracts,
             Options: options,
             CurrentDate: currentDate,
-            Media: media));
+            Media: media,
+            InlineToolResultImages: model?.InlineToolResultImages ?? false,
+            UseMidConversationSystem: model?.Descriptor.Properties.SupportsMidConversationSystem ?? false));
     }
 
     // Stored history references media by artifact URI so sessions stay light in memory;
@@ -1292,7 +1442,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     // Section order follows the reference builder: dynamic behavior, session guidance,
     // environment, output style (unused), context management, git snapshot.
-    private string? BuildDynamicSystemSections(IChatModel? model)
+    private string? BuildDynamicSystemSections(IChatModel? model, string? skillsListing)
     {
         var sections = new List<string>
         {
@@ -1300,7 +1450,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         };
         if (PromptTexts.SessionSpecificGuidance(
                 skillToolAvailable: _deps.Tools.VisibleContracts.Any(tool => tool.Name == "Skill"),
-                hasSkills: !string.IsNullOrEmpty(_deps.Options.SkillsListing)) is { } guidance)
+                hasSkills: !string.IsNullOrEmpty(skillsListing)) is { } guidance)
         {
             sections.Add(guidance);
         }
@@ -1340,28 +1490,19 @@ public sealed class SessionRuntime : IAsyncDisposable
         await EmitAsync(new ContextUsageUpdatedEvent(_contextUsage), persist: true).ConfigureAwait(false);
     }
 
-    private AssembledContext AppendDateReminder(AssembledContext request)
+    private void AppendDateReminder()
     {
         var today = EnvironmentSections.FormatLocalIsoDate(_deps.Clock.GetLocalNow().LocalDateTime);
-        if (_lastSeenLocalDate is null || _lastSeenLocalDate == today)
-        {
-            _lastSeenLocalDate = today;
-            return request;
-        }
+        if (_lastSeenLocalDate is not null && _lastSeenLocalDate != today)
+            AppendInMemoryReminder(EnvironmentSections.DateChangeReminder(today), MessageSource.DateChange);
         _lastSeenLocalDate = today;
-        return request with
-        {
-            Request = request.Request with
-            {
-                Messages =
-                [
-                    .. request.Request.Messages,
-                    new ModelInputMessage(MessageRole.User,
-                        [new InputTextBlock(SystemReminder.Wrap(EnvironmentSections.DateChangeReminder(today)))]),
-                ],
-            },
-        };
     }
+
+    private void AppendInMemoryReminder(string body, MessageSource source = MessageSource.RuntimeMode) =>
+        _history.Append(new ConversationMessage(
+            StrongId.NewMessageId(), MessageRole.User,
+            [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.SystemReminder, SystemReminder.Wrap(body), ProviderVisible: true)],
+            _deps.Clock.GetUtcNow(), Source: source));
 
     private async Task EmitModelChangedAsync(ModelSelection selection)
     {
@@ -1379,8 +1520,19 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
     }
 
-    private async Task PersistRecordAsync(CancellationToken ct) =>
-        await _deps.Store.UpsertSessionAsync(_record, ct).ConfigureAwait(false);
+    private async Task PersistRecordAsync(CancellationToken ct, Func<SessionRecord, SessionRecord> update)
+    {
+        await _recordLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            _record = update(_record);
+            await _deps.Store.UpsertSessionAsync(_record, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _recordLock.Release();
+        }
+    }
 
     private void BumpRevision() => Interlocked.Increment(ref _revision);
 
@@ -1422,7 +1574,13 @@ public sealed class SessionRuntime : IAsyncDisposable
                 : new AssistantMessageCommittedEvent(stored.Message);
             EmitForReplay(committed);
         }
+        foreach (var sessionEvent in durable.Select(evt => evt.Event)
+                     .Where(evt => evt is SubagentStartedEvent or SubagentStatusChangedEvent or TurnFailedEvent or TurnCompletedEvent))
+        {
+            EmitForReplay(sessionEvent);
+        }
         _history.AppendRange(messages.Select(m => m.Message).ToList());
+        _titleAttempted = messages.Any(message => IsRealUserTurn(message.Message));
         await RepairDanglingToolCallsAsync(messages).ConfigureAwait(false);
         _usageAnchorIndex = -1;
         if (messages.Count > 0)
@@ -1508,6 +1666,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         try
         {
             await _turnTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await _titleTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         }
         catch
         {
@@ -1515,17 +1674,18 @@ public sealed class SessionRuntime : IAsyncDisposable
         _sessionCts.Dispose();
         _events.DropAll();
         _commandLock.Dispose();
+        _recordLock.Dispose();
     }
 
     private enum ModelStepOutcome
     {
         ContinueWithTools,
         Finished,
+        Stopped,
         Failed,
         Cancelled,
         ContextOverflow,
         ContinuedOutput,
-        ContinueAfterHistoryRepair,
     }
 
     // A pending turn input is either a real user command or a task notification body that

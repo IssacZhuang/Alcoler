@@ -46,7 +46,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         HttpRequestMessage? built = null;
         ModelFailure? validationFailure = null;
         try { built = BuildRequest(request); }
-        catch (ArgumentException ex) { validationFailure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message); }
+        catch (ArgumentException ex) { validationFailure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message, Phase: ModelFailurePhase.RequestSetup); }
         if (validationFailure is not null)
         {
             yield return new ModelStreamFailed(validationFailure);
@@ -62,7 +62,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            sendFailure = ModelFailureClassifier.FromException(ex, cancellationToken);
+            sendFailure = ModelFailureClassifier.FromException(ex, cancellationToken) with { Phase = ModelFailurePhase.RequestSetup };
         }
         if (sendFailure is not null)
         {
@@ -96,9 +96,10 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                     using var document = JsonDocument.Parse(frame.Data);
                     events = state.Dispatch(document.RootElement).ToList();
                 }
-                catch (JsonException ex)
+                catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
                 {
-                    dispatchFailure = new ModelFailure(ModelFailureKind.StreamProtocolError, ex.Message);
+                    dispatchFailure = new ModelFailure(ModelFailureKind.StreamProtocolError, ex.Message,
+                        Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response!.StatusCode);
                 }
                 if (dispatchFailure is not null)
                 {
@@ -113,10 +114,46 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         }
     }
 
-    private HttpRequestMessage BuildRequest(ModelRequest request)
+    public bool SupportsNonStreamingGeneration => true;
+
+    public ValueTask<IReadOnlyList<ModelStreamEvent>> GenerateAsync(ModelRequest request, CancellationToken cancellationToken) =>
+        ModelHttpGeneration.SendAsync(httpClient, () => BuildRequest(request, stream: false), DecodeGeneration, cancellationToken);
+
+    private static IReadOnlyList<ModelStreamEvent> DecodeGeneration(JsonElement root)
+    {
+        var choices = root.GetProperty("choices");
+        if (choices.GetArrayLength() == 0)
+            throw new JsonException("Chat completion has no choices.");
+        var choice = choices[0];
+        var message = choice.GetProperty("message");
+        var delta = message.EnumerateObject().ToDictionary(property => property.Name, property => (object?)property.Value);
+        if (message.TryGetProperty("tool_calls", out var tools) && tools.ValueKind == JsonValueKind.Array)
+            delta["tool_calls"] = tools.EnumerateArray().Select((tool, index) => new
+            {
+                index,
+                id = tool.GetProperty("id").GetString(),
+                function = tool.GetProperty("function"),
+            }).ToArray();
+        var state = new OpenAiStreamState();
+        var events = state.Dispatch(JsonSerializer.SerializeToElement(new
+        {
+            choices = new[] { new { delta, finish_reason = choice.TryGetProperty("finish_reason", out var reason) ? reason.GetString() : null } },
+            usage = root.TryGetProperty("usage", out var usage) ? usage : default(JsonElement?),
+        })).ToList();
+        events.AddRange(state.Complete());
+        if (message.TryGetProperty("reasoning_content", out var reasoning) && reasoning.ValueKind == JsonValueKind.String && reasoning.GetString() is { Length: > 0 })
+        {
+            var deltaIndex = events.FindIndex(e => e is ModelReasoningDelta);
+            events.Insert(deltaIndex, new ModelReasoningStarted());
+            events.Insert(deltaIndex + 2, new ModelReasoningEnded());
+        }
+        return events;
+    }
+
+    private HttpRequestMessage BuildRequest(ModelRequest request, bool stream = true)
     {
         var normalized = ReasoningHistoryNormalizer.Normalize(
-            request.Messages, keepReasoning: false, Descriptor.Properties.SupportsImage);
+            request.Messages, keepReasoning: true, Descriptor.Properties.SupportsImage, Descriptor);
         ModelRequestOptions.ValidateRequest(request with { Messages = normalized }, Descriptor.Properties);
         var messages = new List<object>();
         foreach (var input in ModelRequestSystemBlocks.Normalize(normalized, Descriptor.Properties.SupportsMidConversationSystem))
@@ -125,10 +162,11 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         var payload = new Dictionary<string, object?>
         {
             ["model"] = options.Model,
-            ["stream"] = true,
-            ["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true },
+            ["stream"] = stream,
             ["messages"] = messages,
         };
+        if (stream)
+            payload["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true };
         if (request.Tools.Count > 0)
             payload["tools"] = request.Tools.Select(t => new Dictionary<string, object?>
             {
@@ -148,7 +186,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                     options.UseLegacyMaxTokens ? "max_tokens" : "max_completion_tokens", DefaultMaxTokens), Encoding.UTF8, "application/json"),
         };
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
-        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
         return message;
     }
 
@@ -157,12 +195,15 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         if (message.Role == MessageRole.Assistant)
         {
             var text = string.Concat(message.Content.OfType<InputTextBlock>().Select(b => b.Text));
+            var reasoning = string.Concat(message.Content.OfType<InputReasoningBlock>().Select(b => b.Text));
             var toolCalls = message.Content.OfType<InputToolCallBlock>().ToList();
             var assistant = new Dictionary<string, object?>
             {
                 ["role"] = "assistant",
                 ["content"] = text.Length > 0 ? text : null,
             };
+            if (reasoning.Length > 0)
+                assistant["reasoning_content"] = reasoning;
             if (toolCalls.Count > 0)
                 assistant["tool_calls"] = toolCalls.Select(t => new Dictionary<string, object?>
                 {
@@ -243,7 +284,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
             if (root.TryGetProperty("usage", out var usage) &&
                 usage.ValueKind == JsonValueKind.Object)
             {
-                _usage = ReadUsage(usage);
+                _usage = usage.ValueKind == JsonValueKind.Object ? ReadUsage(usage) : null;
                 if (_finishReason is not null)
                 {
                     foreach (var e in Finish())
@@ -284,7 +325,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
             {
                 yield return new ModelStreamFailed(new ModelFailure(
                     ModelFailureKind.StreamProtocolError,
-                    "openai-compatible stream ended without finish_reason or usage"));
+                    "openai-compatible stream ended without finish_reason or usage", Phase: ModelFailurePhase.ResponseBody));
             }
         }
 
@@ -293,7 +334,8 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
             _finished = true;
             foreach (var e in CloseOpenContent())
                 yield return e;
-            yield return new ModelStreamFinished(MapFinishReason(_finishReason), _usage);
+            yield return new ModelStreamFinished(MapFinishReason(_finishReason), _usage, _finishReason,
+                ContextWindowExceeded: _finishReason == "model_context_window_exceeded");
         }
 
         private IEnumerable<ModelStreamEvent> CloseOpenContent()
@@ -420,7 +462,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
 
         private static ModelFinishReason MapFinishReason(string? finishReason) => finishReason switch
         {
-            "stop" or null => ModelFinishReason.Stop,
+            "stop" => ModelFinishReason.Stop,
             "tool_calls" or "function_call" => ModelFinishReason.ToolCalls,
             // Gateway providers surface the output-limit family under raw non-standard
             // reasons; all of them mean the response was truncated.

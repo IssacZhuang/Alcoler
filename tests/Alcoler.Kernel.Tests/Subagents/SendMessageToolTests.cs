@@ -30,7 +30,7 @@ public class SendMessageToolTests
     }
 
     [Fact]
-    public async Task CompletedAgent_ResumesInBackground_AndReceivesWrappedPrompt()
+    public async Task CompletedAgent_ResumesInBackground_AndReceivesRawPrompt()
     {
         await using var harness = TestHarness.Create(
             new ScriptStep.Events(
@@ -58,7 +58,7 @@ public class SendMessageToolTests
             CancellationToken.None);
 
         Assert.False(result.IsError);
-        Assert.Contains("resumed it in the background with your message", result.SingleText());
+        Assert.Contains("was stopped (completed); resumed it in the background with your message", result.SingleText());
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (childProjection.Snapshot() is var snapshot &&
@@ -72,6 +72,91 @@ public class SendMessageToolTests
         Assert.NotNull(delivered);
         // A resumed agent receives the raw message as its next prompt, with no wrapper.
         Assert.Equal("check the kernel again", delivered);
+    }
+
+    [Fact]
+    public async Task BusyAgent_ReceivesCoordinatorGuide_InItsActiveTurn()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new FakeTool("Gate", execute: async (_, token) =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+            return ToolExecutionResult.Text("ready");
+        });
+        var callId = new ToolCallId("gate-call");
+        await using var harness = TestHarness.Create(
+            new ScriptStep.Events(
+                new Contracts.Models.ModelToolCallReady(new Contracts.Models.ToolCall(callId, "Gate", JsonDocument.Parse("{}").RootElement.Clone())),
+                new Contracts.Models.ModelStreamFinished(Contracts.Models.ModelFinishReason.ToolCalls)),
+            new ScriptStep.Events(
+                new Contracts.Models.ModelTextDelta("finished"),
+                new Contracts.Models.ModelStreamFinished(Contracts.Models.ModelFinishReason.Stop)));
+        await using var childRuntime = harness.BuildRuntime(gate);
+        var session = await childRuntime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        var messenger = new SubagentMessenger();
+        var agentId = StrongId.NewSubagentId();
+        messenger.Register(new SessionId("sess_parent"), new SubagentChannel(agentId, session.Id, "child", childRuntime));
+        using var projection = childRuntime.Subscribe(session.Id);
+        Assert.True((await childRuntime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None)).Accepted);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var result = await new SendMessageTool(messenger).ExecuteAsync(
+                Context($$"""{"to":"{{agentId.Value}}","summary":"narrow scope","message":"focus on Kernel"}"""), CancellationToken.None);
+            Assert.False(result.IsError);
+            Assert.Contains("was sent to its active turn", result.SingleText());
+            release.TrySetResult();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (projection.Snapshot().State.Phase != TurnPhase.Idle)
+                await Task.Delay(10, timeout.Token);
+            Assert.Contains(projection.Snapshot().Rows.OfType<UserMessageRow>(), row => row.Text ==
+                "The coordinator sent a message while you were working:\nfocus on Kernel\n\nAddress this before completing your current task.");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task RespondToCoordinator_QueuesEscapedEnvelope_AndKeepsContinuationGuidance()
+    {
+        string? body = null;
+        var tool = new RespondToCoordinatorTool(new SubagentId("sub_child"), "Explore", (message, _) =>
+        {
+            body = message;
+            return ValueTask.CompletedTask;
+        });
+        var result = await tool.ExecuteAsync(
+            Context("""{"summary":"Found <entry>","message":"Use \"kernel\" & don't stop."}"""), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal("""
+            <subagent-message>
+            <agent-id>sub_child</agent-id>
+            <agent-type>Explore</agent-type>
+            <summary>Found &lt;entry&gt;</summary>
+            <message>Use &quot;kernel&quot; &amp; don&apos;t stop.</message>
+            </subagent-message>
+            """.Replace("\r\n", "\n"), body);
+        Assert.Contains("was queued for the coordinator.", result.SingleText());
+        Assert.EndsWith("Continue the current task unless the coordinator explicitly changed or ended it.", result.SingleText());
+    }
+
+    [Fact]
+    public async Task RespondToCoordinator_DeliveryFailure_PreservesContinuationBeforeError()
+    {
+        var tool = new RespondToCoordinatorTool(new SubagentId("sub_child"), "Explore",
+            (_, _) => ValueTask.FromException(new InvalidOperationException("coordinator unavailable")));
+        var result = await tool.ExecuteAsync(Context("""{"summary":"s","message":"hello"}"""), CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Contains("failed to queue for the coordinator. Continue the current task", result.SingleText());
+        Assert.EndsWith("Failure: coordinator unavailable.", result.SingleText());
     }
 
     [Fact]

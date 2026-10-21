@@ -1,38 +1,55 @@
+using System.Buffers;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 
 namespace Alcoler.Adapters.Tools;
 
-/// <summary>
-/// One shell process with stdout/stderr captured per stream plus a combined log that can
-/// stream into an output file while the process runs. The session survives the tool call
-/// that started it so a timed-out command can be handed to the background job service.
-/// </summary>
 internal sealed class BashProcessSession : IDisposable
 {
     internal const string CwdMarker = "__ALCOLER_CWD__";
+    internal const long MaxPersistedBytes = 5L * 1024 * 1024 * 1024;
 
     private readonly Process _process;
     private readonly object _sync = new();
     private readonly StringBuilder _stdout = new();
     private readonly StringBuilder _stderr = new();
-    private readonly StringBuilder _combined = new();
-    private FileStream? _outputFile;
+    private readonly StringBuilder _tail = new();
     private readonly bool _captureCwd;
+    private readonly long _persistedLimit;
+    private readonly Func<string, Stream> _openOutput;
+    private Stream? _outputFile;
+    private long _persistedBytes;
+    private int _tailBytes;
+    private Task _stdoutPump = Task.CompletedTask;
+    private Task _stderrPump = Task.CompletedTask;
+    private string? _capturedCwd;
     private bool _owned = true;
+    private bool _limitExceeded;
 
-    private BashProcessSession(Process process, bool captureCwd)
+    private BashProcessSession(Process process, bool captureCwd, int inlineLimit, long persistedLimit, Func<string, Stream>? openOutput)
     {
         _process = process;
         _captureCwd = captureCwd;
+        InlineLimit = inlineLimit;
+        _persistedLimit = persistedLimit;
+        _openOutput = openOutput ?? (path => new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 4096));
     }
+
+    public string? OutputPath { get; private set; }
+    public bool PersistenceFailed { get; private set; }
+    public long OutputBytes { get; private set; }
+    public int InlineLimit { get; }
 
     public static BashProcessSession Start(
         ShellSpec shell,
         string command,
         string workingDirectory,
         bool captureCwd,
-        string? outputFilePath)
+        string? outputFilePath,
+        long persistedLimit = MaxPersistedBytes,
+        Func<string, Stream>? openOutput = null,
+        Encoding? legacyEncoding = null)
     {
         var startInfo = new ProcessStartInfo(shell.FileName)
         {
@@ -41,77 +58,183 @@ internal sealed class BashProcessSession : IDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
         startInfo.ArgumentList.Add(shell.Arguments);
-        startInfo.ArgumentList.Add(captureCwd ? WrapWithCwdCapture(command) : command);
-
-        var process = new Process { StartInfo = startInfo };
-        var session = new BashProcessSession(process, captureCwd);
-        if (outputFilePath is not null)
-            session.OpenOutputFile(outputFilePath);
-
-        process.OutputDataReceived += session.OnStdoutLine;
-        process.ErrorDataReceived += session.OnStderrLine;
-        process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        return session;
+        var isPosix = Path.GetFileNameWithoutExtension(shell.FileName) is "bash" or "sh" or "zsh" or "dash";
+        var script = captureCwd ? WrapWithCwdCapture(command) : command;
+        startInfo.ArgumentList.Add(isPosix ? "exec 2>&1; " + script : script);
+        legacyEncoding ??= BashOutputDecoder.ResolveWindowsLegacyEncoding();
+        var session = new BashProcessSession(new Process { StartInfo = startInfo }, captureCwd,
+            ResolveInlineLimit(Environment.GetEnvironmentVariable("BASH_MAX_OUTPUT_LENGTH")), persistedLimit, openOutput);
+        try
+        {
+            if (outputFilePath is not null)
+                session.OpenOutputFile(outputFilePath);
+            session._process.Start();
+            session._stdoutPump = session.PumpAsync(session._process.StandardOutput.BaseStream, stdout: true, legacyEncoding);
+            session._stderrPump = session.PumpAsync(session._process.StandardError.BaseStream, stdout: false, legacyEncoding);
+            return session;
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
     }
 
-    /// <summary>
-    /// Posix-shell wrapper that keeps the command's exit status while appending the final
-    /// working directory as a stdout marker; the marker is stripped before the model sees
-    /// the output. cygpath yields a Windows path from git-bash (whose $PWD may use an MSYS
-    /// mount like /tmp that has no drive-letter mapping); shells without cygpath fall back
-    /// to the native $PWD.
-    /// </summary>
+    internal static int ResolveInlineLimit(string? value)
+    {
+        if (value is null)
+            return BashModelContent.MaxInlineOutputBytes;
+        var parsed = BashTimeoutPolicy.ParsePositive(value);
+        return parsed is null ? BashModelContent.MaxInlineOutputBytes : Math.Min(parsed.Value, 150_000);
+    }
+
     private static string WrapWithCwdCapture(string command) =>
         $$"""{ {{command}} ; } ; __rc=$?; printf '{{CwdMarker}}%s' "$(cygpath -w "$PWD" 2>/dev/null || printf '%s' "$PWD")"; exit $__rc""";
 
     public string SnapshotStdout()
     {
         lock (_sync)
-        {
-            return StripCwdMarker(_stdout.ToString());
-        }
+            return _stdout.ToString();
     }
 
     public string SnapshotStderr()
     {
         lock (_sync)
-        {
             return _stderr.ToString();
-        }
+    }
+
+    public string SnapshotTail()
+    {
+        lock (_sync)
+            return _tail.ToString();
     }
 
     public async Task<int> WaitForExitAsync(CancellationToken cancellationToken)
     {
         await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        // WaitForExit() without a timeout flushes the async output event queue.
-        _process.WaitForExit();
-        return _process.ExitCode;
+        await Task.WhenAll(_stdoutPump, _stderrPump).WaitAsync(cancellationToken).ConfigureAwait(false);
+        CloseOutputFile();
+        return _limitExceeded ? 1 : _process.ExitCode;
     }
 
-    /// <summary>
-    /// Moves a still-running foreground process to a background output file; everything
-    /// captured so far is flushed before live output continues into the file.
-    /// </summary>
     public void OpenOutputFile(string path)
     {
         lock (_sync)
         {
             if (_outputFile is not null)
                 return;
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            _outputFile = new FileStream(
-                path,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.Read,
-                bufferSize: 4096);
-            var prefix = Encoding.UTF8.GetBytes(_combined.ToString());
-            _outputFile.Write(prefix, 0, prefix.Length);
-            _outputFile.Flush();
+            OutputPath = path;
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                _outputFile = _openOutput(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                PersistenceFailed = true;
+            }
+        }
+    }
+
+    private async Task PumpAsync(Stream reader, bool stdout, Encoding? legacyEncoding)
+    {
+        var buffer = new byte[4096];
+        var decoder = new BashOutputDecoder(legacyEncoding);
+        var pending = "";
+        while (true)
+        {
+            var count = await reader.ReadAsync(buffer).ConfigureAwait(false);
+            var text = decoder.Decode(buffer.AsSpan(0, count), flush: count == 0);
+            if (text.Length == 0)
+            {
+                if (count == 0)
+                    break;
+                continue;
+            }
+            if (stdout && _captureCwd)
+            {
+                pending += text;
+                // A command may print the marker itself; only the final bounded tail is cwd plumbing.
+                var safeLength = Math.Max(0, pending.Length - 32_768);
+                if (safeLength > 0 && char.IsHighSurrogate(pending[safeLength - 1]))
+                    safeLength--;
+                Append(pending[..safeLength], stdout);
+                pending = pending[safeLength..];
+            }
+            else
+            {
+                // Retain a split surrogate until the next read so persisted UTF-8 stays intact.
+                text = pending + text;
+                var length = text.Length - (char.IsHighSurrogate(text[^1]) ? 1 : 0);
+                Append(text[..length], stdout);
+                pending = text[length..];
+            }
+            if (count == 0)
+                break;
+        }
+        if (stdout && _captureCwd && pending.LastIndexOf(CwdMarker, StringComparison.Ordinal) is >= 0 and var marker)
+        {
+            _capturedCwd = pending[(marker + CwdMarker.Length)..];
+            pending = pending[..marker];
+        }
+        Append(pending, stdout);
+    }
+
+    private void Append(string text, bool stdout)
+    {
+        if (text.Length == 0)
+            return;
+        lock (_sync)
+        {
+            var bytes = Encoding.UTF8.GetBytes(text);
+            OutputBytes += bytes.Length;
+            var target = stdout ? _stdout : _stderr;
+            var remaining = InlineLimit - Encoding.UTF8.GetByteCount(target.ToString());
+            var chars = 0;
+            while (chars < text.Length)
+            {
+                var size = char.IsSurrogatePair(text, chars) ? 2 : 1;
+                var cost = Encoding.UTF8.GetByteCount(text.AsSpan(chars, size));
+                if (cost > remaining)
+                    break;
+                remaining -= cost;
+                chars += size;
+            }
+            target.Append(text.AsSpan(0, chars));
+            _tail.Append(text);
+            _tailBytes += bytes.Length;
+            var removed = 0;
+            while (_tailBytes > BashModelContent.MaxInlineOutputBytes && removed < _tail.Length)
+            {
+                var pair = char.IsHighSurrogate(_tail[removed]) && removed + 1 < _tail.Length && char.IsLowSurrogate(_tail[removed + 1]);
+                _tailBytes -= pair ? 4 : _tail[removed] <= 0x7f ? 1 : _tail[removed] <= 0x7ff ? 2 : 3;
+                removed += pair ? 2 : 1;
+            }
+            _tail.Remove(0, removed);
+            if (_outputFile is not null)
+            {
+                try
+                {
+                    var writable = (int)Math.Min(bytes.Length, Math.Max(0, _persistedLimit - _persistedBytes));
+                    _outputFile.Write(bytes.AsSpan(0, writable));
+                    _persistedBytes += writable;
+                    _outputFile.Flush();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    PersistenceFailed = true;
+                    CloseOutputFile();
+                }
+            }
+            if (OutputBytes > _persistedLimit && !_limitExceeded)
+            {
+                _limitExceeded = true;
+                KillTree();
+            }
         }
     }
 
@@ -130,19 +253,12 @@ internal sealed class BashProcessSession : IDisposable
     {
         try
         {
-            var exitCode = await WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            return exitCode;
+            return await WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             KillTree();
-            try
-            {
-                await _process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException)
-            {
-            }
+            await WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
         finally
@@ -152,82 +268,37 @@ internal sealed class BashProcessSession : IDisposable
         }
     }
 
-    /// <summary>
-    /// Detaches the session from its creating scope; the background job's completion
-    /// callback becomes responsible for releasing process and file handles.
-    /// </summary>
     public void TransferOwnership() => _owned = false;
-
-    private void OnStdoutLine(object? sender, DataReceivedEventArgs e)
-    {
-        if (e.Data is null)
-            return;
-        lock (_sync)
-        {
-            _stdout.AppendLine(e.Data);
-            AppendCombined(e.Data);
-        }
-    }
-
-    private void OnStderrLine(object? sender, DataReceivedEventArgs e)
-    {
-        if (e.Data is null)
-            return;
-        lock (_sync)
-        {
-            _stderr.AppendLine(e.Data);
-            AppendCombined(e.Data);
-        }
-    }
-
-    private void AppendCombined(string line)
-    {
-        // The cwd marker is tool plumbing, not command output, and must not reach the
-        // background output file the model reads.
-        if (_captureCwd && line.StartsWith(CwdMarker, StringComparison.Ordinal))
-            return;
-        _combined.AppendLine(line);
-        if (_outputFile is not null)
-        {
-            var bytes = Encoding.UTF8.GetBytes(line + "\n");
-            _outputFile.Write(bytes, 0, bytes.Length);
-            _outputFile.Flush();
-        }
-    }
-
-    private string StripCwdMarker(string stdout)
-    {
-        if (!_captureCwd)
-            return stdout;
-        var markerIndex = stdout.LastIndexOf(CwdMarker, StringComparison.Ordinal);
-        if (markerIndex < 0)
-            return stdout;
-        return stdout[..markerIndex];
-    }
 
     internal bool TryExtractCapturedCwd(out string captured)
     {
-        captured = string.Empty;
-        if (!_captureCwd)
-            return false;
-        string stdout;
-        lock (_sync)
-        {
-            stdout = _stdout.ToString();
-        }
-        var markerIndex = stdout.LastIndexOf(CwdMarker, StringComparison.Ordinal);
-        if (markerIndex < 0)
-            return false;
-        captured = stdout[(markerIndex + CwdMarker.Length)..].Trim();
+        captured = _capturedCwd?.Trim() ?? "";
         return captured.Length > 0;
+    }
+
+    public void DeleteOutputFile()
+    {
+        CloseOutputFile();
+        if (OutputPath is not null)
+            File.Delete(OutputPath);
     }
 
     private void CloseOutputFile()
     {
         lock (_sync)
         {
-            _outputFile?.Dispose();
-            _outputFile = null;
+            try
+            {
+                _outputFile?.Dispose();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                PersistenceFailed = true;
+            }
+            finally
+            {
+                _outputFile = null;
+            }
         }
     }
 
@@ -235,7 +306,154 @@ internal sealed class BashProcessSession : IDisposable
     {
         if (!_owned)
             return;
-        CloseOutputFile();
-        _process.Dispose();
+        KillTree();
+        try
+        {
+            Task.WhenAll(_stdoutPump, _stderrPump).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            CloseOutputFile();
+            _process.Dispose();
+        }
+    }
+}
+
+internal sealed class BashOutputDecoder(Encoding? legacyEncoding)
+{
+    private Encoding? _encoding = legacyEncoding is null ? Encoding.UTF8 : null;
+    private Decoder? _decoder = legacyEncoding is null ? Encoding.UTF8.GetDecoder() : null;
+    private byte[] _pending = [];
+
+    public string Decode(ReadOnlySpan<byte> bytes, bool flush = false)
+    {
+        if (_decoder is null)
+        {
+            var combined = new byte[_pending.Length + bytes.Length];
+            _pending.CopyTo(combined, 0);
+            bytes.CopyTo(combined.AsSpan(_pending.Length));
+            var offset = 0;
+            var nonAscii = false;
+            while (offset < combined.Length)
+            {
+                var status = Rune.DecodeFromUtf8(combined.AsSpan(offset), out var rune, out var consumed);
+                if (status == OperationStatus.NeedMoreData && !flush)
+                {
+                    if (!nonAscii)
+                    {
+                        _pending = combined[offset..];
+                        return Encoding.UTF8.GetString(combined.AsSpan(0, offset));
+                    }
+                    _encoding = Encoding.UTF8;
+                    _decoder = _encoding.GetDecoder();
+                    break;
+                }
+                if (status != OperationStatus.Done)
+                {
+                    _encoding = legacyEncoding!;
+                    _decoder = _encoding.GetDecoder();
+                    break;
+                }
+                nonAscii |= !rune.IsAscii;
+                offset += consumed;
+            }
+            _pending = [];
+            if (_decoder is null)
+            {
+                if (!nonAscii)
+                    return Encoding.UTF8.GetString(combined);
+                _encoding = Encoding.UTF8;
+                _decoder = _encoding.GetDecoder();
+            }
+            return Convert(combined, flush);
+        }
+        return Convert(bytes, flush);
+    }
+
+    private string Convert(ReadOnlySpan<byte> bytes, bool flush)
+    {
+        var chars = new char[_encoding!.GetMaxCharCount(bytes.Length + 4)];
+        var written = _decoder!.GetChars(bytes, chars, flush);
+        return new string(chars, 0, written);
+    }
+
+    internal static Encoding? ResolveWindowsLegacyEncoding()
+    {
+        if (!OperatingSystem.IsWindows())
+            return null;
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var configured = Environment.GetEnvironmentVariable("ZCODE_WINDOWS_OUTPUT_ENCODING")?.Trim();
+        if (!string.IsNullOrEmpty(configured))
+            return Find(configured);
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    Arguments = "/d /s /c chcp",
+                },
+            };
+            process.Start();
+            if (process.WaitForExit(1_000))
+            {
+                var output = process.StandardOutput.ReadToEnd();
+                var digits = new string(output.SkipWhile(static ch => !char.IsAsciiDigit(ch)).TakeWhile(char.IsAsciiDigit).ToArray());
+                if (int.TryParse(digits, out var codePage) && codePage != 65001 && Find($"cp{codePage}") is { } encoding)
+                    return encoding;
+            }
+            else
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
+        {
+        }
+        var locale = string.Join(" ", Environment.GetEnvironmentVariable("LC_ALL"), Environment.GetEnvironmentVariable("LC_CTYPE"),
+            Environment.GetEnvironmentVariable("LANG"), CultureInfo.CurrentCulture.Name).ToLowerInvariant();
+        return Find(locale.Contains("zh") || locale.Contains("chinese") ? "gb18030"
+            : locale.Contains("ja") || locale.Contains("japanese") ? "cp932"
+            : locale.Contains("ko") || locale.Contains("korean") ? "cp949"
+            : locale.Contains("ru") || locale.Contains("russian") ? "cp866" : "cp437");
+
+        static Encoding? Find(string name)
+        {
+            try
+            {
+                return name.StartsWith("cp", StringComparison.OrdinalIgnoreCase) && int.TryParse(name.AsSpan(2), out var codePage)
+                    ? Encoding.GetEncoding(codePage) : Encoding.GetEncoding(name);
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
+        }
+    }
+}
+
+internal sealed record BashTimeoutPolicy(int DefaultMs, int MaxMs)
+{
+    public static BashTimeoutPolicy FromEnvironment(Func<string, string?> get)
+    {
+        var defaultMs = ParsePositive(get("BASH_DEFAULT_TIMEOUT_MS")) ?? BashTool.DefaultTimeoutMs;
+        return new(defaultMs, Math.Max(defaultMs, ParsePositive(get("BASH_MAX_TIMEOUT_MS")) ?? BashTool.MaxTimeoutMs));
+    }
+
+    public int Resolve(int? input) => Math.Min(input is null or 0 ? DefaultMs : input.Value, MaxMs);
+
+    internal static int? ParsePositive(string? value)
+    {
+        var text = value?.TrimStart();
+        if (string.IsNullOrEmpty(text))
+            return null;
+        var end = text[0] is '+' or '-' ? 1 : 0;
+        while (end < text.Length && char.IsAsciiDigit(text[end]))
+            end++;
+        return int.TryParse(text.AsSpan(0, end), out var number) && number > 0 ? number : null;
     }
 }

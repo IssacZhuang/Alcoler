@@ -35,6 +35,29 @@ public class OpenAiCompatibleChatModelTests
     private static HttpResponseMessage SseResponse(string body) => SegmentedStream.ToResponse(body, segmentSize: 11);
 
     [Fact]
+    public async Task Request_ReplaysReasoningContent_WithoutAnthropicSignatureRepair()
+    {
+        var handler = new RecordingHandler((_, _) => SseResponse("data: [DONE]\n\n"));
+        await CollectAsync(CreateModel(handler), new ModelRequest([
+            new(MessageRole.Assistant, [new InputReasoningBlock("thought"), new InputTextBlock("answer")]),
+            new(MessageRole.User, [new InputTextBlock("next")]),
+        ], [], new()));
+        using var body = JsonDocument.Parse(handler.RequestBodies.Single()!);
+        Assert.Equal("thought", body.RootElement.GetProperty("messages")[0].GetProperty("reasoning_content").GetString());
+
+        var rejectionHandler = new RecordingHandler((_, _) => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("""{"error":{"message":"signature in thinking block invalid"}}"""),
+        });
+        var events = await CollectAsync(CreateModel(rejectionHandler), new ModelRequest([
+            new(MessageRole.Assistant, [new InputReasoningBlock("signed", "sig"), new InputTextBlock("answer")]),
+            new(MessageRole.User, [new InputTextBlock("next")]),
+        ], [], new()));
+        Assert.Single(rejectionHandler.Requests);
+        Assert.Single(events.OfType<ModelStreamFailed>());
+    }
+
+    [Fact]
     public async Task HappyPath_AssemblesChunkedToolCallsAndUsage()
     {
         var sse = string.Join("\n",
@@ -172,7 +195,7 @@ public class OpenAiCompatibleChatModelTests
     }
 
     [Fact]
-    public async Task DoneWithUsageButNoFinishReason_SynthesizesStopFinish()
+    public async Task DoneWithUsageButNoFinishReason_ReportsOtherWithoutInventingRawReason()
     {
         var sse = string.Join("\n",
             """data: {"choices":[{"delta":{"content":"hi"}}]}""",
@@ -188,7 +211,8 @@ public class OpenAiCompatibleChatModelTests
         var events = await CollectAsync(model);
 
         var finish = Assert.IsType<ModelStreamFinished>(events.Last());
-        Assert.Equal(ModelFinishReason.Stop, finish.FinishReason);
+        Assert.Equal(ModelFinishReason.Other, finish.FinishReason);
+        Assert.Null(finish.RawFinishReason);
         Assert.Equal(2, finish.Usage!.InputTokens);
     }
 

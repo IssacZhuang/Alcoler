@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Models;
@@ -19,37 +20,47 @@ public static class TokenEstimator
         return (weighted + 2) / 3;
     }
 
-    public static int EstimateMessageTokens(ConversationMessage message)
+    public static int EstimateMessageTokens(ConversationMessage message) =>
+        ContextBuilder.Project(message).Sum(EstimateModelMessageTokens);
+
+    public static int EstimateModelMessageTokens(ModelInputMessage message)
     {
-        var total = 0;
-        foreach (var part in message.Parts)
+        long contentCharacters = 0;
+        long toolCharacters = 0;
+        var contentCount = 0;
+        foreach (var block in message.Content)
         {
-            switch (part)
+            if (block is InputToolCallBlock call)
             {
-                case TextPart text:
-                    total += EstimateTokens(text.Text);
-                    break;
-                case ReasoningPart reasoning:
-                    total += EstimateTokens(reasoning.Text);
-                    break;
-                case ToolCallPart toolCall:
-                    total += EstimateTokens(RawJson(toolCall.Input));
-                    break;
-                case ToolResultPart result:
-                    foreach (var block in result.Content)
-                        if (block is ToolResultText resultText)
-                            total += EstimateTokens(resultText.Text);
-                    break;
-                case FilePart file:
-                    if (file.FileName is not null)
-                        total += EstimateTokens(file.FileName);
-                    break;
-                case AttachmentPart attachment:
-                    total += EstimateTokens(attachment.Content);
-                    break;
+                toolCharacters += call.Name.Length + CompactJson(call.Input).Length;
+                continue;
+            }
+
+            var text = block switch
+            {
+                InputTextBlock value => value.Text,
+                InputReasoningBlock value => value.Text,
+                InputImageBlock image => $"[Attached {image.MimeType}]",
+                InputToolResultBlock result => result.Content,
+                _ => string.Empty,
+            };
+            if (text.Length > 0)
+            {
+                if (contentCount++ > 0)
+                    contentCharacters += 2;
+                contentCharacters += text.Length;
+            }
+            if (block is InputToolResultBlock { Images: { } images })
+            {
+                foreach (var image in images)
+                {
+                    if (contentCount++ > 0)
+                        contentCharacters += 2;
+                    contentCharacters += $"[Attached {image.MimeType}]".Length;
+                }
             }
         }
-        return total;
+        return (int)Math.Min(int.MaxValue, (contentCharacters + toolCharacters + 2) / 3);
     }
 
     public static int EstimateHistoryTokens(IReadOnlyList<ConversationMessage> messages)
@@ -60,7 +71,7 @@ public static class TokenEstimator
         return total;
     }
 
-    // Anchor is ContextUsageTokens when reported, else InputTokens of the same committed step.
+    // Provider input usage excludes the committed assistant unless a context-usage total is available.
     public static (int Tokens, string Source) EstimateCurrentInputTokens(
         IReadOnlyList<ConversationMessage> history,
         int anchorIndex,
@@ -71,9 +82,9 @@ public static class TokenEstimator
             return (EstimateHistoryTokens(history), EstimateSource);
 
         var tail = 0;
-        for (var i = anchorIndex + 1; i < history.Count; i++)
-            foreach (var projected in ContextBuilder.Project(history[i]))
-                tail += EstimateTokens(SerializeMessage(projected));
+        var startIndex = usage?.ContextUsageTokens is null ? anchorIndex : anchorIndex + 1;
+        for (var i = Math.Max(0, startIndex); i < history.Count; i++)
+            tail += EstimateMessageTokens(history[i]);
         return (anchor.Value + tail, ProviderUsageSource);
     }
 
@@ -160,9 +171,10 @@ public static class TokenEstimator
     internal static string RawJson(JsonElement element) =>
         element.ValueKind == JsonValueKind.Undefined ? string.Empty : element.GetRawText();
 
-    // Astral code points weigh 2 through their surrogate pair; a UTF-16 char cannot itself exceed 0xFFFF.
-    private static bool IsDoubleWeight(char c) =>
-        (c >= '\u4E00' && c <= '\u9FFF')
-        || (c >= '\u3400' && c <= '\u4DBF')
-        || (c >= '\uFF00' && c <= '\uFFEF');
+    private static readonly JsonSerializerOptions CompactJsonOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    private static string CompactJson(JsonElement element) =>
+        element.ValueKind == JsonValueKind.Undefined ? "{}" : JsonSerializer.Serialize(element, CompactJsonOptions);
+
+    private static bool IsDoubleWeight(char c) => c >= '\u4E00' && c <= '\u9FFF';
 }

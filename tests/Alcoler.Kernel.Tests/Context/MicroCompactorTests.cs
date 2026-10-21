@@ -100,7 +100,7 @@ public class MicroCompactorTests
     {
         var history = new List<ConversationMessage>();
         history.AddRange(TestMessages.Round("TodoWrite", new string('x', 600)).Messages);
-        history.AddRange(TestMessages.Round("ApplyPatch", new string('x', 600)).Messages);
+        history.AddRange(TestMessages.Round("TaskOutput", new string('x', 600)).Messages);
         history.AddRange(TestMessages.Rounds(count: 1, "Read", 1_000));
         history.AddRange(TestMessages.Rounds(count: 5, "Grep", 600));
 
@@ -122,14 +122,31 @@ public class MicroCompactorTests
     }
 
     [Fact]
-    public void TaskOutputResults_AreCleared()
+    public void ApplyPatchResults_AreCleared()
     {
         var history = new List<ConversationMessage>();
-        history.AddRange(TestMessages.Rounds(count: 8, "TaskOutput", 600));
+        history.AddRange(TestMessages.Rounds(count: 8, "ApplyPatch", 600));
 
         var result = MicroCompactor.Apply(history, Now.AddMinutes(-90), Now, autoCompactThresholdTokens: 166_000);
 
         Assert.Equal(3, result.ClearedParts.Count);
+    }
+
+    [Fact]
+    public void IneligibleAndAlreadyClearedRecentResultsDoNotDisplaceProtectedCandidates()
+    {
+        var history = TestMessages.Rounds(6, "Read", 1_000);
+        history.AddRange(TestMessages.Rounds(6, "TaskOutput", 1_000));
+        history.AddRange(TestMessages.Round("Read", MicroCompactor.ClearedContentText).Messages);
+
+        var result = MicroCompactor.Apply(history, Now.AddMinutes(-90), Now, 166_000);
+
+        Assert.Single(result.ClearedParts);
+        Assert.Equal(history[1].Parts[0].Id, result.ClearedParts[0]);
+        Assert.Equal(TokenEstimator.EstimateHistoryTokens(history) - TokenEstimator.EstimateHistoryTokens(result.Messages), result.EstimatedTokensSaved);
+        var second = MicroCompactor.Apply(result.Messages, Now.AddMinutes(-90), Now, 166_000);
+        Assert.Empty(second.ClearedParts);
+        Assert.Same(result.Messages, second.Messages);
     }
 
     [Fact]

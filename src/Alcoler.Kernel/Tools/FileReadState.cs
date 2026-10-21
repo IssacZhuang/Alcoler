@@ -9,7 +9,8 @@ namespace Alcoler.Kernel.Tools;
 public sealed class FileReadState : IFileReadState
 {
     private readonly object _sync = new();
-    private Dictionary<string, FileReadSnapshot> _reads = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, FileReadSnapshot> _reads = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Dictionary<(int Offset, int? Limit), FileReadSnapshot>> _views = new(StringComparer.OrdinalIgnoreCase);
 
     public FileReadSnapshot? Find(string path)
     {
@@ -27,14 +28,25 @@ public sealed class FileReadState : IFileReadState
         }
     }
 
-    public void RecordRead(string path, bool completeView)
+    public FileReadSnapshot? FindView(string path, int offset, int? limit)
+    {
+        lock (_sync)
+            return _views.TryGetValue(Normalize(path), out var views) && views.TryGetValue((offset, limit), out var snapshot)
+                ? snapshot : null;
+    }
+
+    public void RecordRead(string path, bool completeView) => RecordReadView(path, completeView, 1, null);
+
+    public void RecordReadView(string path, bool completeView, int offset, int? limit, string? contentHash = null)
     {
         lock (_sync)
         {
-            _reads[Normalize(path)] = new FileReadSnapshot(
-                Length(path),
-                WriteTime(path),
-                completeView);
+            var key = Normalize(path);
+            var snapshot = new FileReadSnapshot(Length(path), WriteTime(path), completeView, offset, limit, contentHash);
+            _reads[key] = snapshot;
+            if (!_views.TryGetValue(key, out var views))
+                _views[key] = views = [];
+            views[(offset, limit)] = snapshot;
         }
     }
 
@@ -43,10 +55,10 @@ public sealed class FileReadState : IFileReadState
         lock (_sync)
         {
             // The post-write state is what the model has in context, so it counts as a read.
-            _reads[Normalize(path)] = new FileReadSnapshot(
-                Length(path),
-                WriteTime(path),
-                CompleteView: true);
+            var key = Normalize(path);
+            var snapshot = new FileReadSnapshot(Length(path), WriteTime(path), CompleteView: true);
+            _reads[key] = snapshot;
+            _views[key] = new() { [(1, null)] = snapshot };
         }
     }
 
@@ -55,6 +67,7 @@ public sealed class FileReadState : IFileReadState
         lock (_sync)
         {
             _reads.Remove(Normalize(path));
+            _views.Remove(Normalize(path));
         }
     }
 

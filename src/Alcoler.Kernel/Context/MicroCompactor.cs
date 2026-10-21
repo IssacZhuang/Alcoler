@@ -12,10 +12,9 @@ public static class MicroCompactor
 {
     public const string ClearedContentText = "[Old tool result content cleared]";
 
-    // Only tool names that exist (or are about to exist) in the registry; unmatched names are never hit.
     private static readonly HashSet<string> EligibleToolNames =
     [
-        "Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebFetch", "WebSearch", "TaskOutput",
+        "Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebFetch", "WebSearch", "ApplyPatch",
     ];
 
     public static MicrocompactResult Apply(
@@ -37,12 +36,12 @@ public static class MicroCompactor
                 if (part is ToolCallPart call)
                     toolNames[call.ToolCallId] = call.ToolName;
 
-        var groups = CompactionSelector.GroupByAssistantLedRounds(messages);
+        var groups = GroupByToolCallRounds(messages);
         var protectedGroups = new HashSet<int>();
         var kept = 0;
         for (var i = groups.Count - 1; i >= 0 && kept < CompactPolicy.MicroCompactKeepRecentGroups; i--)
         {
-            if (groups[i].Messages.Any(ContainsToolResult))
+            if (groups[i].Any(message => message.Parts.OfType<ToolResultPart>().Any(part => IsClearable(part, toolNames))))
             {
                 protectedGroups.Add(i);
                 kept++;
@@ -50,17 +49,16 @@ public static class MicroCompactor
         }
 
         var clearedParts = new List<PartId>();
-        var savedTokens = 0;
         var result = new List<ConversationMessage>(messages.Count);
         for (var gi = 0; gi < groups.Count; gi++)
         {
             if (protectedGroups.Contains(gi))
             {
-                result.AddRange(groups[gi].Messages);
+                result.AddRange(groups[gi]);
                 continue;
             }
 
-            foreach (var message in groups[gi].Messages)
+            foreach (var message in groups[gi])
             {
                 var modified = false;
                 var newParts = new List<MessagePart>(message.Parts.Count);
@@ -68,7 +66,6 @@ public static class MicroCompactor
                 {
                     if (part is ToolResultPart toolResult && IsClearable(toolResult, toolNames))
                     {
-                        savedTokens += ResultTextTokens(toolResult) - TokenEstimator.EstimateTokens(ClearedContentText);
                         clearedParts.Add(toolResult.Id);
                         newParts.Add(toolResult with { Content = [new ToolResultText(ClearedContentText)] });
                         modified = true;
@@ -82,6 +79,7 @@ public static class MicroCompactor
             }
         }
 
+        var savedTokens = Math.Max(0, TokenEstimator.EstimateHistoryTokens(messages) - TokenEstimator.EstimateHistoryTokens(result));
         if (clearedParts.Count == 0 || savedTokens < CompactPolicy.MicroCompactMinSavingsTokens)
             return new MicrocompactResult(messages, [], 0);
 
@@ -91,18 +89,23 @@ public static class MicroCompactor
     private static bool IsClearable(ToolResultPart part, Dictionary<ToolCallId, string> toolNames) =>
         !part.IsError
         && !part.Content.Any(b => b is ToolResultMedia)
+        && string.Join("\n\n", part.Content.OfType<ToolResultText>().Select(block => block.Text).Where(text => text.Length > 0)) != ClearedContentText
         && toolNames.TryGetValue(part.ToolCallId, out var toolName)
         && EligibleToolNames.Contains(toolName);
 
-    private static bool ContainsToolResult(ConversationMessage message) =>
-        message.Parts.Any(p => p is ToolResultPart);
-
-    private static int ResultTextTokens(ToolResultPart part)
+    private static IReadOnlyList<List<ConversationMessage>> GroupByToolCallRounds(IReadOnlyList<ConversationMessage> messages)
     {
-        var total = 0;
-        foreach (var block in part.Content)
-            if (block is ToolResultText text)
-                total += TokenEstimator.EstimateTokens(text.Text);
-        return total;
+        var groups = new List<List<ConversationMessage>>();
+        List<ConversationMessage>? current = null;
+        foreach (var message in messages)
+        {
+            if (current is null || message.Role == MessageRole.Assistant && message.Parts.Any(part => part is ToolCallPart))
+            {
+                current = [];
+                groups.Add(current);
+            }
+            current.Add(message);
+        }
+        return groups;
     }
 }

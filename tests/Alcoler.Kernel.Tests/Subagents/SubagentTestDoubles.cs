@@ -93,11 +93,14 @@ internal sealed class FakeSubagentFactory
 
     public List<SubagentRequest> Requests { get; } = [];
 
+    public List<SubagentId> Ids { get; } = [];
+
     public SubagentChildSessionFactory ToFactory() => CreateAsync;
 
-    private ValueTask<SubagentChildSession> CreateAsync(SubagentRequest request, CancellationToken cancellationToken)
+    private ValueTask<SubagentChildSession> CreateAsync(SubagentId id, SubagentRequest request, CancellationToken cancellationToken)
     {
         Requests.Add(request);
+        Ids.Add(id);
         var child = _create is null ? new FakeChildSession() : _create(request);
         Children.Add(child);
         return ValueTask.FromResult(child.ToChildSession());

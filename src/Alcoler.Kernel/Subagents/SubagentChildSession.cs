@@ -23,5 +23,6 @@ public sealed record SubagentChildSession(
 /// runtimes itself. The returned session must not have its prompt submitted yet.
 /// </summary>
 public delegate ValueTask<SubagentChildSession> SubagentChildSessionFactory(
+    SubagentId id,
     SubagentRequest request,
     CancellationToken cancellationToken);

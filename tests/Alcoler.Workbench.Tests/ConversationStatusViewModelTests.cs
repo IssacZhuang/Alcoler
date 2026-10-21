@@ -419,6 +419,38 @@ public sealed class ConversationStatusViewModelTests
         Assert.Equal("one", Assert.Single(model.Agents).Id);
     }
 
+    [Fact]
+    public void Agents_FourDistinctTypedRows_SurviveBatchedCompletionAndSnapshotResetWithoutToolDoubleCounting()
+    {
+        using var model = Create();
+        var running = Enumerable.Range(1, 4)
+            .Select(index => Agent($"subagent:{index}", index.ToString(), SubagentStatus.Running)).ToArray();
+        var calls = Enumerable.Range(1, 4)
+            .Select(index => Tool($"call:{index}", "Agent", new { description = $"Agent {index}" }, ToolCallStatus.Running)).ToArray();
+        Reset(model, [.. calls]);
+        Assert.Empty(model.Agents);
+        Apply(model, running.Select(row => (RowOp)new RowAppended(row)).ToArray());
+        Assert.Equal(4, model.Agents.Count);
+        Assert.Equal("4", model.AgentCountText);
+
+        var latest = running.Select((row, index) => index == 3 ? row : row with
+        {
+            Subagent = row.Subagent! with { Status = SubagentStatus.Completed, EndedAt = Now },
+        }).ToArray();
+        Apply(model, latest.Take(3).Select(row => (RowOp)new RowUpserted(row)).ToArray());
+        Assert.Equal("4", Assert.Single(model.Agents).Id);
+        Assert.Equal(3, model.EndedAgents.Count);
+        Assert.Equal("1/4", model.AgentCountText);
+        Assert.Equal("1 agent running", model.SummaryText);
+
+        Reset(model, [.. calls, .. latest]);
+        Assert.Equal("4", Assert.Single(model.Agents).Id);
+        Assert.Equal(3, model.EndedAgents.Count);
+        Assert.Equal("1/4", model.AgentCountText);
+        Apply(model, new RowUpserted(latest[0]));
+        Assert.Equal("1/4", model.AgentCountText);
+    }
+
     [Theory]
     [InlineData(SubagentStatus.Completed)]
     [InlineData(SubagentStatus.Failed)]

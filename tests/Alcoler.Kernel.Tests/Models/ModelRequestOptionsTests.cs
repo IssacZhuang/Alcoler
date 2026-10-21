@@ -115,7 +115,8 @@ public class ModelRequestOptionsTests
     [InlineData("responses", true, "system")]
     [InlineData("chat", false, "user")]
     [InlineData("responses", false, "user")]
-    [InlineData("anthropic", true, "user")]
+    [InlineData("anthropic", true, "system")]
+    [InlineData("anthropic", false, "user")]
     public async Task MidConversationSystem_IsNotHoisted(string format, bool supported, string expectedRole)
     {
         var handler = Handler(format);

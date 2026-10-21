@@ -6,20 +6,18 @@ using Alcoler.Contracts.Tools;
 namespace Alcoler.Kernel.Subagents;
 
 /// <summary>
-/// Delivers a follow-up message to a background subagent of this session: a busy child is
-/// steered (its queue drains into its running turn), an idle child is resumed in the
-/// background. Scoped to the parent side of Alcoler's subagent model, where the Agent
-/// tool already returns the child's final output directly.
+/// Parent-to-child delivery is serialized per child so concurrent follow-ups cannot
+/// both reset a terminal child's run metadata.
 /// </summary>
 public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
 {
     private const string BusyWrapper =
-        "The parent session sent a message while you were working:\n{0}\n\nAddress this before completing your current task.";
+        "The coordinator sent a message while you were working:\n{0}\n\nAddress this before completing your current task.";
 
     public ToolContract Contract { get; } = new(
         "SendMessage",
         """
-        Send a message to a background subagent started via the Agent tool in this session.
+        Send a message to a subagent started via the Agent tool in this session.
 
         ```json
         {"to": "sub_<id>", "summary": "narrow the search", "message": "focus only on the Kernel project"}
@@ -70,21 +68,39 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
                 $"No active local_agent task found for target {to}.",
                 isError: true);
 
-        var busy = channel.IsBusy;
-        // ZCode resumes a finished agent with the raw message as its next prompt; only an
-        // active turn gets wrapper framing so the model knows to address it mid-task.
-        var body = busy ? string.Format(BusyWrapper, message) : message;
-        var commandId = StrongId.NewCommandId();
-        var ack = await channel.Runtime.SubmitAsync(
-            new SendTextCommand(commandId, channel.ChildSessionId, 0, body),
-            cancellationToken).ConfigureAwait(false);
-        if (!ack.Accepted)
-            return ToolExecutionResult.Text($"Message delivery failed: {ack.RejectionReason}", isError: true);
+        await channel.DeliveryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var busy = channel.IsBusy;
+            var previousStatus = SubagentTool.BackgroundStatus(channel.Status);
+            var summary = StringOrNull(context.Input, "summary");
+            var commandId = StrongId.NewCommandId();
+            if (!busy && channel.ResumeAsync is { } resume)
+            {
+                await resume(message, summary, context.ToolCallId, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                if (!busy && channel.BeforeResumeAsync is { } beforeResume)
+                    await beforeResume().ConfigureAwait(false);
+                var body = busy ? string.Format(BusyWrapper, message) : message;
+                var ack = await channel.Runtime.SubmitAsync(
+                    new SendTextCommand(commandId, channel.ChildSessionId, 0, body,
+                        Delivery: busy ? SendTextDelivery.Guide : SendTextDelivery.Queue),
+                    cancellationToken).ConfigureAwait(false);
+                if (!ack.Accepted)
+                    return ToolExecutionResult.Text($"Message delivery failed: {ack.RejectionReason}", isError: true);
+            }
 
-        var resultText = busy
-            ? $"Message {commandId.Value} was sent to its active turn for local agent {channel.Id.Value}."
-            : $"Agent \"{channel.Id.Value}\" was stopped; resumed it in the background with your message. You'll be notified when it finishes.";
-        return ToolExecutionResult.Text(resultText, displaySummary: StringOrNull(context.Input, "summary"));
+            var resultText = busy
+                ? $"Message {commandId.Value} was sent to its active turn for local agent {channel.Id.Value}."
+                : $"Agent \"{channel.Id.Value}\" was stopped ({previousStatus}); resumed it in the background with your message. You'll be notified when it finishes.";
+            return ToolExecutionResult.Text(resultText, displaySummary: summary);
+        }
+        finally
+        {
+            channel.DeliveryLock.Release();
+        }
     }
 
     private static string? StringOrNull(JsonElement input, string name) =>

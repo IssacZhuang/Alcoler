@@ -27,8 +27,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private readonly Dictionary<ComposerViewModel, Action<PermissionMode>> _modeObservers = [];
     private readonly IAsyncDisposable? _ownedResource;
     private readonly IUiScheduler _scheduler;
+    private readonly ISessionActivityRuntime? _activities;
     private readonly IGitService _gitService = new LibGit2GitService();
     private readonly Dictionary<SessionId, string> _sessionRoots = [];
+    private readonly List<Dictionary<SessionId, string>> _refreshTitleOverrides = [];
     private readonly Dictionary<string, DraftConversationViewModel> _drafts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<SessionId, SessionDraft> _sessionDrafts = [];
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DraftConversationViewModel, DraftDocumentOwner> _draftDocumentOwners = new();
@@ -36,6 +38,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private long _navigationVersion;
     private string? _paneRoot;
     private bool _terminalAutoStarted;
+    private bool _disposed;
 
     public WorkbenchViewModel(
         IAgentRuntime runtime,
@@ -60,6 +63,12 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         BrowserPane = browserPane;
         _hub = new SessionProjectionHub(runtime, scheduler, coalesceWindow: TimeSpan.FromMilliseconds(30));
         Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync);
+        runtime.SessionTitleChanged += OnSessionTitleChanged;
+        if (runtime is ISessionActivityRuntime activities)
+        {
+            _activities = activities;
+            activities.SessionActivityChanged += OnSessionActivityChanged;
+        }
         ModelChoices = BuildModelChoices(config);
         Draft = GetOrCreateDraft(Environment.CurrentDirectory);
         Documents.PropertyChanged += OnDocumentsPropertyChanged;
@@ -237,6 +246,13 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
+        _runtime.SessionTitleChanged -= OnSessionTitleChanged;
+        _refreshTitleOverrides.Clear();
+        if (_activities is not null)
+        {
+            _activities.SessionActivityChanged -= OnSessionActivityChanged;
+        }
         CloseActive();
         foreach (var (composer, observer) in _modeObservers)
             composer.ModeSelected -= observer;
@@ -296,6 +312,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         conversation.ModeSubmitted += mode => ClearSubmittedMode(sessionId, mode);
         Active = conversation;
         Sidebar.SetActive(sessionId);
+        Sidebar.SyncRunningState(sessionId, _activities?.GetSessionActivity(sessionId));
         BrowserPane?.Bind(sessionId);
         EnsureDocumentContext();
         if (_sessionRoots.TryGetValue(sessionId, out var root))
@@ -543,21 +560,73 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public async Task RefreshFromRuntimeAsync()
     {
-        var summaries = await _runtime.ListSessionsAsync(null, 200, CancellationToken.None);
-        Sidebar.ApplySummaries(
-        [
-            .. summaries.Select(s => new SessionSummaryViewModel(s.Id, s.Title, s.WorkspaceRoot, s.UpdatedAt))
-        ]);
-        foreach (var summary in summaries)
+        if (_disposed)
         {
-            _sessionRoots[summary.Id] = summary.WorkspaceRoot;
+            return;
         }
-        if (_focusedWorkspaceRoot is null && Active is null && Draft is { } initial
-            && string.IsNullOrEmpty(initial.Composer.Draft) && !initial.Composer.IsSending
-            && summaries.OrderByDescending(summary => summary.UpdatedAt).FirstOrDefault() is { } recent)
+        var titles = new Dictionary<SessionId, string>();
+        _refreshTitleOverrides.Add(titles);
+        try
         {
-            ShowNewTask(recent.WorkspaceRoot);
+            var summaries = await _runtime.ListSessionsAsync(null, 200, CancellationToken.None);
+            if (_disposed)
+            {
+                return;
+            }
+            Sidebar.ApplySummaries(
+            [
+                .. summaries.Select(s => new SessionSummaryViewModel(
+                    s.Id, titles.GetValueOrDefault(s.Id, s.Title), s.WorkspaceRoot, s.UpdatedAt))
+            ]);
+            foreach (var summary in summaries)
+            {
+                _sessionRoots[summary.Id] = summary.WorkspaceRoot;
+                Sidebar.SyncRunningState(summary.Id, _activities?.GetSessionActivity(summary.Id));
+            }
+            if (_focusedWorkspaceRoot is null && Active is null && Draft is { } initial
+                && string.IsNullOrEmpty(initial.Composer.Draft) && !initial.Composer.IsSending
+                && summaries.OrderByDescending(summary => summary.UpdatedAt).FirstOrDefault() is { } recent)
+            {
+                ShowNewTask(recent.WorkspaceRoot);
+            }
         }
+        finally
+        {
+            _refreshTitleOverrides.Remove(titles);
+        }
+    }
+
+    private void OnSessionTitleChanged(SessionId sessionId, string title)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _scheduler.Post(() =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            foreach (var titles in _refreshTitleOverrides)
+            {
+                titles[sessionId] = title;
+            }
+            Sidebar.ApplyTitle(sessionId, title);
+            if (Active is { } active && active.SessionId == sessionId)
+            {
+                active.Title = title;
+            }
+        });
+    }
+
+    private void OnSessionActivityChanged(SessionId sessionId)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _scheduler.Post(() => Sidebar.ApplyActivity(sessionId, _activities?.GetSessionActivity(sessionId)));
     }
 
     private void EnsurePanes(string root)

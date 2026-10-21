@@ -33,7 +33,7 @@ public sealed class OpenAiResponsesChatModel(
         HttpRequestMessage? built = null;
         ModelFailure? failure = null;
         try { built = BuildRequest(request); }
-        catch (ArgumentException ex) { failure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message); }
+        catch (ArgumentException ex) { failure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message, Phase: ModelFailurePhase.RequestSetup); }
         if (failure is not null)
         {
             yield return new ModelStreamFailed(failure);
@@ -42,7 +42,7 @@ public sealed class OpenAiResponsesChatModel(
         using var httpRequest = built!;
         HttpResponseMessage? response = null;
         try { response = await httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { failure = ModelFailureClassifier.FromException(ex, cancellationToken); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { failure = ModelFailureClassifier.FromException(ex, cancellationToken) with { Phase = ModelFailurePhase.RequestSetup }; }
         if (failure is not null)
         {
             yield return new ModelStreamFailed(failure);
@@ -67,7 +67,8 @@ public sealed class OpenAiResponsesChatModel(
                 }
                 catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
                 {
-                    failure = new ModelFailure(ModelFailureKind.StreamProtocolError, $"Invalid Responses stream: {ex.Message}");
+                    failure = new ModelFailure(ModelFailureKind.StreamProtocolError, $"Invalid Responses stream: {ex.Message}",
+                        Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response!.StatusCode);
                 }
                 if (failure is not null)
                 {
@@ -78,16 +79,42 @@ public sealed class OpenAiResponsesChatModel(
                 if (state.Terminal) yield break;
             }
             yield return new ModelStreamFailed(new ModelFailure(ModelFailureKind.StreamProtocolError,
-                "Responses stream ended without response.completed, response.incomplete, or response.failed."));
+                "Responses stream ended without response.completed, response.incomplete, or response.failed.",
+                Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response!.StatusCode));
         }
     }
 
-    private HttpRequestMessage BuildRequest(ModelRequest request)
+    public bool SupportsNonStreamingGeneration => true;
+
+    public ValueTask<IReadOnlyList<ModelStreamEvent>> GenerateAsync(ModelRequest request, CancellationToken cancellationToken) =>
+        ModelHttpGeneration.SendAsync(httpClient, () => BuildRequest(request, stream: false), DecodeGeneration, cancellationToken);
+
+    private static IReadOnlyList<ModelStreamEvent> DecodeGeneration(JsonElement root)
+    {
+        var status = root.TryGetProperty("status", out var value) ? value.GetString() : null;
+        if (!root.TryGetProperty("output", out _) && status != "failed")
+            throw new JsonException("Responses completion has no output.");
+        var type = status switch
+        {
+            "failed" => "response.failed",
+            "incomplete" => "response.incomplete",
+            _ => "response.completed",
+        };
+        return new ResponsesStreamState().Dispatch(JsonSerializer.SerializeToElement(new { type, response = root }), type).ToList();
+    }
+
+    private HttpRequestMessage BuildRequest(ModelRequest request, bool stream = true)
     {
         var normalized = ReasoningHistoryNormalizer.Normalize(
-            request.Messages, keepReasoning: false, Descriptor.Properties.SupportsImage);
+            request.Messages, keepReasoning: true, Descriptor.Properties.SupportsImage, Descriptor);
         ModelRequestOptions.ValidateRequest(request with { Messages = normalized }, Descriptor.Properties);
         var input = new List<object>();
+        var reasoningItems = new Dictionary<string, Dictionary<string, object?>>();
+        var encryptedReasoning = normalized.Where(message => message.Role == MessageRole.Assistant)
+            .SelectMany(message => message.Content.OfType<InputReasoningBlock>())
+            .Where(block => block.ProviderItemId is { Length: > 0 } && block.EncryptedContent is not null)
+            .GroupBy(block => block.ProviderItemId!)
+            .ToDictionary(group => group.Key, group => group.Last().EncryptedContent!);
         foreach (var message in ModelRequestSystemBlocks.Normalize(normalized, Descriptor.Properties.SupportsMidConversationSystem))
         {
             var text = new List<object>();
@@ -119,6 +146,36 @@ public sealed class OpenAiResponsesChatModel(
                             ["image_url"] = $"data:{image.MimeType};base64,{image.Base64Data}",
                         });
                         break;
+                    case InputReasoningBlock reasoning when reasoning.EncryptedContent is not null ||
+                        reasoning.ProviderItemId is { } replayId && encryptedReasoning.ContainsKey(replayId):
+                        FlushText();
+                        var encryptedContent = reasoning.ProviderItemId is { } encryptedId
+                            ? encryptedReasoning.GetValueOrDefault(encryptedId) ?? reasoning.EncryptedContent
+                            : reasoning.EncryptedContent;
+                        var summary = new List<object>();
+                        if (reasoning.Text.Length > 0)
+                            summary.Add(new Dictionary<string, object?> { ["type"] = "summary_text", ["text"] = reasoning.Text });
+                        if (reasoning.ProviderItemId is { Length: > 0 } itemId && reasoningItems.TryGetValue(itemId, out var existing))
+                        {
+                            ((List<object>)existing["summary"]!).AddRange(summary);
+                            existing["encrypted_content"] = encryptedContent;
+                        }
+                        else
+                        {
+                            var item = new Dictionary<string, object?>
+                            {
+                                ["type"] = "reasoning",
+                                ["encrypted_content"] = encryptedContent,
+                                ["summary"] = summary,
+                            };
+                            if (reasoning.ProviderItemId is { Length: > 0 } reasoningId)
+                            {
+                                item["id"] = reasoningId;
+                                reasoningItems[reasoningId] = item;
+                            }
+                            input.Add(item);
+                        }
+                        break;
                     case InputToolCallBlock call:
                         FlushText();
                         input.Add(new Dictionary<string, object?>
@@ -142,7 +199,14 @@ public sealed class OpenAiResponsesChatModel(
             }
             FlushText();
         }
-        var payload = new Dictionary<string, object?> { ["model"] = options.Model, ["input"] = input, ["stream"] = true };
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = options.Model,
+            ["input"] = input,
+            ["stream"] = stream,
+            ["store"] = false,
+            ["include"] = new[] { "reasoning.encrypted_content" },
+        };
         if (request.Tools.Count > 0)
             payload["tools"] = request.Tools.Select(t => new Dictionary<string, object?>
             {
@@ -157,7 +221,7 @@ public sealed class OpenAiResponsesChatModel(
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
-        httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
         return httpRequest;
     }
 
@@ -166,6 +230,7 @@ public sealed class OpenAiResponsesChatModel(
         private readonly Dictionary<string, OpenTool> _tools = [];
         private readonly Dictionary<int, string> _itemIds = [];
         private readonly Dictionary<string, OpenText> _texts = [];
+        private readonly Dictionary<string, string?> _reasoningContent = [];
         private bool _started;
         public bool Terminal { get; private set; }
 
@@ -190,6 +255,13 @@ public sealed class OpenAiResponsesChatModel(
                             foreach (var e in RegisterTool(id, item)) yield return e;
                             if (type.EndsWith(".done", StringComparison.Ordinal))
                                 foreach (var e in FinishTool(_tools[id], String(item, "arguments"))) yield return e;
+                        }
+                        else if (String(item, "type") == "reasoning")
+                        {
+                            _reasoningContent[id] = String(item, "encrypted_content");
+                            foreach (var e in TextDelta($"{id}:r:0", "", reasoning: true)) yield return e;
+                            if (type.EndsWith(".done", StringComparison.Ordinal))
+                                foreach (var e in ItemContent(item, id)) yield return e;
                         }
                         else if (type.EndsWith(".done", StringComparison.Ordinal))
                         {
@@ -224,7 +296,7 @@ public sealed class OpenAiResponsesChatModel(
                 case "response.reasoning_text.done":
                     {
                         var reasoning = type != "response.output_text.done";
-                        foreach (var e in TextDone(TextKey(root, reasoning), String(root, "text"), reasoning)) yield return e;
+                        foreach (var e in TextDone(TextKey(root, reasoning), String(root, "text"), reasoning, close: !reasoning)) yield return e;
                         break;
                     }
                 case "response.completed":
@@ -252,7 +324,9 @@ public sealed class OpenAiResponsesChatModel(
                         Terminal = true;
                         yield return new ModelStreamFinished(type == "response.incomplete"
                             ? reason == "content_filter" ? ModelFinishReason.ContentFilter : ModelFinishReason.Length
-                            : _tools.Count > 0 ? ModelFinishReason.ToolCalls : ModelFinishReason.Stop, ReadUsage(response));
+                            : _tools.Count > 0 ? ModelFinishReason.ToolCalls : ModelFinishReason.Stop, ReadUsage(response),
+                            RawFinishReason: reason ?? (type == "response.completed" ? "completed" : "incomplete"),
+                            ContextWindowExceeded: reason is "context_length_exceeded" or "model_context_window_exceeded");
                         break;
                     }
                 case "response.failed":
@@ -271,7 +345,7 @@ public sealed class OpenAiResponsesChatModel(
                             "context_length_exceeded" => ModelFailureKind.ContextOverflow,
                             "invalid_request_error" or "invalid_value" => ModelFailureKind.InvalidRequest,
                             _ => ModelFailureKind.ProviderError,
-                        }, message, code));
+                        }, message, code, Phase: ModelFailurePhase.ResponseBody));
                         break;
                     }
             }
@@ -319,7 +393,14 @@ public sealed class OpenAiResponsesChatModel(
         {
             if (!_texts.TryGetValue(key, out var text))
             {
-                text = new OpenText(reasoning);
+                if (reasoning)
+                    foreach (var previous in _texts.Values.Where(value => value.Reasoning && !value.Closed))
+                        foreach (var e in CloseText(previous)) yield return e;
+                text = new OpenText(reasoning)
+                {
+                    ItemId = reasoning ? key[..key.LastIndexOf(":r:", StringComparison.Ordinal)] : null,
+                };
+                text.EncryptedContent = text.ItemId is { } id ? _reasoningContent.GetValueOrDefault(id) : null;
                 _texts[key] = text;
                 yield return reasoning ? new ModelReasoningStarted() : new ModelTextStarted();
             }
@@ -330,11 +411,11 @@ public sealed class OpenAiResponsesChatModel(
             }
         }
 
-        private IEnumerable<ModelStreamEvent> TextDone(string key, string? fullText, bool reasoning)
+        private IEnumerable<ModelStreamEvent> TextDone(string key, string? fullText, bool reasoning, bool close = true)
         {
             if (!_texts.TryGetValue(key, out var text) || !text.HasDelta && !text.Closed)
                 foreach (var e in TextDelta(key, fullText ?? "", reasoning)) yield return e;
-            if (_texts.TryGetValue(key, out text))
+            if (close && _texts.TryGetValue(key, out text))
                 foreach (var e in CloseText(text)) yield return e;
         }
 
@@ -342,19 +423,35 @@ public sealed class OpenAiResponsesChatModel(
         {
             if (text.Closed) yield break;
             text.Closed = true;
-            yield return text.Reasoning ? new ModelReasoningEnded() : new ModelTextEnded();
+            yield return text.Reasoning
+                ? new ModelReasoningEnded(EncryptedContent: text.EncryptedContent, ProviderItemId: text.ItemId)
+                : new ModelTextEnded();
         }
 
         private IEnumerable<ModelStreamEvent> ItemContent(JsonElement item, string id)
         {
             var reasoning = String(item, "type") == "reasoning";
-            if (!item.TryGetProperty(reasoning ? "summary" : "content", out var content) || content.ValueKind != JsonValueKind.Array) yield break;
-            var i = 0;
-            foreach (var part in content.EnumerateArray())
+            if (reasoning)
             {
-                if (String(part, "type") is "output_text" or "summary_text" or "reasoning_text")
-                    foreach (var e in TextDone($"{id}:{(reasoning ? "r" : "t")}:{i}", String(part, "text"), reasoning)) yield return e;
-                i++;
+                foreach (var e in TextDelta($"{id}:r:0", "", reasoning: true)) yield return e;
+            }
+            if (item.TryGetProperty(reasoning ? "summary" : "content", out var content) && content.ValueKind == JsonValueKind.Array)
+            {
+                var i = 0;
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (String(part, "type") is "output_text" or "summary_text" or "reasoning_text")
+                        foreach (var e in TextDone($"{id}:{(reasoning ? "r" : "t")}:{i}", String(part, "text"), reasoning, close: !reasoning)) yield return e;
+                    i++;
+                }
+            }
+            if (reasoning)
+            {
+                foreach (var text in _texts.Values.Where(text => text.Reasoning && text.ItemId == id && !text.Closed))
+                {
+                    text.EncryptedContent = String(item, "encrypted_content");
+                    foreach (var e in CloseText(text)) yield return e;
+                }
             }
         }
 
@@ -383,6 +480,8 @@ public sealed class OpenAiResponsesChatModel(
     private sealed class OpenText(bool reasoning)
     {
         public bool Reasoning { get; } = reasoning;
+        public string? ItemId { get; set; }
+        public string? EncryptedContent { get; set; }
         public bool HasDelta { get; set; }
         public bool Closed { get; set; }
     }

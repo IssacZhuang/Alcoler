@@ -18,8 +18,7 @@ public sealed class ToolScheduler
     public static bool CanRunParallel(ITool? tool) =>
         tool is not null
         && !tool.Metadata.Destructive
-        && tool.Metadata.ConcurrentSafe
-        && tool.Metadata.SideEffectScope == SideEffectScope.None;
+        && tool.Metadata.ConcurrentSafe;
 
     public IReadOnlyList<ToolSchedulerGroup> Schedule(IReadOnlyList<ScheduledToolCall> calls)
     {

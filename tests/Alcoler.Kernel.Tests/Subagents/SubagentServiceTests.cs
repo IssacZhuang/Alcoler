@@ -38,6 +38,7 @@ public class SubagentServiceTests
 
         var state = service.ActiveStates.Single();
         Assert.Equal(result.State.Id, state.Id);
+        Assert.Equal(result.State.Id, Assert.Single(factory.Ids));
         Assert.Equal(SubagentStatus.Completed, state.Status);
         Assert.Equal("child output", state.ResultSummary);
         Assert.Equal(Now, state.StartedAt);
@@ -186,6 +187,7 @@ public class SubagentServiceTests
 
         var running = service.ActiveStates.Single();
         Assert.Equal(handle.Id, running.Id);
+        Assert.Equal(handle.Id, Assert.Single(factory.Ids));
         Assert.Equal(SubagentStatus.Running, running.Status);
         Assert.Null(running.EndedAt);
 

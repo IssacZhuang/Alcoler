@@ -17,11 +17,21 @@ public interface IConversationProjection : IDisposable
     IAsyncEnumerable<ConversationDelta> Deltas(CancellationToken cancellationToken);
 }
 
+public sealed record SessionActivitySnapshot(TurnPhase Phase, TurnOutcome? LastOutcome);
+
 public interface ISessionActivityRuntime
 {
     IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId);
 
     bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId);
+
+    SessionActivitySnapshot? GetSessionActivity(SessionId sessionId) => null;
+
+    event Action<SessionId>? SessionActivityChanged
+    {
+        add { }
+        remove { }
+    }
 
     IConversationProjection? TryObserveSubagent(SessionId parentSessionId, SessionId childSessionId) => null;
 }
@@ -35,6 +45,12 @@ public interface IAgentRuntime : IAsyncDisposable
     ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken);
 
     ValueTask<Commands.CommandAck> SubmitAsync(Commands.ConversationCommand command, CancellationToken cancellationToken);
+
+    event Action<SessionId, string>? SessionTitleChanged
+    {
+        add { }
+        remove { }
+    }
 
     IConversationProjection Subscribe(SessionId sessionId);
 

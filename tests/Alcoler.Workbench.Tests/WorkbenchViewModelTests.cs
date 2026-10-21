@@ -122,6 +122,42 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Sidebar_AfterRestart_HidesChildSessionsWhileDirectResumePreservesParentMetadata()
+    {
+        SessionHandle parent;
+        SessionHandle child;
+        await using (var store = new SqliteSessionStore(DatabasePath))
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            await using var runtime = CreateRuntime(store);
+            parent = await runtime.CreateSessionAsync(new SessionOptions(_root, "Parent"), CancellationToken.None);
+            child = await runtime.CreateSessionAsync(
+                new SessionOptions(_root, "Child", ParentSessionId: parent.Id), CancellationToken.None);
+            Assert.Equal(parent.Id, Assert.Single(await runtime.ListSessionsAsync(null, 1, CancellationToken.None)).Id);
+        }
+
+        await using var reopenedStore = new SqliteSessionStore(DatabasePath);
+        await reopenedStore.InitializeAsync(CancellationToken.None);
+        await using var reopenedRuntime = CreateRuntime(reopenedStore);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(reopenedRuntime, scheduler, new WorkbenchConfig([]));
+        await workbench.Sidebar.RefreshAsync();
+        Assert.Equal(parent.Id, Assert.Single(Assert.Single(workbench.Sidebar.Groups).Sessions).Id);
+
+        var resumed = await reopenedRuntime.ResumeSessionAsync(child.Id, CancellationToken.None);
+        Assert.Equal(child.Id, resumed.Id);
+        using var projection = Assert.IsAssignableFrom<IConversationProjection>(reopenedRuntime.TryObserve(child.Id));
+        Assert.Equal("Child", projection.Snapshot().State.Title);
+        var ack = await reopenedRuntime.SubmitAsync(
+            new RenameSessionCommand(StrongId.NewCommandId(), child.Id, 0, "Renamed child"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        Assert.Equal(parent.Id, (await reopenedStore.GetSessionAsync(child.Id, CancellationToken.None))!.ParentSessionId);
+        await workbench.Sidebar.RefreshAsync();
+        Assert.Equal(parent.Id, Assert.Single(Assert.Single(workbench.Sidebar.Groups).Sessions).Id);
+        await WaitUntilAsync(() => workbench.GitPane is null or { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
     public async Task UnsentMode_AfterRuntimeRestart_RestoresSelectionWithoutChangingPersistedSessionPolicy()
     {
         var configPath = Path.Combine(_root, "config.json");

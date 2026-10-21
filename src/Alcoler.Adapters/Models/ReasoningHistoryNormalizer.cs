@@ -1,16 +1,9 @@
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Models;
+using Alcoler.Kernel.Runtime;
 
 namespace Alcoler.Adapters.Models;
 
-/// <summary>
-/// Ports ZCode normalizeReasoningHistory: structural cleanup of replayed assistant
-/// history before serialization. Providers that cannot replay thinking blocks pass
-/// <c>keepReasoning: false</c> to drop them first; every provider then runs the same
-/// structural passes. Cross-model signature compatibility is handled reactively by
-/// the kernel's signature-rejection recovery instead of proactively here, because
-/// Alcoler history does not record which model produced a reasoning block.
-/// </summary>
 internal static class ReasoningHistoryNormalizer
 {
     private const string EmptyAssistantContentFallback = "(no content)";
@@ -18,9 +11,11 @@ internal static class ReasoningHistoryNormalizer
         "[Attached media]\n[Media omitted from provider request because the selected model does not support image input.]";
 
     public static IReadOnlyList<ModelInputMessage> Normalize(
-        IReadOnlyList<ModelInputMessage> messages, bool keepReasoning, bool supportsImages = true)
+        IReadOnlyList<ModelInputMessage> messages, bool keepReasoning, bool supportsImages = true,
+        ModelDescriptor? targetModel = null)
     {
-        var withoutReasoning = keepReasoning ? messages : DropReasoningBlocks(messages);
+        var compatible = RemoveCrossModelReasoning(messages, targetModel);
+        var withoutReasoning = keepReasoning ? compatible : DropReasoningBlocks(compatible);
         var withoutUnsupportedImages = supportsImages
             ? withoutReasoning
             : DowngradeUnsupportedImages(withoutReasoning);
@@ -30,6 +25,38 @@ internal static class ReasoningHistoryNormalizer
         return RepairEmptyAssistantContent(withoutWhitespaceOnly);
     }
 
+    private static readonly string[][] ReasoningProviderGroups =
+    [
+        ["builtin:zai-coding-plan", "account:zai-individual-coding-plan", "account:zai-team-coding-plan"],
+        ["builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan", "account:bigmodel-team-coding-plan"],
+    ];
+
+    private static IReadOnlyList<ModelInputMessage> RemoveCrossModelReasoning(
+        IReadOnlyList<ModelInputMessage> messages, ModelDescriptor? targetModel)
+    {
+        if (targetModel is null)
+            return messages;
+        List<ModelInputMessage>? result = null;
+        for (var index = 0; index < messages.Count; index++)
+        {
+            var message = messages[index];
+            if (message.Role != MessageRole.Assistant ||
+                string.IsNullOrEmpty(message.ProviderId) || string.IsNullOrEmpty(message.ModelId) ||
+                message.ModelId == targetModel.ModelId && ProvidersCompatible(message.ProviderId, targetModel.ProviderId))
+                continue;
+            var content = message.Content.Where(block =>
+                block is not InputReasoningBlock reasoning || !ThinkingSignatureRecovery.IsSignedOrRedacted(reasoning)).ToList();
+            if (content.Count == message.Content.Count)
+                continue;
+            result ??= [.. messages];
+            result[index] = message with { Content = content };
+        }
+        return result ?? messages;
+    }
+
+    private static bool ProvidersCompatible(string source, string target) =>
+        source == target || ReasoningProviderGroups.Any(group => group.Contains(source) && group.Contains(target));
+
     private static IReadOnlyList<ModelInputMessage> DowngradeUnsupportedImages(
         IReadOnlyList<ModelInputMessage> messages)
     {
@@ -37,13 +64,22 @@ internal static class ReasoningHistoryNormalizer
         for (var index = 0; index < messages.Count; index++)
         {
             var message = messages[index];
-            if (!message.Content.Any(block => block is InputImageBlock))
+            if (!message.Content.Any(block => block is InputImageBlock || block is InputToolResultBlock { Images.Count: > 0 }))
                 continue;
             result ??= [.. messages];
             result[index] = message with
             {
                 Content = message.Content.Select(block =>
-                        block is InputImageBlock ? new InputTextBlock(UnsupportedImageText) : block)
+                        block switch
+                        {
+                            InputImageBlock => new InputTextBlock(UnsupportedImageText),
+                            InputToolResultBlock { Images.Count: > 0 } toolResult => toolResult with
+                            {
+                                Content = string.Join("\n", new[] { toolResult.Content }.Concat(toolResult.Images.Select(_ => UnsupportedImageText))),
+                                Images = null,
+                            },
+                            _ => block,
+                        })
                     .ToList(),
             };
         }
@@ -169,7 +205,7 @@ internal static class ReasoningHistoryNormalizer
             var mergedContent = new List<ModelContentBlock>(previous.Content);
             if (previous.Content.Count > 0 &&
                 previous.Content[^1] is InputTextBlock previousText &&
-                message.Content[0] is InputTextBlock)
+                message.Content.Count > 0 && message.Content[0] is InputTextBlock)
                 mergedContent[^1] = new InputTextBlock(previousText.Text + "\n");
             mergedContent.AddRange(message.Content);
             result[^1] = new ModelInputMessage(

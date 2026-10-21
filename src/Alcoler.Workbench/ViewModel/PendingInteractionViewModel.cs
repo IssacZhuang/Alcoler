@@ -49,6 +49,17 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
     private int _activeOptionIndex = -1;
 
     public QuestionDraftViewModel? CurrentQuestion => _drafts.ElementAtOrDefault(CurrentQuestionIndex);
+    public bool HasPreviews => CurrentQuestion?.HasPreviews == true;
+    public string? ActivePreview => HasPreviews && CurrentQuestion is { } question
+        ? (ActiveOptionIndex >= 0 && ActiveOptionIndex < question.Options.Count
+            ? question.Options[ActiveOptionIndex].Preview
+            : question.Options.FirstOrDefault(option => option.IsSelected)?.Preview ?? question.Options[0].Preview)
+        : null;
+    public IReadOnlyDictionary<string, InteractionAnnotation> SelectedAnnotations => _drafts
+        .Where(question => question.HasAnswer && question.HasPreviews)
+        .ToDictionary(question => question.Header, question => new InteractionAnnotation(
+            question.Options.FirstOrDefault(option => option.IsSelected)?.Preview,
+            string.IsNullOrWhiteSpace(question.PreviewNotes) ? null : question.PreviewNotes.Trim()));
     public int QuestionCount => _drafts.Count;
     public bool HasQuestions => QuestionCount > 0;
     public string PageText => $"{Math.Min(CurrentQuestionIndex + 1, Math.Max(QuestionCount, 1))} / {Math.Max(QuestionCount, 1)}";
@@ -97,7 +108,8 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
         ActiveOptionIndex = index;
         var option = question.Options[index];
         question.SetOptionSelected(option.Label, !question.MultiSelect || !option.IsSelected);
-        return !question.MultiSelect && ContinueQuestion();
+        OnPropertyChanged(nameof(ActivePreview));
+        return !question.MultiSelect && !question.HasPreviews && ContinueQuestion();
     }
 
     public bool ContinueQuestion()
@@ -144,11 +156,15 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
     {
         SelectedAnswers = _drafts.Where(question => question.HasAnswer)
             .ToDictionary(question => question.Header, question => question.Answer);
+        OnPropertyChanged(nameof(SelectedAnnotations));
+        OnPropertyChanged(nameof(ActivePreview));
     }
 
     private void RefreshPage()
     {
         OnPropertyChanged(nameof(CurrentQuestion));
+        OnPropertyChanged(nameof(HasPreviews));
+        OnPropertyChanged(nameof(ActivePreview));
         OnPropertyChanged(nameof(PageText));
         OnPropertyChanged(nameof(CanMovePrevious));
         OnPropertyChanged(nameof(CanMoveNext));
@@ -168,6 +184,7 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
         foreach (var option in question.Options)
             option.IsActive = option.Index == ActiveOptionIndex;
         question.IsCustomActive = ActiveOptionIndex == question.Options.Count;
+        OnPropertyChanged(nameof(ActivePreview));
     }
 
     partial void OnQuestionsChanged(IReadOnlyList<InteractionQuestion> value)
@@ -199,6 +216,7 @@ public sealed partial class QuestionDraftViewModel : ObservableObject
     public string Header => Source.Header;
     public string Text => Source.Text;
     public bool MultiSelect => Source.MultiSelect;
+    public bool HasPreviews => !MultiSelect && Options.Any(option => !string.IsNullOrEmpty(option.Preview));
     public IReadOnlyList<QuestionOptionViewModel> Options { get; }
     public string CustomNumber => $"{Options.Count + 1}.";
     public bool IsCustomSelected => !string.IsNullOrWhiteSpace(CustomAnswer);
@@ -208,6 +226,11 @@ public sealed partial class QuestionDraftViewModel : ObservableObject
 
     [ObservableProperty]
     private string _customAnswer = string.Empty;
+
+    [ObservableProperty]
+    private string _previewNotes = string.Empty;
+
+    partial void OnPreviewNotesChanged(string value) => _answerChanged();
 
     [ObservableProperty]
     private bool _isCustomActive;
@@ -254,12 +277,14 @@ public sealed partial class QuestionOptionViewModel : ObservableObject
     {
         Label = source.Label;
         Description = source.Description;
+        Preview = source.Preview;
         Index = index;
         MultiSelect = multiSelect;
     }
 
     public string Label { get; }
     public string? Description { get; }
+    public string? Preview { get; }
     public string InlineDescription => string.IsNullOrEmpty(Description) ? string.Empty : $"  {Description}";
     public int Index { get; }
     public string Number => $"{Index + 1}.";

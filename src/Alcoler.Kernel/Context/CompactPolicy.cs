@@ -34,7 +34,7 @@ public static class CompactPolicy
         Math.Max(0, EffectiveContextWindow(contextWindowTokens) - AutoCompactBufferTokens);
 
     public static int MicroCompactTriggerTokens(int autoCompactThreshold) =>
-        Math.Min(autoCompactThreshold * 9 / 10, autoCompactThreshold - 2_000);
+        Math.Max(0, Math.Min(autoCompactThreshold * 9 / 10, autoCompactThreshold - 2_000));
 
     // ZCode createCompactRapidRefillError message, verbatim.
     public static string RapidRefillBreakerMessage(int toolTurnThreshold, int maxConsecutiveRapidRefills) =>

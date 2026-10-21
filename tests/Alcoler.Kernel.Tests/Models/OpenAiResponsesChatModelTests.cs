@@ -122,6 +122,64 @@ public class OpenAiResponsesChatModelTests
         Assert.Equal(ModelFailureKind.AuthenticationFailed, Assert.IsType<ModelStreamFailed>(Assert.Single(await Collect(Model(handler)))).Failure.Kind);
     }
 
+    [Fact]
+    public async Task EncryptedReasoning_IsDecodedAtItemEndAndReplayedStatelessly()
+    {
+        var handler = Handler(
+            """{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}""",
+            """{"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":"Consider it"}""",
+            """{"type":"response.reasoning_summary_text.done","item_id":"rs_1","summary_index":0,"text":"Consider it"}""",
+            """{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","encrypted_content":"cipher","summary":[{"type":"summary_text","text":"Consider it"}]}}""",
+            """{"type":"response.completed","response":{"output":[{"id":"rs_1","type":"reasoning","encrypted_content":"cipher","summary":[{"type":"summary_text","text":"Consider it"}]}]}}""");
+        var events = await Collect(Model(handler));
+        var ended = Assert.Single(events.OfType<ModelReasoningEnded>());
+        Assert.Equal("cipher", ended.EncryptedContent);
+        Assert.Equal("rs_1", ended.ProviderItemId);
+        Assert.Equal("Consider it", Assert.Single(events.OfType<ModelReasoningDelta>()).Delta);
+
+        var replayHandler = Handler("""{"type":"response.completed","response":{"output":[]}}""");
+        await Collect(Model(replayHandler), new ModelRequest([
+            new(MessageRole.Assistant,
+            [
+                new InputReasoningBlock("Consider it", EncryptedContent: ended.EncryptedContent, ProviderItemId: ended.ProviderItemId),
+                new InputReasoningBlock("Then act", EncryptedContent: "updated-cipher", ProviderItemId: ended.ProviderItemId),
+                new InputTextBlock("answer"),
+            ]),
+            new(MessageRole.User, [new InputTextBlock("next")]),
+        ], [], new()));
+        using var body = JsonDocument.Parse(replayHandler.RequestBodies.Single()!);
+        Assert.False(body.RootElement.GetProperty("store").GetBoolean());
+        Assert.Equal("reasoning.encrypted_content", body.RootElement.GetProperty("include")[0].GetString());
+        var input = body.RootElement.GetProperty("input");
+        var reasoning = input[0];
+        Assert.Equal("reasoning", reasoning.GetProperty("type").GetString());
+        Assert.Equal("rs_1", reasoning.GetProperty("id").GetString());
+        Assert.Equal("updated-cipher", reasoning.GetProperty("encrypted_content").GetString());
+        Assert.Equal(2, reasoning.GetProperty("summary").GetArrayLength());
+        Assert.Equal("Then act", reasoning.GetProperty("summary")[1].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task MetadataOnlyEncryptedReasoning_WithoutItemId_ReplaysWithoutInventingId()
+    {
+        var events = await Collect(Model(Handler("""{"type":"response.completed","response":{"output":[{"id":"rs_1","type":"reasoning","encrypted_content":"opaque","summary":[]}]}}""")));
+        var ended = Assert.Single(events.OfType<ModelReasoningEnded>());
+        Assert.Equal("opaque", ended.EncryptedContent);
+        Assert.Equal("rs_1", ended.ProviderItemId);
+        Assert.Empty(events.OfType<ModelReasoningDelta>());
+
+        var handler = Handler("""{"type":"response.completed","response":{"output":[]}}""");
+        await Collect(Model(handler), new ModelRequest([
+            new(MessageRole.Assistant, [new InputReasoningBlock("", EncryptedContent: "opaque"), new InputTextBlock("answer")]),
+            new(MessageRole.User, [new InputTextBlock("next")]),
+        ], [], new()));
+        using var body = JsonDocument.Parse(handler.RequestBodies.Single()!);
+        var reasoning = body.RootElement.GetProperty("input")[0];
+        Assert.Equal("opaque", reasoning.GetProperty("encrypted_content").GetString());
+        Assert.False(reasoning.TryGetProperty("id", out _));
+        Assert.Equal(0, reasoning.GetProperty("summary").GetArrayLength());
+    }
+
     private static RecordingHandler Handler(params string[] frames) => new((_, _) => SegmentedStream.ToResponse(string.Join("", frames.Select(f => "data: " + f + "\n\n")), 5));
     private static OpenAiResponsesChatModel Model(RecordingHandler handler) => new(new HttpClient(handler), new("test", "key", "https://test/v1"));
     private static async Task<List<ModelStreamEvent>> Collect(IChatModel model, ModelRequest? request = null)

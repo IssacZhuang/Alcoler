@@ -50,6 +50,33 @@ public class ConversationViewModelTests
         risk,
         "test reason");
 
+    [Theory]
+    [InlineData(TurnPhase.ProcessingInput, "Preparing request", true, true)]
+    [InlineData(TurnPhase.AwaitingModel, "Waiting for model", true, true)]
+    [InlineData(TurnPhase.Streaming, "Generating response", true, true)]
+    [InlineData(TurnPhase.ExecutingTools, "Running tools", true, true)]
+    [InlineData(TurnPhase.AwaitingPermission, "Waiting for permission", false, true)]
+    [InlineData(TurnPhase.AwaitingInteraction, "Waiting for your answer", false, true)]
+    [InlineData(TurnPhase.Completing, "Finishing up", true, true)]
+    [InlineData(TurnPhase.Idle, "", false, false)]
+    [InlineData(TurnPhase.Error, "", false, false)]
+    public void ActivityPresentation_DistinguishesRunningFromWaitingForUser(
+        TurnPhase phase, string text, bool isWorking, bool isTurnActive)
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var state = TestSnapshots.State(phase);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+
+            Assert.Equal(text, viewModel.ActivityText);
+            Assert.Equal(isWorking, viewModel.IsWorking);
+            Assert.Equal(isTurnActive, viewModel.Composer.IsTurnActive);
+            Assert.Equal(phase.ToString(), viewModel.PhaseText);
+        }
+    }
+
     [Fact]
     public void ApplyOps_AppendsUpsertsAndRemoves()
     {

@@ -20,11 +20,16 @@ public sealed class BackgroundJobService : IBackgroundJobService
         _onCompleted = onCompleted;
     }
 
-    public BackgroundJobInfo Start(string description, string? outputPath, Func<CancellationToken, Task<BackgroundJobResult>> run)
+    public BackgroundJobInfo Start(
+        string description,
+        string? outputPath,
+        Func<CancellationToken, Task<BackgroundJobResult>> run,
+        ToolCallId? toolUseId = null)
     {
         var id = StrongId.NewBackgroundJobId();
         var cts = new CancellationTokenSource();
-        var info = new BackgroundJobInfo(id, description, _clock.GetUtcNow(), BackgroundJobStatus.Running, OutputPath: outputPath);
+        var info = new BackgroundJobInfo(id, description, _clock.GetUtcNow(), BackgroundJobStatus.Running,
+            OutputPath: outputPath, ToolUseId: toolUseId);
         var entry = new JobEntry(cts, info);
         _jobs[id] = entry;
 
@@ -71,12 +76,12 @@ public sealed class BackgroundJobService : IBackgroundJobService
         }
         catch (OperationCanceledException)
         {
-            result = new BackgroundJobResult(-1, "Job was stopped");
+            result = new BackgroundJobResult(null, "Job was stopped");
             status = BackgroundJobStatus.Stopped;
         }
         catch (Exception ex)
         {
-            result = new BackgroundJobResult(-1, ex.Message);
+            result = new BackgroundJobResult(null, ex.Message);
             status = BackgroundJobStatus.Failed;
         }
 

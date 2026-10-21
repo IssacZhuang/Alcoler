@@ -19,6 +19,10 @@ public class StreamingToolPolicyTests
     }
 
     [Fact]
+    public void UnknownTool_CannotExecuteDuringStream() =>
+        Assert.False(StreamingToolPolicy.CanExecuteDuringStream(null));
+
+    [Fact]
     public void SideEffectingTools_CannotExecuteDuringStream()
     {
         Assert.False(StreamingToolPolicy.CanExecuteDuringStream(new WriteTool()));

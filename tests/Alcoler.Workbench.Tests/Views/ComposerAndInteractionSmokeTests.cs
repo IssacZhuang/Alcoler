@@ -187,6 +187,53 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task QuestionCard_PreviewFocusSelectionNotesAndSubmission_PreserveArtifacts()
+    {
+        var question = new InteractionQuestion("Layout", "Which layout?",
+            [new("Split", "Two panes", "```text\n[left][right]\n```"), new("Stack", "One column", "[top]\n[bottom]")]);
+        using var harness = Show<InteractionAreaView>(QuestionState(question));
+        await PrepareQuestionAsync(harness);
+
+        var preview = FindNamed<Workbench.Controls.ConversationMarkdown>(harness.View, "QuestionPreview");
+        var panel = FindNamed<Border>(harness.View, "QuestionPreviewPanel");
+        Assert.True(panel.IsVisible);
+        Assert.Contains("[left][right]", preview.Markdown);
+        Assert.True(panel.TranslatePoint(default, harness.View)!.Value.X > Option(harness, "Split").TranslatePoint(default, harness.View)!.Value.X);
+
+        Option(harness, "Stack").Focus();
+        await PumpAsync();
+        Assert.Equal("[top]\n[bottom]", preview.Markdown);
+        await ClickAsync(harness, Option(harness, "Stack"));
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Equal("Stack", harness.ViewModel.PendingInteraction!.SelectedAnswers["Layout"]);
+
+        var notes = FindNamed<TextBox>(harness.View, "PreviewNotesInput");
+        notes.Focus();
+        notes.Text = "Keep generous spacing";
+        await PumpAsync();
+        Assert.Equal("Keep generous spacing", harness.ViewModel.PendingInteraction.SelectedAnnotations["Layout"].Notes);
+        await ClickAsync(harness, FindNamed<Button>(harness.View, "SubmitAnswersButton"));
+
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("Stack", command.InteractionAnswer!.Answers["Layout"]);
+        Assert.Equal("[top]\n[bottom]", command.InteractionAnswer.Annotations!["Layout"].Preview);
+        Assert.Equal("Keep generous spacing", command.InteractionAnswer.Annotations["Layout"].Notes);
+    }
+
+    [AvaloniaFact]
+    public async Task QuestionCard_MultiSelectDoesNotRenderPreviews()
+    {
+        var question = new InteractionQuestion("Features", "Which features?",
+            [new("Search", "Find files", "not supported for multi-select"), new("History", "View changes")], true);
+        using var harness = Show<InteractionAreaView>(QuestionState(question));
+        await PrepareQuestionAsync(harness);
+
+        Assert.False(FindNamed<Border>(harness.View, "QuestionPreviewPanel").IsVisible);
+        Assert.False(FindNamed<TextBox>(harness.View, "PreviewNotesInput").IsVisible);
+        Assert.Empty(harness.ViewModel.PendingInteraction!.SelectedAnnotations);
+    }
+
+    [AvaloniaFact]
     public async Task Composer_TurnActive_AllowsQueueWithoutChangingPermissionsAndShowsStop()
     {
         using var harness = Show<ComposerView>();

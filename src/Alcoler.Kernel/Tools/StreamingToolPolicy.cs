@@ -4,8 +4,9 @@ namespace Alcoler.Kernel.Tools;
 
 public static class StreamingToolPolicy
 {
-    public static bool CanExecuteDuringStream(ITool tool) =>
-        tool.Metadata.ReadOnly
+    public static bool CanExecuteDuringStream(ITool? tool) =>
+        tool is not null
+        && tool.Metadata.ReadOnly
         && tool.Metadata.ConcurrentSafe
         && !tool.Metadata.Destructive
         && !tool.Metadata.NeedsApproval

@@ -33,7 +33,7 @@ public sealed class ToolCallExecutor
         _schemas = new Dictionary<string, JsonSchema>(StringComparer.Ordinal);
         foreach (var tool in _registry.Tools)
         {
-            var schema = tool.Contract.InputSchema.Deserialize<JsonSchema>()
+            var schema = tool.RuntimeInputSchema.Deserialize<JsonSchema>()
                 ?? throw new InvalidOperationException($"Tool '{tool.Contract.Name}' declared an unreadable input schema.");
             _schemas.Add(tool.Contract.Name, schema);
         }
@@ -59,6 +59,9 @@ public sealed class ToolCallExecutor
         Func<ToolExecutionNotification, ValueTask> notificationSink,
         CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+            return CancelledResult();
+
         var tool = _registry.TryFind(call.Name);
         if (tool is null)
             return ToolUseError($"Unknown tool '{call.Name}'.");
@@ -114,23 +117,8 @@ public sealed class ToolCallExecutor
                 && _modeResolver(context) != PermissionMode.Plan)
                 return ToolExecutionResult.Text(ExitPlanModeTool.NotInPlanModeMessage, isError: true);
 
-            var executionContext = context with { Input = input };
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (tool.Metadata.DefaultTimeoutMs is > 0)
-                timeoutCts.CancelAfter(tool.Metadata.DefaultTimeoutMs.Value);
-            try
-            {
-                var result = await tool.ExecuteAsync(executionContext, timeoutCts.Token).ConfigureAwait(false);
-                return WithEmptyOutputPlaceholder(result, tool.Contract.Name);
-            }
-            catch (OperationCanceledException)
-            {
-                return CancelledResult();
-            }
-            catch (Exception ex)
-            {
-                return ToolUseError(ex.Message);
-            }
+            var executionContext = context with { Input = input, ToolCallId = call.Id };
+            return await ExecuteHandlerAsync(tool, executionContext, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -142,13 +130,69 @@ public sealed class ToolCallExecutor
         }
     }
 
-    private static ToolExecutionResult CancelledResult() => ToolExecutionResult.Text("Tool execution cancelled");
+    private static async Task<ToolExecutionResult> ExecuteHandlerAsync(
+        ITool tool,
+        ToolExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return CancelledResult();
+
+        var executionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var timeoutMs = tool.Metadata.DefaultTimeoutMs;
+        if (timeoutMs is > 0)
+            executionCts.CancelAfter(timeoutMs.Value);
+        var execution = Task.Run(async () =>
+        {
+            executionCts.Token.ThrowIfCancellationRequested();
+            return await tool.ExecuteAsync(context, executionCts.Token).ConfigureAwait(false);
+        }, CancellationToken.None);
+        try
+        {
+            var result = await execution.WaitAsync(executionCts.Token).ConfigureAwait(false);
+            return WithEmptyOutputPlaceholder(result, tool.Contract.Name);
+        }
+        catch (OperationCanceledException)
+        {
+            return !cancellationToken.IsCancellationRequested && executionCts.IsCancellationRequested && timeoutMs is > 0
+                ? ToolExecutionResult.Text($"Tool execution timed out after {timeoutMs.Value}ms", isError: true)
+                : CancelledResult();
+        }
+        catch (Exception ex)
+        {
+            return ToolUseError(ex.Message);
+        }
+        finally
+        {
+            if (execution.IsCompleted)
+                executionCts.Dispose();
+            else
+                _ = ObserveAbandonedExecutionAsync(execution, executionCts);
+        }
+    }
+
+    private static async Task ObserveAbandonedExecutionAsync(Task execution, CancellationTokenSource executionCts)
+    {
+        try
+        {
+            await execution.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+        finally
+        {
+            executionCts.Dispose();
+        }
+    }
+
+    private static ToolExecutionResult CancelledResult() => ToolExecutionResult.Text("Tool execution cancelled", isError: true);
 
     private ToolExecutionResult DeniedResult(ITool tool, ToolExecutionContext context)
     {
         if (string.Equals(tool.Contract.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal)
             && _modeResolver(context) == PermissionMode.Plan)
-            return ToolExecutionResult.Text(ExitPlanModeTool.PlanDeniedMessage, isError: true);
+            return ToolExecutionResult.Text(ExitPlanModeTool.PlanDeniedMessage, isError: true, stopTurnAfterResult: true);
         return ToolExecutionResult.Text($"Permission denied for {tool.Contract.Name}", isError: true);
     }
 
@@ -156,7 +200,7 @@ public sealed class ToolCallExecutor
     {
         if (result.IsError || !HasOnlyBlankText(result))
             return result;
-        return ToolExecutionResult.Text($"({toolName} completed with no output)", displaySummary: result.DisplaySummary);
+        return result with { Content = [new ToolResultText($"({toolName} completed with no output)")] };
     }
 
     private static bool HasOnlyBlankText(ToolExecutionResult result)

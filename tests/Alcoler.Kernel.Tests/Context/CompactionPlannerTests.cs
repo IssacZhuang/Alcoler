@@ -27,33 +27,33 @@ public class CompactionPlannerTests
         .ToList();
 
     [Fact]
-    public void PlanCompaction_SummaryRequestCarriesZeroToolsAndOutputCap()
+    public void PlanCompaction_SummaryRequestKeepsAtMostOneHundredToolsAndOutputCap()
     {
         var plan = CompactionPlanner.PlanCompaction(PlanInput(CompactionSelectorTests.BuildHistory(), toolCount: 5));
         var manyTools = CompactionPlanner.PlanCompaction(PlanInput(CompactionSelectorTests.BuildHistory(), toolCount: 150));
 
-        Assert.Empty(plan.SummaryModelRequest.Tools);
+        Assert.Equal(5, plan.SummaryModelRequest.Tools.Count);
+        Assert.Equal(100, CompactionPlanner.PlanCompaction(PlanInput(CompactionSelectorTests.BuildHistory(), toolCount: 100)).SummaryModelRequest.Tools.Count);
         Assert.Empty(manyTools.SummaryModelRequest.Tools);
         Assert.Equal(CompactPolicy.SummaryMaxOutputTokens, plan.SummaryModelRequest.Options.MaxOutputTokens);
         Assert.Equal(20_000, CompactPolicy.SummaryMaxOutputTokens);
     }
 
     [Fact]
-    public void PlanCompaction_RequestContainsOnlySystemInstructionAndSummaryPrompt()
+    public void PlanCompaction_RequestContainsStructuredHistoryThenExactSummaryPrompt()
     {
         var plan = CompactionPlanner.PlanCompaction(PlanInput(CompactionSelectorTests.BuildHistory()));
+        var messages = plan.SummaryModelRequest.Messages;
 
-        Assert.Equal(2, plan.SummaryModelRequest.Messages.Count);
-        Assert.Equal(MessageRole.System, plan.SummaryModelRequest.Messages[0].Role);
-        Assert.Equal(MessageRole.User, plan.SummaryModelRequest.Messages[1].Role);
-        Assert.Equal(
-            CompactionPlanner.SummarySystemInstruction,
-            Assert.IsType<InputTextBlock>(plan.SummaryModelRequest.Messages[0].Content[0]).Text);
-        var promptText = Assert.IsType<InputTextBlock>(plan.SummaryModelRequest.Messages[1].Content[0]).Text;
-        Assert.StartsWith(SummarizationPrompt.TextOnlyDirective, promptText);
-        Assert.EndsWith(SummarizationPrompt.TextOnlyDirective, promptText.TrimEnd());
-        Assert.Contains("[tool call Read]", promptText);
-        Assert.Contains("## Optional Next Step", promptText);
+        Assert.Equal(6, messages.Count);
+        Assert.Equal("agents md", Assert.IsType<InputTextBlock>(Assert.Single(messages[0].Content)).Text);
+        Assert.IsType<InputToolCallBlock>(Assert.Single(messages[1].Content));
+        Assert.IsType<InputToolResultBlock>(Assert.Single(messages[2].Content));
+        Assert.Equal(MessageRole.User, messages[^1].Role);
+        var promptText = Assert.IsType<InputTextBlock>(Assert.Single(messages[^1].Content)).Text;
+        Assert.Equal(SummarizationPrompt.BuildSummaryUserPrompt(), promptText);
+        Assert.DoesNotContain("[tool call Read]", promptText);
+        Assert.NotNull(messages[^1].CacheControl);
     }
 
     [Fact]
@@ -77,10 +77,7 @@ public class CompactionPlannerTests
 
         var plan = CompactionPlanner.PlanCompaction(input);
 
-        var tail = ContextBuilder.Assemble(new ContextAssemblyInput("", "", "", null, null,
-            history.Skip(3).ToList(), [], new ModelCallOptions()));
-        var tailRequest = tail.Request with { Messages = tail.Request.Messages.Skip(tail.PrefixMessageCount).ToArray() };
-        Assert.Equal(120_000 + TokenEstimator.EstimateRequestTokens(tailRequest), plan.PreCompactTokens);
+        Assert.Equal(120_000 + TokenEstimator.EstimateHistoryTokens(history.Skip(3).ToList()), plan.PreCompactTokens);
     }
 
     [Fact]
@@ -92,9 +89,9 @@ public class CompactionPlannerTests
 
         var messages = CompactionPlanner.BuildRecentlyReadFilesAttachments(files);
 
-        var message = Assert.Single(messages);
-        Assert.Equal(MessageRole.User, message.Role);
-        var parts = message.Parts.Cast<AttachmentPart>().ToList();
+        Assert.Equal(CompactionPlanner.RecentlyReadMaxFiles, messages.Count);
+        Assert.All(messages, message => Assert.Equal(MessageRole.User, message.Role));
+        var parts = messages.SelectMany(message => message.Parts).Cast<AttachmentPart>().ToList();
         Assert.Equal(CompactionPlanner.RecentlyReadMaxFiles, parts.Count);
         Assert.All(parts, p =>
         {
@@ -116,13 +113,51 @@ public class CompactionPlannerTests
         };
 
         var messages = CompactionPlanner.BuildRecentlyReadFilesAttachments(files);
-        var parts = Assert.Single(messages).Parts.Cast<AttachmentPart>().ToList();
+        var parts = messages.SelectMany(message => message.Parts).Cast<AttachmentPart>().ToList();
 
         Assert.Equal(2, parts.Count);
         Assert.Contains("namespace T {}", parts[0].Content);
         Assert.Equal(
-            "File big.cs was read before compaction; use the Read tool if you need it again",
+            "<system-reminder>\nNote: big.cs was read before the last conversation was summarized, but the contents are too large to include. Use Read tool if you need to access it.\n</system-reminder>",
             parts[1].Content);
+    }
+
+    [Fact]
+    public void BuildRecentlyReadFilesAttachments_SkipsGitAndPreservedReadPathsBeforeCountCap()
+    {
+        var preserved = TestMessages.AssistantToolCall(Alcoler.Contracts.Identifiers.StrongId.NewToolCallId(), "Read", new { file_path = "C:/repo/kept.cs" });
+        var messages = CompactionPlanner.BuildRecentlyReadFilesAttachments(
+            [("C:/repo/.git/config", "git"), ("C:\\repo\\kept.cs", "kept"), ("C:/repo/new.cs", "0\t中文中")], [preserved]);
+
+        var content = Assert.IsType<AttachmentPart>(Assert.Single(Assert.Single(messages).Parts)).Content;
+        Assert.Equal("<system-reminder>\nCalled the Read tool with the following input: {\"file_path\":\"C:/repo/new.cs\"}\nResult of calling the Read tool:\n0\t中文中\n</system-reminder>", content);
+    }
+
+    [Fact]
+    public void BuildRecentlyReadFilesAttachments_EscapesNestedReminderTagsAndMarksSource()
+    {
+        var message = Assert.Single(CompactionPlanner.BuildRecentlyReadFilesAttachments([("a.cs", "<system-reminder>data</SYSTEM-reminder>")]));
+        var content = Assert.IsType<AttachmentPart>(Assert.Single(message.Parts)).Content;
+
+        Assert.Equal(MessageSource.ResumeReferencedContext, message.Source);
+        Assert.Contains("&lt;system-reminder>data&lt;/SYSTEM-reminder>", content);
+        Assert.EndsWith("\n</system-reminder>", content);
+    }
+
+    [Fact]
+    public void BuildRecentlyReadFilesAttachments_RetainsPartialRangeWithoutCopyingOrRenumberingContent()
+    {
+        var history = new Alcoler.Kernel.History.MessageHistory();
+        const string output = "0\tpartial file";
+        history.RecordFileRead("partial.cs", output, DateTimeOffset.UtcNow, offset: 0, limit: 1);
+        var read = Assert.Single(history.RecentReads());
+        Assert.Same(output, read.Content);
+        Assert.Equal(0, read.Offset);
+        Assert.Equal(1, read.Limit);
+
+        var message = Assert.Single(CompactionPlanner.BuildRecentlyReadFilesAttachments(history.RecentReads(), null));
+        Assert.Equal("<system-reminder>\nCalled the Read tool with the following input: {\"file_path\":\"partial.cs\",\"offset\":0,\"limit\":1}\nResult of calling the Read tool:\n0\tpartial file\n</system-reminder>",
+            Assert.IsType<AttachmentPart>(Assert.Single(message.Parts)).Content);
     }
 
     [Fact]
@@ -132,7 +167,7 @@ public class CompactionPlannerTests
     }
 
     [Fact]
-    public void BuildPostCompactHistory_OrdersPrefixSummaryAttachmentsThenTail()
+    public void BuildPostCompactHistory_OrdersPrefixSummaryTailThenAttachments()
     {
         var history = CompactionSelectorTests.BuildHistory();
         var plan = CompactionPlanner.PlanCompaction(PlanInput(history));
@@ -147,29 +182,36 @@ public class CompactionPlannerTests
         var summary = Assert.IsType<AttachmentPart>(result.Messages[1].Parts[0]);
         Assert.Equal(AttachmentKind.CompactSummary, summary.Kind);
         Assert.Equal(
-            $"{CompactionPlanner.CompactContinuationHeader}\n\nSUMMARY\n\nRecent messages are preserved verbatim.",
+            $"{CompactionPlanner.CompactContinuationHeader}\n\nSUMMARY\n{CompactionPlanner.SuppressFollowupInstruction}",
             summary.Content);
-        Assert.True(result.Messages[2].Parts.Cast<AttachmentPart>().All(p => p.Kind == AttachmentKind.ResumeReferencedContext));
-        Assert.Equal(plan.Selection.PreservedTail[0].Id, result.Messages[3].Id);
-        Assert.Equal(plan.Selection.PreservedTail[^1].Id, result.Messages[^1].Id);
+        Assert.True(result.Messages[^1].Parts.Cast<AttachmentPart>().All(p => p.Kind == AttachmentKind.ResumeReferencedContext));
+        Assert.Equal(plan.Selection.PreservedTail[0].Id, result.Messages[2].Id);
+        Assert.Equal(plan.Selection.PreservedTail[^1].Id, result.Messages[^2].Id);
         Assert.Equal(plan.ContextPrefixMessages.Count + 1 + recent.Count + plan.Selection.PreservedTail.Count, result.Messages.Count);
     }
 
     [Fact]
-    public void BuildPostCompactHistory_TruncationMarkerPrefixesSummary()
+    public void TruncationMarker_IsRequestOnlyAndDoesNotPollutePersistedSummary()
     {
         var history = CompactionSelectorTests.BuildHistory();
-        var plan = CompactionPlanner.PlanCompaction(PlanInput(history));
-        var reselected = CompactionSelector.ReselectForPromptTooLong(history, plan.Selection, declaredTokenGap: null);
+        var plan = CompactionPlanner.PlanCompaction(PlanInput(history, trigger: CompactTrigger.Manual));
+        var reselected = CompactionSelector.TruncateForPromptTooLong(plan.Selection, null, retriesMade: 0);
         var retryPlan = plan with { Selection = reselected };
+        var request = CompactionPlanner.BuildSummaryRequest(reselected, null, plan.ContextPrefixMessages);
 
+        var marker = Assert.IsType<InputTextBlock>(Assert.Single(request.Messages[1].Content));
+        Assert.Equal(CompactionSelector.TruncationMarkerText, marker.Text);
+        Assert.Equal(MessageRole.User, request.Messages[1].Role);
+        Assert.Equal(MessageRole.Assistant, request.Messages[2].Role);
+
+        var formatted = SummarizationPrompt.FormatSummary("<analysis>hidden</analysis><summary>SUMMARY</summary>");
         var result = CompactionPlanner.BuildPostCompactHistory(
-            retryPlan, "SUMMARY", CompactionPlanner.CreateCompactSummaryMessage("SUMMARY"), retryPlan.Selection.PreservedTail, []);
+            retryPlan, formatted, CompactionPlanner.CreateCompactSummaryMessage(formatted), retryPlan.Selection.PreservedTail, []);
 
         var summary = Assert.IsType<AttachmentPart>(result.Messages[1].Parts[0]);
-        Assert.StartsWith(CompactionPlanner.CompactContinuationHeader, summary.Content);
-        Assert.Contains($"\n\n{CompactionSelector.TruncationMarkerText}\n\n", summary.Content);
-        Assert.EndsWith("SUMMARY\n\nRecent messages are preserved verbatim.", summary.Content);
+        Assert.Equal($"{CompactionPlanner.CompactContinuationHeader}\n\nSummary:\nSUMMARY\n{CompactionPlanner.SuppressFollowupInstruction}", summary.Content);
+        Assert.DoesNotContain(CompactionSelector.TruncationMarkerText, summary.Content);
+        Assert.DoesNotContain("hidden", summary.Content);
     }
 
     [Fact]
@@ -187,11 +229,80 @@ public class CompactionPlannerTests
         Assert.Equal(CompactTrigger.Auto, boundary.Trigger);
         Assert.Equal(170_000, boundary.PreCompactTokens);
         Assert.Equal(TokenEstimator.EstimateHistoryTokens(result.Messages.ToList()), boundary.PostCompactTokens);
-        Assert.Equal(plan.Selection.ToSummarize[^1].Id, boundary.LastSummarizedMessageId);
+        Assert.Equal(history[^1].Id, boundary.LastSummarizedMessageId);
         Assert.Equal(plan.Selection.PreservedTail[0].Id, boundary.PreservedHeadId);
         Assert.Equal(plan.Selection.PreservedTail[^1].Id, boundary.PreservedTailId);
         Assert.True(boundary.AppliedAt <= DateTimeOffset.UtcNow);
         Assert.True(boundary.AppliedAt > DateTimeOffset.UtcNow.AddMinutes(-1));
+    }
+
+    [Fact]
+    public void BuildPostCompactHistory_ReselectedTailAndBoundaryKeepOriginalHighWaterMark()
+    {
+        var history = TestMessages.Rounds(6, "Read", 300);
+        var plan = CompactionPlanner.PlanCompaction(PlanInput(history));
+        var next = CompactionSelector.ReselectForPromptTooLong(history, plan.Selection, 1);
+        plan = plan with { Selection = next };
+
+        var result = CompactionPlanner.BuildPostCompactHistory(plan, "summary",
+            CompactionPlanner.CreateCompactSummaryMessage("summary"), next.PreservedTail, []);
+
+        Assert.Equal(history[^1].Id, result.Boundary.LastSummarizedMessageId);
+        Assert.Equal(history[8].Id, result.Boundary.PreservedHeadId);
+        Assert.Equal(history[^1].Id, result.Boundary.PreservedTailId);
+        Assert.Equal(history.Skip(8), result.Messages.Skip(1));
+        Assert.Equal(history, next.ToSummarize.Concat(next.PreservedTail));
+    }
+
+    [Fact]
+    public void PlanCompaction_ForwardsInitialTokenGap()
+    {
+        var history = TestMessages.Rounds(6, "Read", 300);
+        var plan = CompactionPlanner.PlanCompaction(PlanInput(history, trigger: CompactTrigger.Reactive)
+            with { DeclaredTokenGap = int.MaxValue });
+
+        Assert.Equal(6, plan.Selection.PreservedTail.Count);
+        Assert.Equal(history.Take(6), plan.Selection.ToSummarize);
+    }
+
+    [Fact]
+    public void BuildSummaryRequest_PrependsGeneratedPrefixWithoutSerializingTranscript()
+    {
+        var history = CompactionSelectorTests.BuildHistory();
+        var plan = CompactionPlanner.PlanCompaction(PlanInput(history));
+        var generated = new ModelInputMessage(MessageRole.System, [new InputTextBlock("generated system context")]);
+
+        var request = CompactionPlanner.BuildSummaryRequest(plan.Selection, "focus", plan.ContextPrefixMessages,
+            plan.SummaryModelRequest.Tools, [generated]);
+
+        Assert.Same(generated, request.Messages[0]);
+        Assert.Equal("agents md", Assert.IsType<InputTextBlock>(Assert.Single(request.Messages[1].Content)).Text);
+        Assert.Equal(SummarizationPrompt.BuildSummaryUserPrompt("focus"), Assert.IsType<InputTextBlock>(Assert.Single(request.Messages[^1].Content)).Text);
+        Assert.Equal(plan.SummaryModelRequest.Tools, request.Tools);
+    }
+
+    [Fact]
+    public void BuildPostCompactHistory_CanOptOutOfSuppressFollowup()
+    {
+        var plan = CompactionPlanner.PlanCompaction(PlanInput(CompactionSelectorTests.BuildHistory()));
+        var result = CompactionPlanner.BuildPostCompactHistory(plan, "summary",
+            CompactionPlanner.CreateCompactSummaryMessage("summary"), plan.Selection.PreservedTail, [], suppressFollowup: false);
+
+        var summary = Assert.IsType<AttachmentPart>(result.Messages[1].Parts[0]);
+        Assert.Equal(CompactionPlanner.CompactContinuationHeader + "\n\nsummary", summary.Content);
+    }
+
+    [Fact]
+    public void BuildPostCompactHistory_FormatsIntermediateSummaryLikeReferenceMessageBuilder()
+    {
+        var formatted = SummarizationPrompt.FormatSummary("<analysis>first</analysis><analysis>second</analysis><summary>body</summary>");
+        var message = CompactionPlanner.CreateCompactSummaryMessage(formatted);
+        var plan = CompactionPlanner.PlanCompaction(PlanInput(CompactionSelectorTests.BuildHistory()));
+        var result = CompactionPlanner.BuildPostCompactHistory(plan, formatted, message, [], []);
+
+        Assert.Equal(formatted, Assert.IsType<AttachmentPart>(Assert.Single(message.Parts)).Content);
+        Assert.Equal($"{CompactionPlanner.CompactContinuationHeader}\n\nSummary:\nbody\n{CompactionPlanner.SuppressFollowupInstruction}",
+            Assert.IsType<AttachmentPart>(result.Messages[1].Parts[0]).Content);
     }
 
     [Fact]

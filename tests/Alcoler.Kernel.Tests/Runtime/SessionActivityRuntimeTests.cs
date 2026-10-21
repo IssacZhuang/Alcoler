@@ -62,7 +62,7 @@ public class SessionActivityRuntimeTests
         var stopped = Assert.Single(activity.GetBackgroundJobs(first.Id));
         Assert.Equal(firstJob.Info.Id, stopped.Id);
         Assert.Equal(firstJob.Info.OutputPath, stopped.OutputPath);
-        Assert.Equal(-1, stopped.ExitCode);
+        Assert.Null(stopped.ExitCode);
         Assert.Equal("Job was stopped", stopped.Error);
         Assert.False(activity.StopBackgroundJob(first.Id, stopped.Id));
         Assert.Equal(BackgroundJobStatus.Running, Assert.Single(firstSnapshot).Status);
@@ -138,7 +138,8 @@ public class SessionActivityRuntimeTests
             Assert.Equal(Contracts.Subagents.SubagentStatus.Running, state.Status);
             Assert.Null(runtime.TryObserve(state.ChildSessionId));
             var sessionsBefore = await runtime.ListSessionsAsync(harness.Root, 10, CancellationToken.None);
-            Assert.Equal(3, sessionsBefore.Count);
+            Assert.Equal(2, sessionsBefore.Count);
+            Assert.DoesNotContain(sessionsBefore, session => session.Id == state.ChildSessionId);
 
             Assert.Null(activity.TryObserveSubagent(unrelated.Id, state.ChildSessionId));
             Assert.Null(activity.TryObserveSubagent(StrongId.NewSessionId(), state.ChildSessionId));

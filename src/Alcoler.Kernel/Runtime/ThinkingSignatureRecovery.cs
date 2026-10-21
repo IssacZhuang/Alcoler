@@ -1,19 +1,15 @@
 using Alcoler.Contracts.Conversation;
-using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 
 namespace Alcoler.Kernel.Runtime;
 
-// Mirrors ZCode reasoning-history-normalization: a 400 that names a thinking-block signature
-// problem is repaired by stripping reasoning parts from history and retrying the request once.
-// Matching is deliberately narrow; other invalid requests must not trigger history edits.
 public static class ThinkingSignatureRecovery
 {
     public const string RemovedThinkingText = "[Thinking removed]";
 
-    public static bool IsSignatureRejection(ModelFailure failure)
+    public static bool IsSignatureRejection(ModelFailure failure, int statusCode = 400)
     {
-        if (failure.Kind != ModelFailureKind.InvalidRequest)
+        if (statusCode != 400 || failure.Kind != ModelFailureKind.InvalidRequest)
             return false;
 
         var message = failure.Message.ToLowerInvariant();
@@ -28,25 +24,28 @@ public static class ThinkingSignatureRecovery
         return namesThinkingBlock && namesSignatureFailure;
     }
 
-    // Removes reasoning parts from assistant messages; an assistant message left without any
-    // part gets a text placeholder so turn boundaries survive. Returns the input reference
-    // unchanged when there is nothing to strip.
-    public static IReadOnlyList<ConversationMessage> StripReasoningParts(IReadOnlyList<ConversationMessage> messages)
+    public static bool IsSignedOrRedacted(InputReasoningBlock block) =>
+        !string.IsNullOrEmpty(block.Signature) || block.RedactedData is not null;
+
+    public static IReadOnlyList<ModelInputMessage> RepairRequestMessages(IReadOnlyList<ModelInputMessage> messages)
     {
-        List<ConversationMessage>? result = null;
+        List<ModelInputMessage>? result = null;
         for (var i = 0; i < messages.Count; i++)
         {
             var message = messages[i];
-            if (message.Role != MessageRole.Assistant || message.Parts.All(p => p is not ReasoningPart))
+            if (message.Role != MessageRole.Assistant ||
+                !message.Content.Any(block => block is InputReasoningBlock reasoning && IsSignedOrRedacted(reasoning)))
                 continue;
 
             result ??= [.. messages];
-            var kept = message.Parts.Where(p => p is not ReasoningPart).ToList();
-            if (kept.Count == 0)
-                kept.Add(new TextPart(StrongId.NewPartId(), RemovedThinkingText));
-            result[i] = message with { Parts = kept };
+            var kept = message.Content.Where(block =>
+                    block is not InputReasoningBlock reasoning || !IsSignedOrRedacted(reasoning))
+                .Where(block => block is not InputTextBlock text || text.Text.Trim().Length > 0)
+                .ToList();
+            if (kept.All(block => block is InputReasoningBlock))
+                kept.Add(new InputTextBlock(RemovedThinkingText));
+            result[i] = message with { Content = kept };
         }
-
         return result ?? messages;
     }
 }

@@ -50,7 +50,7 @@ public class CompactPolicyTests
     [InlineData(100_000, 90_000)]
     [InlineData(10_000, 8_000)]
     [InlineData(2_000, 0)]
-    [InlineData(0, -2_000)]
+    [InlineData(0, 0)]
     public void MicroCompactTriggerTokens_IsMinOfNineTenthsAndMinusTwoThousand(int threshold, int expected)
     {
         Assert.Equal(expected, CompactPolicy.MicroCompactTriggerTokens(threshold));

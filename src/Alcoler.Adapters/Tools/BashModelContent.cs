@@ -69,15 +69,16 @@ public static partial class BashModelContent
             + $"{string.Join(", ", displayPaths)}{hiddenSuffix}. Call Read before editing.]";
     }
 
-    public static string FormatPersistedOutputEnvelope(string content, long originalBytes, string persistedPath)
+    public static string FormatPersistedOutputEnvelope(string content, long originalBytes, string persistedPath, bool decimalBytes = false)
     {
         var preview = PreviewFirstChars(content, PersistedPreviewChars);
+        Func<long, string> formatBytes = decimalBytes ? FormatDecimalBytes : FormatByteSize;
         var lines = new List<string>
         {
             "<persisted-output>",
-            $"Output too large ({FormatByteSize(originalBytes)}). Full output saved to: {persistedPath}",
+            $"Output too large ({formatBytes(originalBytes)}). Full output saved to: {persistedPath}",
             string.Empty,
-            $"Preview (first {FormatByteSize(PersistedPreviewChars)}):",
+            $"Preview (first {formatBytes(PersistedPreviewChars)}):",
             preview.Preview,
         };
         if (preview.HasMore)
@@ -85,6 +86,25 @@ public static partial class BashModelContent
         lines.Add("</persisted-output>");
         return string.Join("\n", lines);
     }
+
+    internal static string FormatPersistenceFailure(string tail, long originalBytes)
+    {
+        var suffix = $"\n\n[Tool output truncated by resultBudget: originalBytes={originalBytes}, maxModelBytes={MaxInlineOutputBytes}, strategy=artifact]";
+        var remaining = MaxInlineOutputBytes - Encoding.UTF8.GetByteCount(suffix);
+        var bytes = Encoding.UTF8.GetBytes(tail);
+        var start = Math.Max(0, bytes.Length - remaining);
+        while (start < bytes.Length && (bytes[start] & 0xc0) == 0x80)
+            start++;
+        return Encoding.UTF8.GetString(bytes.AsSpan(start)) + suffix;
+    }
+
+    private static string FormatDecimalBytes(long bytes) => bytes switch
+    {
+        < 1_000 => $"{bytes} B",
+        < 1_000_000 => $"{Math.Round(bytes / 1_000.0, MidpointRounding.AwayFromZero)} KB",
+        < 1_000_000_000 => $"{Math.Round(bytes / 1_000_000.0, MidpointRounding.AwayFromZero)} MB",
+        _ => $"{Math.Round(bytes / 1_000_000_000.0, MidpointRounding.AwayFromZero)} GB",
+    };
 
     public static string FormatByteSize(long bytes)
     {

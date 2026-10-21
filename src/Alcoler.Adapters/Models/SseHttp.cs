@@ -40,14 +40,37 @@ internal static class SseHttp
                 Header(response, "retry-after"),
                 errorBody,
                 Header(response, "retry-after-ms"),
-                Header(response, "x-should-retry"));
+                Header(response, "x-should-retry")) with
+            {
+                Phase = ModelFailurePhase.RequestSetup,
+                HttpStatusCode = (int)response.StatusCode,
+            };
             yield return new SseFrame(FailureEventName, Alcoler.Contracts.Serialization.AlcolerJson.Serialize(failure));
             yield break;
         }
 
         var parser = new SseParser();
         var buffer = new byte[8192];
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        Stream? bodyStream = null;
+        ModelFailure? bodyFailure = null;
+        try
+        {
+            bodyStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            bodyFailure = ModelFailureClassifier.FromException(ex, cancellationToken) with
+            {
+                Phase = ModelFailurePhase.ResponseBody,
+                HttpStatusCode = (int)response.StatusCode,
+            };
+        }
+        if (bodyFailure is not null)
+        {
+            yield return FailureFrame(bodyFailure);
+            yield break;
+        }
+        await using var stream = bodyStream!;
 
         while (true)
         {
@@ -67,7 +90,11 @@ internal static class SseHttp
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                failure = ModelFailureClassifier.FromException(ex, cancellationToken);
+                failure = ModelFailureClassifier.FromException(ex, cancellationToken) with
+                {
+                    Phase = ModelFailurePhase.ResponseBody,
+                    HttpStatusCode = (int)response.StatusCode,
+                };
             }
             if (failure is not null)
             {

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Identifiers;
@@ -320,6 +321,175 @@ public class BashToolTests
     {
         Assert.Equal(expected, BashTool.IsAutoBackgroundEligible(command));
     }
+
+    [Theory]
+    [InlineData(null, null, 120_000, 600_000)]
+    [InlineData("200000", "1000", 200_000, 200_000)]
+    [InlineData("700000junk", null, 700_000, 700_000)]
+    [InlineData("0", "-100", 120_000, 600_000)]
+    public void TimeoutPolicy_UsesPositiveEnvironmentOverrides(string? configuredDefault, string? configuredMax, int expectedDefault, int expectedMax)
+    {
+        var policy = BashTimeoutPolicy.FromEnvironment(key => key == "BASH_DEFAULT_TIMEOUT_MS" ? configuredDefault : configuredMax);
+        Assert.Equal(expectedDefault, policy.DefaultMs);
+        Assert.Equal(expectedMax, policy.MaxMs);
+        Assert.Equal(expectedDefault, policy.Resolve(0));
+        Assert.Equal(-20, policy.Resolve(-20));
+        Assert.Equal(expectedMax, policy.Resolve(int.MaxValue));
+        var tool = new BashTool(ShellResolver.Resolve(), policy);
+        Assert.Contains($"default {expectedDefault}, max {expectedMax}", tool.Contract.Description);
+        Assert.False(tool.Contract.InputSchema.GetProperty("properties").GetProperty("timeout").TryGetProperty("minimum", out _));
+    }
+
+    [Fact]
+    public async Task ProcessCapture_PreservesUnterminatedOutputAndBoundsMemory()
+    {
+        if (!PosixShellAvailable())
+            return;
+        using var workspace = new TempWorkspace();
+        var output = Path.Combine(workspace.Root, "output.log");
+        using var session = BashProcessSession.Start(ShellResolver.Resolve(),
+            "printf 'start'; printf '%080000d' 0; printf 'end'", workspace.Root, captureCwd: true, output);
+        Assert.Equal(0, await session.WaitForExitAsync(CancellationToken.None));
+        Assert.True(session.SnapshotStdout().Length <= session.InlineLimit);
+        var persisted = await File.ReadAllTextAsync(output);
+        Assert.StartsWith("start", persisted);
+        Assert.EndsWith("end", persisted);
+        Assert.DoesNotContain(BashProcessSession.CwdMarker, persisted);
+        Assert.Equal(80_008, session.OutputBytes);
+        Assert.True(session.TryExtractCapturedCwd(out _));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task PersistenceWriterFailure_ReturnsBoundedTailInsteadOfFakeArtifact(bool failOpen, bool unicode)
+    {
+        if (!PosixShellAvailable())
+            return;
+        using var workspace = new TempWorkspace();
+        var writes = 0;
+        var tool = new BashTool(ShellResolver.Resolve(), openOutput: path => failOpen
+            ? throw new IOException("output create failed")
+            : new FailingOutputStream(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read), () => writes++));
+        var command = unicode
+            ? "printf 'discarded-head'; for ((i=0;i<12000;i++)); do printf '\\344\\270\\255\\360\\237\\230\\200'; done; printf 'retained-tail'"
+            : "printf 'discarded-head'; printf '%080000d' 0; printf 'retained-tail'";
+        var result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command })), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var text = result.SingleText();
+        Assert.DoesNotContain("<persisted-output>", text);
+        Assert.DoesNotContain("discarded-head", text);
+        Assert.Contains("retained-tail\n\n[Tool output truncated by resultBudget:", text);
+        Assert.EndsWith("maxModelBytes=30000, strategy=artifact]", text);
+        Assert.InRange(Encoding.UTF8.GetByteCount(text), 29_990, 30_000);
+        Assert.DoesNotContain('\ufffd', text);
+        if (!failOpen)
+            Assert.Equal(1, writes);
+    }
+
+    [Fact]
+    public async Task PosixOutput_MergesStdoutAndStderrInWriteOrder()
+    {
+        if (!PosixShellAvailable())
+            return;
+        using var workspace = new TempWorkspace();
+        var result = await new BashTool().ExecuteAsync(workspace.ContextFor(
+            """{"command":"printf 'out-one\\n'; printf 'err-one\\n' >&2; printf 'out-two\\n'; printf 'err-two\\n' >&2"}"""), CancellationToken.None);
+        Assert.Equal("out-one\nerr-one\nout-two\nerr-two", result.SingleText());
+    }
+
+    [Fact]
+    public void OutputDecoder_PrefersUtf8AndCarriesSplitMultibyteCharacters()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var decoder = new BashOutputDecoder(Encoding.GetEncoding(936));
+        var utf8 = Encoding.UTF8.GetBytes("中");
+        Assert.Equal("ascii ", decoder.Decode("ascii "u8));
+        Assert.Equal("", decoder.Decode(utf8.AsSpan(0, 1)));
+        Assert.Equal("中", decoder.Decode(utf8.AsSpan(1)));
+        Assert.Equal("", decoder.Decode([], flush: true));
+        var asciiPrefix = new string('a', 4095);
+        var split = new BashOutputDecoder(Encoding.GetEncoding(936));
+        Assert.Equal(asciiPrefix, split.Decode([.. Encoding.ASCII.GetBytes(asciiPrefix), utf8[0]]));
+        Assert.Equal("中", split.Decode(utf8.AsSpan(1)));
+    }
+
+    [Fact]
+    public void OutputDecoder_FallsBackToLegacyAndCarriesSplitCharacters()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var decoder = new BashOutputDecoder(Encoding.GetEncoding(936));
+        Assert.Equal("ascii ", decoder.Decode("ascii "u8));
+        Assert.Equal("", decoder.Decode([0xd6]));
+        Assert.Equal("中文", decoder.Decode([0xd0, 0xce, 0xc4]));
+        Assert.Equal("", decoder.Decode([], flush: true));
+    }
+
+    [Fact]
+    public async Task ProcessCapture_DecodesLegacyBytesWithoutCorruptingUtf8Output()
+    {
+        if (!PosixShellAvailable())
+            return;
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        using var workspace = new TempWorkspace();
+        var output = Path.Combine(workspace.Root, "legacy.log");
+        using var session = BashProcessSession.Start(ShellResolver.Resolve(), "printf '\\326\\320\\316\\304'", workspace.Root,
+            captureCwd: false, output, legacyEncoding: Encoding.GetEncoding(936));
+        Assert.Equal(0, await session.WaitForExitAsync(CancellationToken.None));
+        Assert.Equal("中文", session.SnapshotStdout());
+        Assert.Equal("中文", await File.ReadAllTextAsync(output));
+    }
+
+    private sealed class FailingOutputStream(Stream inner, Action attempted) : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => inner.Length;
+        public override long Position { get => inner.Position; set => throw new NotSupportedException(); }
+        public override void Flush() => inner.Flush();
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            attempted();
+            inner.Write(buffer, offset, Math.Min(count, 16));
+            throw new IOException("output write failed");
+        }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                inner.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
+    [Fact]
+    public async Task ProcessCapture_PersistedLimitStopsRunawayOutput()
+    {
+        if (!PosixShellAvailable())
+            return;
+        using var workspace = new TempWorkspace();
+        var output = Path.Combine(workspace.Root, "limited.log");
+        using var session = BashProcessSession.Start(ShellResolver.Resolve(), "yes runaway", workspace.Root,
+            captureCwd: false, output, persistedLimit: 64_000);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        Assert.NotEqual(0, await session.WaitForExitAsync(timeout.Token));
+        Assert.True(session.OutputBytes > 64_000);
+        Assert.Equal(64_000, new FileInfo(output).Length);
+        Assert.True(session.SnapshotStdout().Length <= session.InlineLimit);
+    }
+
+    [Theory]
+    [InlineData(null, 30_000)]
+    [InlineData("", 30_000)]
+    [InlineData("5000junk", 5_000)]
+    [InlineData("999999", 150_000)]
+    public void OutputEnvironmentOverride_IsBounded(string? value, int expected) =>
+        Assert.Equal(expected, BashProcessSession.ResolveInlineLimit(value));
 
     internal static bool PosixShellAvailable()
     {

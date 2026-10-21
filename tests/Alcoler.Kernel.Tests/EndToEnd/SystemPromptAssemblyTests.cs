@@ -1,4 +1,5 @@
 using Alcoler.Adapters.Models;
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
@@ -109,10 +110,70 @@ public class SystemPromptAssemblyTests
     }
 
     [Fact]
+    public async Task SkillsListingAndToolReloadMidSession_ObserveAddedRenamedAndDeletedSkills()
+    {
+        ScriptStep Load(string name, string id) => new ScriptStep.Events([
+            new ModelToolCallReady(new ToolCall(new ToolCallId(id), "Skill",
+                System.Text.Json.JsonSerializer.SerializeToElement(new { skill = name }))),
+            new ModelStreamFinished(ModelFinishReason.ToolCalls),
+        ]);
+        await using var harness = TestHarness.Create(Load("first", "skill-first"), Text("loaded first"),
+            Load("renamed", "skill-renamed"), Text("loaded renamed"), Text("after delete"));
+        var skillDirectory = Path.Combine(harness.Root, ".alcoler", "skills", "fresh");
+        var skillPath = Path.Combine(skillDirectory, "SKILL.md");
+        var capturing = new TestHarness.RequestCapturingModel(harness.ScriptedModel);
+        await using var runtime = harness.BuildRuntime(options => options with
+        {
+            Providers = [new ScriptedModelProvider(capturing)],
+        });
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        Directory.CreateDirectory(skillDirectory);
+        File.WriteAllText(skillPath, "---\nname: first\ndescription: First description\n---\n\nFIRST_BODY ${ZCODE_SKILL_DIR}\n");
+
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "load first"), CancellationToken.None);
+        await WaitForRequestsAsync(capturing, 2);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        Assert.Contains("- first: First description", PromptText(capturing.Requests[0]));
+        Assert.Contains(PromptTexts.SkillSlashGuidance, PromptText(capturing.Requests[0]));
+        Assert.Contains($"FIRST_BODY {skillDirectory}", ToolResultText(capturing.Requests[1]));
+
+        File.WriteAllText(skillPath, "---\nname: renamed\ndescription: Updated description\n---\n\nSECOND_BODY ${CLAUDE_SKILL_DIR}\n");
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "load renamed"), CancellationToken.None);
+        await WaitForRequestsAsync(capturing, 4);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        Assert.Contains("- renamed: Updated description", PromptText(capturing.Requests[2]));
+        Assert.DoesNotContain("- first: First description", PromptText(capturing.Requests[2]));
+        Assert.Contains($"SECOND_BODY {skillDirectory}", ToolResultText(capturing.Requests[3]));
+
+        File.Delete(skillPath);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "after delete"), CancellationToken.None);
+        await WaitForRequestsAsync(capturing, 5);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        Assert.DoesNotContain("- renamed: Updated description", PromptText(capturing.Requests[4]));
+    }
+
+    [Fact]
+    public async Task ExplicitSkillsListingOverride_IsPreserved()
+    {
+        var request = await RunCapturedTurnAsync(Text("done"), transform: options => options with
+        {
+            SkillsListing = "HOST_LISTING_OVERRIDE",
+        });
+
+        Assert.Contains("HOST_LISTING_OVERRIDE", PromptText(request));
+    }
+
+    private static string ToolResultText(ModelRequest request) => string.Join("\n", request.Messages
+        .SelectMany(message => message.Content.OfType<InputToolResultBlock>())
+        .Select(result => result.Content));
+
+    [Fact]
     public async Task DateRolloverMidSession_AppendsDateChangeReminder()
     {
         var clock = new MutableClock(new DateTimeOffset(2026, 10, 20, 9, 0, 0, TimeSpan.FromHours(8)));
-        await using var harness = TestHarness.Create(Text("first answer"), Text("second answer"));
+        await using var harness = TestHarness.Create(Text("first answer"), Text("second answer"), Text("third answer"));
         var capturing = new TestHarness.RequestCapturingModel(harness.ScriptedModel);
         await using var runtime = harness.BuildRuntime(options => options with
         {
@@ -135,6 +196,16 @@ public class SystemPromptAssemblyTests
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
         Assert.Contains("The date has changed. Today's date is now 2026-10-21.", PromptText(capturing.Requests[^1]));
         Assert.Contains("DO NOT mention this to the user explicitly", PromptText(capturing.Requests[^1]));
+
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "same day again"), CancellationToken.None);
+        await WaitForRequestsAsync(capturing, expectedCount: 3);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        Assert.Equal(1, PromptText(capturing.Requests[2]).Split("The date has changed.").Length - 1);
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        Assert.DoesNotContain(messages.SelectMany(m => m.Message.Parts).OfType<AttachmentPart>(),
+            p => p.Content.Contains("The date has changed", StringComparison.Ordinal));
     }
 
     private static async Task WaitForRequestsAsync(TestHarness.RequestCapturingModel capturing, int expectedCount)

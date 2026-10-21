@@ -169,6 +169,7 @@ public class ToolCallExecutorTests
 
         Assert.True(outcome.Result.IsError);
         Assert.Equal("The plan was not approved by the user.", outcome.Result.SingleText());
+        Assert.True(outcome.Result.StopTurnAfterResult);
     }
 
     [Fact]
@@ -225,7 +226,7 @@ public class ToolCallExecutorTests
     }
 
     [Fact]
-    public async Task DefaultTimeout_CancelsExecution()
+    public async Task DefaultTimeout_ReturnsDistinctTimeoutError()
     {
         using var workspace = new TempWorkspace();
         var tool = new FakeTool(
@@ -240,8 +241,8 @@ public class ToolCallExecutorTests
 
         var outcome = await RunAsync(executor, tool.Call(), workspace);
 
-        Assert.Equal("Tool execution cancelled", outcome.Result.SingleText());
-        Assert.False(outcome.Result.IsError);
+        Assert.Equal("Tool execution timed out after 150ms", outcome.Result.SingleText());
+        Assert.True(outcome.Result.IsError);
         Assert.True(outcome.Duration < TimeSpan.FromSeconds(10));
     }
 
@@ -262,6 +263,106 @@ public class ToolCallExecutorTests
         var outcome = await RunAsync(executor, tool.Call(), workspace, cancellationToken: cts.Token);
 
         Assert.Equal("Tool execution cancelled", outcome.Result.SingleText());
+        Assert.True(outcome.Result.IsError);
+    }
+
+    [Fact]
+    public async Task UncooperativeHandler_TimeoutReturnsBeforeHandlerCompletes()
+    {
+        using var workspace = new TempWorkspace();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tool = new FakeTool("Blocked", FakeToolMetadata.ParallelSafe() with { DefaultTimeoutMs = 150 },
+            execute: async (_, ct) =>
+            {
+                entered.TrySetResult();
+                await release.Task;
+                using var registration = ct.Register(() => { });
+                cleanup.TrySetResult();
+                throw new InvalidOperationException("late handler failure");
+            });
+        var notifications = new NotificationCollector();
+        var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
+        try
+        {
+            var execution = RunAsync(executor, tool.Call(), workspace, notifications);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var outcome = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(outcome.Result.IsError);
+            Assert.Equal("Tool execution timed out after 150ms", outcome.Result.SingleText());
+            Assert.False(release.Task.IsCompleted);
+            Assert.Single(notifications.Of<ToolExecutionResultNotification>());
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await cleanup.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task UncooperativeHandler_ExternalCancellationReturnsError()
+    {
+        using var workspace = new TempWorkspace();
+        using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tool = new FakeTool("Blocked", execute: async (_, _) =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            return ToolExecutionResult.Text("late success");
+        });
+        var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
+        try
+        {
+            var execution = RunAsync(executor, tool.Call(), workspace, cancellationToken: cancellation.Token);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            cancellation.Cancel();
+            var outcome = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(outcome.Result.IsError);
+            Assert.Equal("Tool execution cancelled", outcome.Result.SingleText());
+            Assert.False(release.Task.IsCompleted);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task CancellationBeforeStart_DoesNotEnterHandler()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Read");
+        var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var outcome = await RunAsync(executor, tool.Call(), workspace, cancellationToken: cancellation.Token);
+
+        Assert.True(outcome.Result.IsError);
+        Assert.Empty(tool.ExecutedContexts);
+    }
+
+    [Fact]
+    public async Task EmptyOutputPlaceholder_PreservesTurnStopAndCallId()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Terminal", execute: (_, _) =>
+            ValueTask.FromResult(ToolExecutionResult.Text(" ", displaySummary: "done", stopTurnAfterResult: true)));
+        var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
+        var call = tool.Call();
+
+        var outcome = await RunAsync(executor, call, workspace);
+
+        Assert.Equal("(Terminal completed with no output)", outcome.Result.SingleText());
+        Assert.True(outcome.Result.StopTurnAfterResult);
+        Assert.Equal("done", outcome.Result.DisplaySummary);
+        Assert.Equal(call.Id, Assert.Single(tool.ExecutedContexts).ToolCallId);
     }
 
     [Fact]

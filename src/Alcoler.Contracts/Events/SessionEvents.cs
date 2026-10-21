@@ -90,7 +90,7 @@ public sealed record PermissionRequestedEvent(PermissionRequest Request) : Sessi
 
 public sealed record PermissionResolvedEvent(InteractionId InteractionId, PermissionDecision Decision) : SessionEvent;
 
-public sealed record InteractionOption(string Label, string? Description = null);
+public sealed record InteractionOption(string Label, string? Description = null, string? Preview = null);
 
 public sealed record InteractionQuestion(
     string Header,
@@ -103,7 +103,11 @@ public sealed record InteractionRequest(
     string Prompt,
     IReadOnlyList<InteractionQuestion> Questions);
 
-public sealed record InteractionAnswer(IReadOnlyDictionary<string, string> Answers);
+public sealed record InteractionAnnotation(string? Preview = null, string? Notes = null);
+
+public sealed record InteractionAnswer(
+    IReadOnlyDictionary<string, string> Answers,
+    IReadOnlyDictionary<string, InteractionAnnotation>? Annotations = null);
 
 public sealed record InteractionRequestedEvent(InteractionRequest Request) : SessionEvent;
 

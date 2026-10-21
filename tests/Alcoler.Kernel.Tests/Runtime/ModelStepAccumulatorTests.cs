@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
@@ -54,15 +55,66 @@ public class ModelStepAccumulatorTests
     }
 
     [Fact]
-    public async Task SignatureWithoutText_IsDropped()
+    public async Task MetadataOnlyReasoning_IsPreservedInFullAndPartialMessages()
     {
         var accumulator = new ModelStepAccumulator(new TurnId("turn-1"));
         await ApplyAsync(accumulator,
             new ModelReasoningStarted(),
-            new ModelReasoningEnded("sig-only"));
+            new ModelReasoningEnded("sig-only"),
+            new ModelReasoningStarted(),
+            new ModelReasoningEnded(RedactedData: "opaque-redacted"),
+            new ModelReasoningStarted(),
+            new ModelReasoningEnded(EncryptedContent: "opaque-encrypted", ProviderItemId: "item-1"));
 
+        foreach (var message in new[]
+                 {
+                     accumulator.BuildAssistantMessage(DateTimeOffset.UtcNow),
+                     accumulator.BuildPartialAssistantMessage(DateTimeOffset.UtcNow),
+                 })
+        {
+            var reasoning = message.Parts.OfType<ReasoningPart>().ToArray();
+            Assert.Equal(3, reasoning.Length);
+            Assert.All(reasoning, part => Assert.Equal("", part.Text));
+            Assert.Equal("sig-only", reasoning[0].ProviderSignature);
+            Assert.Equal("opaque-redacted", reasoning[1].RedactedData);
+            Assert.Equal("opaque-encrypted", reasoning[2].EncryptedContent);
+            Assert.Equal("item-1", reasoning[2].ProviderItemId);
+        }
+    }
+
+    [Fact]
+    public async Task EmptyReasoningBlockWithoutMetadata_IsDropped()
+    {
+        var accumulator = new ModelStepAccumulator(new TurnId("turn-1"));
+        await ApplyAsync(accumulator, new ModelReasoningStarted(), new ModelReasoningEnded());
+
+        Assert.Empty(accumulator.BuildAssistantMessage(DateTimeOffset.UtcNow).Parts);
+    }
+
+    [Fact]
+    public async Task DuplicateReadyToolCallId_KeepsFirstCallAndTrimsNames()
+    {
+        var accumulator = new ModelStepAccumulator(new TurnId("turn-1"));
+        var first = new ToolCall(new ToolCallId("same"), "  Read \t", JsonSerializer.SerializeToElement(new { path = "first" }));
+        await ApplyAsync(accumulator,
+            new ModelToolCallReady(first),
+            new ModelToolCallReady(first with { Name = "Write", Input = JsonSerializer.SerializeToElement(new { path = "second" }) }),
+            new ModelToolCallReady(new ToolCall(new ToolCallId("different"), " Read ", first.Input)));
+
+        Assert.Collection(accumulator.ToolCalls,
+            call =>
+            {
+                Assert.Equal(first.Id, call.Id);
+                Assert.Equal("Read", call.Name);
+                Assert.Equal("first", call.Input.GetProperty("path").GetString());
+            },
+            call =>
+            {
+                Assert.Equal(new ToolCallId("different"), call.Id);
+                Assert.Equal("Read", call.Name);
+            });
         var message = accumulator.BuildAssistantMessage(DateTimeOffset.UtcNow);
-
-        Assert.Empty(message.Parts);
+        Assert.Equal(2, message.Parts.OfType<ToolCallPart>().Count());
+        Assert.Empty(accumulator.BuildPartialAssistantMessage(DateTimeOffset.UtcNow).Parts.OfType<ToolCallPart>());
     }
 }

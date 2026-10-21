@@ -1,4 +1,4 @@
-using System.Collections;
+using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Tools;
 
@@ -19,7 +19,6 @@ public sealed record ToolBatchResult(IReadOnlyList<ToolBatchOutcome> Outcomes, b
 
 public sealed class ToolBatchRunner
 {
-    // ZCode call-runner abort text; the skip-after-stop-turn path carries its own message.
     private const string CancelledText = "Tool execution cancelled";
     private const string SkippedAfterStopTurnText = "Tool cancelled because a previous tool result requested a turn stop.";
 
@@ -36,12 +35,19 @@ public sealed class ToolBatchRunner
         IReadOnlyList<ScheduledToolCall> calls,
         ToolExecutionContextFactory contextFactory,
         Func<ToolExecutionNotification, ValueTask> sink,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<ToolBatchOutcome>? completedOutcomes = null)
     {
         var outcomes = new ToolBatchOutcome?[calls.Count];
         var indexByCall = new Dictionary<ScheduledToolCall, int>(ReferenceEqualityComparer.Instance);
+        var completedById = completedOutcomes?.ToDictionary(outcome => outcome.Call.Id)
+            ?? new Dictionary<ToolCallId, ToolBatchOutcome>();
         for (var i = 0; i < calls.Count; i++)
+        {
             indexByCall[calls[i]] = i;
+            if (completedById.TryGetValue(calls[i].Call.Id, out var completed))
+                outcomes[i] = completed with { Call = calls[i].Call };
+        }
 
         var stopped = false;
         foreach (var group in _scheduler.Schedule(calls))
@@ -49,9 +55,11 @@ public sealed class ToolBatchRunner
             if (stopped || cancellationToken.IsCancellationRequested)
                 break;
 
-            var groupOutcomes = group.Parallel && group.Calls.Count > 1
-                ? await ExecuteGroupParallelAsync(group, contextFactory, sink, cancellationToken).ConfigureAwait(false)
-                : await ExecuteGroupSequentiallyAsync(group, contextFactory, sink, cancellationToken).ConfigureAwait(false);
+            var pending = new ToolSchedulerGroup(group.Parallel,
+                group.Calls.Where(call => outcomes[indexByCall[call]] is null).ToArray());
+            var groupOutcomes = pending.Parallel && pending.Calls.Count > 1
+                ? await ExecuteGroupParallelAsync(pending, contextFactory, sink, cancellationToken).ConfigureAwait(false)
+                : await ExecuteGroupSequentiallyAsync(pending, contextFactory, sink, cancellationToken).ConfigureAwait(false);
 
             foreach (var (call, outcome) in groupOutcomes)
             {
@@ -61,7 +69,15 @@ public sealed class ToolBatchRunner
                     outcome.Duration,
                     Ran: true,
                     CancelledByStop: false);
+            }
+
+            foreach (var call in group.Calls)
+            {
+                var index = indexByCall[call];
+                var outcome = outcomes[index]!;
                 if (call.StopTurnAfterResult && !outcome.Result.IsError)
+                    outcomes[index] = outcome with { Result = outcome.Result with { StopTurnAfterResult = true } };
+                if (outcomes[index]!.Result.StopTurnAfterResult)
                     stopped = true;
             }
         }
@@ -71,15 +87,18 @@ public sealed class ToolBatchRunner
             if (outcomes[i] is not null)
                 continue;
             var skippedByStop = stopped && !cancellationToken.IsCancellationRequested;
+            var result = ToolExecutionResult.Text(skippedByStop ? SkippedAfterStopTurnText : CancelledText, isError: true);
             outcomes[i] = new ToolBatchOutcome(
                 calls[i].Call,
-                ToolExecutionResult.Text(skippedByStop ? SkippedAfterStopTurnText : CancelledText),
+                result,
                 TimeSpan.Zero,
                 Ran: false,
                 CancelledByStop: skippedByStop);
+            await sink(new ToolExecutionResultNotification(calls[i].Call, result, TimeSpan.Zero)).ConfigureAwait(false);
         }
 
-        return new ToolBatchResult(outcomes!, StoppedAfterResult: stopped);
+        return new ToolBatchResult(outcomes!, StoppedAfterResult: stopped
+            || outcomes.Any(outcome => outcome!.Result.StopTurnAfterResult));
     }
 
     private async Task<List<(ScheduledToolCall Call, ToolExecutionOutcome Outcome)>> ExecuteGroupParallelAsync(

@@ -124,7 +124,7 @@ public sealed class SkillsCatalog
     private static string StripFrontMatter(string text, out IReadOnlyList<string>? frontMatter)
     {
         frontMatter = null;
-        var lines = text.Split('\n');
+        var lines = text.TrimStart('\uFEFF').Split('\n');
         if (lines.Length == 0 || lines[0].Trim() != "---")
             return text;
         for (var i = 1; i < lines.Length; i++)
@@ -139,18 +139,48 @@ public sealed class SkillsCatalog
 
     private static string? FrontMatterValue(IReadOnlyList<string> lines, string key)
     {
-        foreach (var line in lines)
+        for (var index = 0; index < lines.Count; index++)
         {
+            var line = lines[index];
+            if (line.Length == 0 || char.IsWhiteSpace(line[0]))
+                continue;
             var separator = line.IndexOf(':');
             if (separator <= 0 || !string.Equals(line[..separator].Trim(), key, StringComparison.OrdinalIgnoreCase))
                 continue;
             var value = line[(separator + 1)..].Trim();
+            if (value is ">" or ">-" or ">+" or "|" or "|-" or "|+")
+                return ReadBlockScalar(lines, index + 1, value[0] == '>');
             if (value.Length >= 2
                 && ((value.StartsWith('"') && value.EndsWith('"')) || (value.StartsWith('\'') && value.EndsWith('\''))))
-                value = value[1..^1];
+                value = value[1..^1].Trim();
             return value.Length == 0 ? null : value;
         }
         return null;
+    }
+
+    private static string? ReadBlockScalar(IReadOnlyList<string> lines, int start, bool folded)
+    {
+        var block = lines.Skip(start).TakeWhile(line => string.IsNullOrWhiteSpace(line) || char.IsWhiteSpace(line[0])).ToList();
+        var indent = block.Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => line.TakeWhile(char.IsWhiteSpace).Count()).DefaultIfEmpty(0).Min();
+        var content = block.Select(line => string.IsNullOrWhiteSpace(line) ? "" : line[indent..].TrimEnd('\r')).ToList();
+        if (!folded)
+            return NormalizeOptionalValue(string.Join('\n', content));
+        var paragraphs = new List<string>();
+        var paragraph = new List<string>();
+        foreach (var line in content.Append(""))
+        {
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                paragraph.Add(line.Trim());
+                continue;
+            }
+            if (paragraph.Count == 0)
+                continue;
+            paragraphs.Add(string.Join(' ', paragraph));
+            paragraph.Clear();
+        }
+        return NormalizeOptionalValue(string.Join('\n', paragraphs));
     }
 
     private static (string? Name, string? Description) ParseHeadingFallback(string body)

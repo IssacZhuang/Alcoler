@@ -6,6 +6,20 @@ namespace Alcoler.Kernel.Tests.Tools;
 public class GrepToolTests
 {
     [Fact]
+    public async Task OversizedOutput_UsesArtifactEnvelopeAndDecimalBytes()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "large.txt"), string.Join("\n", Enumerable.Repeat("hit " + new string('x', 200), 200)));
+        var result = await new GrepTool().ExecuteAsync(workspace.ContextFor(
+            """{"pattern":"hit","output_mode":"content","head_limit":0}"""), CancellationToken.None);
+        Assert.StartsWith("<persisted-output>", result.SingleText());
+        Assert.Contains(" KB). Full output saved to: ", result.SingleText());
+        Assert.Contains("Preview (first 2 KB):", result.SingleText());
+        Assert.DoesNotContain("truncated by resultBudget", result.SingleText());
+        Assert.Single(Directory.GetFiles(Path.Combine(workspace.Root, ".alcoler", "artifacts", "sess_test")));
+    }
+
+    [Fact]
     public void Contract_PathDescription_MatchesReferenceWording()
     {
         var path = new GrepTool().Contract.InputSchema.GetProperty("properties").GetProperty("path");

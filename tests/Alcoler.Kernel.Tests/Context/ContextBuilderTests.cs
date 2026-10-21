@@ -143,6 +143,163 @@ public class ContextBuilderTests
     }
 
     [Fact]
+    public void Project_InlineToolResultImages_StayWithTheirOwnResults()
+    {
+        var callId = TestMessages.NextToolCallId("Read");
+        var message = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+        [
+            new ToolResultPart(TestMessages.NextPartId(), callId,
+                [new ToolResultText("caption"), new ToolResultMedia("shot", "image/png")]),
+            new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"), [new ToolResultText("other")]),
+        ], DateTimeOffset.UtcNow);
+        var assembled = ContextBuilder.Assemble(Input([message]) with
+        {
+            Media = new Dictionary<string, MediaPayload> { ["shot"] = new("image/png", "aW1n") },
+            InlineToolResultImages = true,
+        });
+        var projected = assembled.Request.Messages[^1];
+        Assert.Equal(2, projected.Content.Count);
+        var first = Assert.IsType<InputToolResultBlock>(projected.Content[0]);
+        Assert.Equal("caption", first.Content);
+        Assert.Equal("aW1n", Assert.Single(first.Images!).Base64Data);
+        Assert.Null(Assert.IsType<InputToolResultBlock>(projected.Content[1]).Images);
+    }
+
+    [Fact]
+    public void Project_PreservesReasoningMetadataAndAssistantOrigin()
+    {
+        var history = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.Assistant,
+        [new ReasoningPart(TestMessages.NextPartId(), "", RedactedData: "opaque", EncryptedContent: "cipher", ProviderItemId: "rs_1")],
+            DateTimeOffset.UtcNow, "account", "model");
+        var message = ContextBuilder.Assemble(Input([history])).Request.Messages[^1];
+        Assert.Equal("account", message.ProviderId);
+        Assert.Equal("model", message.ModelId);
+        var reasoning = Assert.IsType<InputReasoningBlock>(Assert.Single(message.Content));
+        Assert.Equal("opaque", reasoning.RedactedData);
+        Assert.Equal("cipher", reasoning.EncryptedContent);
+        Assert.Equal("rs_1", reasoning.ProviderItemId);
+    }
+
+    [Fact]
+    public void Assemble_ExplicitRemindersBubbleBeforeUsersWithoutRewritingHistory()
+    {
+        var first = TestMessages.UserText("first");
+        var second = TestMessages.UserText("second");
+        var reminder = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new TextPart(TestMessages.NextPartId(), "<system-reminder>\nmode\n</system-reminder>")],
+            DateTimeOffset.UtcNow, Source: MessageSource.RuntimeMode);
+        var literal = TestMessages.UserText("<system-reminder>\nliteral\n</system-reminder>") with { Source = MessageSource.RealUser };
+        var summary = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new AttachmentPart(TestMessages.NextPartId(), AttachmentKind.CompactSummary, "summary")], DateTimeOffset.UtcNow);
+        var history = new[] { first, second, reminder, literal, summary };
+        var messages = ContextBuilder.Assemble(Input(history)).Request.Messages;
+        var projected = messages.TakeLast(5).ToArray();
+        Assert.Equal("<system-reminder>\nmode\n</system-reminder>", Assert.IsType<InputTextBlock>(projected[0].Content[0]).Text);
+        Assert.Equal("first", Assert.IsType<InputTextBlock>(projected[1].Content[0]).Text);
+        Assert.Equal("second", Assert.IsType<InputTextBlock>(projected[2].Content[0]).Text);
+        Assert.Equal("<system-reminder>\nliteral\n</system-reminder>", Assert.IsType<InputTextBlock>(projected[3].Content[0]).Text);
+        Assert.Equal("summary", Assert.IsType<InputTextBlock>(projected[4].Content[0]).Text);
+        Assert.Same(reminder, history[2]);
+    }
+
+    [Fact]
+    public void Assemble_MidConversationSystem_WaitsForEntireToolResultRun()
+    {
+        var first = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"), [new ToolResultText("one")])], DateTimeOffset.UtcNow);
+        var second = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"), [new ToolResultText("two")])], DateTimeOffset.UtcNow);
+        var reminder = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new TextPart(TestMessages.NextPartId(), "<system-reminder>\nmode\n</system-reminder>")],
+            DateTimeOffset.UtcNow, Source: MessageSource.RuntimeMode);
+        var answer = TestMessages.AssistantText("answer");
+        var messages = ContextBuilder.Assemble(Input([first, reminder, second, answer]) with { UseMidConversationSystem = true }).Request.Messages.TakeLast(4).ToArray();
+        Assert.IsType<InputToolResultBlock>(messages[0].Content[0]);
+        Assert.IsType<InputToolResultBlock>(messages[1].Content[0]);
+        Assert.Equal(MessageRole.System, messages[2].Role);
+        Assert.Equal("mode", Assert.IsType<InputTextBlock>(messages[2].Content[0]).Text);
+        Assert.Equal(MessageRole.Assistant, messages[3].Role);
+    }
+
+    [Fact]
+    public void Assemble_TrailingMidConversationSystem_CachesLatestNonSystemMessage()
+    {
+        var reminder = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new TextPart(TestMessages.NextPartId(), "<system-reminder>\nmode\n</system-reminder>")],
+            DateTimeOffset.UtcNow, Source: MessageSource.RuntimeMode);
+        var messages = ContextBuilder.Assemble(Input([TestMessages.UserText("question"), reminder]) with
+            { UseMidConversationSystem = true }).Request.Messages;
+        Assert.Equal(MessageRole.System, messages[^1].Role);
+        Assert.Null(messages[^1].CacheControl);
+        Assert.NotNull(messages[^2].CacheControl);
+    }
+
+    [Fact]
+    public void Assemble_MidConversationSystemWithoutUserAnchor_FallsBackWithoutPromotingSummary()
+    {
+        var reminder = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new TextPart(TestMessages.NextPartId(), "mode")], DateTimeOffset.UtcNow, Source: MessageSource.RuntimeMode);
+        var summary = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new AttachmentPart(TestMessages.NextPartId(), AttachmentKind.CompactSummary, "summary")], DateTimeOffset.UtcNow);
+        var messages = ContextBuilder.Assemble(Input([TestMessages.AssistantText("prior"), reminder, TestMessages.AssistantText("next"), summary]) with
+            { UseMidConversationSystem = true }).Request.Messages.TakeLast(4).ToArray();
+        Assert.Equal(MessageRole.User, messages[1].Role);
+        Assert.Equal(MessageRole.User, messages[3].Role);
+        Assert.Equal("summary", Assert.IsType<InputTextBlock>(messages[3].Content[0]).Text);
+    }
+
+    [Fact]
+    public void Project_UserSteerPresentation_WrapsRawInputWithoutChangingCanonicalText()
+    {
+        var history = TestMessages.UserText("raw guide") with
+        {
+            Source = MessageSource.RealUser,
+            Presentation = MessagePresentation.UserSteer,
+        };
+        var projected = ContextBuilder.Assemble(Input([history])).Request.Messages[^1];
+        Assert.Equal("raw guide", Assert.IsType<TextPart>(Assert.Single(history.Parts)).Text);
+        var text = Assert.IsType<InputTextBlock>(Assert.Single(projected.Content)).Text;
+        Assert.Contains("The user sent a new message while you were working:\nraw guide", text);
+        Assert.StartsWith("<system-reminder>", text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Project_UserSteerWithMcs_UsesSystemAtUserAnchorAndKeepsRawCanonical(bool trailingAssistant)
+    {
+        var guide = TestMessages.UserText("raw guide") with
+        {
+            Source = MessageSource.RealUser,
+            Presentation = MessagePresentation.UserSteer,
+        };
+        var history = new List<ConversationMessage> { TestMessages.UserText("question"), guide };
+        if (trailingAssistant)
+            history.Add(TestMessages.AssistantText("answer"));
+        var projected = ContextBuilder.Assemble(Input(history) with { UseMidConversationSystem = true }).Request.Messages;
+        var system = projected[trailingAssistant ? ^2 : ^1];
+        Assert.Equal(MessageRole.System, system.Role);
+        var text = Assert.IsType<InputTextBlock>(Assert.Single(system.Content)).Text;
+        Assert.StartsWith("The user sent a new message while you were working:\nraw guide", text);
+        Assert.DoesNotContain("<system-reminder>", text);
+        Assert.Equal("raw guide", Assert.IsType<TextPart>(Assert.Single(guide.Parts)).Text);
+    }
+
+    [Fact]
+    public void Project_UserSteerBeforeLaterUser_FallsBackWithoutCrossingCausalBoundary()
+    {
+        var guide = TestMessages.UserText("guide") with { Source = MessageSource.RealUser, Presentation = MessagePresentation.UserSteer };
+        var projected = ContextBuilder.Assemble(Input([TestMessages.UserText("question"), guide, TestMessages.UserText("later")]) with
+            { UseMidConversationSystem = true }).Request.Messages.TakeLast(3).ToArray();
+        Assert.All(projected, message => Assert.Equal(MessageRole.User, message.Role));
+        Assert.Equal("question", Assert.IsType<InputTextBlock>(projected[0].Content[0]).Text);
+        var guideText = Assert.IsType<InputTextBlock>(projected[1].Content[0]).Text;
+        Assert.StartsWith("<system-reminder>\nThe user sent a new message while you were working:\nguide", guideText);
+        Assert.Equal(1, guideText.Split("The user sent a new message while you were working:").Length - 1);
+        Assert.Equal("later", Assert.IsType<InputTextBlock>(projected[2].Content[0]).Text);
+    }
+
+    [Fact]
     public void Project_UnhydratedToolResultMedia_FallsBackToPlaceholderText()
     {
         var callId = TestMessages.NextToolCallId("Read");

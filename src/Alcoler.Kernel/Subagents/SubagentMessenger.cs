@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
-using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Kernel.Runtime;
 
 namespace Alcoler.Kernel.Subagents;
@@ -9,13 +9,20 @@ public sealed record SubagentChannel(
     SubagentId Id,
     SessionId ChildSessionId,
     string Description,
-    AgentRuntime Runtime)
+    AgentRuntime Runtime,
+    Func<ValueTask>? BeforeResumeAsync = null,
+    Func<string, string?, ToolCallId?, CancellationToken, ValueTask>? ResumeAsync = null,
+    Func<SubagentStatus>? ReadStatus = null)
 {
+    internal SemaphoreSlim DeliveryLock { get; } = new(1, 1);
+
     public bool IsBusy => Runtime.GetSession(ChildSessionId)?.IsTurnActive == true;
+
+    public SubagentStatus Status => ReadStatus?.Invoke() ?? SubagentStatus.Completed;
 }
 
 /// <summary>
-/// Per-parent registry of background subagents so SendMessage can steer a running child
+/// Per-parent registry of subagents so SendMessage can steer a running child
 /// or resume a completed one; channels stay registered after completion because resuming
 /// a finished agent is the primary use.
 /// </summary>

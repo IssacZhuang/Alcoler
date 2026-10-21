@@ -42,6 +42,18 @@ public class ToolResultBudgetTests
     }
 
     [Fact]
+    public void Truncation_PreservesTurnStopAndSummary()
+    {
+        var result = ToolExecutionResult.Text(new string('x', 100), isError: true,
+            displaySummary: "stopped", stopTurnAfterResult: true);
+
+        var budgeted = ToolResultBudget.ApplyBudget(result, 10);
+
+        Assert.True(budgeted.StopTurnAfterResult);
+        Assert.Equal("stopped", budgeted.DisplaySummary);
+    }
+
+    [Fact]
     public void MediaBlocks_AreNeverTouched()
     {
         var media = new ToolResultMedia("alcoler-artifact://s/1.png", "image/png", "1.png");

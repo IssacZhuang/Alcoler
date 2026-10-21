@@ -4,11 +4,20 @@ using Alcoler.Contracts.Permissions;
 
 namespace Alcoler.Contracts.Sessions;
 
+public enum SessionTitleSource
+{
+    Default,
+    FirstInput,
+    Generated,
+    Custom,
+}
+
 public sealed record SessionOptions(
     string WorkspaceRoot,
     string? Title = null,
     PermissionMode PermissionMode = PermissionMode.Build,
-    ModelSelection? ModelSelection = null);
+    ModelSelection? ModelSelection = null,
+    SessionId? ParentSessionId = null);
 
 public sealed record SessionHandle(
     SessionId Id,
@@ -23,4 +32,5 @@ public sealed record SessionSummary(
     ModelSelection? ModelSelection,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    bool IsArchived = false);
+    bool IsArchived = false,
+    SessionId? ParentSessionId = null);

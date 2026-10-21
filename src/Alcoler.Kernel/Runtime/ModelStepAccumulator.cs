@@ -13,6 +13,7 @@ public sealed class ModelStepAccumulator
     private readonly List<ReasoningDraft> _reasoningBlocks = [];
     private ReasoningDraft? _openReasoning;
     private readonly List<ToolCall> _toolCalls = [];
+    private readonly HashSet<ToolCallId> _toolCallIds = [];
     private ModelFinishReason _finishReason = ModelFinishReason.Stop;
 
     public ModelStepAccumulator(TurnId turnId)
@@ -55,10 +56,11 @@ public sealed class ModelStepAccumulator
                 return emit(new ModelStreamingReasoningEvent(_turnId, reasoningDelta.Delta));
 
             case ModelReasoningEnded reasoningEnded:
-                // A signature without text cannot be replayed, so a text-less block
-                // is intentionally dropped here.
-                if (_openReasoning is not null)
-                    _openReasoning.Signature = reasoningEnded.ProviderSignature;
+                var reasoning = OpenReasoningBlock();
+                reasoning.Signature = reasoningEnded.ProviderSignature;
+                reasoning.RedactedData = reasoningEnded.RedactedData;
+                reasoning.EncryptedContent = reasoningEnded.EncryptedContent;
+                reasoning.ProviderItemId = reasoningEnded.ProviderItemId;
                 _openReasoning = null;
                 break;
 
@@ -71,7 +73,8 @@ public sealed class ModelStepAccumulator
 
             case ModelToolCallReady toolCall:
                 HasBoundaryContent = true;
-                _toolCalls.Add(toolCall.ToolCall);
+                if (_toolCallIds.Add(toolCall.ToolCall.Id))
+                    _toolCalls.Add(toolCall.ToolCall with { Name = toolCall.ToolCall.Name.Trim() });
                 break;
 
             case ModelStreamFinished finished:
@@ -106,8 +109,12 @@ public sealed class ModelStepAccumulator
         var parts = new List<MessagePart>();
         foreach (var block in _reasoningBlocks)
         {
-            if (block.Text.Length > 0)
-                parts.Add(new ReasoningPart(StrongId.NewPartId(), block.Text.ToString(), block.Signature));
+            if (block.Text.Length > 0 || block.Signature is not null
+                || block.RedactedData is not null || block.EncryptedContent is not null)
+            {
+                parts.Add(new ReasoningPart(StrongId.NewPartId(), block.Text.ToString(), block.Signature,
+                    block.RedactedData, block.EncryptedContent, block.ProviderItemId));
+            }
         }
         if (_text.Length > 0)
         {
@@ -127,5 +134,8 @@ public sealed class ModelStepAccumulator
     {
         public StringBuilder Text { get; } = new();
         public string? Signature { get; set; }
+        public string? RedactedData { get; set; }
+        public string? EncryptedContent { get; set; }
+        public string? ProviderItemId { get; set; }
     }
 }

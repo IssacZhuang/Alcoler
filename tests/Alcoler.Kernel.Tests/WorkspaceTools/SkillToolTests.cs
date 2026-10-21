@@ -79,6 +79,23 @@ public sealed class SkillToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Executor_AcceptsLegacyNameWithoutAdvertisingIt()
+    {
+        _provider.WriteSkill("legacy-skill", "Legacy body.");
+        var tool = new SkillTool();
+        var executor = new ToolCallExecutor(new ToolRegistry([tool]), new ScriptedPermissionGate());
+        var input = JsonDocument.Parse("""{"name":"legacy-skill"}""").RootElement.Clone();
+        var outcome = await executor.ExecuteAsync(
+            new Alcoler.Contracts.Models.ToolCall(StrongId.NewToolCallId(), "Skill", input),
+            (call, _) => ValueTask.FromResult(Context(call.Input.GetRawText(), _provider)),
+            _ => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        Assert.False(outcome.Result.IsError);
+        Assert.Contains("Legacy body.", outcome.Result.SingleText());
+    }
+
+    [Fact]
     public async Task Execute_WithoutSkillProvider_ReportsUnavailable()
     {
         var result = await new SkillTool().ExecuteAsync(
@@ -142,6 +159,43 @@ public sealed class SkillToolTests : IDisposable
         Assert.StartsWith(
             "<skill_content name=\"big\">\n# Skill: big\n" + new string('a', 100_000) + "\n",
             text);
+    }
+
+    [Fact]
+    public async Task Execute_ExpandsOnlySupportedBaseDirectoryVariables()
+    {
+        var directory = _provider.WriteSkill("paths",
+            "${CLAUDE_SKILL_DIR}/script.py\n${ZCODE_SKILL_DIR}/config.json\n${CLAUDE_SKILL_DIR}\n$ARGUMENTS ${OTHER}");
+
+        var result = await new SkillTool().ExecuteAsync(
+            Context("""{"skill":"paths","args":"not substituted"}""", _provider), CancellationToken.None);
+
+        Assert.Contains($"{directory}/script.py\n{directory}/config.json\n{directory}\n$ARGUMENTS ${{OTHER}}", result.SingleText());
+        Assert.DoesNotContain("not substituted", result.SingleText());
+    }
+
+    [Fact]
+    public async Task Execute_TruncatesUtf8BytesBeforeExpandingVariables()
+    {
+        _provider.WriteSkill("unicode", new string('界', 33_333) + "xTAIL");
+
+        var result = await new SkillTool().ExecuteAsync(
+            Context("""{"skill":"unicode"}""", _provider), CancellationToken.None);
+
+        Assert.Contains(new string('界', 33_333) + "x\n", result.SingleText());
+        Assert.DoesNotContain("TAIL", result.SingleText());
+        Assert.Contains("[Skill content truncated]", result.SingleText());
+    }
+
+    [Fact]
+    public void Contract_AdvertisesCurrentInputOnlyAndCurrentTurnLoadedGuidance()
+    {
+        var contract = new SkillTool().Contract;
+        Assert.Equal(["skill"], contract.InputSchema.GetProperty("required").EnumerateArray().Select(value => value.GetString()));
+        Assert.False(contract.InputSchema.GetProperty("properties").TryGetProperty("name", out _));
+        Assert.Contains("fully qualified `plugin:skill`", contract.Description);
+        Assert.Contains("<command-name> tag in the current conversation turn", contract.Description);
+        Assert.DoesNotContain("already been loaded in this conversation", contract.Description);
     }
 
     [Fact]

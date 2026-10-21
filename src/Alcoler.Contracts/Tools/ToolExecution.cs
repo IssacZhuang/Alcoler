@@ -34,20 +34,28 @@ public sealed record ToolExecutionContext(
     IBackgroundJobService? BackgroundJobs = null,
     IAuxModelClient? AuxModel = null,
     ISkillContentProvider? Skills = null,
-    IUserInteractionPort? Interactions = null);
+    IUserInteractionPort? Interactions = null,
+    ToolCallId? ToolCallId = null);
 
 public sealed record ToolExecutionResult(
     IReadOnlyList<ToolResultBlock> Content,
     bool IsError = false,
-    string? DisplaySummary = null)
+    string? DisplaySummary = null,
+    bool StopTurnAfterResult = false)
 {
-    public static ToolExecutionResult Text(string text, bool isError = false, string? displaySummary = null) =>
-        new([new ToolResultText(text)], isError, displaySummary);
+    public static ToolExecutionResult Text(
+        string text,
+        bool isError = false,
+        string? displaySummary = null,
+        bool stopTurnAfterResult = false) =>
+        new([new ToolResultText(text)], isError, displaySummary, stopTurnAfterResult);
 }
 
 public interface ITool
 {
     ToolContract Contract { get; }
+
+    JsonElement RuntimeInputSchema => Contract.InputSchema;
 
     ToolMetadata Metadata { get; }
 

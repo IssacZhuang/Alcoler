@@ -54,6 +54,21 @@ public class SkillsCatalogTests : IDisposable
         Assert.EndsWith("SKILL.md", skill.SkPath);
     }
 
+    [Theory]
+    [InlineData(">-", "Research a topic and deliver results.\nUse only for reports.")]
+    [InlineData("|", "Research a topic\nand deliver results.\n\nUse only for reports.")]
+    public void Load_ParsesMultilineMetadataAndBom(string style, string expected)
+    {
+        WriteSkill(WorkspaceSkills, "report", "\uFEFF---\nname: report\ndescription: " + style
+            + "\n  Research a topic\n  and deliver results.\n\n  Use only for reports.\nwhen_to_use: >\n  When research\n  is requested\n---\nBody.");
+
+        var skill = Assert.Single(Catalog().Load(_workspaceRoot.Root));
+
+        Assert.Equal(expected, skill.Description);
+        Assert.Equal("When research is requested", skill.WhenToUse);
+        Assert.DoesNotContain("description:", SkillsCatalog.StripFrontMatterForTool(File.ReadAllText(skill.SkPath)));
+    }
+
     [Fact]
     public void Load_FallsBackToHeadingAndParagraph_WithoutFrontMatter()
     {

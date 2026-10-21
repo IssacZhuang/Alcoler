@@ -14,7 +14,10 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
 {
     private const int MaxOutputTokensCap = 5_000;
 
-    public async ValueTask<string> CompleteAsync(AuxModelRequest request, CancellationToken cancellationToken)
+    public ValueTask<string> CompleteAsync(AuxModelRequest request, CancellationToken cancellationToken) =>
+        CompleteAsync(request, cancellationToken, separateSystemPrompt: false);
+
+    internal async ValueTask<string> CompleteAsync(AuxModelRequest request, CancellationToken cancellationToken, bool separateSystemPrompt)
     {
         var selection = resolveSelection()
             ?? throw new InvalidOperationException("No model configured for the session.");
@@ -27,17 +30,20 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
             ReasoningLevel: model.Descriptor.Properties.ReasoningLevels is { Count: > 0 } levels ? levels[0] : baseOptions.ReasoningLevel,
             MaxOutputTokens: Math.Max(1, maxOutput));
 
-        var modelRequest = new ModelRequest(
-            [
-                new ModelInputMessage(MessageRole.User,
+        ModelInputMessage[] messages = separateSystemPrompt
+            ? [
+                new(MessageRole.System, [new InputTextBlock(request.SystemPrompt)]),
+                new(MessageRole.User, [new InputTextBlock(request.UserPrompt)]),
+            ]
+            : [
+                new(MessageRole.User,
                 [
                     new InputTextBlock(string.IsNullOrEmpty(request.SystemPrompt)
                         ? request.UserPrompt
                         : $"{request.SystemPrompt}\n\n{request.UserPrompt}"),
                 ]),
-            ],
-            [],
-            options);
+            ];
+        var modelRequest = new ModelRequest(messages, [], options);
 
         var text = new StringBuilder();
         await foreach (var streamEvent in ModelStreamRunner.RunAsync(
@@ -50,6 +56,10 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
             if (streamEvent is ModelTextDelta delta)
             {
                 text.Append(delta.Delta);
+            }
+            else if (streamEvent is ModelToolCallReady && separateSystemPrompt)
+            {
+                throw new InvalidOperationException("The auxiliary title request returned a tool call.");
             }
             else if (streamEvent is ModelStreamFailed)
             {

@@ -2,6 +2,8 @@ using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.History;
+using Alcoler.Kernel.Prompts;
 
 namespace Alcoler.Kernel.Context;
 
@@ -22,7 +24,8 @@ public sealed record CompactionPlan(
     int PreCompactTokens,
     CompactionSelection Selection,
     ModelRequest SummaryModelRequest,
-    IReadOnlyList<ConversationMessage> ContextPrefixMessages);
+    IReadOnlyList<ConversationMessage> ContextPrefixMessages,
+    MessageId? LastActiveMessageId = null);
 
 public sealed record PostCompactResult(
     IReadOnlyList<ConversationMessage> Messages,
@@ -30,19 +33,14 @@ public sealed record PostCompactResult(
 
 public static class CompactionPlanner
 {
-    public const string SummarySystemInstruction =
-        "You are a summarization assistant. Summarize the provided coding-agent conversation exactly as " +
-        "instructed by the user message. Respond with text only.";
-
     public const int RecentlyReadMaxFiles = 5;
     public const int RecentlyReadMaxTokensPerFile = 5_000;
 
     public static CompactionPlan PlanCompaction(CompactionPlanInput input)
     {
-        var selection = CompactionSelector.SelectForCompaction(input.Messages, input.Trigger);
-
-        // Summaries never carry tools, so Tools is always empty regardless of CompactToolKeepMaxCount.
-        var request = BuildSummaryRequest(selection, input.ManualInstructions);
+        var selection = CompactionSelector.SelectForCompaction(input.Messages, input.Trigger, input.DeclaredTokenGap);
+        var contextPrefix = input.Messages.Take(selection.ContextPrefixCount).ToList();
+        var request = BuildSummaryRequest(selection, input.ManualInstructions, contextPrefix, input.Tools);
 
         var preCompactTokens = input.EffectiveTokens > 0
             ? input.EffectiveTokens
@@ -53,17 +51,33 @@ public static class CompactionPlanner
             preCompactTokens,
             selection,
             request,
-            input.Messages.Take(selection.ContextPrefixCount).ToList());
+            contextPrefix,
+            input.Messages.LastOrDefault()?.Id);
     }
 
-    public static ModelRequest BuildSummaryRequest(CompactionSelection selection, string? manualInstructions) =>
-        new(
-        [
-            new ModelInputMessage(MessageRole.System, [new InputTextBlock(SummarySystemInstruction)]),
-            new ModelInputMessage(MessageRole.User, [new InputTextBlock(SummarizationPrompt.BuildSummaryUserPrompt(selection.ToSummarize, manualInstructions))]),
-        ],
-            Tools: [],
-            Options: new ModelCallOptions(MaxOutputTokens: CompactPolicy.SummaryMaxOutputTokens));
+    public static ModelRequest BuildSummaryRequest(
+        CompactionSelection selection,
+        string? manualInstructions,
+        IReadOnlyList<ConversationMessage>? contextPrefixMessages = null,
+        IReadOnlyList<ToolContract>? tools = null,
+        IReadOnlyList<ModelInputMessage>? requestPrefix = null)
+    {
+        var messages = new List<ModelInputMessage>();
+        if (requestPrefix is not null)
+            messages.AddRange(requestPrefix);
+        foreach (var message in contextPrefixMessages ?? [])
+            messages.AddRange(ContextBuilder.Project(message));
+        if (selection.TruncationMarker is { } marker)
+            messages.Add(new ModelInputMessage(MessageRole.User, [new InputTextBlock(marker)]));
+        foreach (var message in selection.ToSummarize)
+            messages.AddRange(ContextBuilder.Project(message));
+        messages.Add(new ModelInputMessage(MessageRole.User,
+            [new InputTextBlock(SummarizationPrompt.BuildSummaryUserPrompt(manualInstructions))], new CacheControl()));
+
+        return new ModelRequest(messages,
+            tools is { Count: <= CompactPolicy.CompactToolKeepMaxCount } ? tools : [],
+            new ModelCallOptions(MaxOutputTokens: CompactPolicy.SummaryMaxOutputTokens));
+    }
 
     public const string CompactContinuationHeader =
         "This session is being continued from a previous conversation that ran out of context. " +
@@ -77,46 +91,57 @@ public static class CompactionPlanner
             DateTimeOffset.UtcNow);
 
     public static IReadOnlyList<ConversationMessage> BuildRecentlyReadFilesAttachments(
-        IReadOnlyList<(string Path, string Content)> recentlyRead)
-    {
-        if (recentlyRead.Count == 0)
-            return [];
+        IReadOnlyList<(string Path, string Content)> recentlyRead,
+        IReadOnlyList<ConversationMessage>? preservedTail = null) =>
+        BuildRecentlyReadFilesAttachments(recentlyRead.Select(file => new RecentFileRead(file.Path, file.Content, default)).ToList(), preservedTail);
 
-        var parts = recentlyRead
-            .Take(RecentlyReadMaxFiles)
-            .Select(file => TokenEstimator.EstimateTokens(file.Content) <= RecentlyReadMaxTokensPerFile
-                ? new AttachmentPart(
-                    StrongId.NewPartId(),
-                    AttachmentKind.ResumeReferencedContext,
-                    $"Contents of {file.Path} (read before compaction):\n\n{file.Content}",
-                    ProviderVisible: true)
-                : new AttachmentPart(
-                    StrongId.NewPartId(),
-                    AttachmentKind.ResumeReferencedContext,
-                    $"File {file.Path} was read before compaction; use the Read tool if you need it again",
-                    ProviderVisible: true))
-            .ToList();
-        return
-        [
-            new ConversationMessage(StrongId.NewMessageId(), MessageRole.User, parts, DateTimeOffset.UtcNow),
-        ];
+    public static IReadOnlyList<ConversationMessage> BuildRecentlyReadFilesAttachments(
+        IReadOnlyList<RecentFileRead> recentlyRead,
+        IReadOnlyList<ConversationMessage>? preservedTail)
+    {
+        var preservedPaths = (preservedTail ?? []).SelectMany(message => message.Parts).OfType<ToolCallPart>()
+            .Where(call => call.ToolName == "Read" && call.Input.ValueKind == System.Text.Json.JsonValueKind.Object)
+            .Select(call => call.Input.TryGetProperty("file_path", out var path) && path.ValueKind == System.Text.Json.JsonValueKind.String
+                ? path.GetString()?.Replace('\\', '/') : null)
+            .Where(path => path is not null).ToHashSet(StringComparer.Ordinal);
+        var messages = new List<ConversationMessage>();
+        foreach (var file in recentlyRead.Where(file => !file.Path.Replace('\\', '/').Contains("/.git/", StringComparison.Ordinal)
+            && !preservedPaths.Contains(file.Path.Replace('\\', '/'))).Take(RecentlyReadMaxFiles))
+        {
+            var input = new Dictionary<string, object> { ["file_path"] = file.Path };
+            if (file.Offset is { } offset)
+                input["offset"] = offset;
+            if (file.Limit is { } limit)
+                input["limit"] = limit;
+            var content = (file.Content.Length + 2) / 3 <= RecentlyReadMaxTokensPerFile
+                ? $"Called the Read tool with the following input: {System.Text.Json.JsonSerializer.Serialize(input)}\nResult of calling the Read tool:\n{file.Content}"
+                : $"Note: {file.Path} was read before the last conversation was summarized, but the contents are too large to include. Use Read tool if you need to access it.";
+            messages.Add(new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
+                [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.ResumeReferencedContext,
+                    SystemReminder.Wrap(System.Text.RegularExpressions.Regex.Replace(content, @"</?system-reminder\b",
+                        match => "&lt;" + match.Value[1..], System.Text.RegularExpressions.RegexOptions.IgnoreCase)), ProviderVisible: true)],
+                DateTimeOffset.UtcNow, Source: MessageSource.ResumeReferencedContext));
+        }
+        return messages;
     }
+
+    public const string SuppressFollowupInstruction =
+        "Continue the conversation from where it left off without asking the user any further questions. " +
+        "Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. " +
+        "Pick up the last task as if the break never happened.";
 
     public static PostCompactResult BuildPostCompactHistory(
         CompactionPlan plan,
         string summaryText,
         ConversationMessage compactSummaryMessage,
         IReadOnlyList<ConversationMessage> preservedTail,
-        IReadOnlyList<ConversationMessage> recentlyReadFilesAttachments)
+        IReadOnlyList<ConversationMessage> recentlyReadFilesAttachments,
+        bool suppressFollowup = true)
     {
         var summaryMessage = compactSummaryMessage;
-        // Mirrors ZCode compact prompt framing: the header explains what the summary is, the
-        // marker (when groups were dropped for size) and verbatim-preserved note follow it.
-        var summaryContent = plan.Selection.TruncationMarker is { } marker
-            ? $"{CompactContinuationHeader}\n\n{marker}\n\n{summaryText}"
-            : $"{CompactContinuationHeader}\n\n{summaryText}";
-        if (preservedTail.Count > 0)
-            summaryContent += "\n\nRecent messages are preserved verbatim.";
+        var summaryContent = $"{CompactContinuationHeader}\n\n{SummarizationPrompt.FormatSummary(summaryText)}";
+        if (suppressFollowup)
+            summaryContent += "\n" + SuppressFollowupInstruction;
         summaryMessage = summaryMessage with
         {
             Parts = [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.CompactSummary, summaryContent, ProviderVisible: true)],
@@ -125,12 +150,10 @@ public static class CompactionPlanner
         var messages = new List<ConversationMessage>();
         messages.AddRange(plan.ContextPrefixMessages);
         messages.Add(summaryMessage);
-        messages.AddRange(recentlyReadFilesAttachments);
         messages.AddRange(preservedTail);
+        messages.AddRange(recentlyReadFilesAttachments);
 
-        var lastSummarized = plan.Selection.ToSummarize.Count > 0
-            ? plan.Selection.ToSummarize[^1].Id
-            : (MessageId?)null;
+        var lastSummarized = plan.LastActiveMessageId;
         var preservedHead = preservedTail.Count > 0 ? preservedTail[0].Id : (MessageId?)null;
         var preservedTailId = preservedTail.Count > 0 ? preservedTail[^1].Id : (MessageId?)null;
 

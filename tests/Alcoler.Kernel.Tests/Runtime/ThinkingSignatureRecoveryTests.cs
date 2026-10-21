@@ -29,6 +29,16 @@ public class ThinkingSignatureRecoveryTests
             new ModelFailure(ModelFailureKind.InvalidRequest, message)));
     }
 
+    [Theory]
+    [InlineData(200)]
+    [InlineData(404)]
+    [InlineData(422)]
+    public void Non400Responses_AreNotSignatureRejections(int statusCode)
+    {
+        Assert.False(ThinkingSignatureRecovery.IsSignatureRejection(
+            new ModelFailure(ModelFailureKind.InvalidRequest, "signature in thinking block"), statusCode));
+    }
+
     [Fact]
     public void OtherFailureKinds_AreNeverSignatureRejections()
     {
@@ -39,37 +49,40 @@ public class ThinkingSignatureRecoveryTests
     }
 
     [Fact]
-    public void StripReasoningParts_KeepsTextAndAddsPlaceholderForReasoningOnlyMessages()
+    public void RepairRequestMessages_RemovesOnlySignedOrRedactedAndPreservesTurnBoundaries()
     {
-        var withText = new ConversationMessage(
-            StrongId.NewMessageId(),
-            MessageRole.Assistant,
-            [new ReasoningPart(StrongId.NewPartId(), "secret"), new TextPart(StrongId.NewPartId(), "answer")],
-            DateTimeOffset.UtcNow);
-        var reasoningOnly = new ConversationMessage(
-            StrongId.NewMessageId(),
-            MessageRole.Assistant,
-            [new ReasoningPart(StrongId.NewPartId(), "secret")],
-            DateTimeOffset.UtcNow);
-        var userMessage = TestUser("hi");
+        var unsigned = new InputReasoningBlock("unsigned");
+        var encrypted = new InputReasoningBlock("openai", EncryptedContent: "cipher");
+        var signed = new InputReasoningBlock("signed", "sig");
+        var withText = new ModelInputMessage(MessageRole.Assistant,
+            [signed, new InputTextBlock("answer")], ProviderId: "anthropic", ModelId: "model");
+        var reasoningOnly = new ModelInputMessage(MessageRole.Assistant,
+            [new InputReasoningBlock("", RedactedData: ""), unsigned, new InputTextBlock("  ")]);
+        var tool = new InputToolCallBlock(new ToolCallId("call"), "Read", System.Text.Json.JsonSerializer.SerializeToElement(new { }));
+        var withTool = new ModelInputMessage(MessageRole.Assistant, [signed, unsigned, tool]);
+        var user = new ModelInputMessage(MessageRole.User, [signed]);
+        IReadOnlyList<ModelInputMessage> messages = [user, withText, reasoningOnly, withTool, new(MessageRole.Assistant, [encrypted])];
 
-        var stripped = ThinkingSignatureRecovery.StripReasoningParts([userMessage, withText, reasoningOnly]);
+        var repaired = ThinkingSignatureRecovery.RepairRequestMessages(messages);
 
-        Assert.Same(userMessage, stripped[0]);
-        Assert.Equal([userMessage.Id, withText.Id, reasoningOnly.Id], stripped.Select(m => m.Id).ToArray());
-        Assert.Equal("answer", Assert.IsType<TextPart>(Assert.Single(stripped[1].Parts)).Text);
-        var placeholder = Assert.IsType<TextPart>(Assert.Single(stripped[2].Parts));
-        Assert.Equal(ThinkingSignatureRecovery.RemovedThinkingText, placeholder.Text);
+        Assert.Same(user, repaired[0]);
+        Assert.Equal("answer", Assert.IsType<InputTextBlock>(Assert.Single(repaired[1].Content)).Text);
+        Assert.Equal("anthropic", repaired[1].ProviderId);
+        Assert.Equal("model", repaired[1].ModelId);
+        Assert.Equal([unsigned, new InputTextBlock(ThinkingSignatureRecovery.RemovedThinkingText)], repaired[2].Content);
+        Assert.Equal([unsigned, tool], repaired[3].Content);
+        Assert.Same(messages[4], repaired[4]);
+        Assert.Equal(3, messages[2].Content.Count);
     }
 
     [Fact]
-    public void StripReasoningParts_ReturnsInputReferenceWhenNothingToStrip()
+    public void RepairRequestMessages_ReturnsInputReferenceWhenNothingToStrip()
     {
-        IReadOnlyList<ConversationMessage> history = [TestUser("hi"), TestUser("again")];
-
-        Assert.Same(history, ThinkingSignatureRecovery.StripReasoningParts(history));
+        IReadOnlyList<ModelInputMessage> messages =
+        [
+            new(MessageRole.Assistant, [new InputReasoningBlock("unsigned", "")]),
+            new(MessageRole.Assistant, [new InputReasoningBlock("encrypted", EncryptedContent: "cipher")]),
+        ];
+        Assert.Same(messages, ThinkingSignatureRecovery.RepairRequestMessages(messages));
     }
-
-    private static ConversationMessage TestUser(string text) =>
-        new(StrongId.NewMessageId(), MessageRole.User, [new TextPart(StrongId.NewPartId(), text)], DateTimeOffset.UtcNow);
 }

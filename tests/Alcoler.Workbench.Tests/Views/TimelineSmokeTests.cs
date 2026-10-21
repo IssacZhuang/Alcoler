@@ -1064,21 +1064,105 @@ public class TimelineSmokeTests
         var window = Host(view, 900, 600);
         try
         {
-            var streaming = TestSnapshots.State(TurnPhase.Streaming);
-            viewModel.ApplyUpdate(new ProjectionUpdate(1, streaming,
-                [new StatePatched(streaming)], Reset: false));
-            Pump();
-
             var bar = Assert.Single(view.GetVisualDescendants().OfType<Border>(),
                 b => b.Classes.Contains("workingBar"));
-            Assert.True(bar.IsVisible);
-            Assert.Contains(view.GetVisualDescendants(), d => d is TextBlock { Text: "Streaming" });
-
-            var idle = TestSnapshots.State();
-            viewModel.ApplyUpdate(new ProjectionUpdate(2, idle, [new StatePatched(idle)], Reset: false));
-            Pump();
-
             Assert.False(bar.IsVisible);
+            var phases = new[]
+            {
+                (TurnPhase.AwaitingModel, "Waiting for model", true),
+                (TurnPhase.Streaming, "Generating response", true),
+                (TurnPhase.ExecutingTools, "Running tools", true),
+                (TurnPhase.AwaitingPermission, "Waiting for permission", false),
+                (TurnPhase.AwaitingInteraction, "Waiting for your answer", false),
+                (TurnPhase.AwaitingModel, "Waiting for model", true),
+            };
+            long sequence = 0;
+            foreach (var (phase, text, running) in phases)
+            {
+                var state = TestSnapshots.State(phase);
+                viewModel.ApplyUpdate(new ProjectionUpdate(++sequence, state, [new StatePatched(state)], Reset: false));
+                Pump();
+
+                Assert.True(bar.IsVisible);
+                Assert.Equal(running, bar.Classes.Contains("running"));
+                Assert.Equal(text, Avalonia.Automation.AutomationProperties.GetName(bar));
+                var label = Assert.Single(bar.GetVisualDescendants().OfType<TextBlock>());
+                Assert.Equal(text, label.Text);
+                Assert.Equal(13, label.FontSize);
+                Assert.Equal(FontWeight.Medium, label.FontWeight);
+                var dots = bar.GetVisualDescendants().OfType<Border>()
+                    .Where(border => border.Classes.Contains("workingDot")).ToArray();
+                Assert.Equal(3, dots.Length);
+                Assert.All(dots, dot => Assert.Equal(running, dot.IsEffectivelyVisible));
+                Assert.Equal(!running, Assert.Single(bar.GetVisualDescendants().OfType<Ellipse>()).IsEffectivelyVisible);
+                AssertWithin(label, bar);
+            }
+
+            foreach (var phase in new[] { TurnPhase.Idle, TurnPhase.Error })
+            {
+                var state = TestSnapshots.State(phase);
+                viewModel.ApplyUpdate(new ProjectionUpdate(++sequence, state, [new StatePatched(state)], Reset: false));
+                Pump();
+                Assert.False(bar.IsVisible);
+                Assert.DoesNotContain("running", bar.Classes);
+            }
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task WorkingIndicator_AnimatesDistinctDotsAndStopsWhenWaitingForUser()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 540, 360);
+        try
+        {
+            var state = TestSnapshots.State(TurnPhase.AwaitingModel);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            Pump();
+            var dots = view.GetVisualDescendants().OfType<Border>()
+                .Where(border => border.Classes.Contains("workingDot")).ToArray();
+            Assert.Equal(3, dots.Length);
+            var samples = dots.Select(_ => new List<double>()).ToArray();
+            var positions = dots.Select(_ => new List<double>()).ToArray();
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(40);
+                AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                Pump();
+                for (var index = 0; index < dots.Length; index++)
+                {
+                    samples[index].Add(dots[index].Opacity);
+                    positions[index].Add(Assert.IsType<TranslateTransform>(dots[index].RenderTransform).Y);
+                }
+            }
+
+            Assert.All(samples, values => Assert.True(values.Max() - values.Min() > 0.3,
+                $"Expected a visible opacity animation, sampled {values.Min():F2} to {values.Max():F2}"));
+            Assert.All(positions, values => Assert.True(values.Max() - values.Min() > 1.5,
+                $"Expected a moving dot, sampled Y {values.Min():F2} to {values.Max():F2}"));
+            Assert.True(samples[0].Zip(samples[1]).Any(pair => Math.Abs(pair.First - pair.Second) > 0.2),
+                "Dots should animate in sequence rather than flashing together.");
+
+            var waiting = TestSnapshots.State(TurnPhase.AwaitingPermission);
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, waiting, [new StatePatched(waiting)], Reset: false));
+            Pump();
+            await Task.Delay(80);
+            AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+            Pump();
+            Assert.All(dots, dot =>
+            {
+                Assert.False(dot.IsEffectivelyVisible);
+                Assert.Equal(0.4, dot.Opacity, 3);
+                Assert.Equal(0, Assert.IsType<TranslateTransform>(dot.RenderTransform).Y);
+            });
         }
         finally
         {

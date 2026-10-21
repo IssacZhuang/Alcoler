@@ -1,3 +1,4 @@
+using System.Text;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Skills;
 
@@ -10,24 +11,29 @@ namespace Alcoler.Kernel.Runtime;
 internal sealed class SkillContentProvider(string workspaceRoot) : ISkillContentProvider
 {
     private readonly SkillsCatalog _catalog = new();
-    private readonly Dictionary<string, SkillInfo> _byName = new(StringComparer.OrdinalIgnoreCase);
-
-    private bool _loaded;
-
     public SkillDocument? TryLoad(string name, CancellationToken cancellationToken)
     {
-        LoadOnce();
-        if (!_byName.TryGetValue(name.Trim(), out var skill))
+        cancellationToken.ThrowIfCancellationRequested();
+        var skill = _catalog.Load(workspaceRoot).FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(candidate.Alias, name.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (skill is null)
             return null;
 
         try
         {
-            var content = File.ReadAllText(skill.SkPath);
+            using var stream = File.OpenRead(skill.SkPath);
+            var truncated = stream.Length > Tools.SkillTool.MaxSkillBytes;
+            var bytes = new byte[(int)Math.Min(stream.Length, Tools.SkillTool.MaxSkillBytes)];
+            stream.ReadExactly(bytes);
+            cancellationToken.ThrowIfCancellationRequested();
+            var content = Encoding.UTF8.GetString(bytes);
             return new SkillDocument(
                 skill.Name,
                 skill.Description,
                 Path.GetDirectoryName(skill.SkPath)!,
-                SkillsCatalog.StripFrontMatterForTool(content));
+                SkillsCatalog.StripFrontMatterForTool(content).Trim(),
+                truncated);
         }
         catch (IOException)
         {
@@ -39,12 +45,4 @@ internal sealed class SkillContentProvider(string workspaceRoot) : ISkillContent
         }
     }
 
-    private void LoadOnce()
-    {
-        if (_loaded)
-            return;
-        foreach (var skill in _catalog.Load(workspaceRoot))
-            _byName.TryAdd(skill.Name, skill);
-        _loaded = true;
-    }
 }

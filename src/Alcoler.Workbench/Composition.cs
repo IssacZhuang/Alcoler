@@ -103,6 +103,7 @@ public static class Composition
             Tools = tools,
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
             DefaultModel = WorkbenchModelCatalog.DefaultSelection(config),
+            SessionTitleGenerationEnabled = true,
             TodoStore = todoStore,
             GitSnapshotProvider = GitSnapshotCollector.Collect,
         });

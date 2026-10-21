@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
@@ -9,7 +10,6 @@ using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Workspace;
 using Alcoler.Kernel.Prompts;
-using Alcoler.Kernel.Skills;
 using Alcoler.Kernel.Tools;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -35,6 +35,10 @@ public sealed record AgentRuntimeOptions
     public string? AgentInstructions { get; init; }
 
     public string? CustomSystemPrompt { get; init; }
+
+    public bool SessionTitleGenerationEnabled { get; init; }
+
+    public TimeSpan SessionTitleGenerationTimeout { get; init; } = TimeSpan.FromSeconds(60);
 
     public string? ShellName { get; init; }
 
@@ -69,7 +73,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     public async ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken)
     {
         var now = _options.Clock.GetUtcNow();
-        var title = options.Title ?? BuildDefaultTitle(options.WorkspaceRoot);
+        var title = options.Title ?? "New session";
         var selection = options.ModelSelection ?? _options.DefaultModel;
         var record = new SessionRecord(
             StrongId.NewSessionId(),
@@ -78,7 +82,9 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             options.PermissionMode,
             selection,
             now,
-            now);
+            now,
+            ParentSessionId: options.ParentSessionId,
+            TitleSource: options.Title is null ? SessionTitleSource.Default : SessionTitleSource.Custom);
         await _options.Store.UpsertSessionAsync(record, cancellationToken).ConfigureAwait(false);
         await CreateRuntimeAsync(record, isNewSession: true).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
@@ -88,7 +94,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     {
         if (_sessions.TryGetValue(sessionId, out var active))
         {
-            return new SessionHandle(active.SessionId, active.WorkspaceRoot, active.SessionId.Value);
+            return new SessionHandle(active.SessionId, active.WorkspaceRoot, active.Title);
         }
 
         var record = await _options.Store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false)
@@ -124,6 +130,15 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             ? runtime.GetBackgroundJobs()
             : [];
 
+    public SessionActivitySnapshot? GetSessionActivity(SessionId sessionId) =>
+        !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime)
+            ? runtime.ActivitySnapshot()
+            : null;
+
+    public event Action<SessionId>? SessionActivityChanged;
+
+    public event Action<SessionId, string>? SessionTitleChanged;
+
     public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId) =>
         !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime) && runtime.StopBackgroundJob(jobId);
 
@@ -156,15 +171,32 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 CustomSystemPrompt = _options.CustomSystemPrompt,
                 ShellName = _options.ShellName,
                 GitSnapshot = _options.GitSnapshotProvider?.Invoke(record.WorkspaceRoot),
-                SkillsListing = SkillsListing.Render(new SkillsCatalog().Load(record.WorkspaceRoot)),
+                SkillsListing = _options.SkillsListing,
                 DefaultModel = _options.DefaultModel,
+                SessionTitleGenerationEnabled = _options.SessionTitleGenerationEnabled,
+                SessionTitleGenerationTimeout = _options.SessionTitleGenerationTimeout,
             },
             _options.Artifacts,
             _options.TodoStore),
             CancellationToken.None,
             persistStartEvents: isNewSession).ConfigureAwait(false);
+        runtime.TurnStarted += OnSessionTurnStarted;
+        runtime.TurnFinished += OnSessionTurnFinished;
+        runtime.TitleChanged += OnSessionTitleChanged;
         _sessions[runtime.SessionId] = runtime;
         return runtime;
+    }
+
+    private void OnSessionTitleChanged(SessionRuntime runtime, string title) =>
+        SessionTitleChanged?.Invoke(runtime.SessionId, title);
+
+    private void OnSessionTurnStarted(SessionRuntime runtime) =>
+        SessionActivityChanged?.Invoke(runtime.SessionId);
+
+    private ValueTask OnSessionTurnFinished(SessionRuntime runtime, TurnOutcome outcome)
+    {
+        SessionActivityChanged?.Invoke(runtime.SessionId);
+        return ValueTask.CompletedTask;
     }
 
     // A host-provided AgentInstructions value is treated as the workspace source verbatim;
@@ -203,12 +235,6 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 ?? throw new InvalidOperationException($"No provider registered for '{sel.ProviderId}'.");
             return provider.BindAsync(sel, CancellationToken.None).AsTask().GetAwaiter().GetResult();
         }, (this, selection));
-    }
-
-    private static string BuildDefaultTitle(string workspaceRoot)
-    {
-        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(workspaceRoot));
-        return string.IsNullOrWhiteSpace(name) ? "New session" : name;
     }
 
     public async ValueTask DisposeAsync()

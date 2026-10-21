@@ -3,10 +3,16 @@ using Alcoler.Contracts.Models;
 
 namespace Alcoler.Contracts.Tools;
 
-public sealed record FileReadSnapshot(long LengthBytes, DateTimeOffset LastWriteUtc, bool CompleteView)
+public sealed record FileReadSnapshot(
+    long LengthBytes,
+    DateTimeOffset LastWriteUtc,
+    bool CompleteView,
+    int Offset = 1,
+    int? Limit = null,
+    string? ContentHash = null)
 {
     public bool MatchesCurrent(long lengthBytes, DateTimeOffset lastWriteUtc) =>
-        LengthBytes == lengthBytes && LastWriteUtc == lastWriteUtc;
+        LengthBytes == lengthBytes && LastWriteUtc.ToUnixTimeMilliseconds() == lastWriteUtc.ToUnixTimeMilliseconds();
 }
 
 /// <summary>
@@ -17,9 +23,14 @@ public interface IFileReadState
 {
     FileReadSnapshot? Find(string path);
 
+    FileReadSnapshot? FindView(string path, int offset, int? limit) =>
+        Find(path) is { } snapshot && snapshot.Offset == offset && snapshot.Limit == limit ? snapshot : null;
+
     IReadOnlyList<(string Path, FileReadSnapshot Snapshot)> TrackedReads();
 
     void RecordRead(string path, bool completeView);
+
+    void RecordReadView(string path, bool completeView, int offset, int? limit, string? contentHash = null) => RecordRead(path, completeView);
 
     void RecordWrite(string path);
 
@@ -42,6 +53,7 @@ public enum BackgroundJobStatus
     Completed,
     Failed,
     Stopped,
+    Lost,
 }
 
 public sealed record BackgroundJobInfo(
@@ -51,9 +63,10 @@ public sealed record BackgroundJobInfo(
     BackgroundJobStatus Status,
     int? ExitCode = null,
     string? OutputPath = null,
-    string? Error = null);
+    string? Error = null,
+    ToolCallId? ToolUseId = null);
 
-public sealed record BackgroundJobResult(int ExitCode, string? Error = null);
+public sealed record BackgroundJobResult(int? ExitCode, string? Error = null);
 
 /// <summary>
 /// Detached jobs (e.g. background Bash) that outlive the tool call which started them.
@@ -61,7 +74,11 @@ public sealed record BackgroundJobResult(int ExitCode, string? Error = null);
 /// </summary>
 public interface IBackgroundJobService
 {
-    BackgroundJobInfo Start(string description, string? outputPath, Func<CancellationToken, Task<BackgroundJobResult>> run);
+    BackgroundJobInfo Start(
+        string description,
+        string? outputPath,
+        Func<CancellationToken, Task<BackgroundJobResult>> run,
+        ToolCallId? toolUseId = null);
 
     IReadOnlyList<BackgroundJobInfo> List();
 
@@ -81,7 +98,7 @@ public interface IAuxModelClient
     ValueTask<string> CompleteAsync(AuxModelRequest request, CancellationToken cancellationToken);
 }
 
-public sealed record SkillDocument(string Name, string Description, string BaseDirectory, string Content);
+public sealed record SkillDocument(string Name, string Description, string BaseDirectory, string Content, bool Truncated = false);
 
 /// <summary>
 /// Loads the body of a skill listed in the session's skills listing.

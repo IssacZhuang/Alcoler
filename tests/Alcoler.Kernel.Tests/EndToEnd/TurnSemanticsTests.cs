@@ -40,15 +40,23 @@ public class TurnSemanticsTests
     private static bool RequestsContain(IReadOnlyList<ModelRequest> requests, string needle) =>
         requests.Any(r => RequestTexts(r).Contains(needle, StringComparison.Ordinal));
 
-    private sealed class GateTool(TaskCompletionSource entered, TaskCompletionSource release) : ITool
+    private sealed class GateTool(
+        TaskCompletionSource entered,
+        TaskCompletionSource release,
+        string output = "gate opened",
+        bool stopTurnAfterResult = false,
+        bool concurrentSafe = false) : ITool
     {
+        private int _executions;
+        public int Executions => Volatile.Read(ref _executions);
+
         public ToolContract Contract { get; } = new(
             "Gate",
             "Test-only tool that blocks until released.",
             ParseSchema("""{"type": "object", "properties": {}, "additionalProperties": false}"""));
 
         public ToolMetadata Metadata { get; } = new(
-            ReadOnly: true, Destructive: false, ConcurrentSafe: false, RequiresUserInteraction: false,
+            ReadOnly: true, Destructive: false, ConcurrentSafe: concurrentSafe, RequiresUserInteraction: false,
             SideEffectScope: SideEffectScope.None, RiskLevel: RiskLevel.Low, NeedsApproval: false,
             AllowedInPlanMode: true);
 
@@ -60,9 +68,10 @@ public class TurnSemanticsTests
 
         public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _executions);
             entered.TrySetResult();
             await release.Task.WaitAsync(cancellationToken);
-            return ToolExecutionResult.Text("gate opened");
+            return ToolExecutionResult.Text(output, stopTurnAfterResult: stopTurnAfterResult);
         }
 
         private static JsonElement ParseSchema(string rawJson) =>
@@ -146,6 +155,34 @@ public class TurnSemanticsTests
         }
     }
 
+    private sealed class FailedStreamAfterToolModel(Task toolResultObserved) : IChatModel
+    {
+        public List<ModelRequest> Requests { get; } = [];
+        public ModelDescriptor Descriptor { get; } = new(
+            "scripted", "test-model", "Failed stream model", new ModelProperties(ContextWindowTokens: 200_000));
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
+            ModelRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            if (Requests.Count == 1)
+            {
+                yield return new ModelTextDelta("uncommitted stream prose");
+                var call = new ToolCall(ToolCallId, " Gate ", JsonSerializer.SerializeToElement(new { }));
+                yield return new ModelToolCallReady(call);
+                yield return new ModelToolCallReady(call);
+                await toolResultObserved.WaitAsync(cancellationToken);
+                yield return new ModelStreamFailed(new ModelFailure(ModelFailureKind.InvalidRequest, "stream rejected after ready tool"));
+            }
+            else
+            {
+                yield return new ModelTextDelta("recovered answer");
+                yield return new ModelStreamFinished(ModelFinishReason.Stop);
+            }
+        }
+    }
+
     private static async Task SendAndWaitIdleAsync(
         AgentRuntime runtime,
         IConversationProjection projection,
@@ -178,7 +215,7 @@ public class TurnSemanticsTests
     }
 
     [Fact]
-    public async Task TextOnlyStep_WithQueuedSteer_ContinuesSameTurn()
+    public async Task TextOnlyStep_WithExplicitGuides_ContinuesSameTurn()
     {
         List<IReadOnlyList<ModelStreamEvent>> calls =
         [
@@ -195,11 +232,17 @@ public class TurnSemanticsTests
 
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "steer one"), CancellationToken.None);
-        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "steer two"), CancellationToken.None);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "steer one", Delivery: SendTextDelivery.Guide), CancellationToken.None);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "steer two", Delivery: SendTextDelivery.Guide), CancellationToken.None);
         release.TrySetResult();
 
-        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle);
+        await WaitForAsync(() =>
+        {
+            var snapshot = projection.Snapshot();
+            return snapshot.State.Phase == TurnPhase.Idle
+                && snapshot.Rows.OfType<AssistantMessageRow>().Any(r => !r.IsStreaming
+                    && r.Parts.OfType<TextPart>().Any(p => p.Text == "second answer"));
+        });
 
         // One steer per boundary: the tool boundary takes "steer one", the text-only finish
         // takes "steer two" and continues the SAME turn for the closing answer.
@@ -209,6 +252,187 @@ public class TurnSemanticsTests
         Assert.Contains("steer two", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
         Assert.Equal(2, projection.Snapshot().Rows.OfType<AssistantMessageRow>().Count(r =>
             r.Parts.OfType<TextPart>().Any(p => p.Text.Contains("answer"))));
+    }
+
+    [Fact]
+    public async Task DefaultQueue_RemainsSeparateTurnWhileGuideJoinsActiveTurn()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            ToolCall("Gate", new { }), Text("guided answer"), Text("queued answer"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var opening = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start");
+        var queued = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "queued later");
+        var guide = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "guide now", Delivery: SendTextDelivery.Guide);
+        await runtime.SubmitAsync(opening, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await runtime.SubmitAsync(queued, CancellationToken.None);
+        await runtime.SubmitAsync(guide, CancellationToken.None);
+        release.TrySetResult();
+
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 3);
+
+        Assert.Contains("guide now", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+        Assert.DoesNotContain("queued later", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+        Assert.Contains(harness.Model.Requests[2].Messages, m => m.Role == MessageRole.User
+            && m.Content.OfType<InputTextBlock>().Any(p => p.Text == "queued later"));
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Equal(new[] { opening.CommandId, queued.CommandId },
+            events.Select(e => e.Event).OfType<TurnStartedEvent>().Select(e => e.CommandId));
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        var canonicalGuide = Assert.Single(messages, m => m.Message.Presentation == MessagePresentation.UserSteer).Message;
+        Assert.Equal(MessageSource.RealUser, canonicalGuide.Source);
+        Assert.Equal("guide now", Assert.Single(canonicalGuide.Parts.OfType<TextPart>()).Text);
+        Assert.Contains("The user sent a new message while you were working:", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task QueuedModeIntent_AppliesOnlyWhenItsOwnTurnStarts()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            ToolCall("Gate", new { }), Text("active answer"), Text("planned answer"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var queued = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, 0, "plan next", Mode: PermissionMode.Plan), CancellationToken.None);
+        Assert.True(queued.Accepted);
+        await using var store = harness.OpenStore();
+        Assert.Equal(PermissionMode.Yolo, (await store.GetSessionAsync(session.Id, CancellationToken.None))!.PermissionMode);
+        Assert.Equal(PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        release.TrySetResult();
+
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 3);
+
+        Assert.DoesNotContain("Plan mode is active.", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+        Assert.Contains("Plan mode is active.", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
+        Assert.Equal(PermissionMode.Plan, (await store.GetSessionAsync(session.Id, CancellationToken.None))!.PermissionMode);
+    }
+
+    [Theory]
+    [InlineData(SendTextDelivery.Queue)]
+    [InlineData(SendTextDelivery.Guide)]
+    public async Task PendingModelIntent_IsDeferredUntilConsumedAndGuideChangesNextModelStep(SendTextDelivery delivery)
+    {
+        var first = new ScriptedCallModel([ToolCall("Gate", new { }), Text("first model closing")]);
+        var next = new ScriptedCallModel([Text("selected model answer")]);
+        await using var harness = TestHarness.Create();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(options => options with
+        {
+            Providers = [new ScriptedModelProvider(first), new ScriptedModelProvider(next, "next")],
+        }, new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var selection = new ModelSelection("next", "test-model", new ModelCallOptions(MaxOutputTokens: 1234));
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, 0, "use selected model", ModelSelection: selection, Delivery: delivery), CancellationToken.None)).Accepted);
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        Assert.Equal("scripted", (await store.GetSessionAsync(session.Id, CancellationToken.None))!.ModelSelection!.ProviderId);
+        Assert.Empty(next.Requests);
+        release.TrySetResult();
+
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && next.Requests.Count == 1);
+
+        Assert.Equal(delivery == SendTextDelivery.Guide ? 1 : 2, first.Requests.Count);
+        var selectedRequest = Assert.Single(next.Requests);
+        Assert.Equal(1234, selectedRequest.Options.MaxOutputTokens);
+        Assert.Contains("use selected model", RequestTexts(selectedRequest), StringComparison.Ordinal);
+        Assert.Equal(selection, (await store.GetSessionAsync(session.Id, CancellationToken.None))!.ModelSelection);
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Equal(delivery == SendTextDelivery.Guide ? 1 : 2, events.Select(e => e.Event).OfType<TurnStartedEvent>().Count());
+    }
+
+    [Fact]
+    public async Task StopTurnToolResult_DoesNotConsumeGuideIntoCompletedTurn()
+    {
+        await using var harness = ScriptedCallHarness.Create(ToolCall("Gate", new { }), Text("guide answered"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release, stopTurnAfterResult: true));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var opening = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start");
+        var guide = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "guide after stop", Delivery: SendTextDelivery.Guide);
+        await runtime.SubmitAsync(opening, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await runtime.SubmitAsync(guide, CancellationToken.None);
+        release.TrySetResult();
+
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 2);
+
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Equal(new[] { opening.CommandId, guide.CommandId },
+            events.Select(e => e.Event).OfType<TurnStartedEvent>().Select(e => e.CommandId));
+        Assert.Contains(harness.Model.Requests[1].Messages, m => m.Role == MessageRole.User
+            && m.Content.OfType<InputTextBlock>().Any(p => p.Text == guide.Text));
+    }
+
+    [Fact]
+    public async Task ToolOutputLargerThanSixtyThousandCharacters_IsNotTruncatedByRuntime()
+    {
+        var output = "BEGIN-" + new string('x', 70_000) + "-END";
+        await using var harness = ScriptedCallHarness.Create(ToolCall("Gate", new { }), Text("done"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        release.TrySetResult();
+        var tool = new GateTool(entered, release, output);
+        await using var runtime = harness.BuildRuntime(tool);
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "read large output", expectedReplies: 2);
+
+        Assert.Equal(2, harness.Model.Requests.Count);
+        Assert.Equal(output, Assert.Single(harness.Model.Requests[1].Messages.SelectMany(m => m.Content).OfType<InputToolResultBlock>()).Content);
+        Assert.Equal(1, tool.Executions);
+        await using var store = harness.OpenStore();
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        Assert.Equal(output, Assert.Single(messages.SelectMany(m => m.Message.Parts).OfType<ToolResultPart>()
+            .SelectMany(p => p.Content).OfType<ToolResultText>()).Text);
+    }
+
+    [Fact]
+    public async Task ContinuationPrompts_StayInterleavedWithAssistantOutputsAndToolResults()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            [new ModelTextDelta("part A"), new ModelStreamFinished(ModelFinishReason.Length)],
+            [new ModelTextDelta("part B"), new ModelStreamFinished(ModelFinishReason.Length)],
+            ToolCall("Gate", new { }), Text("done"), Text("next turn"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        release.TrySetResult();
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "write then read", expectedReplies: 4);
+
+        var third = harness.Model.Requests[2].Messages.SelectMany(m => m.Content).OfType<InputTextBlock>()
+            .Select(p => p.Text).Where(t => t is "part A" or "part B" || t == OutputContinuation.ContinuePromptText);
+        Assert.Equal(new[] { "part A", OutputContinuation.ContinuePromptText, "part B", OutputContinuation.ContinuePromptText }, third);
+        var afterTools = harness.Model.Requests[3].Messages.SelectMany(m => m.Content).Where(b =>
+            b is InputToolResultBlock || b is InputTextBlock t && (t.Text is "part A" or "part B" || t.Text == OutputContinuation.ContinuePromptText)).ToArray();
+        Assert.IsType<InputToolResultBlock>(afterTools[^1]);
+        Assert.Equal(2, afterTools.OfType<InputTextBlock>().Count(p => p.Text == OutputContinuation.ContinuePromptText));
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "new turn", expectedReplies: 5);
+        Assert.DoesNotContain(harness.Model.Requests[4].Messages.SelectMany(m => m.Content).OfType<InputTextBlock>(),
+            p => p.Text == OutputContinuation.ContinuePromptText);
     }
 
     [Fact]
@@ -258,7 +482,8 @@ public class TurnSemanticsTests
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "held-b"), CancellationToken.None);
         await runtime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
 
-        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle);
+        await WaitForAsync(() => runtime.GetSessionActivity(session.Id) is
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Cancelled });
         Assert.Single(harness.Model.Requests);
         release.TrySetResult();
 
@@ -269,12 +494,14 @@ public class TurnSemanticsTests
         Assert.Contains("held-a", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
         Assert.DoesNotContain("fresh", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
 
-        // held-b joins the held-a turn at the tool boundary; fresh continues the same turn
-        // at the text-only finish boundary.
-        await WaitForAsync(() => harness.Model.Requests.Count >= 3);
-        Assert.Contains("held-b", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
-        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count >= 4);
-        Assert.Contains("fresh", RequestTexts(harness.Model.Requests[3]), StringComparison.Ordinal);
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 5);
+        Assert.DoesNotContain("held-b", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
+        Assert.Contains("held-b", RequestTexts(harness.Model.Requests[3]), StringComparison.Ordinal);
+        Assert.DoesNotContain("fresh", RequestTexts(harness.Model.Requests[3]), StringComparison.Ordinal);
+        Assert.Contains("fresh", RequestTexts(harness.Model.Requests[4]), StringComparison.Ordinal);
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Equal(4, events.Select(e => e.Event).OfType<TurnStartedEvent>().Count());
     }
 
     [Fact]
@@ -297,6 +524,47 @@ public class TurnSemanticsTests
         var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
         Assert.Contains(messages, m => m.Message.Role == MessageRole.Assistant
             && m.Message.Parts.OfType<TextPart>().Any(p => p.Text.Contains("partial answer")));
+    }
+
+    [Fact]
+    public async Task FailedStreamAfterReadyReadTool_PersistsMatchedAnchorAndReusesResultWithoutPartialProse()
+    {
+        var observed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        release.TrySetResult();
+        var model = new FailedStreamAfterToolModel(observed.Task);
+        await using var harness = new ScriptedCallHarness([Text("unused")]) { OverrideModel = model };
+        var tool = new GateTool(entered, release, concurrentSafe: true);
+        await using var runtime = harness.BuildRuntime(tool);
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "recover streamed read"), CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await WaitForAsync(() => projection.Snapshot().Rows.OfType<ToolCallRow>().Any(r => r.Id == ToolCallId && r.Output is not null));
+        observed.TrySetResult();
+
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle);
+
+        Assert.Equal(2, model.Requests.Count);
+        Assert.Equal(1, tool.Executions);
+        var request = model.Requests[1];
+        Assert.DoesNotContain("uncommitted stream prose", RequestTexts(request), StringComparison.Ordinal);
+        var call = Assert.Single(request.Messages.SelectMany(m => m.Content).OfType<InputToolCallBlock>());
+        var result = Assert.Single(request.Messages.SelectMany(m => m.Content).OfType<InputToolResultBlock>());
+        Assert.Equal(ToolCallId, call.Id);
+        Assert.Equal("Gate", call.Name);
+        Assert.Equal(call.Id, result.Id);
+        Assert.Equal("gate opened", result.Content);
+        Assert.False(result.IsError);
+        await using var store = harness.OpenStore();
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        var anchor = Assert.Single(messages, m => m.Message.Parts.OfType<ToolCallPart>().Any()).Message;
+        Assert.Empty(anchor.Parts.OfType<TextPart>());
+        Assert.Equal("scripted", anchor.ProviderId);
+        Assert.Equal("test-model", anchor.ModelId);
+        Assert.Single(messages.SelectMany(m => m.Message.Parts).OfType<ToolResultPart>());
+        Assert.Equal(TurnOutcome.Completed, runtime.GetSessionActivity(session.Id)!.LastOutcome);
     }
 
     [Fact]
@@ -358,6 +626,85 @@ public class TurnSemanticsTests
         // No positive headroom in a 1000-token window: the baseline stays unclamped so a
         // provider 400 can drive reactive compaction.
         Assert.Equal(32_000, request.Options.MaxOutputTokens);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BackgroundJobCompletion_AfterCancelledOrFailedTurn_DoesNotResumeHeldQueue(bool fail)
+    {
+        List<IReadOnlyList<ModelStreamEvent>> calls =
+        [
+            ToolCall("BackgroundNotify", new { }, new ToolCallId("call-job")),
+            ToolCall("Gate", new { }),
+        ];
+        if (fail)
+            calls.Add([new ModelStreamFailed(new ModelFailure(ModelFailureKind.AuthenticationFailed, "bad key"))]);
+        calls.AddRange([Text("held answer"), Text("notification answer"), Text("fresh answer")]);
+        await using var harness = new ScriptedCallHarness(calls);
+        var jobRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new BackgroundNotifyTool(jobRelease), new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var held = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "held input");
+        await runtime.SubmitAsync(held, CancellationToken.None);
+        if (fail)
+            release.TrySetResult();
+        else
+            await runtime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+        var expectedOutcome = fail ? TurnOutcome.Failed : TurnOutcome.Cancelled;
+        await WaitForAsync(() => runtime.GetSessionActivity(session.Id) is { Phase: TurnPhase.Idle } activity
+            && activity.LastOutcome == expectedOutcome);
+        var requestCount = harness.Model.Requests.Count;
+
+        jobRelease.TrySetResult();
+        await WaitForAsync(() => runtime.GetBackgroundJobs(session.Id).Single().Status == BackgroundJobStatus.Completed);
+        await Task.Delay(200);
+
+        Assert.Equal(requestCount, harness.Model.Requests.Count);
+        Assert.Equal(expectedOutcome, runtime.GetSessionActivity(session.Id)!.LastOutcome);
+        Assert.Equal(held.CommandId, Assert.Single(projection.Snapshot().State.Queue).CommandId);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "fresh input"), CancellationToken.None);
+        await WaitForAsync(() => runtime.GetSessionActivity(session.Id) is { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed }
+            && harness.Model.Requests.Count == requestCount + 3);
+        Assert.Contains("held input", RequestTexts(harness.Model.Requests[requestCount]), StringComparison.Ordinal);
+        Assert.DoesNotContain("fresh input", RequestTexts(harness.Model.Requests[requestCount]), StringComparison.Ordinal);
+        Assert.Contains("<task-notification>", RequestTexts(harness.Model.Requests[requestCount + 1]), StringComparison.Ordinal);
+        Assert.Contains("fresh input", RequestTexts(harness.Model.Requests[requestCount + 2]), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(ToolCallStatus.Running)]
+    [InlineData(ToolCallStatus.Succeeded)]
+    [InlineData(ToolCallStatus.Failed)]
+    public void AssistantToolDeclaration_PreservesEarlyExecutionState(ToolCallStatus status)
+    {
+        var builder = new ProjectionBuilder();
+        var sessionId = StrongId.NewSessionId();
+        var turnId = StrongId.NewTurnId();
+        var startedAt = DateTimeOffset.UtcNow;
+        var input = JsonSerializer.SerializeToElement(new { file_path = "a.txt" });
+        builder.Apply(new SequencedEvent(1, sessionId, startedAt,
+            new ToolCallStartedEvent(turnId, ToolCallId, "Read", input)));
+        if (status != ToolCallStatus.Running)
+        {
+            builder.Apply(new SequencedEvent(2, sessionId, startedAt.AddSeconds(1),
+                new ToolCallResultEvent(turnId, ToolCallId, "Read",
+                    ToolExecutionResult.Text("early result", isError: status == ToolCallStatus.Failed), TimeSpan.FromSeconds(1))));
+        }
+        var early = Assert.Single(builder.Rows().OfType<ToolCallRow>());
+
+        builder.Apply(new SequencedEvent(3, sessionId, startedAt.AddSeconds(2),
+            new AssistantMessageCommittedEvent(new ConversationMessage(
+                StrongId.NewMessageId(), MessageRole.Assistant,
+                [new ToolCallPart(StrongId.NewPartId(), ToolCallId, "Read", input)], startedAt.AddSeconds(2)))));
+
+        Assert.Equal(early, Assert.Single(builder.Rows().OfType<ToolCallRow>()));
+        Assert.Equal(status, early.Status);
     }
 
     [Fact]
@@ -617,12 +964,15 @@ public class TurnSemanticsTests
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "question 6", mode: PermissionMode.Plan, expectedReplies: 6);
         var sixth = RequestTexts(harness.Model.Requests[5]);
         Assert.Contains("Plan mode still active", sixth, StringComparison.Ordinal);
-        // The 6th attachment is sparse: history's full reminder stays the only Plan Workflow copy.
         Assert.Equal(1, sixth.Split("## Plan Workflow").Length - 1);
+        await using var store = harness.OpenStore();
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        Assert.DoesNotContain(messages.SelectMany(m => m.Message.Parts).OfType<AttachmentPart>(),
+            p => RuntimeReminders.IsPlanModeReminder(p.Content));
     }
 
     [Fact]
-    public async Task PlanModeExit_CommitsOneShotExitedReminder()
+    public async Task PlanModeExit_KeepsOneShotExitedReminderInMemoryOnly()
     {
         List<IReadOnlyList<ModelStreamEvent>> calls =
         [
@@ -653,8 +1003,87 @@ public class TurnSemanticsTests
         Assert.Contains("## Exited Plan Mode", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
         await using var store = harness.OpenStore();
         var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
-        Assert.Contains(messages.SelectMany(m => m.Message.Parts).OfType<AttachmentPart>(),
+        Assert.DoesNotContain(messages.SelectMany(m => m.Message.Parts).OfType<AttachmentPart>(),
             p => p.Content.Contains("## Exited Plan Mode"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ManualPlanModeExit_InjectsMemoryOnlyReminderUnlessPlanIsReentered(bool reenterPlan)
+    {
+        await using var harness = ScriptedCallHarness.Create(Text("planning"), Text("next answer"));
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "first");
+        Assert.True((await runtime.SubmitAsync(new SetModeCommand(
+            StrongId.NewCommandId(), session.Id, 0, PermissionMode.Yolo), CancellationToken.None)).Accepted);
+        if (reenterPlan)
+        {
+            Assert.True((await runtime.SubmitAsync(new SetModeCommand(
+                StrongId.NewCommandId(), session.Id, 0, PermissionMode.Plan), CancellationToken.None)).Accepted);
+        }
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "second", expectedReplies: 2);
+
+        Assert.Equal(!reenterPlan, RequestTexts(harness.Model.Requests[1]).Contains("## Exited Plan Mode", StringComparison.Ordinal));
+        Assert.Equal(reenterPlan ? PermissionMode.Plan : PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        await using var store = harness.OpenStore();
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        Assert.DoesNotContain(messages.SelectMany(m => m.Message.Parts).OfType<AttachmentPart>(),
+            p => p.Content.Contains("## Exited Plan Mode", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TodoReminder_IsDurableButSuppressedUntilLengthContinuationEnds()
+    {
+        var calls = Enumerable.Range(0, 9).Select(_ => Text("answer")).ToList();
+        calls.Add([new ModelTextDelta("truncated"), new ModelStreamFinished(ModelFinishReason.Length)]);
+        calls.Add(ToolCall("Gate", new { }));
+        calls.Add(Text("finished"));
+        await using var harness = new ScriptedCallHarness(calls);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        release.TrySetResult();
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        for (var turn = 0; turn < 9; turn++)
+            await SendAndWaitIdleAsync(runtime, projection, session.Id, $"question {turn}", expectedReplies: turn + 1);
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "long question", expectedReplies: 12);
+
+        Assert.DoesNotContain(TodoReminderPolicy.ReminderBody, RequestTexts(harness.Model.Requests[10]), StringComparison.Ordinal);
+        Assert.Contains(TodoReminderPolicy.ReminderBody, RequestTexts(harness.Model.Requests[11]), StringComparison.Ordinal);
+        await using var store = harness.OpenStore();
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        Assert.Single(messages.SelectMany(m => m.Message.Parts).OfType<AttachmentPart>(),
+            p => TodoReminderPolicy.IsTodoReminder(p.Content));
+    }
+
+    [Fact]
+    public async Task NonLengthToolStep_ResetsOutputContinuationCountWithinTurn()
+    {
+        IReadOnlyList<ModelStreamEvent> Truncated(string text) =>
+            [new ModelTextDelta(text), new ModelStreamFinished(ModelFinishReason.Length)];
+        await using var harness = ScriptedCallHarness.Create(
+            Truncated("A"), Truncated("B"), ToolCall("Gate", new { }),
+            Truncated("C"), Truncated("D"), Text("done"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        release.TrySetResult();
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "continue across tools", expectedReplies: 0);
+
+        Assert.Equal(6, harness.Model.Requests.Count);
+        Assert.Equal(TurnOutcome.Completed, runtime.GetSessionActivity(session.Id)!.LastOutcome);
+        Assert.Equal(4, harness.Model.Requests[5].Messages.SelectMany(m => m.Content).OfType<InputTextBlock>()
+            .Count(p => p.Text == OutputContinuation.ContinuePromptText));
     }
 
     [Fact]
@@ -666,9 +1095,9 @@ public class TurnSemanticsTests
         {
             Text("answer one"),
             Text("answer two"),
-            Text("summary one"),
+            new ModelStreamEvent[] { new ModelTextDelta("summary one"), new ModelTextEnded(), new ModelStreamFinished(ModelFinishReason.Stop) },
             Text("answer three"),
-            Text("summary two"),
+            new ModelStreamEvent[] { new ModelTextDelta("summary two"), new ModelTextEnded(), new ModelStreamFinished(ModelFinishReason.Stop) },
             Text("answer four"),
         };
         var root = Path.Combine(Path.GetTempPath(), "alcoler-rapid-refill-" + Guid.NewGuid().ToString("N"));

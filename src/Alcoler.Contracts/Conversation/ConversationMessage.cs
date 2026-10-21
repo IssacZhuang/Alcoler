@@ -21,7 +21,13 @@ public abstract record MessagePart(PartId Id);
 
 public sealed record TextPart(PartId Id, string Text) : MessagePart(Id);
 
-public sealed record ReasoningPart(PartId Id, string Text, string? ProviderSignature = null) : MessagePart(Id);
+public sealed record ReasoningPart(
+    PartId Id,
+    string Text,
+    string? ProviderSignature = null,
+    string? RedactedData = null,
+    string? EncryptedContent = null,
+    string? ProviderItemId = null) : MessagePart(Id);
 
 public sealed record ToolCallPart(PartId Id, ToolCallId ToolCallId, string ToolName, System.Text.Json.JsonElement Input) : MessagePart(Id);
 
@@ -50,8 +56,30 @@ public enum AttachmentKind
 
 public sealed record AttachmentPart(PartId Id, AttachmentKind Kind, string Content, bool ProviderVisible = true) : MessagePart(Id);
 
+public enum MessageSource
+{
+    RealUser,
+    RuntimeMode,
+    TodoReminder,
+    DateChange,
+    ToolWarning,
+    TaskNotification,
+    ModelAnomaly,
+    LegacySynthetic,
+    ResumeReferencedContext,
+}
+
+public enum MessagePresentation
+{
+    UserSteer,
+}
+
 public sealed record ConversationMessage(
     MessageId Id,
     MessageRole Role,
     IReadOnlyList<MessagePart> Parts,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string? ProviderId = null,
+    string? ModelId = null,
+    MessageSource? Source = null,
+    MessagePresentation? Presentation = null);

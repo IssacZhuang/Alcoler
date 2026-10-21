@@ -4,6 +4,7 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Prompts;
+using Alcoler.Kernel.Runtime;
 
 namespace Alcoler.Kernel.Context;
 
@@ -18,7 +19,9 @@ public sealed record ContextAssemblyInput(
     ModelCallOptions Options,
     string? CurrentDate = null,
     string? ToolPrompt = null,
-    IReadOnlyDictionary<string, MediaPayload>? Media = null);
+    IReadOnlyDictionary<string, MediaPayload>? Media = null,
+    bool InlineToolResultImages = false,
+    bool UseMidConversationSystem = false);
 
 /// <summary>An artifact hydrated for provider replay, keyed by artifact URI.</summary>
 public sealed record MediaPayload(string MimeType, string Base64Data, string? FileName = null);
@@ -78,18 +81,19 @@ public static class ContextBuilder
                 tools.Sum(tool => (long)TokenEstimator.SerializeTool(tool).Length));
         }
 
-        ModelInputMessage? last = null;
-        foreach (var message in input.History)
+        var lastNonSystemIndex = -1;
+        foreach (var message in ProjectHistory(input.History, input.UseMidConversationSystem))
         {
-            foreach (var projected in Project(message, input.Media))
+            foreach (var projected in Project(message, input.Media, input.InlineToolResultImages))
             {
                 messages.Add(projected);
-                last = projected;
+                if (projected.Role != MessageRole.System)
+                    lastNonSystemIndex = messages.Count - 1;
             }
         }
 
-        if (last is not null)
-            messages[^1] = last with { CacheControl = new CacheControl() };
+        if (lastNonSystemIndex >= 0)
+            messages[lastNonSystemIndex] = messages[lastNonSystemIndex] with { CacheControl = new CacheControl() };
 
         AddCategory(ContextUsageSources.Messages,
             messages.Skip(prefixCount).Sum(message => (long)TokenEstimator.SerializeMessage(message).Length));
@@ -102,8 +106,144 @@ public static class ContextBuilder
         }
     }
 
+    private static IReadOnlyList<ConversationMessage> ProjectHistory(
+        IReadOnlyList<ConversationMessage> history, bool useMidConversationSystem)
+    {
+        var reordered = new List<ConversationMessage>();
+        var pending = new List<ConversationMessage>();
+        for (var index = history.Count - 1; index >= 0; index--)
+        {
+            var message = history[index];
+            if (IsAttachmentLike(message))
+            {
+                pending.Add(message);
+                continue;
+            }
+            if ((message.Presentation is not null || message.Role is MessageRole.Assistant or MessageRole.System || HasToolResults(message)) && pending.Count > 0)
+            {
+                reordered.AddRange(pending);
+                pending.Clear();
+            }
+            reordered.Add(message);
+        }
+        reordered.AddRange(pending);
+        reordered.Reverse();
+
+        var projected = new List<ConversationMessage>();
+        pending.Clear();
+        var systems = new HashSet<ConversationMessage>();
+        foreach (var message in reordered)
+        {
+            if (message.Presentation is not null ||
+                pending.Any(item => item.Presentation is not null) && message.Role == MessageRole.User && !IsRuntimeReminder(message))
+                FlushPending();
+            if (useMidConversationSystem && IsMidConversationSource(message) && CanProjectReminder(message))
+            {
+                pending.Add(message);
+                continue;
+            }
+            if (message.Role is MessageRole.Assistant or MessageRole.System)
+                FlushPending();
+            projected.Add(message);
+        }
+        FlushPending();
+        for (var index = 0; index < projected.Count; index++)
+        {
+            var message = projected[index];
+            if (!systems.Contains(message))
+                continue;
+            if (index > 0 && projected[index - 1].Role == MessageRole.User &&
+                (index == projected.Count - 1 || projected[index + 1].Role == MessageRole.Assistant))
+                continue;
+            projected[index] = message with
+            {
+                Role = MessageRole.User,
+                Parts = [new TextPart(message.Parts[0].Id, SystemReminder.Wrap(
+                    System.Text.RegularExpressions.Regex.Replace(ReminderBody(message), @"</?system-reminder\b", match => "&lt;" + match.Value[1..],
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase)))],
+                Source = MessageSource.LegacySynthetic,
+                Presentation = null,
+            };
+        }
+
+        var result = new List<ConversationMessage>();
+        pending.Clear();
+        foreach (var message in projected)
+        {
+            if (IsRuntimeReminder(message) &&
+                (pending.Count > 0 || result.Count > 0 && HasToolResults(result[^1])))
+            {
+                pending.Add(message);
+                continue;
+            }
+            if (!HasToolResults(message))
+            {
+                result.AddRange(pending);
+                pending.Clear();
+            }
+            result.Add(message);
+        }
+        result.AddRange(pending);
+        return result;
+
+        void FlushPending()
+        {
+            if (pending.Count == 0)
+                return;
+            if (projected.Count > 0 && projected[^1].Role == MessageRole.User)
+            {
+                var first = pending[0];
+                var system = first with
+                {
+                    Role = MessageRole.System,
+                    Parts = [new TextPart(first.Parts[0].Id, string.Join("\n\n", pending.Select(ReminderBody)))],
+                    Presentation = null,
+                };
+                projected.Add(system);
+                systems.Add(system);
+            }
+            else
+                projected.AddRange(pending);
+            pending.Clear();
+        }
+    }
+
+    private static bool HasToolResults(ConversationMessage message) =>
+        message.Role == MessageRole.User && message.Parts.Any(part => part is ToolResultPart);
+
+    private static bool IsRuntimeReminder(ConversationMessage message) =>
+        message.Role == MessageRole.User && message.Source is not null and not MessageSource.RealUser && !HasToolResults(message);
+
+    private static bool IsAttachmentLike(ConversationMessage message) =>
+        IsRuntimeReminder(message) && message.Source is not (MessageSource.ToolWarning or MessageSource.ResumeReferencedContext);
+
+    private static bool IsMidConversationSource(ConversationMessage message) =>
+        message.Presentation == MessagePresentation.UserSteer ||
+        IsAttachmentLike(message) && message.Source != MessageSource.LegacySynthetic;
+
+    private static bool CanProjectReminder(ConversationMessage message) =>
+        message.Parts.Count > 0 && message.Parts.All(part => part is TextPart or AttachmentPart { ProviderVisible: true });
+
+    private static string ReminderBody(ConversationMessage message)
+    {
+        var body = string.Join("\n", message.Parts.Select(part => part switch
+        {
+            TextPart text => text.Text,
+            AttachmentPart attachment => attachment.Content,
+            _ => "",
+        }));
+        if (message.Presentation == MessagePresentation.UserSteer)
+            body = Steering.FormatUserSteer(body);
+        const string opening = "<system-reminder>\n";
+        const string closing = "\n</system-reminder>";
+        return body.StartsWith(opening, StringComparison.Ordinal) && body.EndsWith(closing, StringComparison.Ordinal)
+            ? body[opening.Length..^closing.Length]
+            : body;
+    }
+
     internal static IEnumerable<ModelInputMessage> Project(
-        ConversationMessage message, IReadOnlyDictionary<string, MediaPayload>? media = null)
+        ConversationMessage message, IReadOnlyDictionary<string, MediaPayload>? media = null,
+        bool inlineToolResultImages = false)
     {
         var blocks = new List<ModelContentBlock>();
         var images = new List<InputImageBlock>();
@@ -112,16 +252,23 @@ public static class ContextBuilder
             switch (part)
             {
                 case TextPart text:
-                    blocks.Add(new InputTextBlock(text.Text));
+                    blocks.Add(new InputTextBlock(message.Presentation == MessagePresentation.UserSteer
+                        ? Steering.FormatUserSteer(text.Text)
+                        : text.Text));
                     break;
                 case ReasoningPart reasoning:
-                    blocks.Add(new InputReasoningBlock(reasoning.Text, reasoning.ProviderSignature));
+                    blocks.Add(new InputReasoningBlock(reasoning.Text, reasoning.ProviderSignature,
+                        reasoning.RedactedData, reasoning.EncryptedContent, reasoning.ProviderItemId));
                     break;
                 case ToolCallPart call:
                     blocks.Add(new InputToolCallBlock(call.ToolCallId, call.ToolName, call.Input));
                     break;
                 case ToolResultPart result:
-                    blocks.Add(ProjectToolResult(result, media, images));
+                    var resultImages = inlineToolResultImages ? [] : images;
+                    var projectedResult = ProjectToolResult(result, media, resultImages);
+                    blocks.Add(inlineToolResultImages && resultImages.Count > 0
+                        ? projectedResult with { Images = resultImages }
+                        : projectedResult);
                     break;
                 case AttachmentPart attachment when attachment.ProviderVisible:
                     blocks.Add(new InputTextBlock(attachment.Content));
@@ -141,17 +288,19 @@ public static class ContextBuilder
             // turn boundaries survive in the replayed transcript.
             if (message.Role == MessageRole.Assistant)
             {
-                yield return new ModelInputMessage(message.Role, [new InputTextBlock("(no content)")]);
+                yield return new ModelInputMessage(message.Role, [new InputTextBlock("(no content)")],
+                    ProviderId: message.ProviderId, ModelId: message.ModelId);
             }
             yield break;
         }
         if (blocks.Count > 0)
-            yield return new ModelInputMessage(message.Role, blocks);
+            yield return new ModelInputMessage(message.Role, blocks,
+                ProviderId: message.ProviderId, ModelId: message.ModelId);
         if (images.Count > 0)
             yield return new ModelInputMessage(MessageRole.User, [.. images]);
     }
 
-    private static ModelContentBlock ProjectToolResult(
+    private static InputToolResultBlock ProjectToolResult(
         ToolResultPart result,
         IReadOnlyDictionary<string, MediaPayload>? media,
         List<InputImageBlock> images)

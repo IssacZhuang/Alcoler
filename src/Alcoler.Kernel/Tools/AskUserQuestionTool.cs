@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Tools;
@@ -36,6 +38,15 @@ public sealed class AskUserQuestionTool : ITool
         Plan mode note: plan mode is entered manually by the user — do not treat it as something you can switch into. While in plan mode, use this tool to clarify requirements or choose between approaches BEFORE finalizing your plan. Do NOT use this tool to ask "Is my plan ready?", "Should I proceed?", or otherwise reference "the plan" in questions — the user cannot see the plan until you call ExitPlanMode for approval.
 
         Reserve this for decisions where the user's answer changes what you do next — not for choices with a conventional default or facts you can verify in the codebase yourself. In those cases pick the obvious option, mention it in your response, and proceed.
+
+        Preview feature:
+        Use the optional `preview` field on options when presenting concrete artifacts that users need to visually compare:
+        - ASCII mockups of UI layouts or components
+        - Code snippets showing different implementations
+        - Diagram variations
+        - Configuration examples
+
+        Preview content is rendered as markdown in a monospace box. Multi-line text with newlines is supported. When any option has a preview, the UI switches to a side-by-side layout with a vertical option list on the left and preview on the right. Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).
         """,
         ParseSchema("""
         {
@@ -61,7 +72,8 @@ public sealed class AskUserQuestionTool : ITool
                       "type": "object",
                       "properties": {
                         "label": { "type": "string", "description": "The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice." },
-                        "description": { "type": "string", "description": "Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications." }
+                        "description": { "type": "string", "description": "Explanation of what this option means or what will happen if chosen. Useful for providing context about trade-offs or implications." },
+                        "preview": { "type": "string", "description": "Optional preview content rendered when this option is focused. Use for mockups, code snippets, or visual comparisons that help users compare options. See the tool description for the expected content format." }
                       },
                       "required": ["label", "description"],
                       "additionalProperties": false
@@ -69,15 +81,51 @@ public sealed class AskUserQuestionTool : ITool
                   },
                   "multiSelect": { "type": "boolean", "default": false, "description": "Set to true to allow the user to select multiple options instead of just one. Use when choices are not mutually exclusive." }
                 },
-                "required": ["question", "header", "options"],
+                "required": ["question", "header", "options", "multiSelect"],
                 "additionalProperties": false
               }
+            },
+            "answers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "User answers collected by the permission component"
+            },
+            "annotations": {
+              "type": "object",
+              "description": "Optional per-question annotations from the user (e.g., notes on preview selections). Keyed by question text.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "preview": { "type": "string", "description": "The preview content of the selected option, if the question used previews." },
+                  "notes": { "type": "string", "description": "Free-text notes the user added to their selection." }
+                },
+                "additionalProperties": false
+              }
+            },
+            "metadata": {
+              "type": "object",
+              "description": "Optional metadata for tracking and analytics purposes. Not displayed to user.",
+              "properties": {
+                "source": { "type": "string", "description": "Optional identifier for the source of this question (e.g., \"remember\" for /remember command). Used for analytics tracking." }
+              },
+              "additionalProperties": false
             }
           },
           "required": ["questions"],
           "additionalProperties": false
         }
         """));
+
+    public JsonElement RuntimeInputSchema
+    {
+        get
+        {
+            var schema = JsonNode.Parse(Contract.InputSchema.GetRawText())!;
+            schema["properties"]!["questions"]!["items"]!["required"] =
+                new JsonArray("question", "header", "options");
+            return JsonSerializer.SerializeToElement(schema);
+        }
+    }
 
     public ToolMetadata Metadata { get; } = new(
         ReadOnly: true,
@@ -111,14 +159,15 @@ public sealed class AskUserQuestionTool : ITool
             "AskUserQuestion pauses execution to collect answers from the user",
             [.. questions.Select(question => new InteractionQuestion(question.Header, question.Text, question.Options, question.MultiSelect))]);
         var answer = await context.Interactions.AskAsync(request, cancellationToken).ConfigureAwait(false);
-        return ToolExecutionResult.Text(FormatAnswers(questions, answer.Answers));
+        return ToolExecutionResult.Text(FormatAnswers(questions, answer));
     }
 
-    private static string FormatAnswers(IReadOnlyList<QuestionSpec> questions, IReadOnlyDictionary<string, string> answers)
+    private static string FormatAnswers(IReadOnlyList<QuestionSpec> questions, InteractionAnswer answer)
     {
+        var answers = answer.Answers;
         var answered = questions
             .Where(question => answers.TryGetValue(question.Header, out var value) && !string.IsNullOrWhiteSpace(value))
-            .Select(question => $"\"{question.Text}\"=\"{answers[question.Header]}\"")
+            .Select(question => FormatAnswer(question, answers[question.Header], answer.Annotations))
             .ToList();
 
         if (answered.Count == 0)
@@ -129,6 +178,23 @@ public sealed class AskUserQuestionTool : ITool
             return $"The user answered some questions and skipped {questions.Count - answered.Count}. Provided answers: {answersText}{PartialAnswerSuffix}";
 
         return $"User has answered your questions: {answersText}{AllAnswersSuffix}";
+    }
+
+    private static string FormatAnswer(
+        QuestionSpec question, string value, IReadOnlyDictionary<string, InteractionAnnotation>? annotations)
+    {
+        InteractionAnnotation? annotation = null;
+        if (annotations is not null)
+            annotations.TryGetValue(question.Header, out annotation);
+        var preview = annotation?.Preview ?? (question.MultiSelect
+            ? null
+            : question.Options.FirstOrDefault(option => option.Label == value)?.Preview);
+        var text = $"\"{question.Text}\"=\"{value}\"";
+        if (!string.IsNullOrEmpty(preview))
+            text += $" selected preview:\n{preview}";
+        if (!string.IsNullOrEmpty(annotation?.Notes))
+            text += $" user notes: {annotation.Notes}";
+        return text;
     }
 
     private static bool TryParseQuestions(
@@ -211,7 +277,22 @@ public sealed class AskUserQuestionTool : ITool
                     issue = new ToolInputIssue("duplicate_labels", "Option labels must be unique within each question");
                     return false;
                 }
-                options.Add(new InteractionOption(label, descriptionElement.GetString()));
+                string? preview = null;
+                if (option.TryGetProperty("preview", out var previewElement))
+                {
+                    if (previewElement.ValueKind is not JsonValueKind.String)
+                    {
+                        issue = new ToolInputIssue("invalid_preview", "'preview' must be a string");
+                        return false;
+                    }
+                    preview = previewElement.GetString()!;
+                    if (ValidatePreview(preview) is { } previewIssue)
+                    {
+                        issue = previewIssue;
+                        return false;
+                    }
+                }
+                options.Add(new InteractionOption(label, descriptionElement.GetString(), preview));
             }
 
             var multiSelect = false;
@@ -240,6 +321,21 @@ public sealed class AskUserQuestionTool : ITool
 
         questions = specs;
         return true;
+    }
+
+    private static ToolInputIssue? ValidatePreview(string preview)
+    {
+        const RegexOptions flags = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+        const string tag = @"</?\s*[a-z][a-z0-9:-]*(?:\s[^<>]*)?>";
+        if (!Regex.IsMatch(preview, @"<!doctype\b|<!--|" + tag, flags))
+            return null;
+        if (Regex.IsMatch(preview, @"<!doctype\b|</?\s*(?:html|body)\b", flags))
+            return new ToolInputIssue("invalid_preview", "HTML preview must be a fragment without html, body, or doctype");
+        if (Regex.IsMatch(preview, @"</?\s*(?:script|style)\b", flags))
+            return new ToolInputIssue("invalid_preview", "HTML preview cannot contain script or style tags");
+        if (!Regex.IsMatch(preview, tag, flags))
+            return new ToolInputIssue("invalid_preview", "HTML preview must contain an HTML tag");
+        return null;
     }
 
     private sealed record QuestionSpec(

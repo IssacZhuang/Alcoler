@@ -6,6 +6,7 @@ namespace Alcoler.Kernel.Models;
 public sealed record ModelRunnerOptions
 {
     public int MaxAttempts { get; init; } = 11;
+    public bool CommitOnFirstEvent { get; init; }
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromSeconds(2);
     public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(60);
     // ZCode jitters the capped delay uniformly into [50%, 100%]; the factor is the
@@ -35,6 +36,7 @@ public static class ModelStreamRunner
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var timeProvider = options.TimeProvider;
+        model = model.CreateRequestScope();
 
         for (var attempt = 1; attempt <= options.MaxAttempts; attempt++)
         {
@@ -44,7 +46,9 @@ public static class ModelStreamRunner
             var sawFinish = false;
 
             using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var idle = options.IdleTimeout + options.IdleTimeoutGrowthPerRetry * (attempt - 1);
+            var idle = options.IdleTimeout == s_infinite
+                ? s_infinite
+                : options.IdleTimeout + options.IdleTimeoutGrowthPerRetry * (attempt - 1);
             using var idleTimer = timeProvider.CreateTimer(
                 CancelAttempt, attemptCts, idle, s_infinite);
 
@@ -85,6 +89,7 @@ public static class ModelStreamRunner
                     break;
                 if (next is ModelStreamFailed failed)
                 {
+                    committed |= options.CommitOnFirstEvent;
                     failure = failed.Failure;
                     break;
                 }
@@ -100,7 +105,7 @@ public static class ModelStreamRunner
                 buffered.Add(next!);
                 if (next is ModelStreamFinished)
                     sawFinish = true;
-                if (IsBoundary(next!))
+                if (options.CommitOnFirstEvent || IsBoundary(next!))
                 {
                     committed = true;
                     foreach (var bufferedEvent in buffered)

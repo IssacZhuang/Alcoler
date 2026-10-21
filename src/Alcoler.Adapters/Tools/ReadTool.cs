@@ -3,6 +3,7 @@ using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Context;
+using SkiaSharp;
 
 namespace Alcoler.Adapters.Tools;
 
@@ -95,12 +96,13 @@ public sealed class ReadTool : ITool
                 isError: true);
 
         var info = new FileInfo(path);
-        if (context.FileReads?.Find(path) is { CompleteView: true } snapshot
+        var offset = ToolInput.IntOrNull(context.Input, "offset") ?? 1;
+        var startLine = Math.Max(offset, 1);
+        var explicitLimit = ToolInput.IntOrNull(context.Input, "limit");
+        if (context.FileReads?.FindView(path, offset, explicitLimit) is { CompleteView: true } snapshot
             && snapshot.MatchesCurrent(info.Length, info.LastWriteTimeUtc))
             return ToolExecutionResult.Text(FileUnchangedStub);
 
-        var startLine = Math.Max(ToolInput.IntOrNull(context.Input, "offset") ?? 1, 1);
-        var explicitLimit = ToolInput.IntOrNull(context.Input, "limit");
         var limit = explicitLimit ?? DefaultMaxLines;
 
         if (explicitLimit is null && info.Length > MaxFileSizeBytes)
@@ -118,7 +120,8 @@ public sealed class ReadTool : ITool
             var warning = lines.Length == 0
                 ? EmptyFileReminder
                 : $"<system-reminder>Warning: the file exists but is shorter than the provided offset ({startLine}). The file has {lines.Length} lines.</system-reminder>";
-            context.FileReads?.RecordRead(path, completeView: lines.Length == 0);
+            context.FileReads?.RecordReadView(path, completeView: true, offset, explicitLimit,
+                startLine == 1 && explicitLimit is null && lines.Length == 0 ? FileReadGuards.HashContent(content) : null);
             return ToolExecutionResult.Text(warning);
         }
 
@@ -134,8 +137,9 @@ public sealed class ReadTool : ITool
             return RenderPartialView(context, path, lines, selected, tokenCount);
         }
 
-        context.FileReads?.RecordRead(path, completeView: startLine == 1 && selectedEnd >= lines.Length);
-        return ToolExecutionResult.Text(AddLineNumbers(selected, startLine));
+        context.FileReads?.RecordReadView(path, completeView: true, offset, explicitLimit,
+            startLine == 1 && explicitLimit is null && selectedEnd >= lines.Length ? FileReadGuards.HashContent(content) : null);
+        return ToolExecutionResult.Text(AddLineNumbers(selected, offset == 0 ? 0 : startLine));
     }
 
     private ToolExecutionResult RenderPartialView(
@@ -175,10 +179,10 @@ public sealed class ReadTool : ITool
     private static string CurrentDirectory(ToolExecutionContext context) =>
         context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
 
-    // Mirrors ZCode READ_IMAGE_* budgets. Without an image transcoder, images that the
-    // reference would resize or compress are rejected instead of transformed.
     private const int ReadImageMaxInputBytes = 20 * 1024 * 1024;
     private const int ReadImageMaxBase64Bytes = 5 * 1024 * 1024;
+    private const int ReadImageMaxDimension = 2_000;
+    private const double ImageTokenToBase64Ratio = 0.125;
 
     private static async ValueTask<ToolExecutionResult> ReadImageAsync(
         ToolExecutionContext context, string path, string mimeType, CancellationToken cancellationToken)
@@ -194,15 +198,86 @@ public sealed class ReadTool : ITool
                 isError: true);
 
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        var base64Length = (long)Math.Ceiling(bytes.Length / 3.0) * 4;
-        if (base64Length > ReadImageMaxBase64Bytes)
-            return ToolExecutionResult.Text(
-                $"Image is too large for the model request budget ({FormatFileSize(bytes.Length)} raw, {FormatFileSize((int)Math.Min(int.MaxValue, base64Length))} encoded; the cap is {FormatFileSize(ReadImageMaxBase64Bytes)} encoded). Downscale or recompress the image, then read it again.",
-                isError: true);
-
+        if (bytes.Length == 0)
+            return ToolExecutionResult.Text("Image file is empty (0 bytes)", isError: true);
+        try
+        {
+            (bytes, mimeType) = PrepareImage(bytes, mimeType, cancellationToken);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ToolExecutionResult.Text(ex.Message, isError: true);
+        }
+        var fileName = mimeType == "image/jpeg" && ImageMimeFromPath(path) != mimeType
+            ? Path.ChangeExtension(Path.GetFileName(path), ".jpg") : Path.GetFileName(path);
         var artifact = await context.Workspace.SaveArtifactAsync(
-            context.SessionId, Path.GetFileName(path), mimeType, bytes, cancellationToken).ConfigureAwait(false);
+            context.SessionId, fileName, mimeType, bytes, cancellationToken).ConfigureAwait(false);
         return new ToolExecutionResult([new ToolResultMedia(artifact.Uri, artifact.MimeType, artifact.FileName)]);
+    }
+
+    private static (byte[] Bytes, string Mime) PrepareImage(byte[] input, string mime, CancellationToken token)
+    {
+        using var data = SKData.CreateCopy(input);
+        using var codec = SKCodec.Create(data);
+        if (codec is null)
+            throw new InvalidOperationException("Unable to decode image data");
+        var info = codec.Info;
+        mime = codec.EncodedFormat switch
+        {
+            SKEncodedImageFormat.Jpeg => "image/jpeg",
+            SKEncodedImageFormat.Png => "image/png",
+            SKEncodedImageFormat.Gif => "image/gif",
+            SKEncodedImageFormat.Webp => "image/webp",
+            _ => mime,
+        };
+        if (Math.Max(info.Width, info.Height) <= ReadImageMaxDimension && FitsImageBudget(input.Length))
+            return (input, mime);
+        var scale = Math.Min(1, ReadImageMaxDimension / (double)Math.Max(info.Width, info.Height));
+        var desired = codec.GetScaledDimensions((float)scale);
+        using var decoded = new SKBitmap(new SKImageInfo(desired.Width, desired.Height, SKColorType.Bgra8888, SKAlphaType.Premul));
+        var result = codec.GetPixels(decoded.Info, decoded.GetPixels());
+        if (result != SKCodecResult.Success)
+            throw new InvalidOperationException("Unable to decode image data");
+        token.ThrowIfCancellationRequested();
+        if (Math.Max(info.Width, info.Height) <= ReadImageMaxDimension && mime == "image/png")
+        {
+            using var original = SKImage.FromBitmap(decoded);
+            using var png = original.Encode(SKEncodedImageFormat.Png, 100);
+            if (png is not null && FitsImageBudget(png.Size))
+                return (png.ToArray(), "image/png");
+        }
+        foreach (var edge in new[] { 2_000, 1_500, 1_000, 800, 600, 500, 400, 300, 200 })
+        {
+            token.ThrowIfCancellationRequested();
+            var ratio = Math.Min(1, edge / (double)Math.Max(info.Width, info.Height));
+            var width = Math.Max(1, (int)Math.Round(info.Width * ratio));
+            var height = Math.Max(1, (int)Math.Round(info.Height * ratio));
+            using var resized = decoded.Resize(new SKImageInfo(width, height), SKFilterQuality.High);
+            if (resized is null)
+                throw new InvalidOperationException("Unable to resize image data");
+            using var opaque = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Opaque);
+            using (var canvas = new SKCanvas(opaque))
+            {
+                canvas.Clear(SKColors.White);
+                canvas.DrawBitmap(resized, 0, 0);
+            }
+            using var image = SKImage.FromBitmap(opaque);
+            foreach (var quality in new[] { 80, 60, 40, 20 })
+            {
+                token.ThrowIfCancellationRequested();
+                using var encoded = image.Encode(SKEncodedImageFormat.Jpeg, quality);
+                if (encoded is not null && FitsImageBudget(encoded.Size))
+                    return (encoded.ToArray(), "image/jpeg");
+            }
+        }
+        throw new InvalidOperationException($"Unable to compress image ({input.Length} bytes) within the requested model image budget");
+    }
+
+    private static bool FitsImageBudget(long rawBytes)
+    {
+        var base64Bytes = ((rawBytes + 2) / 3) * 4;
+        return rawBytes <= ReadImageMaxBase64Bytes * 3 / 4 && base64Bytes <= ReadImageMaxBase64Bytes
+            && Math.Ceiling(base64Bytes * ImageTokenToBase64Ratio) <= MaxOutputTokens;
     }
 
     private static string? ImageMimeFromPath(string path)

@@ -11,7 +11,8 @@ public sealed record SubagentRequest(
     IReadOnlyList<string>? AllowedTools = null,
     ModelSelection? ModelSelection = null,
     bool Background = false,
-    string? WorkspaceRoot = null);
+    string? WorkspaceRoot = null,
+    ToolCallId? ParentToolCallId = null);
 
 public sealed record SubagentHandle(SubagentId Id, SessionId ChildSessionId, string Description, bool Background);
 

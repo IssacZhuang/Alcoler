@@ -241,7 +241,14 @@ public sealed class GrepTool : ITool
             text = limitInfo.Length > 0 ? $"{body}\n\n[Showing results with pagination = {limitInfo}]" : body;
         }
 
-        return ToolResultBudget.ApplyBudget(ToolExecutionResult.Text(text), MaxModelChars);
+        var bytes = Encoding.UTF8.GetBytes(text);
+        if (bytes.Length > MaxModelChars)
+        {
+            var artifact = await context.Workspace.SaveArtifactAsync(context.SessionId, $"grep-output-{Guid.NewGuid():N}.txt",
+                "text/plain", bytes, cancellationToken).ConfigureAwait(false);
+            text = BashModelContent.FormatPersistedOutputEnvelope(text, bytes.Length, artifact.Uri, decimalBytes: true);
+        }
+        return ToolExecutionResult.Text(text);
     }
 
     private readonly record struct ContentEntry(string Path, int? LineNumber, string Text);

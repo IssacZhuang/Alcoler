@@ -12,7 +12,8 @@ public sealed class ToolRegistry
         ArgumentNullException.ThrowIfNull(tools);
 
         Tools = tools;
-        _canonicalizeAlias = aliasCanonicalizer ?? (static name => name);
+        _canonicalizeAlias = aliasCanonicalizer ?? (static name =>
+            string.Equals(name, "Task", StringComparison.OrdinalIgnoreCase) ? "Agent" : name);
         _toolsByName = new Dictionary<string, ITool>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var tool in tools)

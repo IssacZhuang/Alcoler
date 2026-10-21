@@ -35,12 +35,20 @@ public enum ModelFailureKind
     Cancelled,
 }
 
+public enum ModelFailurePhase
+{
+    RequestSetup,
+    ResponseBody,
+}
+
 public sealed record ModelFailure(
     ModelFailureKind Kind,
     string Message,
     string? ProviderCode = null,
     TimeSpan? RetryAfter = null,
-    int? DeclaredTokenGap = null)
+    int? DeclaredTokenGap = null,
+    ModelFailurePhase? Phase = null,
+    int? HttpStatusCode = null)
 {
     public bool IsRetryable => Kind is ModelFailureKind.NetworkError
         or ModelFailureKind.RateLimited
@@ -70,10 +78,18 @@ public sealed record ModelTextDelta(string Delta) : ModelStreamEvent;
 public sealed record ModelTextEnded : ModelStreamEvent;
 public sealed record ModelReasoningStarted : ModelStreamEvent;
 public sealed record ModelReasoningDelta(string Delta) : ModelStreamEvent;
-public sealed record ModelReasoningEnded(string? ProviderSignature = null) : ModelStreamEvent;
+public sealed record ModelReasoningEnded(
+    string? ProviderSignature = null,
+    string? RedactedData = null,
+    string? EncryptedContent = null,
+    string? ProviderItemId = null) : ModelStreamEvent;
 public sealed record ModelToolInputStarted(ToolCallId Id, string ToolName) : ModelStreamEvent;
 public sealed record ModelToolInputDelta(ToolCallId Id, string DeltaJson) : ModelStreamEvent;
 public sealed record ModelToolInputEnded(ToolCallId Id) : ModelStreamEvent;
 public sealed record ModelToolCallReady(ToolCall ToolCall) : ModelStreamEvent;
-public sealed record ModelStreamFinished(ModelFinishReason FinishReason, TokenUsage? Usage = null) : ModelStreamEvent;
+public sealed record ModelStreamFinished(
+    ModelFinishReason FinishReason,
+    TokenUsage? Usage = null,
+    string? RawFinishReason = null,
+    bool ContextWindowExceeded = false) : ModelStreamEvent;
 public sealed record ModelStreamFailed(ModelFailure Failure) : ModelStreamEvent;

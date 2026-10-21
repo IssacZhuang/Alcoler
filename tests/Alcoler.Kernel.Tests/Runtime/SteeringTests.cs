@@ -87,7 +87,7 @@ public class SteeringTests
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         var steerAck = await runtime.SubmitAsync(
-            new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "change of plans"),
+            new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "change of plans", Delivery: SendTextDelivery.Guide),
             CancellationToken.None);
         Assert.True(steerAck.Accepted);
         release.TrySetResult();
@@ -102,8 +102,7 @@ public class SteeringTests
             .Where(static text => text.Contains("change of plans"))
             .ToList();
         Assert.Single(steerTexts);
-        Assert.StartsWith("<system-reminder>", steerTexts[0]);
-        Assert.Contains("The user sent a new message while you were working:", steerTexts[0]);
+        Assert.Equal("change of plans", steerTexts[0]);
 
         // The scripted model's single final response proves the steer landed inside the same
         // turn instead of spawning a second one.
@@ -118,7 +117,10 @@ public class SteeringTests
     private static async Task WaitForPhaseAsync(IConversationProjection projection, TurnPhase phase)
     {
         var deadline = Task.Delay(TimeSpan.FromSeconds(30));
-        while (projection.Snapshot().State.Phase != phase)
+        while (projection.Snapshot() is var snapshot
+               && (snapshot.State.Phase != phase
+                   || !snapshot.Rows.OfType<AssistantMessageRow>().Any(row => !row.IsStreaming
+                       && row.Parts.OfType<TextPart>().Any(part => part.Text == "done after steer"))))
         {
             if (deadline.IsCompleted)
                 throw new TimeoutException($"Phase never reached {phase}.");

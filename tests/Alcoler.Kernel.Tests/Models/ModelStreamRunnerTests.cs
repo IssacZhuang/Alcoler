@@ -55,6 +55,26 @@ public class ModelStreamRunnerTests
         Assert.Equal(2, model.Attempts);
     }
 
+    [Theory]
+    [InlineData(false, 2)]
+    [InlineData(true, 1)]
+    public async Task CommitOnFirstEvent_ControlsImmediateFailureReplay(bool commitOnFirstEvent, int attempts)
+    {
+        var model = new ScriptedChatModel([
+            new ScriptStep.FailOnce(new ModelFailure(ModelFailureKind.ProviderError, "image too large")),
+            new ScriptStep.Events(new ModelTextDelta("done"), new ModelStreamFinished(ModelFinishReason.Stop))]);
+
+        var events = await CollectAsync(ModelStreamRunner.RunAsync(model, s_request, new ModelRunnerOptions
+        {
+            CommitOnFirstEvent = commitOnFirstEvent,
+            BaseDelay = TimeSpan.Zero,
+            IdleTimeout = Timeout.InfiniteTimeSpan,
+        }));
+
+        Assert.Equal(attempts, model.Attempts);
+        Assert.Equal(commitOnFirstEvent, events.Any(streamEvent => streamEvent is ModelStreamFailed));
+    }
+
     [Fact]
     public async Task FailureAfterBoundary_NeverReplays()
     {
@@ -264,6 +284,37 @@ public class ModelStreamRunnerTests
 
         Assert.Equal(TimeSpan.FromSeconds(600), options.IdleTimeout);
         Assert.Equal(TimeSpan.FromSeconds(30), options.IdleTimeoutGrowthPerRetry);
+    }
+
+    [Fact]
+    public async Task InfiniteIdleTimeout_RemainsInfiniteOnEveryRetry()
+    {
+        var model = new ScriptedChatModel([
+            new ScriptStep.FailOnce(NetworkFailure()),
+            new ScriptStep.Events(new ModelTextDelta("done"), new ModelStreamFinished(ModelFinishReason.Stop)),
+        ]);
+        var clock = new RecordingTimerProvider();
+        var events = await CollectAsync(ModelStreamRunner.RunAsync(model, s_request, new()
+        {
+            MaxAttempts = 2,
+            IdleTimeout = Timeout.InfiniteTimeSpan,
+            BaseDelay = TimeSpan.Zero,
+            TimeProvider = clock,
+        }));
+        Assert.Equal(2, model.Attempts);
+        Assert.Single(events.OfType<ModelStreamFinished>());
+        Assert.Equal(2, clock.CreatedDueTimes.Count);
+        Assert.All(clock.CreatedDueTimes, due => Assert.Equal(Timeout.InfiniteTimeSpan, due));
+    }
+
+    private sealed class RecordingTimerProvider : TimeProvider
+    {
+        public List<TimeSpan> CreatedDueTimes { get; } = [];
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            CreatedDueTimes.Add(dueTime);
+            return base.CreateTimer(callback, state, dueTime, period);
+        }
     }
 
     [Fact]

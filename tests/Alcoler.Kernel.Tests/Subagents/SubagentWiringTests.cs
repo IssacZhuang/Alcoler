@@ -62,6 +62,19 @@ public class SubagentWiringTests
     }
 
     [Fact]
+    public void SelectChildTools_CoordinatorResponse_BypassesProfileAndAllowedToolScope()
+    {
+        var response = new RespondToCoordinatorTool(new SubagentId("sub_test"), "Explore", (_, _) => ValueTask.CompletedTask);
+        var selected = SubagentWiring.SelectChildTools(
+            [.. ParentToolNames.Select(name => new FakeTool(name))],
+            Request(SubagentPrompts.ExploreAgentType, ["Read"]), response);
+
+        Assert.Equal(["Read", "RespondToCoordinator"], selected.Select(tool => tool.Contract.Name));
+        Assert.Same(response, selected[^1]);
+        Assert.True(response.Metadata.AllowedInPlanMode);
+    }
+
+    [Fact]
     public void SelectChildTools_UnknownAgentType_FallsBackToGeneralPurposeScope()
     {
         var names = SelectNames("planner");

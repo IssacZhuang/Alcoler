@@ -66,9 +66,10 @@ public static class ModelRequestSystemBlocks
         return result;
     }
 
-    internal static (IReadOnlyList<ModelInputMessage> Conversation, IReadOnlyList<string> SystemBlocks) ExtractLeading(IReadOnlyList<ModelInputMessage> messages)
+    internal static (IReadOnlyList<ModelInputMessage> Conversation, IReadOnlyList<string> SystemBlocks) ExtractLeading(
+        IReadOnlyList<ModelInputMessage> messages, bool preserveMidSystem = false)
     {
-        var normalized = Normalize(messages, preserveMidSystem: false);
+        var normalized = Normalize(messages, preserveMidSystem);
         var count = normalized.TakeWhile(m => m.Role == MessageRole.System).Count();
         return (normalized.Skip(count).ToArray(), normalized.Take(count).SelectMany(m => m.Content.OfType<InputTextBlock>().Select(b => b.Text)).ToArray());
     }

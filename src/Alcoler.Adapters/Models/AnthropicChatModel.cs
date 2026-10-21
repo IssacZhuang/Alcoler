@@ -10,6 +10,7 @@ using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Tools;
 
 using Alcoler.Kernel.Models;
+using Alcoler.Kernel.Runtime;
 
 namespace Alcoler.Adapters.Models;
 
@@ -26,6 +27,9 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
     private const string AnthropicVersion = "2023-06-01";
     private const int DefaultMaxTokens = 32768;
     private readonly ModelProperties _requestProperties = properties ?? new ModelProperties();
+    private bool _isRequestScope;
+    private bool _signatureRepairAttempted;
+    private IReadOnlyList<ModelInputMessage>? _requestMessages;
 
     public ModelDescriptor Descriptor { get; } = new(
         providerId ?? "anthropic",
@@ -35,14 +39,137 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
     public void ValidateOptions(ModelCallOptions callOptions) => ModelRequestOptions.Validate(_requestProperties, callOptions, DefaultMaxTokens);
 
+    public bool InlineToolResultImages => true;
+
+    public IChatModel CreateRequestScope() => new AnthropicChatModel(httpClient, options, properties, providerId)
+    {
+        _isRequestScope = true,
+    };
+
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
         ModelRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (!_isRequestScope)
+        {
+            await foreach (var streamEvent in CreateRequestScope().StreamAsync(request, cancellationToken).ConfigureAwait(false))
+                yield return streamEvent;
+            yield break;
+        }
+        _requestMessages ??= ReasoningHistoryNormalizer.Normalize(request.Messages, keepReasoning: true,
+            Descriptor.Properties.SupportsImage, Descriptor);
+        request = request with { Messages = _requestMessages };
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var state = new AttemptState();
+            var pending = new List<ModelStreamEvent>();
+            var committed = false;
+            var repair = false;
+            await foreach (var streamEvent in StreamAttemptAsync(request, state, cancellationToken).ConfigureAwait(false))
+            {
+                if (streamEvent is ModelStreamFailed failed && !committed && !_signatureRepairAttempted &&
+                    state.StatusCode == 400 && ThinkingSignatureRecovery.IsSignatureRejection(failed.Failure, state.StatusCode.Value))
+                {
+                    var repaired = ThinkingSignatureRecovery.RepairRequestMessages(request.Messages);
+                    if (!ReferenceEquals(repaired, request.Messages))
+                    {
+                        _signatureRepairAttempted = true;
+                        _requestMessages = repaired;
+                        request = request with { Messages = repaired };
+                        repair = true;
+                        break;
+                    }
+                }
+                var retrySafe = streamEvent switch
+                {
+                    ModelTextDelta delta => delta.Delta.Length == 0,
+                    ModelReasoningDelta delta => delta.Delta.Length == 0,
+                    ModelStreamStarted or ModelTextStarted or ModelTextEnded or ModelReasoningStarted or
+                        ModelReasoningEnded or ModelToolInputStarted or ModelToolInputDelta or ModelToolInputEnded => true,
+                    _ => false,
+                };
+                if (!committed && retrySafe)
+                {
+                    pending.Add(streamEvent);
+                    continue;
+                }
+                foreach (var prelude in pending)
+                    yield return prelude;
+                pending.Clear();
+                committed = true;
+                yield return streamEvent;
+            }
+            if (!repair)
+                yield break;
+        }
+    }
+
+    public bool SupportsNonStreamingGeneration => true;
+
+    public async ValueTask<IReadOnlyList<ModelStreamEvent>> GenerateAsync(ModelRequest request, CancellationToken cancellationToken)
+    {
+        request = request with
+        {
+            Messages = ReasoningHistoryNormalizer.Normalize(request.Messages, keepReasoning: true,
+                Descriptor.Properties.SupportsImage, Descriptor),
+        };
+        for (var attempt = 0; ; attempt++)
+        {
+            var events = await ModelHttpGeneration.SendAsync(httpClient, () => BuildRequest(request, stream: false),
+                DecodeGeneration, cancellationToken).ConfigureAwait(false);
+            if (attempt == 0 && events.OfType<ModelStreamFailed>().FirstOrDefault()?.Failure is { HttpStatusCode: 400 } failure &&
+                ThinkingSignatureRecovery.IsSignatureRejection(failure, 400))
+            {
+                var repaired = ThinkingSignatureRecovery.RepairRequestMessages(request.Messages);
+                if (!ReferenceEquals(repaired, request.Messages))
+                {
+                    request = request with { Messages = repaired };
+                    continue;
+                }
+            }
+            return events;
+        }
+    }
+
+    private static IReadOnlyList<ModelStreamEvent> DecodeGeneration(JsonElement root)
+    {
+        var state = new AnthropicStreamState();
+        var events = new List<ModelStreamEvent>();
+        void Dispatch(object value) => events.AddRange(state.Dispatch(JsonSerializer.SerializeToElement(value)));
+        Dispatch(new { type = "message_start", message = root });
+        var index = 0;
+        foreach (var block in root.GetProperty("content").EnumerateArray())
+        {
+            var type = block.GetProperty("type").GetString();
+            Dispatch(new { type = "content_block_start", index, content_block = block });
+            if (type == "text")
+                Dispatch(new { type = "content_block_delta", index, delta = new { type = "text_delta", text = block.GetProperty("text").GetString() } });
+            else if (type == "thinking")
+                Dispatch(new { type = "content_block_delta", index, delta = new { type = "thinking_delta", thinking = block.GetProperty("thinking").GetString() } });
+            else if (type == "tool_use")
+                Dispatch(new { type = "content_block_delta", index, delta = new { type = "input_json_delta", partial_json = block.GetProperty("input").GetRawText() } });
+            Dispatch(new { type = "content_block_stop", index });
+            index++;
+        }
+        Dispatch(new { type = "message_delta", delta = new { stop_reason = root.TryGetProperty("stop_reason", out var reason) ? reason.GetString() : null } });
+        Dispatch(new { type = "message_stop" });
+        return events;
+    }
+
+    private sealed class AttemptState
+    {
+        public int? StatusCode { get; set; }
+    }
+
+    private async IAsyncEnumerable<ModelStreamEvent> StreamAttemptAsync(
+        ModelRequest request,
+        AttemptState attemptState,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         HttpRequestMessage? built = null;
         ModelFailure? validationFailure = null;
         try { built = BuildRequest(request); }
-        catch (ArgumentException ex) { validationFailure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message); }
+        catch (ArgumentException ex) { validationFailure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message, Phase: ModelFailurePhase.RequestSetup); }
         if (validationFailure is not null)
         {
             yield return new ModelStreamFailed(validationFailure);
@@ -58,7 +185,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            sendFailure = ModelFailureClassifier.FromException(ex, cancellationToken);
+            sendFailure = ModelFailureClassifier.FromException(ex, cancellationToken) with { Phase = ModelFailurePhase.RequestSetup };
         }
         if (sendFailure is not null)
         {
@@ -68,6 +195,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
         using (response!)
         {
+            attemptState.StatusCode = (int)response!.StatusCode;
             var state = new AnthropicStreamState();
             await foreach (var frame in SseHttp.ReadFramesAsync(response!, cancellationToken).ConfigureAwait(false))
             {
@@ -86,9 +214,10 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                     using var document = JsonDocument.Parse(frame.Data);
                     events = state.Dispatch(document.RootElement).ToList();
                 }
-                catch (JsonException ex)
+                catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
                 {
-                    dispatchFailure = new ModelFailure(ModelFailureKind.StreamProtocolError, ex.Message);
+                    dispatchFailure = new ModelFailure(ModelFailureKind.StreamProtocolError, ex.Message,
+                        Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response.StatusCode);
                 }
                 if (dispatchFailure is not null)
                 {
@@ -102,20 +231,20 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
             }
             if (!state.SawTerminal)
                 yield return new ModelStreamFailed(new ModelFailure(
-                    ModelFailureKind.StreamProtocolError, "anthropic stream ended without message_stop"));
+                    ModelFailureKind.StreamProtocolError, "anthropic stream ended without message_stop",
+                    Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response.StatusCode));
         }
     }
 
-    private HttpRequestMessage BuildRequest(ModelRequest request)
+    private HttpRequestMessage BuildRequest(ModelRequest request, bool stream = true)
     {
-        var messages = ReasoningHistoryNormalizer.Normalize(
-            request.Messages, keepReasoning: true, Descriptor.Properties.SupportsImage);
+        var messages = request.Messages;
         ModelRequestOptions.ValidateRequest(request with { Messages = messages }, Descriptor.Properties);
-        var (conversation, systemBlocks) = ModelRequestSystemBlocks.ExtractLeading(messages);
+        var (conversation, systemBlocks) = ModelRequestSystemBlocks.ExtractLeading(messages, Descriptor.Properties.SupportsMidConversationSystem);
         var payload = new Dictionary<string, object?>
         {
             ["model"] = options.Model,
-            ["stream"] = true,
+            ["stream"] = stream,
             ["messages"] = conversation.Select(ToProviderMessage).ToList(),
         };
         if (systemBlocks.Count > 0)
@@ -140,7 +269,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         };
         AnthropicEndpoint.AddAuthHeaders(message, options.ApiKey);
         message.Headers.Add("anthropic-version", AnthropicVersion);
-        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
         return message;
     }
 
@@ -149,27 +278,23 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         var blocks = new List<Dictionary<string, object?>>(message.Content.Count);
         foreach (var block in message.Content)
         {
+            if (block is InputReasoningBlock { Text.Length: 0, Signature: null, RedactedData: null, EncryptedContent: null, ProviderItemId: null })
+                continue;
             Dictionary<string, object?> providerBlock = block switch
             {
                 InputTextBlock text => new() { ["type"] = "text", ["text"] = text.Text },
-                // Unsigned thinking blocks are preserved with an empty signature, mirroring
-                // the reference's providerOptionsForReasoningBlock fallback.
+                InputReasoningBlock { Signature: null, RedactedData: not null } reasoning => new()
+                {
+                    ["type"] = "redacted_thinking",
+                    ["data"] = reasoning.RedactedData,
+                },
                 InputReasoningBlock reasoning => new()
                 {
                     ["type"] = "thinking",
                     ["thinking"] = reasoning.Text,
                     ["signature"] = reasoning.Signature ?? "",
                 },
-                InputImageBlock image => new()
-                {
-                    ["type"] = "image",
-                    ["source"] = new Dictionary<string, object?>
-                    {
-                        ["type"] = "base64",
-                        ["media_type"] = image.MimeType,
-                        ["data"] = image.Base64Data,
-                    },
-                },
+                InputImageBlock image => ToProviderImage(image),
                 InputToolCallBlock toolCall => new()
                 {
                     ["type"] = "tool_use",
@@ -181,7 +306,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                 {
                     ["type"] = "tool_result",
                     ["tool_use_id"] = toolResult.Id.Value,
-                    ["content"] = toolResult.Content,
+                    ["content"] = ToolResultContent(toolResult),
                     ["is_error"] = toolResult.IsError,
                 },
                 _ => throw new InvalidOperationException($"unsupported content block {block.GetType().Name}"),
@@ -191,11 +316,42 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         if (message.CacheControl is not null && blocks.Count > 0)
             blocks[^1]["cache_control"] = new Dictionary<string, object?> { ["type"] = "ephemeral" };
 
+        if (message.Role == MessageRole.System && message.CacheControl is null &&
+            blocks.Count == 1 && blocks[0].GetValueOrDefault("type") is "text")
+            return new Dictionary<string, object?> { ["role"] = "system", ["content"] = blocks[0]["text"] };
+
         return new Dictionary<string, object?>
         {
-            ["role"] = message.Role == MessageRole.User ? "user" : "assistant",
+            ["role"] = message.Role switch
+            {
+                MessageRole.User => "user",
+                MessageRole.System => "system",
+                _ => "assistant",
+            },
             ["content"] = blocks,
         };
+    }
+
+    private static Dictionary<string, object?> ToProviderImage(InputImageBlock image) => new()
+    {
+        ["type"] = "image",
+        ["source"] = new Dictionary<string, object?>
+        {
+            ["type"] = "base64",
+            ["media_type"] = image.MimeType,
+            ["data"] = image.Base64Data,
+        },
+    };
+
+    private static object ToolResultContent(InputToolResultBlock result)
+    {
+        if (result.Images is not { Count: > 0 })
+            return result.Content;
+        var content = new List<Dictionary<string, object?>>();
+        if (result.Content.Length > 0)
+            content.Add(new() { ["type"] = "text", ["text"] = result.Content });
+        content.AddRange(result.Images.Select(ToProviderImage));
+        return content;
     }
 
     private sealed class AnthropicStreamState
@@ -233,7 +389,17 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                                 yield return new ModelTextStarted();
                                 break;
                             case "thinking":
-                                _blocks[index] = new OpenBlock("thinking");
+                                _blocks[index] = new OpenBlock("thinking")
+                                {
+                                    Signature = block.TryGetProperty("signature", out var signature) ? signature.GetString() : null,
+                                };
+                                yield return new ModelReasoningStarted();
+                                break;
+                            case "redacted_thinking":
+                                _blocks[index] = new OpenBlock("redacted_thinking")
+                                {
+                                    RedactedData = block.GetProperty("data").GetString(),
+                                };
                                 yield return new ModelReasoningStarted();
                                 break;
                             case "tool_use":
@@ -291,7 +457,8 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                                 yield return new ModelTextEnded();
                                 break;
                             case "thinking":
-                                yield return new ModelReasoningEnded(open.Signature);
+                            case "redacted_thinking":
+                                yield return new ModelReasoningEnded(open.Signature, open.RedactedData);
                                 break;
                             case "tool_use":
                                 {
@@ -315,7 +482,8 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
                 case "message_stop":
                     SawTerminal = true;
-                    yield return new ModelStreamFinished(MapStopReason(_stopReason), BuildUsage());
+                    yield return new ModelStreamFinished(MapStopReason(_stopReason), BuildUsage(), _stopReason,
+                        ContextWindowExceeded: _stopReason == "model_context_window_exceeded");
                     yield break;
 
                 case "error":
@@ -325,7 +493,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                         var errorType = error.TryGetProperty("type", out var t) ? t.GetString() : null;
                         var errorMessage = error.TryGetProperty("message", out var m) ? m.GetString() : null;
                         yield return new ModelStreamFailed(new ModelFailure(
-                            MapErrorKind(errorType), errorMessage ?? "anthropic stream error", errorType));
+                            MapErrorKind(errorType), errorMessage ?? "anthropic stream error", errorType, Phase: ModelFailurePhase.ResponseBody));
                         yield break;
                     }
             }
@@ -355,7 +523,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
         private static ModelFinishReason MapStopReason(string? stopReason) => stopReason switch
         {
-            "end_turn" or "stop_sequence" or null => ModelFinishReason.Stop,
+            "end_turn" or "stop_sequence" => ModelFinishReason.Stop,
             "tool_use" => ModelFinishReason.ToolCalls,
             "max_tokens" => ModelFinishReason.Length,
             "refusal" => ModelFinishReason.ContentFilter,
@@ -380,6 +548,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         public string? ToolName { get; set; }
         public StringBuilder? Json { get; set; }
         public string? Signature { get; set; }
+        public string? RedactedData { get; set; }
     }
 
     private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();

@@ -312,17 +312,41 @@ public sealed class WebFetchToolTests : IDisposable
     }
 
     [Fact]
-    public async Task FallsBackToRawPreviewWithoutAuxiliaryModel()
+    public async Task MissingAuxiliaryModel_ThrowsConfigurationFailure()
     {
         using var tool = new WebFetchTool(new FakeHttpMessageHandler(_ => TextResponse(
-            new string('y', 6_000),
-            contentType: "text/plain; charset=utf-8")));
-        var result = await tool.ExecuteAsync(Context(Call("https://example.com/plain", "p")), CancellationToken.None);
-        Assert.False(result.IsError);
-        var text = result.SingleText();
-        Assert.StartsWith(new string('y', 5_000), text);
-        Assert.Contains("no auxiliary model is configured for this session", text);
+            new string('y', 6_000), contentType: "text/plain; charset=utf-8")));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            tool.ExecuteAsync(Context(Call("https://example.com/plain", "p")), CancellationToken.None).AsTask());
+        Assert.Equal("Model is not configured for WebFetch prompt processing", error.Message);
     }
+
+    [Fact]
+    public async Task ApprovedMarkdown_ReturnsDirectlyWithoutAuxiliaryModel()
+    {
+        using var tool = new WebFetchTool(new FakeHttpMessageHandler(_ => TextResponse("# Docs", contentType: "text/markdown")));
+        var result = await tool.ExecuteAsync(Context(Call("https://react.dev/reference", "p")), CancellationToken.None);
+        Assert.Equal("# Docs", result.SingleText());
+    }
+
+    [Fact]
+    public async Task ApprovedHtml_UsesDocumentationPrompt()
+    {
+        var aux = new FakeAuxModelClient();
+        using var tool = new WebFetchTool(new FakeHttpMessageHandler(_ => TextResponse("<h1>Docs</h1>")));
+        await tool.ExecuteAsync(Context(Call("https://react.dev/reference", "p"), aux), CancellationToken.None);
+        Assert.Contains("Include relevant details, code examples, and documentation excerpts as needed.", aux.Requests.Single().UserPrompt);
+        Assert.DoesNotContain("125-character", aux.Requests.Single().UserPrompt);
+    }
+
+    [Theory]
+    [InlineData("https://huggingface.co/docs", true)]
+    [InlineData("https://huggingface.co/docs/models", true)]
+    [InlineData("https://huggingface.co/docs-evil", false)]
+    [InlineData("https://huggingface.co/docs/%252fsecret", false)]
+    [InlineData("https://evil.react.dev/reference", false)]
+    public void ApprovedUrls_RespectHostAndPathBoundaries(string url, bool approved) =>
+        Assert.Equal(approved, WebFetchTool.IsPreapprovedUrl(new Uri(url)));
 
     [Fact]
     public async Task ReturnsAuxiliaryModelFailureAsError()

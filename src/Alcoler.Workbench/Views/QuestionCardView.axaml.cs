@@ -55,6 +55,7 @@ public partial class QuestionCardView : UserControl
         _observed = ViewModel;
         if (_observed is not null)
             _observed.PropertyChanged += OnInteractionPropertyChanged;
+        UpdatePreviewLayout();
         QueueFocus();
     }
 
@@ -62,6 +63,15 @@ public partial class QuestionCardView : UserControl
     {
         if (e.PropertyName is nameof(PendingInteractionViewModel.CurrentQuestion) or nameof(PendingInteractionViewModel.ActiveOptionIndex))
             QueueFocus();
+        if (e.PropertyName is nameof(PendingInteractionViewModel.HasPreviews))
+            UpdatePreviewLayout();
+    }
+
+    private void UpdatePreviewLayout()
+    {
+        var previews = ViewModel?.HasPreviews == true;
+        QuestionChoices.ColumnDefinitions[1].Width = new GridLength(previews ? 1 : 0, GridUnitType.Star);
+        QuestionChoices.ColumnSpacing = previews ? 12 : 0;
     }
 
     private void QueueFocus() => Dispatcher.UIThread.Post(() =>
@@ -154,6 +164,8 @@ public partial class QuestionCardView : UserControl
             SubmitRequested?.Invoke(this, EventArgs.Empty);
             return;
         }
+        if (PreviewNotesInput.IsKeyboardFocusWithin)
+            return;
         if (customFocused)
         {
             if (e.Key == Key.Enter)

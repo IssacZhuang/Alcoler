@@ -24,6 +24,7 @@ public class MemorySpikeProbe
 
     private static ScriptStep FinalText(string text) => new ScriptStep.Events(
         new Alcoler.Contracts.Models.ModelTextDelta(text),
+        new Alcoler.Contracts.Models.ModelTextEnded(),
         new Alcoler.Contracts.Models.ModelStreamFinished(Alcoler.Contracts.Models.ModelFinishReason.Stop));
 
     private static string Measure(string label)

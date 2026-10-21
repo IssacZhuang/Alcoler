@@ -13,7 +13,6 @@ public sealed class WebFetchTool : ITool, IDisposable
     private const int MaxUrlChars = 2_000;
     private const int MaxResponseBytes = 10 * 1024 * 1024;
     private const int MaxModelInputChars = 100_000;
-    private const int FallbackPreviewChars = 5_000;
     private const int AuxMaxOutputTokens = 4_096;
     private const int MaxRedirects = 10;
 
@@ -107,7 +106,7 @@ public sealed class WebFetchTool : ITool, IDisposable
             _cache.Set(rawUrl, fetched, now);
         }
 
-        return await SummarizeAsync(prompt, fetched, context.AuxModel, cancellationToken).ConfigureAwait(false);
+        return await SummarizeAsync(prompt, fetched, IsPreapprovedUrl(requestUri), context.AuxModel, cancellationToken).ConfigureAwait(false);
     }
 
     public void Dispose() => _httpClient.Dispose();
@@ -312,33 +311,36 @@ public sealed class WebFetchTool : ITool, IDisposable
     private static async ValueTask<ToolExecutionResult> SummarizeAsync(
         string prompt,
         WebFetchContent fetched,
+        bool preapproved,
         IAuxModelClient? auxModel,
         CancellationToken cancellationToken)
     {
+        if (preapproved && fetched.ContentType.Contains("text/markdown", StringComparison.OrdinalIgnoreCase)
+            && fetched.Content.Length < MaxModelInputChars)
+            return ToolExecutionResult.Text(fetched.Content);
         if (auxModel is null)
-        {
-            var preview = fetched.Content.Length <= FallbackPreviewChars
-                ? fetched.Content
-                : fetched.Content[..FallbackPreviewChars];
-            var note = fetched.Content.Length > FallbackPreviewChars
-                ? $"The content above was truncated to the first {FallbackPreviewChars} characters and was not summarized because no auxiliary model is configured for this session."
-                : "The content above was not summarized because no auxiliary model is configured for this session.";
-            return ToolExecutionResult.Text($"{preview}\n\n{note}");
-        }
+            throw new InvalidOperationException("Model is not configured for WebFetch prompt processing");
 
         var content = fetched.Content;
         if (content.Length > MaxModelInputChars)
             content = content[..(MaxModelInputChars - TruncationSuffix.Length)] + TruncationSuffix;
 
+        var instruction = preapproved
+            ? "Provide a concise response based on the content above. Include relevant details, code examples, and documentation excerpts as needed."
+            : AuxInstruction;
         string answer;
         try
         {
             answer = (await auxModel.CompleteAsync(
                 new AuxModelRequest(
                     "",
-                    $"\nWeb page content:\n---\n{content}\n---\n\n{prompt}\n\n{AuxInstruction}\n",
+                    $"\nWeb page content:\n---\n{content}\n---\n\n{prompt}\n\n{instruction}\n",
                     AuxMaxOutputTokens),
                 cancellationToken).ConfigureAwait(false)).Trim();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -347,6 +349,39 @@ public sealed class WebFetchTool : ITool, IDisposable
 
         return ToolExecutionResult.Text(
             answer.Length > 0 ? answer : "WebFetch completed, but the extraction model returned no text.");
+    }
+
+    private static readonly HashSet<string> PreapprovedHosts = new(StringComparer.Ordinal)
+    {
+        "modelcontextprotocol.io", "agentskills.io", "docs.python.org", "en.cppreference.com", "docs.oracle.com",
+        "learn.microsoft.com", "developer.mozilla.org", "go.dev", "pkg.go.dev", "www.php.net", "docs.swift.org",
+        "kotlinlang.org", "ruby-doc.org", "doc.rust-lang.org", "www.typescriptlang.org", "react.dev", "angular.io",
+        "vuejs.org", "nextjs.org", "expressjs.com", "nodejs.org", "bun.sh", "jquery.com", "getbootstrap.com",
+        "tailwindcss.com", "d3js.org", "threejs.org", "redux.js.org", "webpack.js.org", "jestjs.io", "reactrouter.com",
+        "docs.djangoproject.com", "flask.palletsprojects.com", "fastapi.tiangolo.com", "pandas.pydata.org", "numpy.org",
+        "www.tensorflow.org", "pytorch.org", "scikit-learn.org", "matplotlib.org", "requests.readthedocs.io", "jupyter.org",
+        "laravel.com", "symfony.com", "docs.spring.io", "hibernate.org", "tomcat.apache.org", "gradle.org", "maven.apache.org",
+        "asp.net", "dotnet.microsoft.com", "blazor.net", "reactnative.dev", "docs.flutter.dev", "developer.apple.com",
+        "developer.android.com", "keras.io", "spark.apache.org", "www.mongodb.com", "redis.io", "www.postgresql.org",
+        "dev.mysql.com", "www.sqlite.org", "graphql.org", "prisma.io", "docs.getdbt.com", "docs.aws.amazon.com",
+        "cloud.google.com", "kubernetes.io", "www.docker.com", "www.terraform.io", "www.ansible.com", "docs.stripe.com",
+        "docs.netlify.com", "devcenter.heroku.com", "cypress.io", "selenium.dev", "docs.unity.com", "docs.unrealengine.com",
+        "git-scm.com", "nginx.org", "httpd.apache.org",
+    };
+
+    internal static bool IsPreapprovedUrl(Uri url)
+    {
+        if (PreapprovedHosts.Contains(url.Host))
+            return true;
+        var prefix = url.Host switch
+        {
+            "wordpress.org" => "/documentation",
+            "huggingface.co" or "www.kaggle.com" or "vercel.com" => "/docs",
+            _ => null,
+        };
+        if (prefix is null || Regex.IsMatch(url.AbsolutePath, @"%(25)*(2f|5c|2e)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            return false;
+        return url.AbsolutePath == prefix || url.AbsolutePath.StartsWith(prefix + "/", StringComparison.Ordinal);
     }
 
     private static bool IsRedirect(HttpStatusCode status) =>

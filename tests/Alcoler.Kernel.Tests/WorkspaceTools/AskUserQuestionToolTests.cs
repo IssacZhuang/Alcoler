@@ -92,6 +92,23 @@ public class AskUserQuestionToolTests
     }
 
     [Fact]
+    public async Task Executor_DefaultsOmittedMultiSelectDespiteModelSchemaRequirement()
+    {
+        var port = new FakeInteractionPort();
+        var tool = new AskUserQuestionTool();
+        var executor = new ToolCallExecutor(new ToolRegistry([tool]), new ScriptedPermissionGate());
+        var outcome = await executor.ExecuteAsync(
+            new Alcoler.Contracts.Models.ToolCall(StrongId.NewToolCallId(), "AskUserQuestion",
+                JsonDocument.Parse(LibraryQuestionJson).RootElement.Clone()),
+            (call, _) => ValueTask.FromResult(Context(call.Input.GetRawText(), port)),
+            _ => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        Assert.False(outcome.Result.IsError);
+        Assert.False(Assert.Single(port.Requests).Questions[0].MultiSelect);
+    }
+
+    [Fact]
     public async Task Execute_WithInvalidInput_ReportsIssue()
     {
         var port = new FakeInteractionPort();
@@ -212,6 +229,62 @@ public class AskUserQuestionToolTests
     }
 
     [Fact]
+    public async Task Execute_PreviewAndNotesReachUserAndModel()
+    {
+        const string json = """
+            {"questions":[{"question":"Which layout?","header":"Layout","options":[{"label":"Split","description":"Two panes","preview":"```text\n[left][right]\n```"},{"label":"Stack","description":"One column"}]}]}
+            """;
+        var port = new FakeInteractionPort
+        {
+            Answers = new Dictionary<string, string> { ["Layout"] = "Split" },
+            Annotations = new Dictionary<string, InteractionAnnotation>
+            {
+                ["Layout"] = new(Notes: "Keep the right pane wider"),
+            },
+        };
+
+        var result = await new AskUserQuestionTool().ExecuteAsync(Context(json, port), CancellationToken.None);
+
+        Assert.Equal("```text\n[left][right]\n```", Assert.Single(port.Requests).Questions[0].Options[0].Preview);
+        Assert.Equal("User has answered your questions: \"Which layout?\"=\"Split\" selected preview:\n```text\n[left][right]\n``` user notes: Keep the right pane wider. You can now continue with the user's answers in mind.", result.SingleText());
+    }
+
+    [Theory]
+    [InlineData("<!doctype html><div>x</div>", "HTML preview must be a fragment without html, body, or doctype")]
+    [InlineData("<body>x</body>", "HTML preview must be a fragment without html, body, or doctype")]
+    [InlineData("<script>x</script>", "HTML preview cannot contain script or style tags")]
+    [InlineData("<STYLE>x</STYLE>", "HTML preview cannot contain script or style tags")]
+    [InlineData("<!-- only a comment -->", "HTML preview must contain an HTML tag")]
+    public async Task ValidateInput_RejectsUnsupportedHtmlPreview(string preview, string expected)
+    {
+        var input = JsonSerializer.SerializeToElement(new
+        {
+            questions = new[] { new { question = "Which?", header = "Layout", options = new[]
+            {
+                new { label = "A", description = "a", preview },
+                new { label = "B", description = "b", preview = "plain text" },
+            } } },
+        });
+
+        var issue = await new AskUserQuestionTool().ValidateInputAsync(input, CancellationToken.None);
+
+        Assert.Equal(expected, issue?.Message);
+    }
+
+    [Fact]
+    public void Contract_ExposesPreviewAnnotationsMetadataAndDefaultedRequiredMultiSelect()
+    {
+        var contract = new AskUserQuestionTool().Contract;
+        var properties = contract.InputSchema.GetProperty("properties");
+        var question = properties.GetProperty("questions").GetProperty("items");
+        Assert.Contains("multiSelect", question.GetProperty("required").EnumerateArray().Select(value => value.GetString()));
+        Assert.True(question.GetProperty("properties").GetProperty("options").GetProperty("items").GetProperty("properties").TryGetProperty("preview", out _));
+        Assert.True(properties.TryGetProperty("annotations", out _));
+        Assert.True(properties.TryGetProperty("metadata", out _));
+        Assert.Contains("Preview feature:", contract.Description);
+    }
+
+    [Fact]
     public void Metadata_UsesInteractionPortInsteadOfApproval()
     {
         var metadata = new AskUserQuestionTool().Metadata;
@@ -239,10 +312,12 @@ public class AskUserQuestionToolTests
         public IReadOnlyDictionary<string, string> Answers { get; init; } =
             new Dictionary<string, string>();
 
+        public IReadOnlyDictionary<string, InteractionAnnotation>? Annotations { get; init; }
+
         public ValueTask<InteractionAnswer> AskAsync(InteractionRequest request, CancellationToken cancellationToken)
         {
             Requests.Add(request);
-            return ValueTask.FromResult(new InteractionAnswer(Answers));
+            return ValueTask.FromResult(new InteractionAnswer(Answers, Annotations));
         }
     }
 }

@@ -5,11 +5,13 @@ namespace Alcoler.Kernel.History;
 
 public sealed class RecentFileRead
 {
-    public RecentFileRead(string path, string content, DateTimeOffset readAt)
+    public RecentFileRead(string path, string content, DateTimeOffset readAt, int? offset = null, int? limit = null)
     {
         Path = path;
         Content = content;
         ReadAt = readAt;
+        Offset = offset;
+        Limit = limit;
     }
 
     public string Path { get; }
@@ -17,6 +19,10 @@ public sealed class RecentFileRead
     public string Content { get; }
 
     public DateTimeOffset ReadAt { get; }
+
+    public int? Offset { get; }
+
+    public int? Limit { get; }
 }
 
 public sealed class MessageHistory
@@ -101,12 +107,12 @@ public sealed class MessageHistory
         }
     }
 
-    public void RecordFileRead(string path, string content, DateTimeOffset readAt)
+    public void RecordFileRead(string path, string content, DateTimeOffset readAt, int? offset = null, int? limit = null)
     {
         lock (_sync)
         {
             _recentReads.RemoveAll(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase));
-            _recentReads.Add(new RecentFileRead(path, content, readAt));
+            _recentReads.Add(new RecentFileRead(path, content, readAt, offset, limit));
             while (_recentReads.Count > 5)
             {
                 _recentReads.RemoveAt(0);

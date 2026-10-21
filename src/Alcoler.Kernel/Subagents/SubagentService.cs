@@ -26,8 +26,8 @@ public sealed class SubagentService : ISubagentPort
 
     public async ValueTask<SubagentResult> RunAsync(SubagentRequest request, CancellationToken cancellationToken)
     {
-        var child = await _factory(request, cancellationToken).ConfigureAwait(false);
         var id = StrongId.NewSubagentId();
+        var child = await _factory(id, request, cancellationToken).ConfigureAwait(false);
         TrackStarted(id, child.ChildSessionId, DescriptionOf(request));
         return await RunToResultAsync(id, child, request, cancellationToken).ConfigureAwait(false);
     }
@@ -37,8 +37,8 @@ public sealed class SubagentService : ISubagentPort
         Func<SubagentResult, ValueTask> onCompleted,
         CancellationToken cancellationToken)
     {
-        var child = await _factory(request, cancellationToken).ConfigureAwait(false);
         var id = StrongId.NewSubagentId();
+        var child = await _factory(id, request, cancellationToken).ConfigureAwait(false);
         var description = DescriptionOf(request);
         TrackStarted(id, child.ChildSessionId, description);
         _ = NotifyInBackgroundAsync(id, child, request, onCompleted, cancellationToken);

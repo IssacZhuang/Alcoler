@@ -25,12 +25,15 @@ public class TokenEstimatorTests
         Assert.Equal(1, TokenEstimator.EstimateTokens("中"));
         Assert.Equal(2, TokenEstimator.EstimateTokens("中文"));
         Assert.Equal(2, TokenEstimator.EstimateTokens("ab中"));
-        Assert.Equal(2, TokenEstimator.EstimateTokens("\u4DBF\u4E00"));
+        Assert.Equal(1, TokenEstimator.EstimateTokens("\u4DBF\u4E00"));
     }
 
     [Fact]
-    public void EstimateTokens_FullWidthAndAstralCountDouble()
+    public void EstimateTokens_OnlyUnifiedCjkGetsExtraWeightWhileAstralUsesUtf16Length()
     {
+        Assert.Equal(1, TokenEstimator.EstimateTokens("\u3400\u3400\u4DBF"));
+        Assert.Equal(1, TokenEstimator.EstimateTokens("\uFF21\uFF21\uFFEF"));
+        Assert.Equal(2, TokenEstimator.EstimateTokens("\u4E00\u4E00\u9FFF"));
         Assert.Equal(1, TokenEstimator.EstimateTokens("\uFF21"));
         Assert.Equal(1, TokenEstimator.EstimateTokens("\U00020000"));
         Assert.Equal(1, TokenEstimator.EstimateTokens("a\U0002A700"));
@@ -54,12 +57,9 @@ public class TokenEstimatorTests
         ],
             DateTimeOffset.UtcNow);
 
-        var expected = TokenEstimator.EstimateTokens("abc")
-            + TokenEstimator.EstimateTokens("reasoning text")
-            + TokenEstimator.EstimateTokens(TestJson.Element(new { path = "src/Program.cs" }).GetRawText())
-            + TokenEstimator.EstimateTokens("0123456789")
-            + TokenEstimator.EstimateTokens("a.png")
-            + TokenEstimator.EstimateTokens("reminder content");
+        var content = string.Join("\n\n", "abc", "reasoning text", "0123456789", "[media file: a.png]", "reminder content");
+        var characters = content.Length + "Read".Length + TestJson.Element(new { path = "src/Program.cs" }).GetRawText().Length;
+        var expected = (characters + 2) / 3;
 
         Assert.Equal(expected, TokenEstimator.EstimateMessageTokens(message));
     }
@@ -81,7 +81,7 @@ public class TokenEstimatorTests
             DateTimeOffset.UtcNow);
 
         var callTokens = TokenEstimator.EstimateMessageTokens(withCall);
-        Assert.Equal(TokenEstimator.EstimateTokens(longInput.GetRawText()), callTokens);
+        Assert.Equal(("Read".Length + longInput.GetRawText().Length + 2) / 3, callTokens);
         Assert.True(callTokens > TokenEstimator.EstimateMessageTokens(withoutCall));
     }
 
@@ -114,10 +114,7 @@ public class TokenEstimatorTests
         var (tokens, source) = TokenEstimator.EstimateCurrentInputTokens(history, anchorIndex: 1, usage);
 
         Assert.Equal("provider_usage", source);
-        var tail = new ModelRequest(
-            [new ModelInputMessage(MessageRole.Assistant, [new InputTextBlock("three")]),
-                new ModelInputMessage(MessageRole.User, [new InputTextBlock("four")])], [], new ModelCallOptions());
-        Assert.Equal(1_000 + TokenEstimator.EstimateRequestTokens(tail), tokens);
+        Assert.Equal(1_000 + TokenEstimator.EstimateHistoryTokens(history.Skip(2).ToList()), tokens);
     }
 
     [Fact]
@@ -129,7 +126,42 @@ public class TokenEstimatorTests
         var (tokens, source) = TokenEstimator.EstimateCurrentInputTokens(history, anchorIndex: 1, usage);
 
         Assert.Equal("provider_usage", source);
-        Assert.Equal(500, tokens);
+        Assert.Equal(500 + TokenEstimator.EstimateMessageTokens(history[1]), tokens);
+    }
+
+    [Fact]
+    public void EstimateModelMessageTokens_UsesUnweightedJoinedContentAndCountsReasoning()
+    {
+        var message = new ModelInputMessage(MessageRole.Assistant,
+            [new InputTextBlock("中文中"), new InputReasoningBlock("abcdef"), new InputTextBlock("")]);
+
+        Assert.Equal((3 + 2 + 6 + 2) / 3, TokenEstimator.EstimateModelMessageTokens(message));
+        Assert.Equal(1, TokenEstimator.EstimateMessageTokens(TestMessages.UserText("中文中")));
+        Assert.Equal(2, TokenEstimator.EstimateTokens("中文中"));
+    }
+
+    [Fact]
+    public void EstimateMessageTokens_CountsToolNameAndNormalizedInputAndOmitsHiddenAttachments()
+    {
+        var input = JsonDocument.Parse("{ \"value\" : \"abc\" }").RootElement.Clone();
+        var message = TestMessages.AssistantText("") with
+        {
+            Parts = [new ToolCallPart(StrongId.NewPartId(), StrongId.NewToolCallId(), "ToolName", input)],
+        };
+
+        Assert.Equal(("ToolName{\"value\":\"abc\"}".Length + 2) / 3, TokenEstimator.EstimateMessageTokens(message));
+        Assert.Equal(0, TokenEstimator.EstimateMessageTokens(TestMessages.UserAttachment(AttachmentKind.SystemReminder, "hidden", providerVisible: false)));
+        Assert.Equal(("ToolName{}".Length + 2) / 3, TokenEstimator.EstimateModelMessageTokens(
+            new ModelInputMessage(MessageRole.Assistant,
+                [new InputToolCallBlock(StrongId.NewToolCallId(), "ToolName", default)])));
+    }
+
+    [Fact]
+    public void EstimateModelMessageTokens_ImageCountsPlaceholderNotBase64Payload()
+    {
+        var message = new ModelInputMessage(MessageRole.User, [new InputImageBlock("image/png", new string('a', 50_000))]);
+
+        Assert.Equal(("[Attached image/png]".Length + 2) / 3, TokenEstimator.EstimateModelMessageTokens(message));
     }
 
     [Fact]

@@ -111,7 +111,7 @@ public class WriteToolTests
     }
 
     [Fact]
-    public async Task OverwriteAfterRangeRead_RejectedAsIncompleteView()
+    public async Task OverwriteAfterExplicitRangeRead_Succeeds()
     {
         using var workspace = new TempWorkspace();
         var path = Path.Combine(workspace.Root, "a.txt");
@@ -128,6 +128,20 @@ public class WriteToolTests
             workspace.ContextFor("""{"file_path": "a.txt", "content": "replacement"}""") with { FileReads = reads },
             CancellationToken.None);
 
+        Assert.False(result.IsError);
+        Assert.Equal("replacement", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task OverwriteAfterTokenTruncatedRead_IsRejected()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "large.txt");
+        await File.WriteAllTextAsync(path, new string('x', 100_000));
+        var reads = new FileReadState();
+        await new ReadTool().ExecuteAsync(workspace.ContextFor("""{"file_path":"large.txt"}""") with { FileReads = reads }, CancellationToken.None);
+        var result = await new WriteTool().ExecuteAsync(workspace.ContextFor(
+            """{"file_path":"large.txt","content":"replacement"}""") with { FileReads = reads }, CancellationToken.None);
         Assert.True(result.IsError);
         Assert.Equal("File has not been read yet. Read it first before writing to it.", result.SingleText());
     }

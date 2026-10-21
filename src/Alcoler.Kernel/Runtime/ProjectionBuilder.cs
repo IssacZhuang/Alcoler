@@ -14,7 +14,7 @@ public sealed class ProjectionBuilder
     private readonly Dictionary<string, int> _rowIndex = [];
     private readonly Dictionary<string, string> _streamingText = [];
     private ConversationState _state = ConversationState.Initial(string.Empty, PermissionMode.Build, null, 200_000);
-    private readonly Queue<string> _queue = [];
+    private readonly List<QueuedInput> _queue = [];
     private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
     public ConversationState State { get { lock (_sync) return _state; } }
@@ -198,18 +198,20 @@ public sealed class ProjectionBuilder
                     break;
 
                 case InputQueuedEvent queued:
-                    _queue.Enqueue(queued.Input.Text);
-                    _state = _state with { Queue = [.. _queue.Select((text, i) => queued.Input with { Text = text })] };
+                    _queue.Add(queued.Input);
+                    _state = _state with { Queue = [.. _queue] };
                     stateChanged = true;
                     break;
 
-                case InputDequeuedEvent:
-                case InputDiscardedEvent:
-                    if (_queue.Count > 0)
-                    {
-                        _queue.Dequeue();
-                    }
-                    _state = _state with { Queue = [.. _queue.Select(text => new QueuedInput(default, text, sequenced.OccurredAt))] };
+                case InputDequeuedEvent dequeued:
+                    _queue.RemoveAll(input => input.CommandId == dequeued.CommandId);
+                    _state = _state with { Queue = [.. _queue] };
+                    stateChanged = true;
+                    break;
+
+                case InputDiscardedEvent discarded:
+                    _queue.RemoveAll(input => input.CommandId == discarded.CommandId);
+                    _state = _state with { Queue = [.. _queue] };
                     stateChanged = true;
                     break;
 
@@ -324,6 +326,12 @@ public sealed class ProjectionBuilder
 
         foreach (var toolCall in message.Parts.OfType<ToolCallPart>())
         {
+            if (_rowIndex.TryGetValue(toolCall.ToolCallId.Value, out var index)
+                && _rows[index] is ToolCallRow existing)
+            {
+                Upsert(existing with { ToolName = toolCall.ToolName, Input = toolCall.Input }, ops);
+                continue;
+            }
             Upsert(new ToolCallRow(
                 toolCall.ToolCallId.Value,
                 toolCall.ToolCallId,

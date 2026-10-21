@@ -18,26 +18,44 @@ public sealed class BashTool : ITool, IToolInputPolicy
 
     private readonly ShellSpec _shell;
     private readonly bool _isPosixShell;
+    private readonly BashTimeoutPolicy _timeouts;
+    private readonly Func<string, Stream>? _openOutput;
 
     public BashTool() : this(ShellResolver.Resolve())
     {
     }
 
-    internal BashTool(ShellSpec shell)
+    internal BashTool(ShellSpec shell, BashTimeoutPolicy? timeouts = null, Func<string, Stream>? openOutput = null)
     {
         _shell = shell;
+        _openOutput = openOutput;
+        _timeouts = timeouts ?? BashTimeoutPolicy.FromEnvironment(Environment.GetEnvironmentVariable);
         var shellName = Path.GetFileNameWithoutExtension(shell.FileName);
         _isPosixShell = shellName is "bash" or "sh" or "zsh" or "dash";
+        Contract = CreateContract(_timeouts);
+        Metadata = new(
+            ReadOnly: false,
+            Destructive: false,
+            ConcurrentSafe: false,
+            RequiresUserInteraction: false,
+            SideEffectScope: SideEffectScope.System,
+            RiskLevel: RiskLevel.Medium,
+            NeedsApproval: true,
+            AllowedInPlanMode: false,
+            DefaultTimeoutMs: null,
+            MaxTimeoutMs: _timeouts.MaxMs);
     }
 
-    public ToolContract Contract { get; } = new(
+    public ToolContract Contract { get; }
+
+    private static ToolContract CreateContract(BashTimeoutPolicy timeouts) => new(
         "Bash",
         $"""
         Executes a bash command and returns its output.
 
         - Working directory persists between calls, but prefer absolute paths — `cd` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.
         - IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.
-        - `timeout` is in milliseconds: default {DefaultTimeoutMs}, max {MaxTimeoutMs}.
+        - `timeout` is in milliseconds: default {timeouts.DefaultMs}, max {timeouts.MaxMs}.
         - `run_in_background` runs the command detached: it keeps running across turns and re-invokes you when it exits. No `&` needed.
 
         # Git
@@ -51,7 +69,7 @@ public sealed class BashTool : ITool, IToolInputPolicy
           "type": "object",
           "properties": {
             "command": { "type": "string", "minLength": 1, "description": "The command to execute" },
-            "timeout": { "type": "integer", "minimum": 1, "maximum": {{MaxTimeoutMs}}, "description": "Optional timeout in milliseconds (max {{MaxTimeoutMs}})" },
+            "timeout": { "type": "integer", "maximum": {{timeouts.MaxMs}}, "description": "Optional timeout in milliseconds (max {{timeouts.MaxMs}})" },
             "description": { "type": "string", "description": "{{DescriptionFieldPromptJson}}" },
             "run_in_background": { "type": "boolean", "description": "Set to true to run this command in the background. Use Read to read the output later." },
             "dangerouslyDisableSandbox": { "type": "boolean", "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing." }
@@ -79,17 +97,7 @@ public sealed class BashTool : ITool, IToolInputPolicy
     private static readonly string DescriptionFieldPromptJson =
         JsonEncodedText.Encode(DescriptionFieldPrompt).ToString();
 
-    public ToolMetadata Metadata { get; } = new(
-        ReadOnly: false,
-        Destructive: false,
-        ConcurrentSafe: false,
-        RequiresUserInteraction: false,
-        SideEffectScope: SideEffectScope.System,
-        RiskLevel: RiskLevel.Medium,
-        NeedsApproval: true,
-        AllowedInPlanMode: false,
-        DefaultTimeoutMs: null,
-        MaxTimeoutMs: MaxTimeoutMs);
+    public ToolMetadata Metadata { get; }
 
     public bool IsReadOnlyInput(JsonElement input) =>
         ToolInput.StringOrNull(input, "command") is { } command && BashSemantics.IsReadOnlyCommand(command);
@@ -106,10 +114,7 @@ public sealed class BashTool : ITool, IToolInputPolicy
         if (command.Trim().Length == 0)
             return ToolExecutionResult.Text(string.Empty);
 
-        var timeoutMs = Math.Clamp(
-            ToolInput.IntOrNull(context.Input, "timeout") ?? DefaultTimeoutMs,
-            1,
-            MaxTimeoutMs);
+        var timeoutMs = _timeouts.Resolve(ToolInput.IntOrNull(context.Input, "timeout"));
         var description = ToolInput.StringOrNull(context.Input, "description");
         var runInBackground = ToolInput.BoolOrDefault(context.Input, "run_in_background", false);
         var workingDirectory = context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
@@ -123,12 +128,14 @@ public sealed class BashTool : ITool, IToolInputPolicy
             command,
             workingDirectory,
             captureCwd: _isPosixShell,
-            outputFilePath: null);
+            outputFilePath: CreateBackgroundOutputPath(context),
+            openOutput: _openOutput);
 
         var exitCode = 0;
         var timedOut = false;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeoutMs);
+        if (timeoutMs > 0)
+            timeoutCts.CancelAfter(timeoutMs);
         try
         {
             exitCode = await session.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
@@ -137,12 +144,12 @@ public sealed class BashTool : ITool, IToolInputPolicy
         {
             if (IsAutoBackgroundEligible(command) && context.BackgroundJobs is { } jobs)
             {
-                var outputPath = CreateBackgroundOutputPath(context);
-                session.OpenOutputFile(outputPath);
+                var outputPath = session.OutputPath!;
                 var info = jobs.Start(
                     description ?? command,
                     outputPath,
-                    cancellationToken => RunBackgroundAsync(session, cancellationToken));
+                    cancellationToken => RunBackgroundAsync(session, cancellationToken),
+                    context.ToolCallId);
                 session.TransferOwnership();
                 return ToolExecutionResult.Text(BashModelContent.FormatAutoBackgrounded(
                     info.Id.Value,
@@ -164,8 +171,7 @@ public sealed class BashTool : ITool, IToolInputPolicy
         if (cancellationToken.IsCancellationRequested)
             throw new OperationCanceledException(cancellationToken);
 
-        return await CompleteForegroundAsync(context, session, command, workingDirectory, trackedReads, exitCode, timedOut)
-            .ConfigureAwait(false);
+        return CompleteForeground(context, session, command, workingDirectory, trackedReads, exitCode, timedOut);
     }
 
     private ToolExecutionResult StartExplicitBackground(
@@ -180,14 +186,15 @@ public sealed class BashTool : ITool, IToolInputPolicy
                 isError: true);
 
         var outputPath = CreateBackgroundOutputPath(context);
-        var session = BashProcessSession.Start(_shell, command, workingDirectory, captureCwd: false, outputPath);
+        var session = BashProcessSession.Start(_shell, command, workingDirectory, captureCwd: false, outputPath, openOutput: _openOutput);
         BackgroundJobInfo info;
         try
         {
             info = jobs.Start(
                 description ?? command,
                 outputPath,
-                cancellationToken => RunBackgroundAsync(session, cancellationToken));
+                cancellationToken => RunBackgroundAsync(session, cancellationToken),
+                context.ToolCallId);
         }
         catch
         {
@@ -207,7 +214,7 @@ public sealed class BashTool : ITool, IToolInputPolicy
         return new BackgroundJobResult(exitCode);
     }
 
-    private async ValueTask<ToolExecutionResult> CompleteForegroundAsync(
+    private ToolExecutionResult CompleteForeground(
         ToolExecutionContext context,
         BashProcessSession session,
         string command,
@@ -246,20 +253,20 @@ public sealed class BashTool : ITool, IToolInputPolicy
         }
 
         var content = string.Join("\n", parts);
-        var observedBytes = Encoding.UTF8.GetByteCount(stdout) + Encoding.UTF8.GetByteCount(stderr);
-        if (observedBytes > BashModelContent.MaxInlineOutputBytes)
+        if (session.PersistenceFailed && session.OutputBytes > BashModelContent.MaxInlineOutputBytes)
         {
-            var artifact = await context.Workspace.SaveArtifactAsync(
-                context.SessionId,
-                $"bash-output-{Guid.NewGuid():N}.txt",
-                "text/plain",
-                Encoding.UTF8.GetBytes(content),
-                cancellationToken: default).ConfigureAwait(false);
-            content = BashModelContent.FormatPersistedOutputEnvelope(content, observedBytes, artifact.Uri);
+            content = BashModelContent.FormatPersistenceFailure(session.SnapshotTail(), session.OutputBytes);
+        }
+        else if (!session.PersistenceFailed && session.OutputBytes > session.InlineLimit)
+        {
+            content = BashModelContent.FormatPersistedOutputEnvelope(content, session.OutputBytes, session.OutputPath!);
+        }
+        else if (!session.PersistenceFailed)
+        {
+            session.DeleteOutputFile();
         }
 
-        var result = ToolExecutionResult.Text(content, isError: providerError);
-        return ToolResultBudget.ApplyBudget(result, ToolResultLimits.DefaultMaxInlineChars);
+        return ToolExecutionResult.Text(content, isError: providerError);
     }
 
     private string? DecideCwd(

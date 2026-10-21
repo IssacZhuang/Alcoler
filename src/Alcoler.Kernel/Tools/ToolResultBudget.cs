@@ -50,7 +50,7 @@ public static class ToolResultBudget
         }
 
         return truncated
-            ? new ToolExecutionResult(blocks, result.IsError, result.DisplaySummary)
+            ? result with { Content = blocks }
             : result;
     }
 }

@@ -73,6 +73,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private string _phaseText = TurnPhase.Idle.ToString();
 
     [ObservableProperty]
+    private string _activityText = string.Empty;
+
+    [ObservableProperty]
+    private bool _isWorking;
+
+    [ObservableProperty]
     private PermissionMode _mode = PermissionMode.Build;
 
     [ObservableProperty]
@@ -265,6 +271,19 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             ? $"{selection.ProviderId}/{selection.ModelId}"
             : "default model";
         PhaseText = state.Phase.ToString();
+        ActivityText = state.Phase switch
+        {
+            TurnPhase.ProcessingInput => "Preparing request",
+            TurnPhase.AwaitingModel => "Waiting for model",
+            TurnPhase.Streaming => "Generating response",
+            TurnPhase.ExecutingTools => "Running tools",
+            TurnPhase.AwaitingPermission => "Waiting for permission",
+            TurnPhase.AwaitingInteraction => "Waiting for your answer",
+            TurnPhase.Completing => "Finishing up",
+            _ => string.Empty,
+        };
+        IsWorking = state.Phase is TurnPhase.ProcessingInput or TurnPhase.AwaitingModel
+            or TurnPhase.Streaming or TurnPhase.ExecutingTools or TurnPhase.Completing;
         Composer.IsTurnActive = BusyPhases.Contains(state.Phase);
         Queue = state.Queue;
         OnPropertyChanged(nameof(HasQueuedInput));
@@ -439,7 +458,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             var answers = dismiss ? new Dictionary<string, string>() : pending.SelectedAnswers;
             var ack = await SubmitAsync(new ResolveInteractionCommand(
                 StrongId.NewCommandId(), SessionId, _store.Revision, pending.InteractionId,
-                InteractionAnswer: new InteractionAnswer(answers)));
+                InteractionAnswer: new InteractionAnswer(answers, dismiss ? null : pending.SelectedAnnotations)));
             if (!ack.Accepted)
                 Banner = ack.RejectionReason ?? "Answers were not accepted";
             else

@@ -160,7 +160,7 @@ public class TaskOutputToolTests
 
         var text = result.SingleText();
         Assert.Contains("<status>failed</status>", text);
-        Assert.Contains("<exit_code>-1</exit_code>", text);
+        Assert.DoesNotContain("<exit_code>", text);
         Assert.Contains("<error>command not found</error>", text);
     }
 
@@ -216,13 +216,14 @@ public class TaskOutputToolTests
             DateTimeOffset.UtcNow,
             BackgroundJobStatus.Completed,
             ExitCode: 0,
-            OutputPath: @"C:\ws\.alcoler\background\job.log");
+            OutputPath: @"C:\ws\.alcoler\background\job.log",
+            ToolUseId: new ToolCallId("call_bash"));
         var notification = BackgroundJobNotifications.FormatCompleted(job);
 
         Assert.StartsWith("[SYSTEM NOTIFICATION - NOT USER INPUT]", notification);
         Assert.Contains("NOT a message from the user", notification);
         Assert.Contains("<task-notification>", notification);
-        Assert.Contains("<task-id>bg_test</task-id>", notification);
+        Assert.Contains("<task-id>bg_test</task-id>\n<tool-use-id>call_bash</tool-use-id>", notification);
         Assert.Contains("<output-file>C:\\ws\\.alcoler\\background\\job.log</output-file>", notification);
         Assert.Contains("<status>completed</status>", notification);
         Assert.Contains("Background command \"npm test\" completed (exit code 0)", notification);
@@ -240,6 +241,55 @@ public class TaskOutputToolTests
             new BackgroundJobId("bg_f"), "watch", DateTimeOffset.UtcNow, BackgroundJobStatus.Failed, ExitCode: 2));
         Assert.Contains("<status>failed</status>", failed);
         Assert.Contains("Background command \"watch\" failed with exit code 2", failed);
+    }
+
+    [Fact]
+    public void CompletionNotification_WithoutExitCode_KeepsFailureBare_AndDescribesLostState()
+    {
+        var failed = BackgroundJobNotifications.FormatCompleted(new BackgroundJobInfo(
+            new BackgroundJobId("bg_f"), "watch", DateTimeOffset.UtcNow, BackgroundJobStatus.Failed,
+            Error: "provider secret"));
+        Assert.Contains("<summary>Background command \"watch\" failed</summary>", failed);
+        Assert.DoesNotContain("provider secret", failed);
+
+        var lost = BackgroundJobNotifications.FormatCompleted(new BackgroundJobInfo(
+            new BackgroundJobId("bg_l"), "watch", DateTimeOffset.UtcNow, BackgroundJobStatus.Lost));
+        Assert.Contains("<status>failed</status>", lost);
+        Assert.Contains("failed because its in-process state was lost", lost);
+    }
+
+    [Fact]
+    public void LocalAgentNotification_CorrelatesToolUse_EscapesXml_AndCapsBody()
+    {
+        var notification = BackgroundJobNotifications.FormatLocalAgentCompleted(
+            "sub_a", "completed", "Explore", "find & review", "a < b", toolUses: 2, durationMs: 10,
+            toolUseId: "call_\"<&");
+        Assert.Contains("<tool-use-id>call_&quot;&lt;&amp;</tool-use-id>", notification);
+        Assert.Contains("<result>a &lt; b</result>", notification);
+        Assert.Contains("<usage><tool_uses>2</tool_uses><duration_ms>10</duration_ms></usage>", notification);
+
+        var oversized = BackgroundJobNotifications.FormatLocalAgentCompleted(
+            "sub_a", "completed", "Explore", "find", new string('x', 130_000));
+        Assert.EndsWith("\n[truncated]", oversized);
+        Assert.Equal(120_000 + "\n[truncated]".Length,
+            oversized.Length - oversized.IndexOf("<task-notification>", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task BackgroundJobService_PreservesToolUseId_ThroughCompletion()
+    {
+        var notified = new TaskCompletionSource<BackgroundJobInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var jobs = new BackgroundJobService(TimeProvider.System, info =>
+        {
+            notified.TrySetResult(info);
+            return ValueTask.CompletedTask;
+        });
+        var toolUseId = new ToolCallId("call_background");
+        var started = jobs.Start("command", null, _ => Task.FromResult(new BackgroundJobResult(0)), toolUseId);
+        var completed = await notified.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(toolUseId, started.ToolUseId);
+        Assert.Equal(toolUseId, completed.ToolUseId);
+        Assert.Equal(toolUseId, jobs.Find(started.Id)!.ToolUseId);
     }
 
     private static ToolExecutionContext Context(TempWorkspace workspace, BackgroundJobService jobs, string json) =>

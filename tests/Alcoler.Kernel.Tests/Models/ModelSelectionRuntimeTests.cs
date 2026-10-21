@@ -122,16 +122,32 @@ public class ModelSelectionRuntimeTests
         await using var runtime = fixture.Runtime([new ScriptedModelProvider(frozen, "frozen"), new ScriptedModelProvider(next, "next")],
             new ModelSelection("frozen", "model", new("high", 700)));
         var session = await runtime.CreateSessionAsync(new SessionOptions(fixture.Root), CancellationToken.None);
-        using var projection = runtime.Subscribe(session.Id);
-        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "first"), CancellationToken.None);
+        var firstUser = new Contracts.Conversation.ConversationMessage(StrongId.NewMessageId(), Contracts.Conversation.MessageRole.User,
+            [new Contracts.Conversation.TextPart(StrongId.NewPartId(), "Earlier question")], DateTimeOffset.UtcNow);
+        var firstAssistant = new Contracts.Conversation.ConversationMessage(StrongId.NewMessageId(), Contracts.Conversation.MessageRole.Assistant,
+            [new Contracts.Conversation.TextPart(StrongId.NewPartId(), "Earlier answer")], DateTimeOffset.UtcNow);
+        var secondUser = new Contracts.Conversation.ConversationMessage(StrongId.NewMessageId(), Contracts.Conversation.MessageRole.User,
+            [new Contracts.Conversation.TextPart(StrongId.NewPartId(), "More context")], DateTimeOffset.UtcNow);
+        var secondAssistant = new Contracts.Conversation.ConversationMessage(StrongId.NewMessageId(), Contracts.Conversation.MessageRole.Assistant,
+            [new Contracts.Conversation.TextPart(StrongId.NewPartId(), "More detail")], DateTimeOffset.UtcNow);
+        await fixture.Store.AppendMessagesAsync(session.Id, [firstUser, firstAssistant, secondUser, secondAssistant], 1, CancellationToken.None);
+        await runtime.DisposeAsync();
+        await using var resumed = fixture.Runtime([new ScriptedModelProvider(frozen, "frozen"), new ScriptedModelProvider(next, "next")],
+            new ModelSelection("frozen", "model", new("high", 700)));
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var resumedProjection = resumed.Subscribe(session.Id);
+        await resumed.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "first"), CancellationToken.None);
         await frozen.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.True((await runtime.SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), session.Id, 0,
+        Assert.True((await resumed.SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), session.Id, 0,
             new ModelSelection("next", "model", new("low", 900))), CancellationToken.None)).Accepted);
         frozen.Release.TrySetResult();
-        await WaitForTurn(projection, expectedCompletedAssistantMessages: 1);
+        await WaitForTurn(resumedProjection, expectedCompletedAssistantMessages: 3);
         Assert.Empty(next.Requests);
         Assert.Equal(3, frozen.Requests.Count);
-        Assert.All(frozen.Requests, request => Assert.Equal(new ModelCallOptions("high", 700), request.Options));
+        var requests = frozen.Requests.ToArray();
+        Assert.Equal(new ModelCallOptions("high", 700), requests[0].Options);
+        Assert.Equal(new ModelCallOptions("high", 20_000), requests[1].Options);
+        Assert.Equal(new ModelCallOptions("high", 700), requests[2].Options);
     }
 
     [Fact]
@@ -183,6 +199,7 @@ public class ModelSelectionRuntimeTests
             else
             {
                 yield return new ModelTextDelta("done");
+                yield return new ModelTextEnded();
                 yield return new ModelStreamFinished(ModelFinishReason.Stop);
             }
         }

@@ -20,7 +20,9 @@ public sealed record SessionRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     SessionBranch? Branch = null,
-    bool IsArchived = false);
+    bool IsArchived = false,
+    SessionId? ParentSessionId = null,
+    SessionTitleSource TitleSource = SessionTitleSource.Custom);
 
 public sealed record StoredMessage(long Sequence, ConversationMessage Message);
 
@@ -29,6 +31,8 @@ public interface ISessionStore
     ValueTask InitializeAsync(CancellationToken cancellationToken);
 
     ValueTask UpsertSessionAsync(SessionRecord record, CancellationToken cancellationToken);
+
+    ValueTask<bool> TryUpdateSessionTitleAsync(SessionId sessionId, string title, SessionTitleSource source, CancellationToken cancellationToken);
 
     ValueTask<SessionRecord?> GetSessionAsync(SessionId sessionId, CancellationToken cancellationToken);
 

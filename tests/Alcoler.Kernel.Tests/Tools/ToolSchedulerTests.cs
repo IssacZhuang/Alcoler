@@ -2,6 +2,9 @@ using Xunit;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Kernel.Tools;
+using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Subagents;
+using Alcoler.Kernel.Tests.Subagents;
 
 namespace Alcoler.Kernel.Tests.Tools;
 
@@ -10,6 +13,32 @@ public class ToolSchedulerTests
     private static ToolScheduler Scheduler(params FakeTool[] tools) => new(new ToolRegistry(tools));
 
     private static ScheduledToolCall Call(FakeTool tool) => new(tool.Call());
+
+    [Fact]
+    public void AgentCalls_RunInOneParallelGroup()
+    {
+        var agent = new SubagentTool(new FakeSubagentPort());
+        var scheduler = new ToolScheduler(new ToolRegistry([agent]));
+        var calls = Enumerable.Range(0, 4).Select(_ => new ScheduledToolCall(new ToolCall(
+            StrongId.NewToolCallId(), agent.Contract.Name,
+            System.Text.Json.JsonSerializer.SerializeToElement(new { prompt = "p", description = "d" })))).ToArray();
+
+        var group = Assert.Single(scheduler.Schedule(calls));
+
+        Assert.True(group.Parallel);
+        Assert.Equal(4, group.Calls.Count);
+    }
+
+    [Fact]
+    public void ExplicitConcurrentSafety_AppliesAcrossSideEffectScopes()
+    {
+        var metadata = FakeToolMetadata.ParallelSafe() with { SideEffectScope = SideEffectScope.Session };
+        Assert.True(ToolScheduler.CanRunParallel(new FakeTool("SessionRead", metadata)));
+        Assert.True(ToolScheduler.CanRunParallel(new FakeTool("SessionWrite", metadata with { ReadOnly = false })));
+        Assert.False(ToolScheduler.CanRunParallel(new FakeTool("SessionUnsafe", metadata with { ConcurrentSafe = false })));
+        Assert.True(ToolScheduler.CanRunParallel(new FakeTool("Interactive", metadata with { RequiresUserInteraction = true })));
+        Assert.True(ToolScheduler.CanRunParallel(new FakeTool("System", metadata with { SideEffectScope = SideEffectScope.System })));
+    }
 
     [Fact]
     public void ParallelSafeCalls_RunInOneGroup()
@@ -41,7 +70,7 @@ public class ToolSchedulerTests
     public void TwoUnsafeCalls_NeverShareAGroup()
     {
         var write = new FakeTool("Write", FakeToolMetadata.Serial());
-        var bash = new FakeTool("Bash", FakeToolMetadata.SystemSideEffect());
+        var bash = new FakeTool("Bash", FakeToolMetadata.SystemSideEffect() with { ConcurrentSafe = false });
         var groups = Scheduler(write, bash).Schedule([Call(write), Call(bash)]);
 
         Assert.Equal(2, groups.Count);
@@ -66,9 +95,9 @@ public class ToolSchedulerTests
     }
 
     [Fact]
-    public void SystemSideEffect_IsNotParallel_EvenWhenConcurrentSafe()
+    public void SystemSideEffect_IsNotParallel_WhenExplicitlyUnsafe()
     {
-        var bash = new FakeTool("Bash", FakeToolMetadata.SystemSideEffect());
+        var bash = new FakeTool("Bash", FakeToolMetadata.SystemSideEffect() with { ConcurrentSafe = false });
         Assert.False(ToolScheduler.CanRunParallel(bash));
     }
 

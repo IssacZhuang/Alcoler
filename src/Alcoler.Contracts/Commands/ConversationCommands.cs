@@ -21,13 +21,16 @@ public abstract record ConversationCommand(
     SessionId SessionId,
     long BaseRevision);
 
+public enum SendTextDelivery { Queue, Guide }
+
 public sealed record SendTextCommand(
     CommandId CommandId,
     SessionId SessionId,
     long BaseRevision,
     string Text,
     PermissionMode? Mode = null,
-    ModelSelection? ModelSelection = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
+    ModelSelection? ModelSelection = null,
+    SendTextDelivery Delivery = SendTextDelivery.Queue) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record StopCommand(
     CommandId CommandId,
