@@ -309,7 +309,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             return CommandAck.Rejected(command.CommandId, Revision, "stop running background jobs before rewinding");
         }
-        if (_subagentTasks?.List().Any(task => task.Status == SubagentStatus.Running) == true)
+        if (_subagentTasks?.List().Any(task => task.Status == SubagentStatus.Running
+                && task.ParentSessionId == _record.Id) == true)
         {
             return CommandAck.Rejected(command.CommandId, Revision, "stop running subagents before rewinding");
         }

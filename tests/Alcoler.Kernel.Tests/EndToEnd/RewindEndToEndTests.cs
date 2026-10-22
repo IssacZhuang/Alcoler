@@ -5,7 +5,10 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Subagents;
+using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
+using Alcoler.Kernel.Subagents;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.EndToEnd;
@@ -281,6 +284,82 @@ public class RewindEndToEndTests
         Assert.Equal(["first question", "fresh question"], UserTexts(resumedProjection));
         Assert.DoesNotContain(resumedProjection.Snapshot().Rows.OfType<SystemNoticeRow>(),
             row => row.Text.Contains(failure, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Rewind_IgnoresRunningSubagentsOwnedByOtherSessions_ButRejectsItsOwnRunningSubagents()
+    {
+        await using var harness = ScriptedCallHarness.Create(Reply("answer one"), Reply("answer two"));
+        var tasks = new SubagentTaskRegistry();
+        await using var runtime = harness.BuildRuntime(new SubagentTool(new UnusedSubagentPort(), tasks: tasks));
+        var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        var other = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "first question", expectedReplies: 1);
+        var firstUserId = await FindUserIdAsync(harness, session.Id, "first question");
+
+        tasks.Register(RunningTask("sub_other", other.Id), _ => ValueTask.CompletedTask);
+        var foreignAck = await runtime.SubmitAsync(
+            new RewindConversationCommand(StrongId.NewCommandId(), session.Id, 0, firstUserId),
+            CancellationToken.None);
+        Assert.True(foreignAck.Accepted);
+        await WaitForAsync(() => UserTexts(projection).Length == 0,
+            "the rewind was not applied before the next turn");
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "second question", expectedReplies: 1);
+        var secondUserId = await FindUserIdAsync(harness, session.Id, "second question");
+
+        tasks.Register(RunningTask("sub_own", session.Id), _ => ValueTask.CompletedTask);
+        var ownAck = await runtime.SubmitAsync(
+            new RewindConversationCommand(StrongId.NewCommandId(), session.Id, 0, secondUserId),
+            CancellationToken.None);
+        Assert.False(ownAck.Accepted);
+        Assert.Equal("stop running subagents before rewinding", ownAck.RejectionReason);
+
+        tasks.Update(new SubagentId("sub_own"), info => info with { Status = SubagentStatus.Completed });
+        var completedAck = await runtime.SubmitAsync(
+            new RewindConversationCommand(StrongId.NewCommandId(), session.Id, 0, secondUserId),
+            CancellationToken.None);
+        Assert.True(completedAck.Accepted);
+    }
+
+    private static SubagentTaskInfo RunningTask(string id, SessionId parentSessionId) =>
+        new(
+            new SubagentId(id),
+            new SessionId("sess_child_" + id),
+            "general-purpose",
+            "background work",
+            "background work",
+            OutputFile: null,
+            SubagentStatus.Running,
+            Result: null,
+            Error: null,
+            ToolUses: null,
+            DateTimeOffset.UtcNow,
+            EndedAt: null)
+        {
+            ParentSessionId = parentSessionId,
+        };
+
+    private static async Task<MessageId> FindUserIdAsync(ScriptedCallHarness harness, SessionId sessionId, string text)
+    {
+        await using var store = harness.OpenStore();
+        var stored = await store.LoadMessagesAsync(sessionId, CancellationToken.None);
+        return Assert.Single(stored, item => item.Message.Parts.OfType<TextPart>()
+            .Any(part => part.Text == text)).Message.Id;
+    }
+
+    private sealed class UnusedSubagentPort : ISubagentPort
+    {
+        public ValueTask<SubagentResult> RunAsync(SubagentRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<SubagentHandle> StartBackgroundAsync(
+            SubagentRequest request,
+            Func<SubagentResult, ValueTask> onCompleted,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private static async Task SendAndWaitIdleAsync(

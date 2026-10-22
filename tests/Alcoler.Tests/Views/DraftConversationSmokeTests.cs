@@ -153,6 +153,7 @@ public sealed class DraftConversationSmokeTests
                 var composer = Assert.Single(reopened.GetVisualDescendants().OfType<ComposerView>());
                 Assert.Contains(composer.FindControl<Button>("ModeSelector")!.GetVisualDescendants().OfType<TextBlock>(),
                     text => text.Text == "Plan");
+                Assert.True(composer.FindControl<Border>("PlanModeBadge")!.IsVisible);
                 Assert.Equal(PermissionMode.Plan, restarted.Draft!.Composer.Mode);
             }
             finally { reopened.Close(); }

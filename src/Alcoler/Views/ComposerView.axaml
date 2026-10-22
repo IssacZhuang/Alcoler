@@ -40,6 +40,12 @@
     <Style Selector="Button.modePicker.fullAccess controls|Icon.icon">
       <Setter Property="Stroke" Value="{DynamicResource AlcolerWarning}" />
     </Style>
+    <Style Selector="Border.modeBadge">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusFull}" />
+      <Setter Property="Padding" Value="7,1" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
     <Style Selector="Button.toolbarPicker">
       <Setter Property="Height" Value="28" />
       <Setter Property="MinHeight" Value="0" />
@@ -172,6 +178,11 @@
                   </Flyout>
                 </Button.Flyout>
               </Button>
+              <Border x:Name="PlanModeBadge" Classes="modeBadge" IsVisible="{Binding Composer.IsPlanMode}"
+                      ToolTip.Tip="Plan mode: read-only until you approve a plan">
+                <TextBlock Text="Plan mode" FontSize="{DynamicResource AlcolerFontXs}"
+                           FontWeight="Medium" Foreground="{DynamicResource AlcolerBrand}" />
+              </Border>
               <Button x:Name="StatusTrigger" Classes="modePicker" Click="OnStatusClick" IsVisible="False" VerticalAlignment="Center"
                       ToolTip.Tip="Show running activities" AutomationProperties.Name="Show running activities">
                 <StackPanel Orientation="Horizontal" Spacing="4">

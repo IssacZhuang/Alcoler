@@ -155,6 +155,8 @@ public sealed partial class ComposerViewModel : ObservableObject
 
     public bool IsFullAccess => Mode == PermissionMode.Yolo;
 
+    public bool IsPlanMode => Mode == PermissionMode.Plan;
+
     public bool ShowStop => IsTurnActive && string.IsNullOrWhiteSpace(Draft) && !HasAttachments;
 
     public bool CanSend => !IsSending && (!string.IsNullOrWhiteSpace(Draft) || HasAttachments)
@@ -197,6 +199,7 @@ public sealed partial class ComposerViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(ModeLabel));
         OnPropertyChanged(nameof(IsFullAccess));
+        OnPropertyChanged(nameof(IsPlanMode));
         NotifySendState();
         if (!_restoringMode)
         {

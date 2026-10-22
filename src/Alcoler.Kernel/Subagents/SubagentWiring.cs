@@ -231,7 +231,10 @@ public static class SubagentWiring
                 Error: null,
                 ToolUses: null,
                 startedAt,
-                EndedAt: null),
+                EndedAt: null)
+            {
+                ParentSessionId = request.ParentSessionId,
+            },
             StopChildAsync);
 
         void WriteTerminalArtifacts(SubagentState terminalState, string output, int toolUses)

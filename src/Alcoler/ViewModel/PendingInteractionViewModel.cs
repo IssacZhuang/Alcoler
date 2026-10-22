@@ -10,11 +10,6 @@ namespace Alcoler.ViewModel;
 
 public sealed partial class PendingInteractionViewModel : ObservableObject
 {
-    private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = true,
-        TypeInfoResolver = JsonElementContext.Default,
-    };
     private IReadOnlyList<QuestionDraftViewModel> _drafts = [];
 
     private PendingInteractionViewModel(InteractionId interactionId)
@@ -38,9 +33,6 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
 
     [ObservableProperty]
     private string _feedback = string.Empty;
-
-    [ObservableProperty]
-    private string _inputJson = string.Empty;
 
     [ObservableProperty]
     private string _reason = string.Empty;
@@ -90,7 +82,6 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
             RiskLevel = request.RiskLevel,
             PlanMarkdown = request.AllowsFeedback ? ReadPlan(request.Input) : null,
         };
-        vm.InputJson = JsonSerializer.Serialize(request.Input, IndentedJson);
         vm.Reason = request.Reason;
         return vm;
     }

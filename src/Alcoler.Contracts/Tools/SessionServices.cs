@@ -104,6 +104,8 @@ public sealed record SubagentTaskInfo(
     DateTimeOffset StartedAt,
     DateTimeOffset? EndedAt)
 {
+    public SessionId? ParentSessionId { get; init; }
+
     public bool Notified { get; init; }
 }
 

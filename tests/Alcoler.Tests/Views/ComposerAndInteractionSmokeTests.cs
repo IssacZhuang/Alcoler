@@ -193,6 +193,18 @@ public class ComposerAndInteractionSmokeTests
 
         var feedback = FindNamed<TextBox>(harness.View, "PlanFeedbackBox");
         Assert.True(feedback.IsVisible);
+        Assert.Empty(harness.View.GetVisualDescendants().OfType<Expander>());
+        var deny = FindNamed<Button>(harness.View, "DenyButton");
+        var allow = FindNamed<Button>(harness.View, "AllowButton");
+        Assert.Equal(deny.VerticalContentAlignment, allow.VerticalContentAlignment);
+        Assert.Equal(deny.FontWeight, allow.FontWeight);
+        harness.Window.UpdateLayout();
+        var denyText = Assert.Single(deny.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Request changes");
+        var allowText = Assert.Single(allow.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Approve");
+        Assert.Equal(
+            denyText.TranslatePoint(new Point(0, denyText.Bounds.Height / 2), harness.Window)!.Value.Y,
+            allowText.TranslatePoint(new Point(0, allowText.Bounds.Height / 2), harness.Window)!.Value.Y,
+            precision: 1);
         feedback.Focus();
         feedback.Text = "Use the existing parser.";
         await PumpAsync();
@@ -677,6 +689,25 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task Composer_PlanMode_ShowsBadgeOnlyWhilePlanIsSelected()
+    {
+        using var harness = Show<ComposerView>();
+        await PumpAsync();
+        var badge = FindNamed<Border>(harness.View, "PlanModeBadge");
+        Assert.False(badge.IsVisible);
+
+        harness.ViewModel.Composer.Mode = PermissionMode.Plan;
+        await PumpAsync();
+        Assert.True(badge.IsVisible);
+        Assert.Contains(badge.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Plan mode");
+
+        harness.ViewModel.Composer.Mode = PermissionMode.Edit;
+        await PumpAsync();
+        Assert.False(badge.IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
     public async Task Composer_PlanCommandWithPrompt_SendsPromptInPlanMode()
     {
         using var harness = Show<ComposerView>();
@@ -695,6 +726,7 @@ public class ComposerAndInteractionSmokeTests
         Assert.Equal("design the feature", command.Text);
         Assert.Equal(PermissionMode.Plan, command.Mode);
         Assert.Equal(PermissionMode.Plan, harness.ViewModel.Composer.Mode);
+        Assert.True(FindNamed<Border>(harness.View, "PlanModeBadge").IsVisible);
         Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
     }
 
