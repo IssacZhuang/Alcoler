@@ -4,6 +4,7 @@ using System.Text.Json;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tests.Storage;
 using Alcoler.Kernel.Tools;
 using Xunit;
 
@@ -398,6 +399,31 @@ public class BashToolTests
     }
 
     [Fact]
+    public async Task RunInBackground_WritesOutputUnderToolOutputRoot()
+    {
+        if (!PosixShellAvailable())
+            return;
+        using var workspace = new TempWorkspace();
+        using var outputRoot = new TempDirectory();
+        var jobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
+        var tool = new BashTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor(
+                """{"command": "echo routed-output", "run_in_background": true}""",
+                jobs: jobs,
+                toolOutputRoot: outputRoot.Root),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var job = Assert.Single(jobs.List());
+        Assert.StartsWith(Path.Combine(outputRoot.Root, "sess_test"), job.OutputPath, StringComparison.OrdinalIgnoreCase);
+        await WaitForJobCompletionAsync(jobs, job.Id);
+        Assert.Contains("routed-output", await File.ReadAllTextAsync(job.OutputPath!));
+        Assert.False(Directory.Exists(Path.Combine(workspace.Root, ".alcoler")));
+    }
+
+    [Fact]
     public async Task Timeout_OnEligibleCommand_ConvertsToBackground()
     {
         if (!PosixShellAvailable())
@@ -652,7 +678,8 @@ internal static class BashToolTestContext
         string json,
         ShellSessionState? shell = null,
         FileReadState? fileReads = null,
-        BackgroundJobService? jobs = null) =>
+        BackgroundJobService? jobs = null,
+        string? toolOutputRoot = null) =>
         new(
             new SessionId("sess_test"),
             workspace.Root,
@@ -661,5 +688,6 @@ internal static class BashToolTestContext
             TimeProvider.System,
             FileReads: fileReads,
             Shell: shell,
-            BackgroundJobs: jobs);
+            BackgroundJobs: jobs,
+            ToolOutputRoot: toolOutputRoot);
 }

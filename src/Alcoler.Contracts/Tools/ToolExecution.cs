@@ -36,7 +36,8 @@ public sealed record ToolExecutionContext(
     ISkillContentProvider? Skills = null,
     IUserInteractionPort? Interactions = null,
     ToolCallId? ToolCallId = null,
-    ISubagentTasks? Subagents = null);
+    ISubagentTasks? Subagents = null,
+    string? ToolOutputRoot = null);
 
 public sealed record ToolExecutionResult(
     IReadOnlyList<ToolResultBlock> Content,

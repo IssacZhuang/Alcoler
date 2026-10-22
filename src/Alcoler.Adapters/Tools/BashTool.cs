@@ -371,7 +371,9 @@ public sealed class BashTool : ITool, IToolInputPolicy
 
     private static string CreateBackgroundOutputPath(ToolExecutionContext context)
     {
-        var directory = Path.Combine(context.WorkspaceRoot, ".alcoler", "background", context.SessionId.Value);
+        var directory = context.ToolOutputRoot is { Length: > 0 } outputRoot
+            ? Path.Combine(outputRoot, context.SessionId.Value)
+            : Path.Combine(context.WorkspaceRoot, ".alcoler", "background", context.SessionId.Value);
         return Path.Combine(directory, $"bash-{Guid.NewGuid():N}.log");
     }
 }

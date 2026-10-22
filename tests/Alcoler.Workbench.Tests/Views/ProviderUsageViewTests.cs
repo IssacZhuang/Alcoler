@@ -213,6 +213,39 @@ public sealed class ProviderUsageViewTests
         }
     }
 
+    [AvaloniaFact]
+    public void TwoTierQuota_MetersStayInsideTheirColumns()
+    {
+        var service = new StubService(id => new ProviderUsageSnapshot(id,
+            ProviderUsageAdapterId.Zhipu, ProviderUsageKind.CodingPlan, true,
+            [
+                new ProviderUsageTier(ProviderUsageTierId.FiveHour, UsedPercentage: 4, ResetsAt: DateTimeOffset.Now.AddHours(1)),
+                new ProviderUsageTier(ProviderUsageTierId.Weekly, UsedPercentage: 37, ResetsAt: DateTimeOffset.Now.AddDays(3)),
+            ], DateTimeOffset.UtcNow));
+        using var viewModel = new ProviderUsageViewModel(service);
+        viewModel.Configure("p", "https://api.z.ai", "test-only-key");
+        var view = new ProviderUsageView { DataContext = viewModel };
+        var window = CreateWindow(view);
+        try
+        {
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            var meters = view.GetVisualDescendants().OfType<ProgressBar>().ToArray();
+            Assert.Equal(2, meters.Length);
+            var left = meters[0].TranslatePoint(default, view)!.Value;
+            var right = meters[1].TranslatePoint(default, view)!.Value;
+            Assert.True(meters[0].Bounds.Width > 100);
+            Assert.True(meters[1].Bounds.Width > 100);
+            Assert.True(left.X + meters[0].Bounds.Width <= right.X);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
     private static Window CreateWindow(Control content) => new()
     {
         Width = 320,

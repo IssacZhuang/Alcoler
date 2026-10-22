@@ -141,6 +141,7 @@ public static class Composition
             TodoStore = todoStore,
             GitSnapshotProvider = GitSnapshotCollector.Collect,
             SubagentOutputRoot = WorkbenchDataPaths.ExecPath,
+            ToolOutputRoot = WorkbenchDataPaths.ExecPath,
             ResolveShell = snapshot => ShellResolver.ResolveEnvironment(
                 shellPreference is null ? config.IntegratedTerminalShell : shellPreference(), snapshot),
             DisabledSkillPathsProvider = disabledSkillPathsProvider,

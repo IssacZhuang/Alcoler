@@ -46,6 +46,8 @@ public sealed record AgentRuntimeOptions
 
     public string? SubagentOutputRoot { get; init; }
 
+    public string? ToolOutputRoot { get; init; }
+
     public Func<ShellEnvironment?, ShellEnvironment>? ResolveShell { get; init; }
 
     internal Func<ShellEnvironment?, string>? CustomSystemPromptFactory { get; init; }
@@ -206,6 +208,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 CustomSystemPrompt = _options.CustomSystemPrompt,
                 CustomSystemPromptFactory = _options.CustomSystemPromptFactory,
                 ShellName = _options.ShellName,
+                ToolOutputRoot = _options.ToolOutputRoot,
                 ResolveShell = _options.ResolveShell,
                 GitSnapshot = _options.GitSnapshotProvider?.Invoke(record.WorkspaceRoot),
                 SkillsListing = _options.SkillsListing,

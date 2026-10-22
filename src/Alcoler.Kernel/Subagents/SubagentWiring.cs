@@ -157,6 +157,7 @@ public static class SubagentWiring
             AgentInstructions = options.AgentInstructions,
             CustomSystemPromptFactory = BuildChildPrompt,
             ShellName = options.ShellName,
+            ToolOutputRoot = options.ToolOutputRoot,
             ResolveShell = options.ResolveShell,
             GitSnapshotProvider = options.GitSnapshotProvider,
             UserSkillsBase = options.UserSkillsBase,

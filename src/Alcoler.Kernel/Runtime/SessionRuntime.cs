@@ -40,6 +40,8 @@ public sealed class SessionRuntimeOptions
 
     public string? ShellName { get; init; }
 
+    public string? ToolOutputRoot { get; init; }
+
     public Func<ShellEnvironment?, ShellEnvironment>? ResolveShell { get; init; }
 
     internal Func<ShellEnvironment?, string>? CustomSystemPromptFactory { get; init; }
@@ -1211,7 +1213,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private ToolExecutionContext CreateToolExecutionContext(ToolCall call) =>
         new(_record.Id, _record.WorkspaceRoot, call.Input, _deps.Workspace, _deps.Clock,
             _sessionCommands, _fileReads, _shell, _backgroundJobs, _auxModel, _skills, _broker,
-            call.Id, Subagents: _subagentTasks);
+            call.Id, Subagents: _subagentTasks, ToolOutputRoot: _deps.Options.ToolOutputRoot);
 
     private async ValueTask HandleToolNotificationAsync(TurnId turnId, ToolExecutionNotification notification)
     {

@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Alcoler.Adapters.Tools;
+using Alcoler.Kernel.Tests.Storage;
 using Alcoler.Kernel.Tools;
 using Xunit;
 using SkiaSharp;
@@ -342,6 +344,26 @@ public class ReadToolTests
 
         Assert.True(result.IsError);
         Assert.Contains("escapes", result.SingleText());
+    }
+
+    [Fact]
+    public async Task ToolOutputRootPath_IsReadableOutsideWorkspace()
+    {
+        using var workspace = new TempWorkspace();
+        using var outputRoot = new TempDirectory();
+        var path = Path.Combine(outputRoot.Root, "sess_test", "bash-test.log");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, "background line");
+        var tool = new ReadTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor(
+                JsonSerializer.Serialize(new { file_path = path }),
+                toolOutputRoot: outputRoot.Root),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("background line", result.SingleText());
     }
 
     [Fact]

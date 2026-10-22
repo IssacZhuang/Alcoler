@@ -1,6 +1,11 @@
 # Local runtime data dir
 .alcoler-dev/
 
+# Workspace-local agent runtime output from older builds
+.alcoler/background/
+.alcoler/artifacts/
+.alcoler/build/
+
 # .NET build output
 bin/
 obj/

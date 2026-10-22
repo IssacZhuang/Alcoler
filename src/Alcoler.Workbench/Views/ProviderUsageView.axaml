@@ -55,7 +55,7 @@
                        FontSize="{DynamicResource AlcolerFontLarge}" FontWeight="SemiBold"
                        Foreground="{DynamicResource AlcolerTextPrimary}" />
             <ProgressBar Minimum="0" Maximum="100" Value="{Binding MeterValue}" IsVisible="{Binding HasPercentage}"
-                         Height="6" MinHeight="6" Foreground="{DynamicResource AlcolerAccent}"
+                         Height="6" MinHeight="6" MinWidth="0" Foreground="{DynamicResource AlcolerAccent}"
                          Background="{DynamicResource AlcolerSurfaceHigh}" />
             <TextBlock Text="{Binding ResetText}" IsVisible="{Binding HasReset}" ToolTip.Tip="{Binding ResetToolTip}"
                        FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
