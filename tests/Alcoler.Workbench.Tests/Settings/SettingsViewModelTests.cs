@@ -365,6 +365,7 @@ public class SettingsViewModelTests
         var dialog = new Workbench.Views.SettingsDialog(SampleConfig());
         try
         {
+            Assert.Equal(SystemDecorations.None, dialog.SystemDecorations);
             dialog.Show();
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
             var viewModel = Assert.IsType<SettingsViewModel>(dialog.DataContext);

@@ -10,13 +10,13 @@
              Background="{DynamicResource AlcolerBackground}">
   <UserControl.Styles>
     <Style Selector="Border.composerShell">
-      <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerComposer}" />
     </Style>
     <Style Selector="Border.composerShell:pointerover">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerComposerHigh}" />
     </Style>
     <Style Selector="Border.composerShell:focus-within">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerComposerHigh}" />
     </Style>
     <Style Selector="Button.toolbarAction">
       <Setter Property="Width" Value="28" />

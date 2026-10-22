@@ -77,6 +77,12 @@ public partial class SettingsDialog : Window
         }
     }
 
+    private void OnHeaderPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.Source is Avalonia.Visual source && source.GetSelfAndVisualAncestors().OfType<Button>().Any()) return;
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(e);
+    }
+
     private void OnProviderAdded(object? sender, RoutedEventArgs e)
     {
         _viewModel.AddProviderCommand.Execute(null);

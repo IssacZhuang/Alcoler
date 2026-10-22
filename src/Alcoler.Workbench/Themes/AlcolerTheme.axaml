@@ -11,6 +11,8 @@
       <Color x:Key="AlcolerPopoverColor">#FF2D2D2D</Color>
       <Color x:Key="AlcolerInputColor">#FF343434</Color>
       <Color x:Key="AlcolerInputFocusedColor">#FF3E6058</Color>
+      <Color x:Key="AlcolerComposerColor">#FF2B2B2B</Color>
+      <Color x:Key="AlcolerComposerHighColor">#FF343434</Color>
       <Color x:Key="AlcolerSurfaceColor">#FF343434</Color>
       <Color x:Key="AlcolerSurfaceHighColor">#FF414141</Color>
       <Color x:Key="AlcolerHoverColor">#FF3E635A</Color>
@@ -57,6 +59,8 @@
       <SolidColorBrush x:Key="AlcolerPopover" Color="{DynamicResource AlcolerPopoverColor}" />
       <SolidColorBrush x:Key="AlcolerInput" Color="{DynamicResource AlcolerInputColor}" />
       <SolidColorBrush x:Key="AlcolerInputFocused" Color="{DynamicResource AlcolerInputFocusedColor}" />
+      <SolidColorBrush x:Key="AlcolerComposer" Color="{DynamicResource AlcolerComposerColor}" />
+      <SolidColorBrush x:Key="AlcolerComposerHigh" Color="{DynamicResource AlcolerComposerHighColor}" />
       <SolidColorBrush x:Key="AlcolerSurface" Color="{DynamicResource AlcolerSurfaceColor}" />
       <SolidColorBrush x:Key="AlcolerSurfaceHigh" Color="{DynamicResource AlcolerSurfaceHighColor}" />
       <SolidColorBrush x:Key="AlcolerHover" Color="{DynamicResource AlcolerHoverColor}" />
@@ -153,6 +157,8 @@
       <Color x:Key="AlcolerPopoverColor">#FFFFFFFF</Color>
       <Color x:Key="AlcolerInputColor">#FFE1E9E4</Color>
       <Color x:Key="AlcolerInputFocusedColor">#FFD5E6DE</Color>
+      <Color x:Key="AlcolerComposerColor">#FFDCE6E0</Color>
+      <Color x:Key="AlcolerComposerHighColor">#FFCFDBD3</Color>
       <Color x:Key="AlcolerSurfaceColor">#FFDCE6E0</Color>
       <Color x:Key="AlcolerSurfaceHighColor">#FFCFDBD3</Color>
       <Color x:Key="AlcolerHoverColor">#FFD3E7DD</Color>
@@ -199,6 +205,8 @@
       <SolidColorBrush x:Key="AlcolerPopover" Color="{DynamicResource AlcolerPopoverColor}" />
       <SolidColorBrush x:Key="AlcolerInput" Color="{DynamicResource AlcolerInputColor}" />
       <SolidColorBrush x:Key="AlcolerInputFocused" Color="{DynamicResource AlcolerInputFocusedColor}" />
+      <SolidColorBrush x:Key="AlcolerComposer" Color="{DynamicResource AlcolerComposerColor}" />
+      <SolidColorBrush x:Key="AlcolerComposerHigh" Color="{DynamicResource AlcolerComposerHighColor}" />
       <SolidColorBrush x:Key="AlcolerSurface" Color="{DynamicResource AlcolerSurfaceColor}" />
       <SolidColorBrush x:Key="AlcolerSurfaceHigh" Color="{DynamicResource AlcolerSurfaceHighColor}" />
       <SolidColorBrush x:Key="AlcolerHover" Color="{DynamicResource AlcolerHoverColor}" />

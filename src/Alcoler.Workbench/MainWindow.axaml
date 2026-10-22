@@ -159,6 +159,8 @@
         </Border>
       </Grid>
     </Border>
+    <Border Grid.Column="3" Width="1" HorizontalAlignment="Center" IsHitTestVisible="False"
+            Background="{DynamicResource AlcolerSurface}" IsVisible="{Binding IsSidePaneVisible}" />
     <GridSplitter Grid.Column="3" ResizeDirection="Columns" Width="4"
                   IsVisible="{Binding IsSidePaneVisible}" DragCompleted="OnSidePaneSplitterDragCompleted" />
     <Border Grid.Column="4" Background="{DynamicResource AlcolerBackground}"

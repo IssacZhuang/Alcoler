@@ -337,7 +337,7 @@ public class ComposerAndInteractionSmokeTests
         var mode = FindNamed<Button>(harness.View, "ModeSelector");
         var template = Assert.Single(input.GetVisualDescendants().OfType<Border>(),
             border => border.Name == "PART_BorderElement");
-        var expectedBackground = Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerInput")).Color;
+        var expectedBackground = Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerComposer")).Color;
         var outside = new Point(1, 1);
         var inside = input.TranslatePoint(new Point(input.Bounds.Width / 2, input.Bounds.Height / 2), harness.Window)!.Value;
         var rendered = ElementComposition.GetElementVisual(harness.Window)!.Compositor.RequestCompositionBatchCommitAsync().Rendered;
@@ -346,7 +346,7 @@ public class ComposerAndInteractionSmokeTests
         await rendered.WaitAsync(TimeSpan.FromSeconds(5));
         input.Focus();
         await PumpAsync();
-        var expectedActiveBackground = Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerSurfaceHigh")).Color;
+        var expectedActiveBackground = Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerComposerHigh")).Color;
 
         void AssertBackground()
         {
