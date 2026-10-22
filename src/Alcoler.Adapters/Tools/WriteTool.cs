@@ -7,6 +7,9 @@ public sealed class WriteTool : ITool
 {
     private const string StorageSuffix = " (file state is current in your context \u2014 no need to Read it back)";
 
+    // Line stats are cosmetic; skip them rather than load very large files just to count.
+    private const long MaxStatsFileSizeBytes = 64L * 1024 * 1024;
+
     public ToolContract Contract { get; } = new(
         "Write",
         """
@@ -58,10 +61,13 @@ public sealed class WriteTool : ITool
             return ToolExecutionResult.Text(ex.Message, isError: true);
         }
 
+        string? originalContent = null;
         var exists = File.Exists(path);
         if (exists)
         {
-            var failure = FileReadGuards.ReadStateFailure(path, context);
+            if (new FileInfo(path).Length <= MaxStatsFileSizeBytes)
+                originalContent = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+            var failure = FileReadGuards.ReadStateFailure(path, context, originalContent);
             if (failure is not null)
                 return failure;
         }
@@ -72,8 +78,13 @@ public sealed class WriteTool : ITool
         await File.WriteAllTextAsync(path, content, cancellationToken).ConfigureAwait(false);
         context.FileReads?.RecordWrite(path);
 
-        return ToolExecutionResult.Text(exists
-            ? $"The file {rawPath} has been updated successfully.{StorageSuffix}"
-            : $"File created successfully at: {rawPath}{StorageSuffix}");
+        FileChangeStats? fileChange = !exists || originalContent is not null
+            ? FileChangeStatsCalculator.Compute(originalContent, content)
+            : null;
+        return ToolExecutionResult.Text(
+            exists
+                ? $"The file {rawPath} has been updated successfully.{StorageSuffix}"
+                : $"File created successfully at: {rawPath}{StorageSuffix}",
+            fileChange: fileChange);
     }
 }

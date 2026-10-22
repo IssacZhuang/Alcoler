@@ -42,7 +42,7 @@ public class BashToolTests
         var failure = dialect == ShellDialect.Cmd ? "cmd /d /c exit 7" : "false";
 
         var result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command = builtin }), shell), CancellationToken.None);
-        Assert.False(result.IsError);
+        Assert.False(result.IsError, result.SingleText());
         Assert.Equal(dialect == ShellDialect.Cmd ? "selected-cmd" : "selected-posix", result.SingleText());
         result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command = pipeline }), shell), CancellationToken.None);
         Assert.False(result.IsError);
@@ -106,7 +106,7 @@ public class BashToolTests
         var tool = new BashTool(new ShellSpec(environment.FileName, "/c"));
         var command = $"\"{environment.FileName}\" /d /c echo quoted-executable";
         var result = await tool.ExecuteAsync(workspace.ContextFor(JsonSerializer.Serialize(new { command })), CancellationToken.None);
-        Assert.False(result.IsError);
+        Assert.False(result.IsError, result.SingleText());
         Assert.Equal("quoted-executable", result.SingleText());
         result = await tool.ExecuteAsync(workspace.ContextFor("""{"command":"for %i in (one two) do @echo %i"}"""), CancellationToken.None);
         Assert.False(result.IsError);
@@ -132,7 +132,7 @@ public class BashToolTests
         var results = await Task.WhenAll(
             tool.ExecuteAsync(workspace.ContextFor("""{"command":"echo %COMSPEC%"}""", cmdState), CancellationToken.None).AsTask(),
             tool.ExecuteAsync(workspace.ContextFor("""{"command":"printf '%s' \"$BASH_VERSION\""}""", bashState), CancellationToken.None).AsTask());
-        Assert.All(results, result => Assert.False(result.IsError));
+        Assert.All(results, result => Assert.False(result.IsError, result.SingleText()));
         Assert.EndsWith("cmd.exe", results[0].SingleText(), StringComparison.OrdinalIgnoreCase);
         Assert.Matches(@"^\d+\.\d+", results[1].SingleText());
         Assert.Equal(cmdDirectory, cmdState.CurrentDirectory, ignoreCase: true);

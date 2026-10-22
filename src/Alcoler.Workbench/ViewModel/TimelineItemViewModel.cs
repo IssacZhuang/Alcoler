@@ -3,6 +3,7 @@ using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Projections;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Workbench.ViewModel;
 
@@ -90,6 +91,21 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
 
     public bool HasImages => ImageMedia.Count > 0;
 
+    public bool HasFileChange => FileChange is { Added: > 0 } or { Removed: > 0 };
+
+    public bool HasAddedLines => FileChange is { Added: > 0 };
+
+    public bool HasRemovedLines => FileChange is { Removed: > 0 };
+
+    public string AddedLinesText => $"+{FileChange?.Added ?? 0}";
+
+    public string RemovedLinesText => $"-{FileChange?.Removed ?? 0}";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasFileChange), nameof(HasAddedLines), nameof(HasRemovedLines),
+        nameof(AddedLinesText), nameof(RemovedLinesText))]
+    private FileChangeStats? _fileChange;
+
     [ObservableProperty]
     private string _inputJson = string.Empty;
 
@@ -133,6 +149,7 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         Status = row.Status;
         StatusText = row.Status.ToString().ToLowerInvariant();
         Summary = GetSummary(row.Input);
+        FileChange = row.FileChange;
         IsError = row.IsError;
         DurationText = row.Duration is { } duration
             ? duration.TotalMilliseconds < 1000

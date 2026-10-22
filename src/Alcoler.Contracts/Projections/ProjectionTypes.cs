@@ -6,6 +6,7 @@ using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Subagents;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Contracts.Projections;
 
@@ -101,7 +102,8 @@ public sealed record ToolCallRow(
     IReadOnlyList<ToolResultBlock>? Output,
     bool IsError,
     TimeSpan? Duration,
-    DateTimeOffset StartedAt) : ConversationRow(RowId);
+    DateTimeOffset StartedAt,
+    FileChangeStats? FileChange = null) : ConversationRow(RowId);
 
 public sealed record SystemNoticeRow(
     string RowId,

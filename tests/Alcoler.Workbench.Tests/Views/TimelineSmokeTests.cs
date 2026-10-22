@@ -4,6 +4,7 @@ using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Tools;
 using Alcoler.Workbench.Controls;
 using Alcoler.Workbench.Stores;
 using Alcoler.Workbench.Ui;
@@ -409,6 +410,56 @@ public class TimelineSmokeTests
             window.Width = 900;
             Pump();
             Assert.True(body.Bounds.Height < narrowHeight);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void ToolCallRow_RendersFileChangeCountsAndHidesZeroSides()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 1000);
+        try
+        {
+            var row = new ToolCallRow("t1", StrongId.NewToolCallId(), "Edit",
+                JsonSerializer.SerializeToElement(new { file_path = "src/AgentRuntime.cs" }),
+                ToolCallStatus.Succeeded, [new ToolResultText("updated")], IsError: false,
+                Duration: TimeSpan.FromMilliseconds(20), StartedAt: DateTimeOffset.UtcNow,
+                FileChange: new FileChangeStats(2, 5));
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(row)], Reset: false));
+            Pump();
+
+            var toolItem = Assert.IsType<ToolCallItemViewModel>(Assert.Single(viewModel.Items));
+            var button = ToolHeader(view, toolItem);
+            var added = Assert.Single(button.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "+2");
+            var removed = Assert.Single(button.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "-5");
+            AssertWithin(added, button);
+            AssertWithin(removed, button);
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(),
+                [new RowUpserted(row with { FileChange = new FileChangeStats(0, 3) })], Reset: false));
+            Pump();
+            Assert.DoesNotContain(button.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "+0");
+            Assert.Contains(button.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "-3");
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(),
+                [new RowUpserted(row with { FileChange = new FileChangeStats(2, 0) })], Reset: false));
+            Pump();
+            Assert.Contains(button.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "+2");
+            Assert.DoesNotContain(button.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "-0");
         }
         finally
         {

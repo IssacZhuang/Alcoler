@@ -785,6 +785,38 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public void ToolRow_ExposesFileChangeStats()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var row = ToolRow("t1") with
+            {
+                ToolName = "Edit",
+                FileChange = new FileChangeStats(2, 5),
+            };
+            ApplyRows(viewModel, 1, true, row);
+            var tool = Assert.IsType<ToolCallItemViewModel>(Assert.Single(viewModel.Items));
+            Assert.True(tool.HasFileChange);
+            Assert.True(tool.HasAddedLines);
+            Assert.True(tool.HasRemovedLines);
+            Assert.Equal("+2", tool.AddedLinesText);
+            Assert.Equal("-5", tool.RemovedLinesText);
+
+            ApplyRows(viewModel, 2, false, row with { FileChange = new FileChangeStats(0, 3) });
+            Assert.True(tool.HasFileChange);
+            Assert.False(tool.HasAddedLines);
+            Assert.True(tool.HasRemovedLines);
+            Assert.Equal("+0", tool.AddedLinesText);
+            Assert.Equal("-3", tool.RemovedLinesText);
+
+            ApplyRows(viewModel, 3, false, row with { FileChange = null });
+            Assert.False(tool.HasFileChange);
+        }
+    }
+
+    [Fact]
     public void ThoughtLevelFromState_DoesNotResubmit()
     {
         var (viewModel, runtime, store) = Create();

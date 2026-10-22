@@ -1,4 +1,5 @@
 using Alcoler.Adapters.Tools;
+using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Tools;
 using Xunit;
 
@@ -372,6 +373,80 @@ public class EditToolTests
     }
 
     [Fact]
+    public async Task SuccessfulEdit_ReportsAddedAndRemovedLineCounts()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "code.txt");
+        await File.WriteAllTextAsync(path, "alpha\nbeta\ngamma");
+        var reads = new FileReadState();
+        await new ReadTool().ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "code.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+        var tool = new EditTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "code.txt", "old_string": "beta", "new_string": "BETA"}""") with { FileReads = reads },
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(new FileChangeStats(1, 1), result.FileChange);
+    }
+
+    [Fact]
+    public async Task DeletingLines_ReportsOnlyRemovedCount()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "code.txt");
+        await File.WriteAllTextAsync(path, "alpha\nbeta\ngamma");
+        var reads = new FileReadState();
+        await new ReadTool().ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "code.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+        var tool = new EditTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "code.txt", "old_string": "beta\n", "new_string": ""}""") with { FileReads = reads },
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(new FileChangeStats(0, 1), result.FileChange);
+    }
+
+    [Fact]
+    public async Task ReplaceAll_ReportsEveryChangedLine()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "code.txt");
+        await File.WriteAllTextAsync(path, "one beta\nother beta");
+        var reads = new FileReadState();
+        await new ReadTool().ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "code.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+        var tool = new EditTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "code.txt", "old_string": "beta", "new_string": "x", "replace_all": true}""") with { FileReads = reads },
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(new FileChangeStats(2, 2), result.FileChange);
+    }
+
+    [Fact]
+    public async Task CreatingFile_ReportsAddedLineCount()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new EditTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "fresh.txt", "old_string": "", "new_string": "one\ntwo"}"""),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(new FileChangeStats(2, 0), result.FileChange);
+    }
+
+    [Fact]
     public async Task PathEscapingWorkspace_ReturnsError()
     {
         using var workspace = new TempWorkspace();
@@ -383,5 +458,6 @@ public class EditToolTests
 
         Assert.True(result.IsError);
         Assert.Contains("escapes", result.SingleText());
+        Assert.Null(result.FileChange);
     }
 }

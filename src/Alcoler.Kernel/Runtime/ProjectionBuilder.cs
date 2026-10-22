@@ -146,7 +146,8 @@ public sealed class ProjectionBuilder
                             toolResult.Result.Content,
                             toolResult.Result.IsError,
                             toolResult.Duration,
-                            existing?.StartedAt ?? sequenced.OccurredAt), ops);
+                            existing?.StartedAt ?? sequenced.OccurredAt,
+                            toolResult.Result.FileChange), ops);
                         break;
                     }
 
@@ -310,7 +311,8 @@ public sealed class ProjectionBuilder
                 toolResult.Content,
                 toolResult.IsError,
                 existing?.Duration,
-                existing?.StartedAt ?? message.CreatedAt), ops);
+                existing?.StartedAt ?? message.CreatedAt,
+                existing?.FileChange), ops);
         }
     }
 

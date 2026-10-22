@@ -1,4 +1,5 @@
 using Alcoler.Adapters.Tools;
+using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Tools;
 using Xunit;
 
@@ -22,6 +23,7 @@ public class WriteToolTests
         Assert.Equal(
             "File created successfully at: sub/dir/new.txt (file state is current in your context \u2014 no need to Read it back)",
             result.SingleText());
+        Assert.Equal(new FileChangeStats(2, 0), result.FileChange);
     }
 
     [Fact]
@@ -63,6 +65,28 @@ public class WriteToolTests
         Assert.Equal(
             "The file a.txt has been updated successfully. (file state is current in your context \u2014 no need to Read it back)",
             result.SingleText());
+        Assert.Equal(new FileChangeStats(1, 1), result.FileChange);
+    }
+
+    [Fact]
+    public async Task Overwrite_ReportsLineChangesAgainstPreviousContent()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "a.txt");
+        await File.WriteAllTextAsync(path, "one\ntwo\nthree");
+        var reads = new FileReadState();
+        var reader = new ReadTool();
+        var tool = new WriteTool();
+
+        await reader.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "a.txt"}""") with { FileReads = reads },
+            CancellationToken.None);
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor("""{"file_path": "a.txt", "content": "one\nTWO\nthree\nfour"}""") with { FileReads = reads },
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(new FileChangeStats(2, 1), result.FileChange);
     }
 
     [Fact]

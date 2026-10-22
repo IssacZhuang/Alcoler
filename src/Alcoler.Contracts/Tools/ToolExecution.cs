@@ -40,20 +40,24 @@ public sealed record ToolExecutionContext(
     string? ToolOutputRoot = null,
     IProviderWebSearch? ProviderSearch = null);
 
+public sealed record FileChangeStats(int Added, int Removed);
+
 public sealed record ToolExecutionResult(
     IReadOnlyList<ToolResultBlock> Content,
     bool IsError = false,
     string? DisplaySummary = null,
     bool StopTurnAfterResult = false,
-    string? StructuredOutput = null)
+    string? StructuredOutput = null,
+    FileChangeStats? FileChange = null)
 {
     public static ToolExecutionResult Text(
         string text,
         bool isError = false,
         string? displaySummary = null,
         bool stopTurnAfterResult = false,
-        string? structuredOutput = null) =>
-        new([new ToolResultText(text)], isError, displaySummary, stopTurnAfterResult, structuredOutput);
+        string? structuredOutput = null,
+        FileChangeStats? fileChange = null) =>
+        new([new ToolResultText(text)], isError, displaySummary, stopTurnAfterResult, structuredOutput, fileChange);
 }
 
 public interface ITool
