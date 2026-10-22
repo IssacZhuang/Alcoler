@@ -14,3 +14,6 @@ obj/
 TestResults/
 *.binlog
 artifacts/
+
+# Windows reserved device name artifact
+nul
