@@ -72,6 +72,12 @@ public interface IAgentRuntime : IAsyncDisposable
         CancellationToken cancellationToken) =>
         ValueTask.FromException<int>(new NotSupportedException("This runtime does not support automatic session archiving."));
 
+    ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken) =>
+        ValueTask.FromException<int>(new NotSupportedException("This runtime does not support counting archived sessions."));
+
+    ValueTask<int> DeleteArchivedSessionsAsync(CancellationToken cancellationToken) =>
+        ValueTask.FromException<int>(new NotSupportedException("This runtime does not support deleting archived sessions."));
+
     ValueTask<Commands.CommandAck> SubmitAsync(Commands.ConversationCommand command, CancellationToken cancellationToken);
 
     event Action<SessionId, string>? SessionTitleChanged

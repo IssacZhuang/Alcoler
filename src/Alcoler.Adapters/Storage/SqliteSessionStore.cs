@@ -280,6 +280,100 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         }, cancellationToken);
     }
 
+    public ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken) =>
+        QueryAsync(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM session
+                WHERE parent_session_id IS NULL
+                  AND is_archived = 1
+                """;
+            return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }, cancellationToken);
+
+    public ValueTask<ArchivedSessionDeletion> DeleteArchivedSessionsAsync(CancellationToken cancellationToken) =>
+        QueryAsync(connection =>
+        {
+            using var transaction = connection.BeginTransaction();
+            int taskCount;
+            using (var count = connection.CreateCommand())
+            {
+                count.Transaction = transaction;
+                count.CommandText = """
+                    SELECT COUNT(*)
+                    FROM session
+                    WHERE parent_session_id IS NULL
+                      AND is_archived = 1
+                    """;
+                taskCount = Convert.ToInt32(count.ExecuteScalar(), CultureInfo.InvariantCulture);
+            }
+
+            using (var collect = connection.CreateCommand())
+            {
+                collect.Transaction = transaction;
+                collect.CommandText = """
+                    DROP TABLE IF EXISTS archived_cleanup_ids;
+                    CREATE TEMP TABLE archived_cleanup_ids (id TEXT PRIMARY KEY);
+                    INSERT INTO archived_cleanup_ids (id)
+                    WITH RECURSIVE doomed(id) AS (
+                        SELECT id FROM session WHERE is_archived = 1
+                        UNION
+                        SELECT child.id
+                        FROM session child
+                        JOIN doomed ON child.parent_session_id = doomed.id
+                    )
+                    SELECT id FROM doomed;
+                    """;
+                collect.ExecuteNonQuery();
+            }
+
+            using (var delete = connection.CreateCommand())
+            {
+                delete.Transaction = transaction;
+                delete.CommandText = """
+                    DELETE FROM message WHERE session_id IN (SELECT id FROM archived_cleanup_ids);
+                    DELETE FROM durable_event WHERE session_id IN (SELECT id FROM archived_cleanup_ids);
+                    DELETE FROM session WHERE id IN (SELECT id FROM archived_cleanup_ids);
+                    """;
+                delete.ExecuteNonQuery();
+            }
+
+            var deletedSessionIds = new List<SessionId>();
+            using (var select = connection.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = "SELECT id FROM archived_cleanup_ids";
+                using var reader = select.ExecuteReader();
+                while (reader.Read())
+                {
+                    deletedSessionIds.Add(new SessionId(reader.GetString(0)));
+                }
+            }
+
+            using (var drop = connection.CreateCommand())
+            {
+                drop.Transaction = transaction;
+                drop.CommandText = "DROP TABLE archived_cleanup_ids";
+                drop.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+
+            // VACUUM cannot run inside a transaction, and a locked database must not undo the deletion.
+            try
+            {
+                Execute(connection, "VACUUM;");
+                Execute(connection, "PRAGMA wal_checkpoint(TRUNCATE);");
+            }
+            catch (SqliteException)
+            {
+            }
+
+            return new ArchivedSessionDeletion(taskCount, deletedSessionIds);
+        }, cancellationToken);
+
     public ValueTask DeleteSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
         RunAsync(connection =>
         {

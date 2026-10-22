@@ -70,6 +70,37 @@ public class SessionArchiveRuntimeTests
         Assert.Equal(new[] { second.Id }, archived.Select(summary => summary.Id).ToArray());
     }
 
+    [Fact]
+    public async Task DeleteArchivedSessions_EvictsResidentArchivedSessionsAndKeepsActiveOnes()
+    {
+        await using var harness = TestHarness.Create();
+        var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, store);
+        var archived = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        var active = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        await runtime.SetSessionArchivedAsync(archived.Id, true, CancellationToken.None);
+        var artifacts = new FileArtifactStore(Path.Combine(harness.Root, "artifacts"));
+        var artifact = await artifacts.SaveAsync(
+            archived.Id, "capture.png", "image/png", new byte[] { 1 }, CancellationToken.None);
+        var outputDirectory = Path.Combine(harness.Root, "agent-output", archived.Id.Value);
+        Directory.CreateDirectory(outputDirectory);
+        await File.WriteAllTextAsync(Path.Combine(outputDirectory, "output.txt"), "log");
+
+        Assert.Equal(1, await runtime.CountArchivedSessionsAsync(CancellationToken.None));
+
+        var deleted = await runtime.DeleteArchivedSessionsAsync(CancellationToken.None);
+
+        Assert.Equal(1, deleted);
+        Assert.Null(await store.GetSessionAsync(archived.Id, CancellationToken.None));
+        Assert.NotNull(await store.GetSessionAsync(active.Id, CancellationToken.None));
+        Assert.Null(runtime.TryObserve(archived.Id));
+        Assert.NotNull(runtime.TryObserve(active.Id));
+        Assert.Null(await artifacts.TryLoadAsync(artifact.Uri, CancellationToken.None));
+        Assert.False(Directory.Exists(outputDirectory));
+        Assert.Equal(0, await runtime.CountArchivedSessionsAsync(CancellationToken.None));
+    }
+
     private static async Task AgeSessionAsync(SqliteSessionStore store, SessionId sessionId)
     {
         var record = Assert.IsType<SessionRecord>(await store.GetSessionAsync(sessionId, CancellationToken.None));

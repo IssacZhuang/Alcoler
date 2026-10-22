@@ -94,6 +94,24 @@ public sealed class FileArtifactStoreTests : IDisposable
         Assert.Null(await store.TryLoadAsync("alcoler-artifact://sess_none/missing.png", CancellationToken.None));
     }
 
+    [Fact]
+    public async Task DeleteSessionArtifacts_RemovesOnlyTheRequestedSession()
+    {
+        var store = NewStore();
+        var removed = await store.SaveAsync(
+            new SessionId("sess_removed"), "removed.png", "image/png", new byte[] { 1 }, CancellationToken.None);
+        var kept = await store.SaveAsync(
+            new SessionId("sess_kept"), "kept.png", "image/png", new byte[] { 2 }, CancellationToken.None);
+
+        await store.DeleteSessionArtifactsAsync(new SessionId("sess_removed"), CancellationToken.None);
+
+        Assert.False(Directory.Exists(Path.Combine(ArtifactsRoot, "sess_removed")));
+        Assert.Null(await store.TryLoadAsync(removed.Uri, CancellationToken.None));
+        Assert.NotNull(await store.TryLoadAsync(kept.Uri, CancellationToken.None));
+
+        await store.DeleteSessionArtifactsAsync(new SessionId("sess_removed"), CancellationToken.None);
+    }
+
     public void Dispose() => _temp.Dispose();
 
     private FileArtifactStore NewStore() => new(ArtifactsRoot);

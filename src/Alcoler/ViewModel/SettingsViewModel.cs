@@ -152,6 +152,13 @@ public sealed partial class SkillToggleViewModel : ObservableObject
     private bool _enabled;
 }
 
+public interface IArchivedSessionMaintenance
+{
+    ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken);
+
+    ValueTask<int> DeleteArchivedSessionsAsync(CancellationToken cancellationToken);
+}
+
 public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     private const string Dark = "dark";
@@ -168,6 +175,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public IReadOnlyList<ProviderTemplate> ProviderTemplates => WorkbenchModelCatalog.Templates;
 
     private readonly WorkbenchConfig _config;
+    private readonly IArchivedSessionMaintenance? _archivedSessions;
 
     public ObservableCollection<int> AutoArchiveDayOptions { get; } = [3, 7, 14, 30];
 
@@ -183,15 +191,18 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     }
 
     internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount,
-        SkillsCatalog? skillsCatalog = null)
-        : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount, skillsCatalog)
+        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null)
+        : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount, skillsCatalog,
+            archivedSessions)
     {
     }
 
     internal SettingsViewModel(WorkbenchConfig config, IReadOnlyList<ShellEnvironment> shells, bool isWindows,
-        Auth.ChatGptAccountService? chatGptAccount = null, SkillsCatalog? skillsCatalog = null)
+        Auth.ChatGptAccountService? chatGptAccount = null, SkillsCatalog? skillsCatalog = null,
+        IArchivedSessionMaintenance? archivedSessions = null)
     {
         _config = config;
+        _archivedSessions = archivedSessions;
         SupportsShellSelection = isWindows;
         ChatGpt = chatGptAccount is null ? null : new ChatGptAccountViewModel(chatGptAccount, ApplyChatGptModels);
         var choices = new List<ShellChoice> { new("Auto (Git Bash, then CMD)") };
@@ -279,6 +290,82 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public bool HasError => !string.IsNullOrEmpty(Error);
 
     partial void OnErrorChanged(string? value) => OnPropertyChanged(nameof(HasError));
+
+    public bool CanManageArchivedSessions => _archivedSessions is not null;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ArchivedSessionCountText))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteArchivedSessions))]
+    private int _archivedSessionCount;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ArchivedSessionCountText))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteArchivedSessions))]
+    private bool _isArchivedSessionCountLoading;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanDeleteArchivedSessions))]
+    private bool _isDeletingArchivedSessions;
+
+    public string ArchivedSessionCountText => IsArchivedSessionCountLoading
+        ? "Loading..."
+        : ArchivedSessionCount switch
+        {
+            0 => "No archived tasks",
+            1 => "1 archived task",
+            _ => $"{ArchivedSessionCount} archived tasks",
+        };
+
+    public bool CanDeleteArchivedSessions =>
+        _archivedSessions is not null &&
+        ArchivedSessionCount > 0 &&
+        !IsArchivedSessionCountLoading &&
+        !IsDeletingArchivedSessions;
+
+    public async Task LoadArchivedSessionCountAsync(CancellationToken cancellationToken = default)
+    {
+        if (_archivedSessions is null)
+        {
+            return;
+        }
+
+        IsArchivedSessionCountLoading = true;
+        try
+        {
+            ArchivedSessionCount = await _archivedSessions.CountArchivedSessionsAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Error = $"Could not count archived tasks: {exception.Message}";
+        }
+        finally
+        {
+            IsArchivedSessionCountLoading = false;
+        }
+    }
+
+    public async Task DeleteArchivedSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        if (_archivedSessions is null || IsDeletingArchivedSessions)
+        {
+            return;
+        }
+
+        IsDeletingArchivedSessions = true;
+        try
+        {
+            await _archivedSessions.DeleteArchivedSessionsAsync(cancellationToken);
+            ArchivedSessionCount = await _archivedSessions.CountArchivedSessionsAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Error = $"Could not delete archived tasks: {exception.Message}";
+        }
+        finally
+        {
+            IsDeletingArchivedSessions = false;
+        }
+    }
 
     [RelayCommand]
     private void AddProvider() => AddProviderFromTemplate(null);

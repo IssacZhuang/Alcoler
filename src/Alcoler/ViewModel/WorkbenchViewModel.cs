@@ -35,7 +35,7 @@ public sealed record ModelChoice(string ProviderId, string ModelId, string Displ
     }
 }
 
-public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
+public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, IArchivedSessionMaintenance
 {
     private readonly IAgentRuntime _runtime;
     private readonly SessionProjectionHub _hub;
@@ -390,6 +390,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
         var workspaceRoot = _sessionRoots.GetValueOrDefault(sessionId) ?? CurrentWorkspaceRoot;
         _sessionRoots.TryAdd(sessionId, workspaceRoot);
+        RevealWorkspace(workspaceRoot);
         CloseActive();
         Draft = null;
         var store = _hub.Acquire(sessionId);
@@ -466,6 +467,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public void ShowNewTask(string? workspaceRoot = null)
     {        ++_navigationVersion;
+        if (workspaceRoot is not null)
+        {
+            RevealWorkspace(workspaceRoot);
+        }
         var root = workspaceRoot ?? _focusedWorkspaceRoot
             ?? (Active is { } active ? _sessionRoots.GetValueOrDefault(active.SessionId) : null)
             ?? Sidebar.Groups.OrderByDescending(group => group.Sessions.Select(session => session.UpdatedAt).DefaultIfEmpty().Max())
@@ -682,6 +687,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             TransferDraftSelection(draft, handle.Id);
             SavePendingMode(handle.Id, draft.Composer.Mode);
             _sessionRoots[handle.Id] = handle.WorkspaceRoot;
+            RevealWorkspace(draft.WorkspaceRoot);
             var draftOwnerId = GetDraftDocumentOwnerId(draft);
             var browserDocuments = Documents.Items.Where(document => document.OwnerId == draftOwnerId
                 && string.Equals(document.WorkspaceRoot,
@@ -765,6 +771,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 GetNewDraftSelection(workspaceRoot)),
             CancellationToken.None);
         _sessionRoots[handle.Id] = workspaceRoot;
+        RevealWorkspace(workspaceRoot);
         await OpenSessionAsync(handle.Id);
         await Sidebar.RefreshAsync();
         return handle;
@@ -813,6 +820,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 _sessionRoots[summary.Id] = summary.WorkspaceRoot;
             }
 
+            var hiddenRoots = BuildRemovedWorkspaceRoots();
             var displayed = Sidebar.IsArchivedView
                 ? await _runtime.ListSessionsAsync(null, 200, SessionListKind.Archived, CancellationToken.None)
                 : active;
@@ -820,6 +828,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             {
                 return;
             }
+            displayed = hiddenRoots is { Count: > 0 }
+                ? displayed.Where(s => !IsWorkspaceRemoved(hiddenRoots, s.WorkspaceRoot)).ToArray()
+                : displayed;
             Sidebar.ApplySummaries(
             [
                 .. displayed.Select(s => new SessionSummaryViewModel(
@@ -832,7 +843,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             }
             if (_focusedWorkspaceRoot is null && Active is null && Draft is { } initial
                 && string.IsNullOrEmpty(initial.Composer.Draft) && !initial.Composer.IsSending
-                && active.OrderByDescending(summary => summary.UpdatedAt).FirstOrDefault() is { } recent)
+                && displayed.OrderByDescending(summary => summary.UpdatedAt).FirstOrDefault() is { } recent)
             {
                 ShowNewTask(recent.WorkspaceRoot);
             }
@@ -841,6 +852,67 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         {
             _refreshTitleOverrides.Remove(titles);
         }
+    }
+
+    /// <summary>
+    /// Removal only hides the sidebar entry; sessions stay stored and running, and the
+    /// group returns as soon as a task is opened or started in the folder again.
+    /// </summary>
+    public async Task RemoveWorkspaceAsync(string workspaceRoot)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        var root = DocumentViewModel.NormalizeWorkspaceRoot(workspaceRoot);
+        var removed = new HashSet<string>(
+            _composerConfig.RemovedWorkspaceRoots ?? (IReadOnlyList<string>)[],
+            StringComparer.OrdinalIgnoreCase)
+        {
+            root,
+        };
+        SaveComposerConfig(_composerConfig with { RemovedWorkspaceRoots = [.. removed] });
+        if (Active is { } active
+            && _sessionRoots.TryGetValue(active.SessionId, out var activeRoot)
+            && string.Equals(DocumentViewModel.NormalizeWorkspaceRoot(activeRoot), root, StringComparison.OrdinalIgnoreCase))
+        {
+            CloseActive();
+        }
+        if (_focusedWorkspaceRoot is { } focused
+            && string.Equals(DocumentViewModel.NormalizeWorkspaceRoot(focused), root, StringComparison.OrdinalIgnoreCase))
+        {
+            _focusedWorkspaceRoot = null;
+        }
+        await Sidebar.RefreshAsync();
+        if ((Draft is { } draft && string.Equals(DocumentViewModel.NormalizeWorkspaceRoot(draft.WorkspaceRoot), root, StringComparison.OrdinalIgnoreCase))
+            || (Active is null && Draft is null))
+        {
+            ShowNewTask(null);
+        }
+    }
+
+    private HashSet<string>? BuildRemovedWorkspaceRoots() =>
+        _composerConfig.RemovedWorkspaceRoots is { Count: > 0 } removed
+            ? new HashSet<string>(removed, StringComparer.OrdinalIgnoreCase)
+            : null;
+
+    private static bool IsWorkspaceRemoved(IReadOnlyCollection<string> removedRoots, string workspaceRoot) =>
+        removedRoots.Contains(DocumentViewModel.NormalizeWorkspaceRoot(workspaceRoot), StringComparer.OrdinalIgnoreCase);
+
+    private void RevealWorkspace(string workspaceRoot)
+    {
+        if (_composerConfig.RemovedWorkspaceRoots is not { } removed
+            || !IsWorkspaceRemoved(removed, workspaceRoot))
+        {
+            return;
+        }
+        var root = DocumentViewModel.NormalizeWorkspaceRoot(workspaceRoot);
+        SaveComposerConfig(_composerConfig with
+        {
+            RemovedWorkspaceRoots = removed
+                .Where(stored => !string.Equals(stored, root, StringComparison.OrdinalIgnoreCase))
+                .ToArray(),
+        });
     }
 
     public async Task SetSessionArchivedAsync(SessionId sessionId, bool archived)
@@ -861,6 +933,34 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
         Sidebar.IsArchivedView = !Sidebar.IsArchivedView;
         await Sidebar.RefreshAsync();
+    }
+
+    public ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken) =>
+        _disposed ? ValueTask.FromResult(0) : _runtime.CountArchivedSessionsAsync(cancellationToken);
+
+    public async ValueTask<int> DeleteArchivedSessionsAsync(CancellationToken cancellationToken)
+    {
+        if (_disposed)
+        {
+            return 0;
+        }
+
+        if (Active is { } active)
+        {
+            var archived = await _runtime.ListSessionsAsync(
+                null, int.MaxValue, SessionListKind.Archived, cancellationToken);
+            if (archived.Any(summary => summary.Id == active.SessionId))
+            {
+                ShowNewTask();
+                _sessionDrafts.Remove(active.SessionId);
+            }
+        }
+
+        var deleted = await Task.Run(
+            () => _runtime.DeleteArchivedSessionsAsync(cancellationToken).AsTask(),
+            cancellationToken);
+        await Sidebar.RefreshAsync();
+        return deleted;
     }
 
     private async Task TryAutoArchiveAsync()

@@ -245,6 +245,35 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task DeleteArchivedSessions_ClosesActiveArchivedSessionAndRefreshesSidebar()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store);
+        var archived = await runtime.CreateSessionAsync(new SessionOptions(_root, "Archived"), CancellationToken.None);
+        var active = await runtime.CreateSessionAsync(new SessionOptions(_root, "Active"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(archived.Id);
+        await workbench.SetSessionArchivedAsync(archived.Id, true);
+        scheduler.RunPending();
+
+        Assert.NotNull(workbench.Active);
+        Assert.Equal(1, await workbench.CountArchivedSessionsAsync(CancellationToken.None));
+
+        var deleted = await workbench.DeleteArchivedSessionsAsync(CancellationToken.None);
+
+        Assert.Equal(1, deleted);
+        Assert.Null(workbench.Active);
+        Assert.Null(await store.GetSessionAsync(archived.Id, CancellationToken.None));
+        Assert.NotNull(await store.GetSessionAsync(active.Id, CancellationToken.None));
+        Assert.Equal(
+            new[] { "Active" },
+            workbench.Sidebar.Groups.SelectMany(group => group.Sessions)
+                .Select(session => session.Title).ToArray());
+    }
+
+    [Fact]
     public async Task UnsentMode_AfterRuntimeRestart_RestoresSelectionWithoutChangingPersistedSessionPolicy()
     {
         var configPath = Path.Combine(_root, "config.json");

@@ -568,6 +568,23 @@
                   </Grid>
                 </StackPanel>
               </Border>
+              <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
+                      CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16"
+                      IsVisible="{Binding CanManageArchivedSessions}">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                  <StackPanel Spacing="4" VerticalAlignment="Center">
+                    <TextBlock Classes="fieldLabel" Text="Archived tasks" />
+                    <TextBlock Classes="description" Text="{Binding ArchivedSessionCountText}" />
+                    <TextBlock Classes="description"
+                               Text="Deleting archived tasks permanently removes their conversations and attachments. This cannot be undone." />
+                  </StackPanel>
+                  <Button x:Name="DeleteArchivedSessionsButton" Grid.Column="1" Classes="danger action" Content="Delete all"
+                          Click="OnDeleteArchivedSessionsClick"
+                          IsEnabled="{Binding CanDeleteArchivedSessions}"
+                          VerticalAlignment="Center"
+                          AutomationProperties.Name="Delete all archived tasks" />
+                </Grid>
+              </Border>
             </StackPanel>
           </ScrollViewer>
 

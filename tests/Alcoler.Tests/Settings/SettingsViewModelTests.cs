@@ -560,6 +560,98 @@ public class SettingsViewModelTests
         }
     }
 
+    [Fact]
+    public async Task ArchivedSessionCount_LoadsAndControlsDeleteAvailability()
+    {
+        var maintenance = new FakeArchivedSessionMaintenance(3);
+        var viewModel = new SettingsViewModel(
+            SampleConfig(), [], isWindows: true, archivedSessions: maintenance);
+
+        Assert.True(viewModel.CanManageArchivedSessions);
+        Assert.False(viewModel.CanDeleteArchivedSessions);
+        Assert.Equal("No archived tasks", viewModel.ArchivedSessionCountText);
+
+        await viewModel.LoadArchivedSessionCountAsync();
+
+        Assert.Equal(3, viewModel.ArchivedSessionCount);
+        Assert.Equal("3 archived tasks", viewModel.ArchivedSessionCountText);
+        Assert.True(viewModel.CanDeleteArchivedSessions);
+    }
+
+    [Fact]
+    public async Task DeleteArchivedSessions_RefreshesCountAndDisablesDelete()
+    {
+        var maintenance = new FakeArchivedSessionMaintenance(2);
+        var viewModel = new SettingsViewModel(
+            SampleConfig(), [], isWindows: true, archivedSessions: maintenance);
+        await viewModel.LoadArchivedSessionCountAsync();
+
+        await viewModel.DeleteArchivedSessionsAsync();
+
+        Assert.Equal(1, maintenance.DeleteCalls);
+        Assert.Equal(0, viewModel.ArchivedSessionCount);
+        Assert.Equal("No archived tasks", viewModel.ArchivedSessionCountText);
+        Assert.False(viewModel.CanDeleteArchivedSessions);
+    }
+
+    [Fact]
+    public async Task ArchivedSessionCount_WithoutMaintenanceIsUnavailable()
+    {
+        var viewModel = new SettingsViewModel(SampleConfig());
+
+        await viewModel.LoadArchivedSessionCountAsync();
+
+        Assert.False(viewModel.CanManageArchivedSessions);
+        Assert.False(viewModel.CanDeleteArchivedSessions);
+        Assert.Equal(0, viewModel.ArchivedSessionCount);
+    }
+
+    [AvaloniaFact]
+    public async Task SettingsDialog_DeleteArchivedSessionsRequiresConfirmation()
+    {
+        var owner = new Window();
+        owner.Show();
+        try
+        {
+            var maintenance = new FakeArchivedSessionMaintenance(2);
+            var result = Alcoler.Views.SettingsDialog.ShowAsync(
+                owner, SampleConfig(), archivedSessions: maintenance);
+            var settings = Assert.IsType<Alcoler.Views.SettingsDialog>(Assert.Single(owner.OwnedWindows));
+            var viewModel = Assert.IsType<SettingsViewModel>(settings.DataContext);
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Equal(2, viewModel.ArchivedSessionCount);
+
+            settings.FindControl<RadioButton>("SessionsTab")!.IsChecked = true;
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            var deleteButton = settings.FindControl<Button>("DeleteArchivedSessionsButton")!;
+            Assert.True(deleteButton.IsEnabled);
+
+            deleteButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            var confirm = Assert.IsType<Alcoler.Views.ConfirmDialog>(Assert.Single(settings.OwnedWindows));
+            Assert.Equal(0, maintenance.DeleteCalls);
+            confirm.FindControl<Button>("CancelButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Equal(0, maintenance.DeleteCalls);
+            Assert.Equal(2, viewModel.ArchivedSessionCount);
+
+            deleteButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            confirm = Assert.IsType<Alcoler.Views.ConfirmDialog>(Assert.Single(settings.OwnedWindows));
+            confirm.FindControl<Button>("ConfirmButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Equal(1, maintenance.DeleteCalls);
+            Assert.Equal(0, viewModel.ArchivedSessionCount);
+
+            settings.FindControl<Button>("CancelButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Null(await result);
+        }
+        finally
+        {
+            owner.Close();
+        }
+    }
+
     [AvaloniaFact]
     public async Task SettingsDialog_CloseCancelAndBackDiscardDrafts()
     {
@@ -667,6 +759,22 @@ public class SettingsViewModelTests
         finally
         {
             owner.Close();
+        }
+    }
+
+    private sealed class FakeArchivedSessionMaintenance(int count) : IArchivedSessionMaintenance
+    {
+        public int DeleteCalls { get; private set; }
+
+        public ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(count);
+
+        public ValueTask<int> DeleteArchivedSessionsAsync(CancellationToken cancellationToken)
+        {
+            DeleteCalls++;
+            var deleted = count;
+            count = 0;
+            return ValueTask.FromResult(deleted);
         }
     }
 }

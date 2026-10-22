@@ -74,6 +74,28 @@ public partial class SidebarView : UserControl
         }
     }
 
+    private async void OnRemoveProjectClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: SessionGroupViewModel group }
+            || DataContext is not WorkbenchViewModel viewModel)
+        {
+            return;
+        }
+        e.Handled = true;
+        if (group.HasRunningSessions && TopLevel.GetTopLevel(this) is Window owner)
+        {
+            var confirmed = await ConfirmDialog.ShowAsync(owner,
+                $"\"{group.DisplayTitle}\" still has a running task. It keeps running and stays stored; " +
+                "the project only leaves the sidebar until you start a task in this folder again.",
+                "Remove project");
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+        await viewModel.RemoveWorkspaceAsync(group.WorkspaceRoot);
+    }
+
     private void OnGroupClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Control { DataContext: SessionGroupViewModel group })
@@ -111,7 +133,7 @@ public partial class SidebarView : UserControl
             return;
         }
         var current = WorkbenchConfig.LoadOrDefault();
-        if (await SettingsDialog.ShowAsync(owner, current, viewModel.ChatGptAccount) is not { } saved)
+        if (await SettingsDialog.ShowAsync(owner, current, viewModel.ChatGptAccount, viewModel) is not { } saved)
         {
             return;
         }

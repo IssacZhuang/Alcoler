@@ -273,6 +273,91 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             .ConfigureAwait(false);
     }
 
+    public ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+        return _options.Store.CountArchivedSessionsAsync(cancellationToken);
+    }
+
+    public async ValueTask<int> DeleteArchivedSessionsAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+
+        var archived = await _options.Store
+            .ListSessionsAsync(null, int.MaxValue, SessionListKind.Archived, cancellationToken)
+            .ConfigureAwait(false);
+        var archivedIds = archived.Select(summary => summary.Id).ToHashSet();
+        foreach (var (sessionId, runtime) in _sessions.ToArray())
+        {
+            if ((runtime.IsArchived || archivedIds.Contains(sessionId)) &&
+                _sessions.TryRemove(sessionId, out var removed))
+            {
+                await removed.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        foreach (var (key, reference) in _subagentRuntimes.ToArray())
+        {
+            if (!archivedIds.Contains(key.Parent) || !_subagentRuntimes.TryRemove(key, out _))
+            {
+                continue;
+            }
+
+            if (reference.TryGetTarget(out var childRuntime))
+            {
+                await childRuntime.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        var deletion = await _options.Store.DeleteArchivedSessionsAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var sessionId in deletion.DeletedSessionIds)
+        {
+            try
+            {
+                await _options.Artifacts
+                    .DeleteSessionArtifactsAsync(sessionId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is NotSupportedException or IOException or UnauthorizedAccessException)
+            {
+            }
+
+            DeleteSessionOutputDirectory(_options.ToolOutputRoot, sessionId);
+            if (!string.Equals(
+                    _options.ToolOutputRoot, _options.SubagentOutputRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                DeleteSessionOutputDirectory(_options.SubagentOutputRoot, sessionId);
+            }
+        }
+
+        return deletion.ArchivedTaskCount;
+    }
+
+    private static void DeleteSessionOutputDirectory(string? root, SessionId sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return;
+        }
+
+        try
+        {
+            var fullRoot = Path.GetFullPath(root);
+            var directory = Path.GetFullPath(Path.Combine(fullRoot, sessionId.Value));
+            if (!string.Equals(Path.GetDirectoryName(directory), fullRoot, StringComparison.OrdinalIgnoreCase) ||
+                !Directory.Exists(directory))
+            {
+                return;
+            }
+
+            Directory.Delete(directory, recursive: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
     public async ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken)
     {
         if (!_sessions.TryGetValue(command.SessionId, out var runtime))

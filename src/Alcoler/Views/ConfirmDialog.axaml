@@ -1,0 +1,28 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Alcoler.Views.ConfirmDialog"
+        Title="Confirm"
+        Width="480" SizeToContent="Height"
+        CanResize="False" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource AlcolerBackground}">
+  <Window.Styles>
+    <Style Selector="TextBlock.message">
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="Button.action">
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="Padding" Value="16,7" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
+    </Style>
+  </Window.Styles>
+  <StackPanel Margin="24,20" Spacing="20">
+    <TextBlock x:Name="MessageText" Classes="message" />
+    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+      <Button x:Name="CancelButton" Classes="secondary action" Content="Cancel" Click="OnCancelClick" IsCancel="True" />
+      <Button x:Name="ConfirmButton" Classes="primary action" Click="OnConfirmClick" IsDefault="True" />
+    </StackPanel>
+  </StackPanel>
+</Window>

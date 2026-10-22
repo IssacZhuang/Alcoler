@@ -49,7 +49,8 @@ public sealed record WorkbenchComposerConfig(
     PermissionMode DefaultMode = PermissionMode.Build,
     IReadOnlyDictionary<string, PermissionMode>? PendingSessionModes = null,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, ModelSelection>>? ModelSelections = null,
-    IReadOnlyDictionary<string, ModelSelection>? RecentModelSelections = null)
+    IReadOnlyDictionary<string, ModelSelection>? RecentModelSelections = null,
+    IReadOnlyList<string>? RemovedWorkspaceRoots = null)
 {
     public const string DraftSessionKey = "__draft__";
 }

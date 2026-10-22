@@ -19,23 +19,45 @@ public partial class SettingsDialog : Window
     }
 
     internal SettingsDialog(WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null,
-        SkillsCatalog? skillsCatalog = null)
+        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null)
     {
         InitializeComponent();
-        _viewModel = new SettingsViewModel(current, chatGptAccount: chatGptAccount, skillsCatalog: skillsCatalog);
+        _viewModel = new SettingsViewModel(current, chatGptAccount: chatGptAccount, skillsCatalog: skillsCatalog,
+            archivedSessions: archivedSessions);
         DataContext = _viewModel;
         if (_viewModel.ChatGpt is { } chatGpt)
             chatGpt.OpenAuthorizeUrl = uri => Launcher.LaunchUriAsync(uri);
         ProvidersTab.IsChecked = true;
+        Opened += async (_, _) => await _viewModel.LoadArchivedSessionCountAsync();
         Closing += (_, e) => e.Cancel = _isSaving;
         Closed += (_, _) => _viewModel.Dispose();
         WindowChrome.Attach(this);
     }
 
-    public static async Task<WorkbenchConfig?> ShowAsync(Window owner, WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null)
+    public static async Task<WorkbenchConfig?> ShowAsync(Window owner, WorkbenchConfig current,
+        Auth.ChatGptAccountService? chatGptAccount = null, IArchivedSessionMaintenance? archivedSessions = null)
     {
-        var dialog = new SettingsDialog(current, chatGptAccount);
+        var dialog = new SettingsDialog(current, chatGptAccount, archivedSessions: archivedSessions);
         return await dialog.ShowDialog<WorkbenchConfig?>(owner);
+    }
+
+    private async void OnDeleteArchivedSessionsClick(object? sender, RoutedEventArgs e)
+    {
+        var count = _viewModel.ArchivedSessionCount;
+        if (count <= 0 || _viewModel.IsDeletingArchivedSessions)
+        {
+            return;
+        }
+
+        var message = count == 1
+            ? "This permanently deletes 1 archived task and its conversation. This cannot be undone."
+            : $"This permanently deletes {count} archived tasks and their conversations. This cannot be undone.";
+        if (!await ConfirmDialog.ShowAsync(this, message, "Delete"))
+        {
+            return;
+        }
+
+        await _viewModel.DeleteArchivedSessionsAsync();
     }
 
     private async void OnSaveClick(object? sender, RoutedEventArgs e)

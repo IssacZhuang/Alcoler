@@ -31,6 +31,8 @@ public sealed record SessionRecord(
 
 public sealed record StoredMessage(long Sequence, ConversationMessage Message);
 
+public sealed record ArchivedSessionDeletion(int ArchivedTaskCount, IReadOnlyList<SessionId> DeletedSessionIds);
+
 public interface ISessionStore
 {
     ValueTask InitializeAsync(CancellationToken cancellationToken);
@@ -62,6 +64,12 @@ public interface ISessionStore
         CancellationToken cancellationToken) =>
         ValueTask.FromException<int>(new NotSupportedException("This session store does not support automatic session archiving."));
 
+    ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken) =>
+        ValueTask.FromException<int>(new NotSupportedException("This session store does not support counting archived sessions."));
+
+    ValueTask<ArchivedSessionDeletion> DeleteArchivedSessionsAsync(CancellationToken cancellationToken) =>
+        ValueTask.FromException<ArchivedSessionDeletion>(new NotSupportedException("This session store does not support deleting archived sessions."));
+
     ValueTask DeleteSessionAsync(SessionId sessionId, CancellationToken cancellationToken);
 
     ValueTask AppendMessagesAsync(SessionId sessionId, IReadOnlyList<ConversationMessage> messages, long startingSequence, CancellationToken cancellationToken);
@@ -87,4 +95,7 @@ public interface IArtifactStore
         CancellationToken cancellationToken);
 
     ValueTask<ReadOnlyMemory<byte>?> TryLoadAsync(string artifactUri, CancellationToken cancellationToken);
+
+    ValueTask DeleteSessionArtifactsAsync(SessionId sessionId, CancellationToken cancellationToken) =>
+        ValueTask.FromException(new NotSupportedException("This artifact store does not support deleting session artifacts."));
 }

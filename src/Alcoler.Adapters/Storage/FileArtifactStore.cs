@@ -55,6 +55,20 @@ public sealed class FileArtifactStore : IArtifactStore
         return await File.ReadAllBytesAsync(filePath, cancellationToken).ConfigureAwait(false);
     }
 
+    public ValueTask DeleteSessionArtifactsAsync(SessionId sessionId, CancellationToken cancellationToken)
+    {
+        var session = ValidateSegment(sessionId.Value, nameof(sessionId));
+        var directory = Path.GetFullPath(Path.Combine(_root, session));
+        if (!PathGuard.IsUnderRoot(directory, _root) || !Directory.Exists(directory))
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.Delete(directory, recursive: true);
+        return ValueTask.CompletedTask;
+    }
+
     // "scheme://host/path" parsing would swallow the session id into the authority, so the reference format is parsed textually.
     private static bool TryParseArtifactUri(string artifactUri, out string session, out string fileName)
     {

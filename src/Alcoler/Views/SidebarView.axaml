@@ -107,6 +107,12 @@
               <StackPanel Margin="0,4,0,12">
                 <Grid ColumnDefinitions="*,Auto">
                   <Button Classes="groupHeader" Click="OnGroupClick" ToolTip.Tip="{Binding WorkspaceRoot}">
+                    <Button.ContextFlyout>
+                      <MenuFlyout>
+                        <MenuItem Header="Remove project" Click="OnRemoveProjectClick"
+                                  ToolTip.Tip="Hides this project from the sidebar; sessions are kept" />
+                      </MenuFlyout>
+                    </Button.ContextFlyout>
                     <Grid ColumnDefinitions="14,*,12" ColumnSpacing="8">
                       <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
                       <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" TextTrimming="CharacterEllipsis"

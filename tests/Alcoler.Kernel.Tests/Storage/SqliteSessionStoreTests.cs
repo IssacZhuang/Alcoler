@@ -406,6 +406,64 @@ public sealed class SqliteSessionStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task DeleteArchivedSessions_RemovesArchivedRootsAndTheirDescendantsOnly()
+    {
+        await using var store = await NewInitializedStoreAsync();
+        var archivedRoot = NewRecord(title: "archived", isArchived: true);
+        var archivedChild = NewRecord(title: "archived child") with { ParentSessionId = archivedRoot.Id };
+        var archivedGrandchild = NewRecord(title: "archived grandchild") with
+        {
+            ParentSessionId = archivedChild.Id,
+        };
+        var activeRoot = NewRecord(title: "active");
+        var activeChild = NewRecord(title: "active child") with { ParentSessionId = activeRoot.Id };
+        foreach (var record in new[] { archivedRoot, archivedChild, archivedGrandchild, activeRoot, activeChild })
+        {
+            await store.UpsertSessionAsync(record, CancellationToken.None);
+        }
+
+        await store.AppendMessagesAsync(
+            archivedRoot.Id, [NewMessage("archived")], 0, CancellationToken.None);
+        await store.AppendMessagesAsync(
+            archivedChild.Id, [NewMessage("child")], 0, CancellationToken.None);
+        await store.AppendMessagesAsync(
+            activeRoot.Id, [NewMessage("active")], 0, CancellationToken.None);
+        await store.AppendDurableEventsAsync(
+            [
+                NewEvent(archivedRoot.Id, 1, new SessionStartedEvent(
+                    archivedRoot.WorkspaceRoot, archivedRoot.Title, PermissionMode.Build, null)),
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(1, await store.CountArchivedSessionsAsync(CancellationToken.None));
+
+        var deletion = await store.DeleteArchivedSessionsAsync(CancellationToken.None);
+
+        Assert.Equal(1, deletion.ArchivedTaskCount);
+        Assert.Equal(
+            new[] { archivedGrandchild.Id.Value, archivedChild.Id.Value, archivedRoot.Id.Value }
+                .Order(StringComparer.Ordinal),
+            deletion.DeletedSessionIds.Select(id => id.Value).Order(StringComparer.Ordinal));
+        Assert.Null(await store.GetSessionAsync(archivedRoot.Id, CancellationToken.None));
+        Assert.Null(await store.GetSessionAsync(archivedChild.Id, CancellationToken.None));
+        Assert.Null(await store.GetSessionAsync(archivedGrandchild.Id, CancellationToken.None));
+        Assert.NotNull(await store.GetSessionAsync(activeRoot.Id, CancellationToken.None));
+        Assert.NotNull(await store.GetSessionAsync(activeChild.Id, CancellationToken.None));
+        Assert.Empty(await store.LoadMessagesAsync(archivedRoot.Id, CancellationToken.None));
+        Assert.Empty(await store.LoadMessagesAsync(archivedChild.Id, CancellationToken.None));
+        Assert.Empty(await store.LoadDurableEventsAsync(archivedRoot.Id, CancellationToken.None));
+        Assert.Single(await store.LoadMessagesAsync(activeRoot.Id, CancellationToken.None));
+        Assert.Equal(0, await store.CountArchivedSessionsAsync(CancellationToken.None));
+
+        var second = await store.DeleteArchivedSessionsAsync(CancellationToken.None);
+        Assert.Equal(0, second.ArchivedTaskCount);
+        Assert.Empty(second.DeletedSessionIds);
+
+        await using var raw = OpenRawConnection();
+        Assert.Equal(2L, ExecuteScalar(raw, "SELECT COUNT(*) FROM session"));
+    }
+
+    [Fact]
     public async Task ListSessions_ExcludesChildrenBeforeLimitAndWorkspaceFilter_AfterRestart()
     {
         var older = NewRecord(title: "older", updated: Iso("2026-10-01T00:00:00Z"));

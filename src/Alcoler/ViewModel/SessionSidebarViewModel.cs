@@ -93,6 +93,8 @@ public sealed partial class SessionGroupViewModel : ObservableObject
 
     public bool HasSessionOverflow => Sessions.Count > SessionPageSize;
 
+    public bool HasRunningSessions => Sessions.Any(session => session.IsRunning);
+
     public bool CanShowMore => VisibleSessions.Count < Sessions.Count;
 
     public bool CanCollapse => VisibleSessions.Count > SessionPageSize;

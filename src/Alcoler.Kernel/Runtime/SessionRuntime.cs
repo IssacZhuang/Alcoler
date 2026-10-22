@@ -172,6 +172,8 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     public string Title => _record.Title;
 
+    internal bool IsArchived => _record.IsArchived;
+
     public long Revision => Volatile.Read(ref _revision);
 
     public bool IsTurnActive => _turnMachine.IsBusy;
