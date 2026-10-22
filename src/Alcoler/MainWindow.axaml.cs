@@ -17,7 +17,13 @@ namespace Alcoler;
 public partial class MainWindow : Window
 {
     private static readonly TimeSpan PaneAnimationDuration = TimeSpan.FromMilliseconds(180);
+    private static readonly TimeSpan WorkbenchBannerDuration = TimeSpan.FromSeconds(5);
     private readonly Dictionary<ColumnDefinition, PaneAnimation> _columnAnimations = [];
+    private readonly DispatcherTimer _workbenchBannerTimer = new(DispatcherPriority.Background)
+    {
+        Interval = WorkbenchBannerDuration,
+    };
+    private bool _workbenchToastHovered;
     private double _sidebarWidth = 264;
     private double _sidePaneWidth;
     private double _terminalHeight;
@@ -35,6 +41,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent(true);
         WindowChrome.Attach(this);
+        _workbenchBannerTimer.Tick += OnWorkbenchBannerTimerTick;
         AddHandler(KeyDownEvent, OnShellKeyDown, RoutingStrategies.Tunnel);
         SizeChanged += (_, _) =>
         {
@@ -72,10 +79,12 @@ public partial class MainWindow : Window
         ObserveConversation();
         ApplyPaneVisibility();
         ApplyConversationLayout();
+        RestartWorkbenchBannerTimer();
     }
 
     protected override void OnClosed(EventArgs e)
     {
+        _workbenchBannerTimer.Stop();
         CancelColumnAnimation(ShellGrid.ColumnDefinitions[0]);
         CancelColumnAnimation(SidePaneColumn);
         if (_viewModel is not null)
@@ -130,6 +139,10 @@ public partial class MainWindow : Window
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName is nameof(WorkbenchViewModel.Banner) or nameof(WorkbenchViewModel.UnsentText))
+        {
+            RestartWorkbenchBannerTimer();
+        }
         if (e.PropertyName is nameof(WorkbenchViewModel.IsSidePaneVisible)
             or nameof(WorkbenchViewModel.IsTerminalVisible) or nameof(WorkbenchViewModel.IsSidebarVisible))
         {
@@ -467,6 +480,35 @@ public partial class MainWindow : Window
     }
 
     private void OnDismissWorkbenchBannerClick(object? sender, RoutedEventArgs e) => _viewModel?.ClearBanner();
+
+    private void OnWorkbenchBannerTimerTick(object? sender, EventArgs e)
+    {
+        _workbenchBannerTimer.Stop();
+        _viewModel?.ClearBanner();
+    }
+
+    private void OnWorkbenchToastPointerEntered(object? sender, PointerEventArgs e)
+    {
+        _workbenchToastHovered = true;
+        _workbenchBannerTimer.Stop();
+    }
+
+    private void OnWorkbenchToastPointerExited(object? sender, PointerEventArgs e)
+    {
+        _workbenchToastHovered = false;
+        RestartWorkbenchBannerTimer();
+    }
+
+    private void RestartWorkbenchBannerTimer()
+    {
+        _workbenchBannerTimer.Stop();
+        if (_workbenchToastHovered || _viewModel is not { } viewModel
+            || string.IsNullOrEmpty(viewModel.Banner) || !string.IsNullOrEmpty(viewModel.UnsentText))
+        {
+            return;
+        }
+        _workbenchBannerTimer.Start();
+    }
 
     private sealed record PaneAnimation(DispatcherTimer Timer);
 }

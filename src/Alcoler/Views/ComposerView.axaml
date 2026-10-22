@@ -95,26 +95,29 @@
         </ScrollViewer>
       </Border>
 
+      <Border x:Name="SkillPanel" IsVisible="False" MaxHeight="220" Margin="0,0,0,4"
+              Background="{DynamicResource AlcolerPopover}"
+              BorderBrush="{DynamicResource AlcolerSurfaceHigh}" BorderThickness="1"
+              CornerRadius="12" Padding="4" BoxShadow="0 4 12 0 #26000000">
+        <ListBox x:Name="SkillSuggestions" Classes="skillList" SelectionMode="Single" MaxHeight="212">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="local:ComposerSkillEntry">
+              <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+                <TextBlock Text="{Binding Name}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                           FontWeight="Medium" MaxWidth="180" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding Description}" FontSize="{DynamicResource AlcolerFontSmall}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                           Foreground="{DynamicResource AlcolerTextSecondary}" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Border>
+
       <Border x:Name="ComposerShell" Classes="composerShell"
               BorderThickness="0"
               CornerRadius="16" Padding="12">
         <StackPanel Spacing="12">
-          <Border x:Name="SkillPanel" IsVisible="False" MaxHeight="220"
-                  Background="{DynamicResource AlcolerSurface}" CornerRadius="8" Padding="4">
-            <ListBox x:Name="SkillSuggestions" Classes="skillList" SelectionMode="Single" MaxHeight="212">
-              <ListBox.ItemTemplate>
-                <DataTemplate x:DataType="local:ComposerSkillEntry">
-                  <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
-                    <TextBlock Text="{Binding Name}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}"
-                               FontWeight="Medium" MaxWidth="180" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="1" Text="{Binding Description}" FontSize="{DynamicResource AlcolerFontSmall}"
-                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
-                               Foreground="{DynamicResource AlcolerTextSecondary}" />
-                  </Grid>
-                </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
-          </Border>
           <ItemsControl ItemsSource="{Binding Composer.Attachments}" IsVisible="{Binding Composer.HasAttachments}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>

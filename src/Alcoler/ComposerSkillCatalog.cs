@@ -2,7 +2,10 @@ using Alcoler.Kernel.Skills;
 
 namespace Alcoler;
 
-public sealed record ComposerSkillEntry(string Name, string Description, string Path);
+public sealed record ComposerSkillEntry(string Name, string Description, string Path)
+{
+    public bool IsCommand { get; init; }
+}
 
 public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
 {

@@ -607,6 +607,69 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task Composer_PlanSuggestionCompletesToCommandWithoutSending()
+    {
+        using var harness = Show<ComposerView>();
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        harness.Window.KeyTextInput("/pl");
+        await PumpAsync();
+        var panel = FindNamed<Border>(harness.View, "SkillPanel");
+        var suggestions = FindNamed<ListBox>(harness.View, "SkillSuggestions");
+        Assert.True(panel.IsVisible);
+        var plan = Assert.IsType<ComposerSkillEntry>(suggestions.SelectedItem);
+        Assert.True(plan.IsCommand);
+        Assert.Equal("plan", plan.Name);
+
+        await PressAsync(harness, PhysicalKey.Tab);
+
+        Assert.Equal("/plan ", input.Text);
+        Assert.Equal("/plan ", harness.ViewModel.Composer.Draft);
+        Assert.False(panel.IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_PlanCommandShadowsSkillWithSameName()
+    {
+        using var harness = Show<ComposerView>();
+        WriteComposerSkill(harness, "plan");
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        harness.Window.KeyTextInput("/plan");
+        await PumpAsync();
+        var suggestions = FindNamed<ListBox>(harness.View, "SkillSuggestions");
+        var plan = Assert.Single(suggestions.Items.OfType<ComposerSkillEntry>(),
+            entry => entry.Name.Equals("plan", StringComparison.OrdinalIgnoreCase));
+        Assert.True(plan.IsCommand);
+        Assert.Equal(string.Empty, plan.Path);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_PlanCommandWithPrompt_SendsPromptInPlanMode()
+    {
+        using var harness = Show<ComposerView>();
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        input.Text = "/plan design the feature";
+        input.CaretIndex = input.Text.Length;
+        input.SelectionStart = input.CaretIndex;
+        input.SelectionEnd = input.CaretIndex;
+        await PumpAsync();
+
+        await PressAsync(harness, PhysicalKey.Enter);
+
+        var command = Assert.IsType<Contracts.Commands.SendTextCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("design the feature", command.Text);
+        Assert.Equal(PermissionMode.Plan, command.Mode);
+        Assert.Equal(PermissionMode.Plan, harness.ViewModel.Composer.Mode);
+        Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
+    }
+
+    [AvaloniaFact]
     public async Task Composer_SlashSuggestionPointerClickPreservesInputAndDoesNotSubmit()
     {
         using var harness = Show<ComposerView>();

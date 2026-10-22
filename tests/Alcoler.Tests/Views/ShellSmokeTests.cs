@@ -1,3 +1,4 @@
+using System.Reflection;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Stores;
@@ -57,6 +58,71 @@ public class ShellSmokeTests
         Assert.IsType<Alcoler.Views.InteractionAreaView>(Assert.Single(window.GetVisualDescendants().OfType<Alcoler.Views.InteractionAreaView>()));
         Assert.IsType<Alcoler.Views.ComposerView>(Assert.Single(window.GetVisualDescendants().OfType<Alcoler.Views.ComposerView>()));
         window.Close();
+    }
+
+    [AvaloniaFact]
+    public void WorkbenchBanner_FloatsOverContentWithoutDisplacingIt()
+    {
+        using var viewModel = CreateWorkbench();
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+            var composer = window.FindControl<Alcoler.Views.ComposerView>("MainComposer")!;
+            var toast = window.FindControl<Border>("WorkbenchToast")!;
+            var before = composer.TranslatePoint(default, window)!.Value;
+            Assert.False(toast.IsVisible);
+
+            viewModel.Banner = "Saved.";
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            Assert.True(toast.IsVisible);
+            Assert.Equal(before.Y, composer.TranslatePoint(default, window)!.Value.Y);
+            Assert.True(toast.TranslatePoint(default, window)!.Value.Y > 48);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void WorkbenchBanner_TimerPausesForRecoveryTextAndStopsWhenCleared()
+    {
+        using var viewModel = CreateWorkbench();
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            var timerField = Assert.Single(typeof(MainWindow)
+                .GetFields(BindingFlags.Instance | BindingFlags.NonPublic), field => field.FieldType == typeof(DispatcherTimer));
+            var timer = Assert.IsType<DispatcherTimer>(timerField.GetValue(window));
+            Assert.False(timer.IsEnabled);
+
+            viewModel.Banner = "Saved.";
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(timer.IsEnabled);
+            Assert.Equal(TimeSpan.FromSeconds(5), timer.Interval);
+
+            viewModel.UnsentText = "Original prompt";
+            Dispatcher.UIThread.RunJobs();
+            Assert.False(timer.IsEnabled);
+
+            viewModel.UnsentText = null;
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(timer.IsEnabled);
+
+            viewModel.ClearBanner();
+            Dispatcher.UIThread.RunJobs();
+            Assert.False(timer.IsEnabled);
+        }
+        finally
+        {
+            window.Close();
+        }
     }
 
     [AvaloniaFact]

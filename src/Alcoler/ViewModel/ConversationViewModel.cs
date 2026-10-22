@@ -483,6 +483,23 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             return;
         }
+        if (ComposerCommands.TryParse(Composer.Draft, out var command))
+        {
+            if (Composer.IsTurnActive)
+            {
+                Composer.InputError = "Stop the active turn before changing permissions.";
+                return;
+            }
+            Composer.Mode = PermissionMode.Plan;
+            if (command.Prompt.Length == 0)
+            {
+                Composer.InputError = null;
+                Composer.Draft = string.Empty;
+                return;
+            }
+            Composer.InputError = null;
+            Composer.Draft = command.Prompt;
+        }
         var text = Composer.Draft;
         var selection = CurrentSelection;
         var submissionSequence = NextSubmissionSequence?.Invoke() ?? 0;

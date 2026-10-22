@@ -55,6 +55,49 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Draft_PlanCommandWithPrompt_CreatesPlanSessionAndSendsOnlyThePrompt()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, Reply("Planning."));
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        var draft = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
+        draft.Composer.Draft = "/plan design the feature";
+
+        await draft.SendAsync();
+
+        var persisted = Assert.Single(await runtime.ListSessionsAsync(null, 200, CancellationToken.None));
+        Assert.Equal(PermissionMode.Plan, persisted.PermissionMode);
+        Assert.Empty(draft.Composer.Draft);
+        var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
+        await WaitUntilAsync(() => conversation.Items.OfType<AssistantMessageItemViewModel>()
+            .Any(item => item.MarkdownText == "Planning." && !item.IsStreaming), scheduler);
+        Assert.Equal("design the feature",
+            Assert.Single(conversation.Items.OfType<UserMessageItemViewModel>()).Text);
+    }
+
+    [Fact]
+    public async Task Draft_PlanCommandWithoutPrompt_OnlySelectsPlanMode()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store);
+        using var workbench = new WorkbenchViewModel(runtime, new QueuedUiScheduler(), new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        var draft = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
+        draft.Composer.Draft = "/plan";
+
+        await draft.SendAsync();
+
+        Assert.Equal(PermissionMode.Plan, draft.Composer.Mode);
+        Assert.Empty(draft.Composer.Draft);
+        Assert.Null(draft.CreatedSessionId);
+        Assert.Empty(await runtime.ListSessionsAsync(null, 200, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ForkFromAssistantMessage_OpensTheChildAndAddsItToTheSidebar()
     {
         await using var store = new SqliteSessionStore(DatabasePath);

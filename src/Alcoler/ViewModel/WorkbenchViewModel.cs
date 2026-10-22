@@ -667,6 +667,18 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             await OpenSessionAsync(existing);
             return;
         }
+        if (ComposerCommands.TryParse(draft.Composer.Draft, out var command))
+        {
+            draft.Composer.Mode = PermissionMode.Plan;
+            if (command.Prompt.Length == 0)
+            {
+                draft.Composer.InputError = null;
+                draft.Composer.Draft = string.Empty;
+                return;
+            }
+            draft.Composer.InputError = null;
+            draft.Composer.Draft = command.Prompt;
+        }
         var text = draft.Composer.Draft;
         var mode = draft.Composer.Mode;
         var selection = draft.Selection;

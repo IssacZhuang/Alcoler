@@ -140,25 +140,27 @@ public partial class SidebarView : UserControl
         ThemeSelector.Apply(saved.Theme);
         viewModel.ApplySettings(saved);
         await viewModel.Sidebar.RefreshAsync();
-        var mcpChanged = McpServersChanged(current, saved);
-        var skillsChanged = SkillsChanged(current, saved);
-        var searchChanged = !string.Equals(current.BraveApiKey, saved.BraveApiKey, StringComparison.Ordinal);
-        if (searchChanged)
+        if (AppliedSettingsBanner(current, saved) is { } banner)
         {
-            viewModel.Banner = "Web search settings saved. Restart Alcoler to apply them.";
+            viewModel.Banner = banner;
         }
-        else if (mcpChanged)
+    }
+
+    internal static string? AppliedSettingsBanner(WorkbenchConfig before, WorkbenchConfig after)
+    {
+        if (!string.Equals(before.BraveApiKey, after.BraveApiKey, StringComparison.Ordinal))
         {
-            viewModel.Banner = "MCP settings saved. They apply to new sessions; open sessions keep their current tools.";
+            return "Web search settings saved. Restart Alcoler to apply them.";
         }
-        else if (skillsChanged)
+        if (McpServersChanged(before, after))
         {
-            viewModel.Banner = "Skill settings applied.";
+            return "MCP settings saved. They apply to new sessions; open sessions keep their current tools.";
         }
-        else if (current.IntegratedTerminalShell != saved.IntegratedTerminalShell)
+        if (before.IntegratedTerminalShell != after.IntegratedTerminalShell)
         {
-            viewModel.Banner = "Shell preference saved. It applies to new sessions; existing sessions keep their shell.";
+            return "Shell preference saved. It applies to new sessions; existing sessions keep their shell.";
         }
+        return null;
     }
 
     internal static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
@@ -167,17 +169,11 @@ public partial class SidebarView : UserControl
     internal static bool McpServersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
         SerializeMcpSettings(before) != SerializeMcpSettings(after);
 
-    internal static bool SkillsChanged(WorkbenchConfig before, WorkbenchConfig after) =>
-        SerializeSkillSettings(before) != SerializeSkillSettings(after);
-
     private static string SerializeProviderSettings(WorkbenchConfig config) =>
         JsonSerializer.Serialize(new WorkbenchConfig(config.Providers, config.DefaultModel), WorkbenchConfig.JsonOptions);
 
     private static string SerializeMcpSettings(WorkbenchConfig config) =>
         JsonSerializer.Serialize(new WorkbenchConfig([], McpServers: config.McpServers), WorkbenchConfig.JsonOptions);
-
-    private static string SerializeSkillSettings(WorkbenchConfig config) =>
-        string.Join('\n', (config.DisabledSkillPaths ?? []).OrderBy(path => path, StringComparer.OrdinalIgnoreCase));
 
     private async void OnRefreshClick(object? sender, RoutedEventArgs e)
     {

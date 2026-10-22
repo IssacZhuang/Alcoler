@@ -375,6 +375,55 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public async Task SendAsync_PlanCommandWithPrompt_SendsPromptInPlanMode()
+    {
+        var (viewModel, runtime, store) = Create();
+        viewModel.Composer.Draft = "/plan design the feature";
+
+        await viewModel.SendAsync();
+
+        var command = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
+        Assert.Equal("design the feature", command.Text);
+        Assert.Equal(PermissionMode.Plan, command.Mode);
+        Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+        Assert.Equal(string.Empty, viewModel.Composer.Draft);
+        store.Dispose();
+    }
+
+    [Fact]
+    public async Task SendAsync_PlanCommandWithoutPrompt_OnlySelectsPlanMode()
+    {
+        var (viewModel, runtime, store) = Create();
+        viewModel.Composer.Draft = "/plan";
+
+        await viewModel.SendAsync();
+
+        Assert.Empty(runtime.Submitted);
+        Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+        Assert.Equal(string.Empty, viewModel.Composer.Draft);
+        Assert.Null(viewModel.Composer.InputError);
+        store.Dispose();
+    }
+
+    [Fact]
+    public async Task SendAsync_PlanCommandDuringActiveTurn_RejectsWithoutSubmitting()
+    {
+        var (viewModel, runtime, store) = Create();
+        var state = TestSnapshots.State(TurnPhase.Streaming);
+        viewModel.ApplyUpdate(new ProjectionUpdate(2, state, [new StatePatched(state)], Reset: false));
+        Assert.True(viewModel.Composer.IsTurnActive);
+        viewModel.Composer.Draft = "/plan do it";
+
+        await viewModel.SendAsync();
+
+        Assert.Empty(runtime.Submitted);
+        Assert.Equal("/plan do it", viewModel.Composer.Draft);
+        Assert.NotNull(viewModel.Composer.InputError);
+        Assert.Equal(PermissionMode.Build, viewModel.Composer.Mode);
+        store.Dispose();
+    }
+
+    [Fact]
     public void UserMessageItem_CarriesRewindAffordance()
     {
         var (viewModel, _, store) = Create();

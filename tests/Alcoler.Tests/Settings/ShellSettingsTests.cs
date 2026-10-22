@@ -99,6 +99,21 @@ public sealed class ShellSettingsTests
     }
 
     [Fact]
+    public void AppliedSettingsBanner_IgnoresSkillAndThemeChanges()
+    {
+        var config = new WorkbenchConfig([]);
+
+        Assert.Null(SidebarView.AppliedSettingsBanner(config, config with { DisabledSkillPaths = ["C:/skills/demo/SKILL.md"] }));
+        Assert.Null(SidebarView.AppliedSettingsBanner(config, config with { Theme = "light" }));
+        Assert.Contains("Web search", SidebarView.AppliedSettingsBanner(config, config with { BraveApiKey = "key" }));
+        Assert.Contains("MCP", SidebarView.AppliedSettingsBanner(config, config with
+        {
+            McpServers = [new WorkbenchMcpServerConfig("server", "command")],
+        }));
+        Assert.Contains("Shell", SidebarView.AppliedSettingsBanner(config, config with { IntegratedTerminalShell = Cmd }));
+    }
+
+    [Fact]
     public void ShellAndMcpOnlyChanges_DoNotCountAsProviderChanges()
     {
         var config = new WorkbenchConfig([]);

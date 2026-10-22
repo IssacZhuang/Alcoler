@@ -494,14 +494,29 @@ public partial class ComposerView : UserControl
             return;
         }
         _historyRecallText = null;
-        if (_recallingHistory || IsComposing || ViewModel is not { } host || string.IsNullOrWhiteSpace(host.WorkspaceRoot)
+        if (_recallingHistory || IsComposing || ViewModel is not { } host
             || ActiveSkillToken() is not { } token || token.Token == _dismissedSkillToken)
         {
             SkillPanel.IsVisible = false;
             return;
         }
         _dismissedSkillToken = null;
-        var entries = _skills.Query(host.WorkspaceRoot, token.Token, _workbench?.DisabledSkillPaths);
+        List<ComposerSkillEntry> entries = [];
+        if (ComposerCommands.MatchesSuggestion(token.Token))
+        {
+            entries.Add(new ComposerSkillEntry(ComposerCommands.PlanCommandName, ComposerCommands.PlanDescription, string.Empty)
+            {
+                IsCommand = true,
+            });
+        }
+        if (!string.IsNullOrWhiteSpace(host.WorkspaceRoot))
+        {
+            foreach (var skill in _skills.Query(host.WorkspaceRoot, token.Token, _workbench?.DisabledSkillPaths))
+            {
+                if (!ComposerCommands.IsBuiltIn(skill.Name))
+                    entries.Add(skill);
+            }
+        }
         SkillSuggestions.ItemsSource = entries;
         SkillSuggestions.SelectedIndex = entries.Count > 0 ? 0 : -1;
         SkillPanel.IsVisible = entries.Count > 0;
