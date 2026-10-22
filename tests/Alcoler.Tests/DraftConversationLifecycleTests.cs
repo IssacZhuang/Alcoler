@@ -441,12 +441,12 @@ public sealed class DraftConversationLifecycleTests
     }
 
     [Fact]
-    public void InvalidSavedModes_DefaultSafelyToBuild()
+    public void InvalidSavedModes_DefaultSafelyToFullAccess()
     {
         using var workbench = new WorkbenchViewModel(new DraftRuntime(), _scheduler,
             new WorkbenchConfig([], Composer: new WorkbenchComposerConfig((PermissionMode)999)));
 
-        Assert.Equal(PermissionMode.Build, workbench.Draft!.Composer.Mode);
+        Assert.Equal(PermissionMode.Yolo, workbench.Draft!.Composer.Mode);
     }
 
     [Fact]

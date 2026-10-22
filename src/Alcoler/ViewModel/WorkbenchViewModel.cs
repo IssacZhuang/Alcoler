@@ -86,7 +86,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         var composerConfig = config.Composer ?? new WorkbenchComposerConfig();
         _composerConfig = composerConfig with
         {
-            DefaultMode = Enum.IsDefined(composerConfig.DefaultMode) ? composerConfig.DefaultMode : PermissionMode.Build,
+            DefaultMode = Enum.IsDefined(composerConfig.DefaultMode) ? composerConfig.DefaultMode : PermissionMode.Yolo,
             PendingSessionModes = composerConfig.PendingSessionModes?
                 .Where(pair => Enum.IsDefined(pair.Value)).ToDictionary(),
         };

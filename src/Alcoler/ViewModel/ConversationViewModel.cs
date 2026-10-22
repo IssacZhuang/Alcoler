@@ -113,7 +113,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private bool _isWorking;
 
     [ObservableProperty]
-    private PermissionMode _mode = PermissionMode.Build;
+    private PermissionMode _mode = PermissionMode.Yolo;
 
     [ObservableProperty]
     private string _modelText = string.Empty;

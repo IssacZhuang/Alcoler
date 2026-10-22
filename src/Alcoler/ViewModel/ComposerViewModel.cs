@@ -140,7 +140,7 @@ public sealed partial class ComposerViewModel : ObservableObject
     private string _draft = string.Empty;
 
     [ObservableProperty]
-    private PermissionMode _mode = PermissionMode.Build;
+    private PermissionMode _mode = PermissionMode.Yolo;
 
     [ObservableProperty]
     private bool _isTurnActive;
@@ -149,7 +149,7 @@ public sealed partial class ComposerViewModel : ObservableObject
     private bool _isSending;
 
     [ObservableProperty]
-    private PermissionMode _sessionMode = PermissionMode.Build;
+    private PermissionMode _sessionMode = PermissionMode.Yolo;
 
     public string ModeLabel => Mode == PermissionMode.Yolo ? "Full access" : Mode.ToString();
 

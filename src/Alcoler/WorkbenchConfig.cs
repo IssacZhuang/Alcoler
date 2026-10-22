@@ -46,7 +46,7 @@ public sealed record WorkbenchProviderConfig(
 public sealed record WorkbenchDefaultModelConfig(string ProviderId, string ModelId);
 
 public sealed record WorkbenchComposerConfig(
-    PermissionMode DefaultMode = PermissionMode.Build,
+    PermissionMode DefaultMode = PermissionMode.Yolo,
     IReadOnlyDictionary<string, PermissionMode>? PendingSessionModes = null,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, ModelSelection>>? ModelSelections = null,
     IReadOnlyDictionary<string, ModelSelection>? RecentModelSelections = null,

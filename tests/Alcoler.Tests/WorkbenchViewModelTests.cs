@@ -291,7 +291,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
             await workbench.OpenSessionAsync(session.Id);
             await WaitUntilAsync(() => workbench.Active!.Title.Length > 0, scheduler);
             workbench.Active!.Composer.Mode = PermissionMode.Plan;
-            Assert.Equal(PermissionMode.Build, Assert.Single(await runtime.ListSessionsAsync(null, 200, CancellationToken.None)).PermissionMode);
+            Assert.Equal(PermissionMode.Yolo, Assert.Single(await runtime.ListSessionsAsync(null, 200, CancellationToken.None)).PermissionMode);
             await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
         }
         await using var reopenedStore = new SqliteSessionStore(DatabasePath);
@@ -306,7 +306,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
         var conversation = restarted.Active!;
         Assert.Equal(PermissionMode.Plan, conversation.Composer.Mode);
-        Assert.Equal(PermissionMode.Build, conversation.Composer.SessionMode);
+        Assert.Equal(PermissionMode.Yolo, conversation.Composer.SessionMode);
         conversation.Composer.Draft = "Continue in plan mode.";
         await conversation.SendAsync();
         await WaitUntilAsync(() => conversation.Items.OfType<AssistantMessageItemViewModel>()

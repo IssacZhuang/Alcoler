@@ -22,7 +22,7 @@ public enum SessionListKind
 public sealed record SessionOptions(
     string WorkspaceRoot,
     string? Title = null,
-    PermissionMode PermissionMode = PermissionMode.Build,
+    PermissionMode PermissionMode = PermissionMode.Yolo,
     ModelSelection? ModelSelection = null,
     SessionId? ParentSessionId = null,
     ShellEnvironment? Shell = null);
