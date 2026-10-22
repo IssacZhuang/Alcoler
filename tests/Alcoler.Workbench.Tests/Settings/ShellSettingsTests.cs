@@ -99,14 +99,23 @@ public sealed class ShellSettingsTests
     }
 
     [Fact]
-    public void ShellOnlyChanges_DoNotRequireProviderRestart()
+    public void ShellAndMcpOnlyChanges_DoNotCountAsProviderChanges()
     {
         var config = new WorkbenchConfig([]);
         Assert.False(SidebarView.ProvidersChanged(config, config with { IntegratedTerminalShell = Cmd }));
         Assert.False(SidebarView.ProvidersChanged(config, config with { Theme = "light", IntegratedTerminalShell = GitBash }));
-        Assert.True(SidebarView.ProvidersChanged(config, config with
+        Assert.False(SidebarView.ProvidersChanged(config, config with
         {
             McpServers = [new WorkbenchMcpServerConfig("server", "command")],
+        }));
+        Assert.True(SidebarView.McpServersChanged(config, config with
+        {
+            McpServers = [new WorkbenchMcpServerConfig("server", "command")],
+        }));
+        Assert.True(SidebarView.ProvidersChanged(config, config with
+        {
+            Providers = [new WorkbenchProviderConfig("openai-compatible", "https://example.test/v1", "key",
+                [new WorkbenchModelConfig("model")])],
         }));
     }
 

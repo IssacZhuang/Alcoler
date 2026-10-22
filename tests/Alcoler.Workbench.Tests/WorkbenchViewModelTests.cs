@@ -319,6 +319,23 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public void ApplySettings_RefreshesModelChoicesForNewSessions()
+    {
+        using var workbench = new WorkbenchViewModel(
+            new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        var updated = new WorkbenchConfig([
+            new WorkbenchProviderConfig("openai-compatible", "https://example.test/v1", "key", [
+                new WorkbenchModelConfig("first", ReasoningLevels: ["low", "high"]),
+                new WorkbenchModelConfig("second", ReasoningLevels: ["low", "medium", "high"]),
+            ], Id: "custom"),
+        ], new WorkbenchDefaultModelConfig("custom", "first"));
+
+        workbench.ApplySettings(updated);
+
+        Assert.Equal(["first", "second"], workbench.ModelChoices.Select(choice => choice.ModelId));
+    }
+
+    [Fact]
     public void DocumentLauncherAndGenericOpen_SynchronizeVisibilityWithoutImplicitGitOrBottomTerminal()
     {
         using var workbench = new WorkbenchViewModel(

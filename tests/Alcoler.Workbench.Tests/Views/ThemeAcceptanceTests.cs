@@ -93,6 +93,11 @@ public sealed class ThemeAcceptanceTests
         try
         {
             await CheckAsync(window, $"main-{ThemeName(light)}-draft");
+            var brandIcon = Named<Image>(window, "PART_BrandIcon");
+            Assert.NotNull(brandIcon.Source);
+            Assert.True(brandIcon.IsEffectivelyVisible);
+            Assert.Equal(new Size(64, 64), brandIcon.Source.Size);
+            Assert.Equal(new Size(20, 20), brandIcon.Bounds.Size);
             workbench.Active = new ConversationViewModel(runtime, store);
             workbench.Sidebar.SetActive(id);
             workbench.Active.Composer.Draft = "A readable follow-up message";

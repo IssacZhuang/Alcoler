@@ -165,6 +165,35 @@ public class ModelSelectionRuntimeTests
         Assert.InRange(options.MaxOutputTokens!.Value, 1, 3000);
     }
 
+    [Fact]
+    public async Task ProviderConfigurationUpdate_AppliesToNewSessionsAndKeepsResidentSessionsRunnable()
+    {
+        await using var fixture = await Fixture.Create();
+        var first = new CapturingModel("first");
+        var second = new CapturingModel("second");
+        var firstProvider = new ScriptedModelProvider(first, "first");
+        var secondProvider = new ScriptedModelProvider(second, "second");
+        await using var runtime = fixture.Runtime([firstProvider], new ModelSelection("first", "model"));
+
+        var resident = await runtime.CreateSessionAsync(new SessionOptions(fixture.Root), CancellationToken.None);
+        runtime.ApplyProviderConfiguration([firstProvider, secondProvider], new ModelSelection("second", "model"));
+
+        var fresh = await runtime.CreateSessionAsync(new SessionOptions(fixture.Root), CancellationToken.None);
+        Assert.Equal(new ModelSelection("second", "model"),
+            (await fixture.Store.GetSessionAsync(fresh.Id, CancellationToken.None))!.ModelSelection);
+
+        using var residentProjection = runtime.Subscribe(resident.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), resident.Id, 0, "resident"), CancellationToken.None);
+        await WaitForTurn(residentProjection, expectedCompletedAssistantMessages: 1);
+
+        using var freshProjection = runtime.Subscribe(fresh.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), fresh.Id, 0, "fresh"), CancellationToken.None);
+        await WaitForTurn(freshProjection, expectedCompletedAssistantMessages: 1);
+
+        Assert.Single(first.Requests);
+        Assert.Single(second.Requests);
+    }
+
     private static async Task WaitForTurn(IConversationProjection projection, int expectedCompletedAssistantMessages)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
