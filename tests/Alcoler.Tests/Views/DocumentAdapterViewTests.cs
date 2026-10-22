@@ -302,11 +302,13 @@ public sealed class DocumentAdapterViewTests : IDisposable
 
             var assistantItem = Assert.Single(transcript.Conversation.Items.OfType<AssistantMessageItemViewModel>());
             var toolItem = Assert.Single(transcript.Conversation.Items.OfType<ToolCallItemViewModel>());
+            var streamingTail = Assert.Single(childTimeline.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                block => block.Classes.Contains("streamingTail"));
+            Assert.True(streamingTail.IsEffectivelyVisible);
+            Assert.Equal(textPart.Text, streamingTail.Text);
+            Assert.Equal(textPart.Text, assistantItem.StreamingTail);
             var markdown = Assert.Single(childTimeline.GetVisualDescendants().OfType<ConversationMarkdown>());
-            Assert.True(markdown.IsEffectivelyVisible);
-            Assert.Equal(textPart.Text, markdown.Markdown);
-            Assert.Contains(markdown.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
-                block => block.IsEffectivelyVisible && block.Text == textPart.Text);
+            Assert.False(markdown.IsEffectivelyVisible);
             var thinking = Assert.Single(childTimeline.GetVisualDescendants().OfType<Expander>(),
                 expander => expander.Classes.Contains("thinkingBlock"));
             var thinkingToggle = Assert.Single(thinking.GetVisualDescendants().OfType<ToggleButton>(),
@@ -340,14 +342,14 @@ public sealed class DocumentAdapterViewTests : IDisposable
             var updatedText = textPart with { Text = "The child review now includes a live update." };
             childProjection.Emit(new ConversationDelta(2,
                 [new RowUpserted(assistant with { Parts = [updatedReasoning, updatedText] })]));
-            await WaitUntilAsync(window, () => markdown.Markdown == updatedText.Text
+            await WaitUntilAsync(window, () => streamingTail.Text == updatedText.Text
                 && childTimeline.GetVisualDescendants().OfType<SelectableTextBlock>()
                     .Any(block => block.IsEffectivelyVisible && block.Text == updatedReasoning.Text));
             Assert.True(thinking.IsExpanded);
             Assert.True(assistantItem.IsReasoningExpanded);
             Assert.True(toolItem.IsExpanded);
-            Assert.Contains(markdown.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
-                block => block.IsEffectivelyVisible && block.Text == updatedText.Text);
+            Assert.True(streamingTail.IsEffectivelyVisible);
+            Assert.Equal(updatedText.Text, streamingTail.Text);
 
             childProjection.Emit(new ConversationDelta(3,
                 [new RowUpserted(tool with

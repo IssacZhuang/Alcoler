@@ -388,7 +388,10 @@ public sealed class ConversationPanel : VirtualizingPanel
         AssistantMessageItemViewModel => propertyName is nameof(AssistantMessageItemViewModel.MarkdownText)
             or nameof(AssistantMessageItemViewModel.ReasoningBlocks)
             or nameof(AssistantMessageItemViewModel.IsStreaming)
-            or nameof(AssistantMessageItemViewModel.IsReasoningExpanded),
+            or nameof(AssistantMessageItemViewModel.IsReasoningExpanded)
+            or nameof(AssistantMessageItemViewModel.StreamingTail)
+            or nameof(AssistantMessageItemViewModel.StreamingTailIsCode)
+            or nameof(AssistantMessageItemViewModel.FinalMarkdown),
         ToolCallItemViewModel tool => propertyName is nameof(ToolCallItemViewModel.IsExpanded) or nameof(ToolCallItemViewModel.ImageMedia) ||
             tool.IsExpanded && propertyName is nameof(ToolCallItemViewModel.InputJson) or nameof(ToolCallItemViewModel.OutputText),
         _ => true,

@@ -35,8 +35,10 @@ public sealed class ProjectionStore : IDisposable
     private ConversationState _state;
     private long _sequence;
     private long _revision;
-    private List<RowOp>? _pending;
+    private readonly PendingRowOps _pending = new();
+    private ConversationSnapshot? _pendingReset;
     private ITimer? _flushTimer;
+    private bool _deliveryScheduled;
     private bool _disposed;
 
     public ProjectionStore(
@@ -119,6 +121,8 @@ public sealed class ProjectionStore : IDisposable
             _pumpCts?.Dispose();
             _flushTimer?.Dispose();
             _flushTimer = null;
+            _pending.Clear();
+            _pendingReset = null;
             _projection?.Dispose();
             _projection = null;
         }
@@ -205,13 +209,14 @@ public sealed class ProjectionStore : IDisposable
             }
             _state = snapshot.State;
             _sequence = snapshot.Sequence;
-            _pending = null;
+            _pending.Clear();
+            _pendingReset = snapshot;
         }
-        Publish(new ProjectionUpdate(snapshot.Sequence, snapshot.State, [], Reset: true, ResetRows: snapshot.Rows));
+        RequestDelivery();
 
         await foreach (var delta in projection.Deltas(ct).ConfigureAwait(false))
         {
-            ProjectionUpdate? immediate = null;
+            var coalesced = _coalesceWindow is not null;
             lock (_sync)
             {
                 if (delta.Sequence != _sequence + 1)
@@ -224,25 +229,20 @@ public sealed class ProjectionStore : IDisposable
                     continue;
                 }
                 ApplyOps(delta.Ops);
+                _pending.Add(delta.Ops);
 
                 if (_coalesceWindow is { } window)
                 {
-                    _pending ??= [];
-                    _pending.AddRange(delta.Ops);
                     _flushTimer ??= _timeProvider.CreateTimer(
                         static state => ((ProjectionStore)state!).Flush(),
                         this,
                         window,
                         Timeout.InfiniteTimeSpan);
                 }
-                else
-                {
-                    immediate = new ProjectionUpdate(_sequence, _state, [.. delta.Ops], Reset: false);
-                }
             }
-            if (immediate is not null)
+            if (!coalesced)
             {
-                Publish(immediate);
+                RequestDelivery();
             }
         }
         return PumpOutcome.Ended;
@@ -294,25 +294,118 @@ public sealed class ProjectionStore : IDisposable
 
     private void Flush()
     {
-        ProjectionUpdate? update = null;
         lock (_sync)
         {
-            if (_pending is { Count: > 0 } ops)
-            {
-                update = new ProjectionUpdate(_sequence, _state, [.. ops], Reset: false);
-            }
-            _pending = null;
             _flushTimer?.Dispose();
             _flushTimer = null;
         }
-        if (update is not null)
-        {
-            Publish(update);
-        }
+        RequestDelivery();
     }
 
-    private void Publish(ProjectionUpdate update)
+    private void RequestDelivery()
     {
-        _scheduler.Post(() => Updated?.Invoke(update));
+        lock (_sync)
+        {
+            if (_disposed || _deliveryScheduled ||
+                (_pendingReset is null && _pending.IsEmpty))
+            {
+                return;
+            }
+            _deliveryScheduled = true;
+        }
+        _scheduler.PostBackground(Deliver);
+    }
+
+    private void Deliver()
+    {
+        ProjectionUpdate? update = null;
+        lock (_sync)
+        {
+            _deliveryScheduled = false;
+            if (_disposed)
+                return;
+
+            if (_pendingReset is { } reset)
+            {
+                _pendingReset = null;
+                update = new ProjectionUpdate(reset.Sequence, reset.State, [], Reset: true, ResetRows: reset.Rows);
+            }
+            else if (_pending.Take() is { } ops)
+            {
+                update = new ProjectionUpdate(_sequence, _state, ops, Reset: false);
+            }
+        }
+        if (update is not null)
+        {
+            Updated?.Invoke(update);
+        }
+        RequestDelivery();
+    }
+
+    private sealed class PendingRowOps
+    {
+        private readonly List<RowOp> _ops = [];
+        private readonly Dictionary<string, int> _rowSlots = new(StringComparer.Ordinal);
+        private StatePatched? _state;
+
+        public bool IsEmpty => _ops.Count == 0 && _state is null;
+
+        public void Add(IReadOnlyList<RowOp> ops)
+        {
+            foreach (var op in ops)
+            {
+                switch (op)
+                {
+                    case StatePatched patched:
+                        _state = patched;
+                        break;
+
+                    case RowRemoved removed:
+                        if (_rowSlots.Remove(removed.RowId, out var slot))
+                            _ops[slot] = removed;
+                        else
+                            _ops.Add(removed);
+                        break;
+
+                    case RowAppended appended:
+                        ReplaceOrAdd(appended.Row.RowId, op);
+                        break;
+
+                    case RowUpserted upserted:
+                        ReplaceOrAdd(upserted.Row.RowId, op);
+                        break;
+                }
+            }
+        }
+
+        public IReadOnlyList<RowOp>? Take()
+        {
+            if (IsEmpty)
+                return null;
+            var result = new RowOp[_ops.Count + (_state is null ? 0 : 1)];
+            _ops.CopyTo(result, 0);
+            if (_state is not null)
+                result[^1] = _state;
+            Clear();
+            return result;
+        }
+
+        public void Clear()
+        {
+            _ops.Clear();
+            _rowSlots.Clear();
+            _state = null;
+        }
+
+        private void ReplaceOrAdd(string rowId, RowOp op)
+        {
+            if (_rowSlots.TryGetValue(rowId, out var slot))
+            {
+                _ops[slot] = op;
+                return;
+            }
+            _rowSlots[rowId] = _ops.Count;
+            _ops.Add(op);
+        }
     }
 }

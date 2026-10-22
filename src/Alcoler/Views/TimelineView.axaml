@@ -157,6 +157,19 @@
       <Setter Property="TextWrapping" Value="NoWrap" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
+    <Style Selector="SelectableTextBlock.streamingTail">
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontPrimary}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="LineHeight" Value="24.5" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="SelectionBrush" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
+    <Style Selector="SelectableTextBlock.streamingTail.code">
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+      <Setter Property="LineHeight" Value="20" />
+    </Style>
     <Style Selector="Border.monoPane">
       <Setter Property="Background" Value="{DynamicResource AlcolerSurface}" />
       <Setter Property="BorderThickness" Value="0" />
@@ -355,8 +368,22 @@
                       </ScrollViewer>
                     </Border>
                   </Expander>
-                  <controls:ConversationMarkdown Markdown="{Binding MarkdownText}"
-                                                 IsVisible="{Binding MarkdownText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <StackPanel Spacing="0" HorizontalAlignment="Stretch" IsVisible="{Binding IsStreaming}">
+                    <ItemsControl ItemsSource="{Binding StreamingChunks}" IsVisible="{Binding IsStreaming}"
+                                  HorizontalAlignment="Stretch">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:AssistantMarkdownChunk">
+                          <controls:ConversationMarkdownFragment Markdown="{Binding Text}" />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <SelectableTextBlock Classes="streamingTail"
+                                         Classes.code="{Binding StreamingTailIsCode}"
+                                         Text="{Binding StreamingTail}"
+                                         IsVisible="{Binding HasStreamingTail}" />
+                  </StackPanel>
+                  <controls:ConversationMarkdown Markdown="{Binding FinalMarkdown}"
+                                                 IsVisible="{Binding HasFinalMarkdown}" />
                   <Rectangle Classes="streamingCaret" HorizontalAlignment="Left" IsVisible="{Binding IsStreaming}" />
                   <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding CanFork}">
                     <Button Classes="messageAction" Click="OnForkAssistantMessageClick"

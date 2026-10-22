@@ -73,6 +73,32 @@ public class ConversationMarkdownTests
     }
 
     [AvaloniaFact]
+    public void Fragment_ReusesTypographyAndCodeChrome()
+    {
+        var fragment = new ConversationMarkdownFragment
+        {
+            Markdown = "# Title\n\nBody `inline`.\n\n```csharp\nvar x = 1;\n```",
+        };
+        using var host = new Harness(fragment);
+
+        var heading = Assert.Single(fragment.GetVisualDescendants().OfType<CTextBlock>(),
+            block => block.Classes.Contains("Heading1"));
+        var body = Assert.Single(fragment.GetVisualDescendants().OfType<CTextBlock>(),
+            block => block.Text.StartsWith("Body", StringComparison.Ordinal));
+        var code = Assert.Single(fragment.GetVisualDescendants().OfType<CTextBlock>(),
+            block => block.Classes.Contains("CodeBlock"));
+        var copy = Assert.Single(fragment.GetVisualDescendants().OfType<Button>(),
+            button => button.Classes.Contains("copyCode"));
+
+        Assert.Equal(18, heading.FontSize);
+        Assert.Equal(16, heading.Margin.Bottom);
+        Assert.Equal(14, body.FontSize);
+        Assert.Equal("JetBrains Mono", body.FontFamily.Name);
+        Assert.Equal("JetBrains Mono", code.FontFamily.Name);
+        Assert.True(copy.IsEffectivelyVisible);
+    }
+
+    [AvaloniaFact]
     public void ListsQuotesTablesAndRules_KeepNeutralScopedAppearance()
     {
         var view = new ConversationMarkdown

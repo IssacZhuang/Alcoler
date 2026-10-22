@@ -61,8 +61,10 @@ public class TimelineSmokeTests
             var descendants = view.GetVisualDescendants().ToList();
             Assert.Contains(descendants, d => d is SelectableTextBlock { Text: "hello timeline" });
 
-            var markdown = Assert.Single(descendants.OfType<Markdown.Avalonia.MarkdownScrollViewer>());
-            Assert.Equal("# Title\n\nassistant body", markdown.Markdown);
+            var fragment = Assert.Single(descendants.OfType<ConversationMarkdownFragment>());
+            Assert.Equal("# Title\n\n", fragment.Markdown);
+            Assert.Contains(descendants, d => d is SelectableTextBlock { Text: "assistant body", Classes: var classes }
+                && classes.Contains("streamingTail"));
 
             Assert.Single(descendants.OfType<Expander>());
             // A collapsed Expander only materializes its header; the content stays in the logical tree.
@@ -76,6 +78,76 @@ public class TimelineSmokeTests
             var caret = Assert.Single(descendants.OfType<Rectangle>(),
                 r => r.Classes.Contains("streamingCaret"));
             Assert.True(caret.IsVisible);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void StreamingUpserts_AppendChunksWithoutRebuildingEarlierContent()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 600, 800);
+        try
+        {
+            var id = StrongId.NewMessageId();
+            var row = new AssistantMessageRow("a1", id,
+                [new TextPart(StrongId.NewPartId(), "First paragraph.\n\nSecond paragraph.\n\nTail")],
+                IsStreaming: true, At: DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowAppended(row)], Reset: false));
+            Pump();
+
+            var chunks = view.GetVisualDescendants().OfType<ConversationMarkdownFragment>().ToArray();
+            Assert.Equal(2, chunks.Length);
+            var firstChunk = chunks[0];
+
+            var continued = row with
+            {
+                Parts = [new TextPart(StrongId.NewPartId(), "First paragraph.\n\nSecond paragraph.\n\nTail continues.")],
+            };
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(continued)], Reset: false));
+            Pump();
+
+            var unchanged = view.GetVisualDescendants().OfType<ConversationMarkdownFragment>().ToArray();
+            Assert.Equal(2, unchanged.Length);
+            Assert.Same(firstChunk, unchanged[0]);
+            Assert.Contains(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                block => block.Classes.Contains("streamingTail") && block.Text == "Tail continues.");
+
+            var extended = row with
+            {
+                Parts =
+                [
+                    new TextPart(StrongId.NewPartId(),
+                        "First paragraph.\n\nSecond paragraph.\n\nTail continues.\n\nFinal paragraph."),
+                ],
+            };
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowUpserted(extended)], Reset: false));
+            Pump();
+
+            var appended = view.GetVisualDescendants().OfType<ConversationMarkdownFragment>().ToArray();
+            Assert.Equal(3, appended.Length);
+            Assert.Same(firstChunk, appended[0]);
+            Assert.Contains(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                block => block.Classes.Contains("streamingTail") && block.Text == "Final paragraph.");
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(4, TestSnapshots.State(),
+                [new RowUpserted(extended with { IsStreaming = false })], Reset: false));
+            Pump();
+
+            Assert.Empty(view.GetVisualDescendants().OfType<ConversationMarkdownFragment>());
+            var final = Assert.Single(view.GetVisualDescendants().OfType<ConversationMarkdown>());
+            Assert.True(final.IsEffectivelyVisible);
+            Assert.Equal("First paragraph.\n\nSecond paragraph.\n\nTail continues.\n\nFinal paragraph.",
+                final.Markdown);
         }
         finally
         {
@@ -590,10 +662,8 @@ public class TimelineSmokeTests
             var items = view.FindControl<ItemsControl>("TimelineItems")!;
             items.ScrollIntoView(viewModel.Items.Count - 1);
             await RenderAsync(window);
-            var viewers = view.GetVisualDescendants().OfType<Markdown.Avalonia.MarkdownScrollViewer>().ToArray();
-            Assert.True(viewers.Length == 1, DescribeTimeline(view));
-            var markdown = viewers[0];
-            var earlier = Assert.Single(markdown.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
+            Assert.NotEmpty(view.GetVisualDescendants().OfType<ConversationMarkdownFragment>());
+            var earlier = Assert.Single(view.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
                 block => block.Text.StartsWith("Earlier response paragraph 5.", StringComparison.Ordinal));
             var paragraphPosition = earlier.TranslatePoint(default, scroller);
             Assert.True(paragraphPosition.HasValue, DescribeTimeline(view));
@@ -622,8 +692,7 @@ public class TimelineSmokeTests
             Assert.True(scroller.Extent.Height > previousExtent,
                 $"Realized streaming answer did not grow: before {previousExtent}, after {scroller.Extent.Height}");
             Assert.Equal(readingOffset, scroller.Offset);
-            var currentMarkdown = Assert.Single(view.GetVisualDescendants().OfType<Markdown.Avalonia.MarkdownScrollViewer>());
-            Assert.Equal(expanded, currentMarkdown.Markdown);
+            Assert.Equal(expanded, StreamingText(view));
             Assert.Equal(earlierOrigin, retained.TranslatePoint(default, scroller)!.Value);
             Assert.Equal(scrollCount, view.AutoScrollCount);
 
@@ -749,7 +818,8 @@ public class TimelineSmokeTests
         var window = Host(view, 900, 600);
         try
         {
-            var text = string.Join("\n\n", Enumerable.Repeat("A long answer keeps streaming while the reader scrolls upward.", 40));
+            var text = string.Join("\n\n", Enumerable.Repeat("A long answer keeps streaming while the reader scrolls upward.", 20)) +
+                "\n\n```\n" + string.Join("\n", Enumerable.Repeat("var streamed = true;", 20)) + "\n```\n";
             var row = new AssistantMessageRow("a1", StrongId.NewMessageId(),
                 [new TextPart(StrongId.NewPartId(), text)], true, DateTimeOffset.UtcNow);
             viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming),
@@ -980,14 +1050,22 @@ public class TimelineSmokeTests
             $"{child.GetType().Name} escapes {parent.GetType().Name}: x {origin.X}, width {child.Bounds.Width}, parent {parent.Bounds.Width}");
     }
 
+    private static string StreamingText(TimelineView view)
+    {
+        var chunks = string.Concat(view.GetVisualDescendants().OfType<ConversationMarkdownFragment>()
+            .Select(fragment => fragment.Markdown));
+        var tail = view.GetVisualDescendants().OfType<SelectableTextBlock>()
+            .FirstOrDefault(block => block.Classes.Contains("streamingTail"));
+        return chunks + (tail?.Text ?? string.Empty);
+    }
+
     private async Task<ColorTextBlock.Avalonia.CTextBlock> WaitForParagraphAsync(Window window, TimelineView view, string text)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
         while (true)
         {
             await RenderAsync(window);
-            var paragraph = view.GetVisualDescendants().OfType<Markdown.Avalonia.MarkdownScrollViewer>()
-                .SelectMany(viewer => viewer.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>())
+            var paragraph = view.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>()
                 .SingleOrDefault(block => block.Text == text);
             if (paragraph is not null)
             {
