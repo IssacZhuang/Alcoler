@@ -17,7 +17,7 @@ namespace Alcoler.Adapters.Storage;
 
 public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDisposable
 {
-    private const int SchemaVersion = 4;
+    private const int SchemaVersion = 5;
 
     private static readonly (int Version, string Sql)[] Migrations =
     [
@@ -59,6 +59,13 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         (2, "ALTER TABLE session ADD COLUMN parent_session_id TEXT NULL;"),
         (3, "ALTER TABLE session ADD COLUMN title_source TEXT NOT NULL DEFAULT 'legacy';"),
         (4, "ALTER TABLE session ADD COLUMN shell_json TEXT NULL;"),
+        (
+            5,
+            """
+            ALTER TABLE session ADD COLUMN forked_from_session_id TEXT NULL;
+            ALTER TABLE session ADD COLUMN forked_from_message_id TEXT NULL;
+            """
+        ),
     ];
 
     private readonly string _databasePath;
@@ -125,9 +132,11 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.CommandText = """
                 INSERT OR REPLACE INTO session
                     (id, workspace_root, title, permission_mode, model_selection_json,
-                     created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json)
+                     created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
+                     forked_from_session_id, forked_from_message_id)
                 VALUES ($id, $workspace_root, $title, $permission_mode, $model_selection_json,
-                        $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source, $shell_json)
+                        $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source, $shell_json,
+                        $forked_from_session_id, $forked_from_message_id)
                 """;
             command.Parameters.AddWithValue("$id", record.Id.Value);
             command.Parameters.AddWithValue("$workspace_root", record.WorkspaceRoot);
@@ -143,6 +152,10 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.Parameters.AddWithValue("$parent_session_id", (object?)record.ParentSessionId?.Value ?? DBNull.Value);
             command.Parameters.AddWithValue("$title_source", record.TitleSource.ToString());
             command.Parameters.AddWithValue("$shell_json", record.Shell is null ? DBNull.Value : AlcolerJson.Serialize(record.Shell));
+            command.Parameters.AddWithValue("$forked_from_session_id",
+                (object?)record.ForkedFromSessionId?.Value ?? DBNull.Value);
+            command.Parameters.AddWithValue("$forked_from_message_id",
+                (object?)record.ForkedFromMessageId?.Value ?? DBNull.Value);
             command.ExecuteNonQuery();
         }, cancellationToken);
     }
@@ -168,7 +181,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT workspace_root, title, permission_mode, model_selection_json,
-                       created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json
+                       created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
+                       forked_from_session_id, forked_from_message_id
                 FROM session
                 WHERE id = $id
                 """;
@@ -671,7 +685,9 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         reader.GetBoolean(reader.GetOrdinal("is_archived")),
         ReadParentSessionId(reader),
         ReadTitleSource(reader),
-        DeserializeOptional<ShellEnvironment>(reader, "shell_json"));
+        DeserializeOptional<ShellEnvironment>(reader, "shell_json"),
+        ReadForkedFromSessionId(reader),
+        ReadForkedFromMessageId(reader));
 
     private static SessionSummary ReadSummary(SqliteDataReader reader) => new(
         new SessionId(reader.GetString(reader.GetOrdinal("id"))),
@@ -692,6 +708,18 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
     {
         var ordinal = reader.GetOrdinal("parent_session_id");
         return reader.IsDBNull(ordinal) ? null : new SessionId(reader.GetString(ordinal));
+    }
+
+    private static SessionId? ReadForkedFromSessionId(SqliteDataReader reader)
+    {
+        var ordinal = reader.GetOrdinal("forked_from_session_id");
+        return reader.IsDBNull(ordinal) ? null : new SessionId(reader.GetString(ordinal));
+    }
+
+    private static MessageId? ReadForkedFromMessageId(SqliteDataReader reader)
+    {
+        var ordinal = reader.GetOrdinal("forked_from_message_id");
+        return reader.IsDBNull(ordinal) ? null : new MessageId(reader.GetString(ordinal));
     }
 
     private static T? DeserializeOptional<T>(SqliteDataReader reader, string column)

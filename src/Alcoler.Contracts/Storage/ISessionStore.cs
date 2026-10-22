@@ -25,7 +25,9 @@ public sealed record SessionRecord(
     bool IsArchived = false,
     SessionId? ParentSessionId = null,
     SessionTitleSource TitleSource = SessionTitleSource.Custom,
-    ShellEnvironment? Shell = null);
+    ShellEnvironment? Shell = null,
+    SessionId? ForkedFromSessionId = null,
+    MessageId? ForkedFromMessageId = null);
 
 public sealed record StoredMessage(long Sequence, ConversationMessage Message);
 

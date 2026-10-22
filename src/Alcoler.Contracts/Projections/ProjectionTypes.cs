@@ -92,7 +92,8 @@ public sealed record AssistantMessageRow(
     MessageId Id,
     IReadOnlyList<MessagePart> Parts,
     bool IsStreaming,
-    DateTimeOffset At) : ConversationRow(RowId);
+    DateTimeOffset At,
+    bool CanFork = false) : ConversationRow(RowId);
 
 public sealed record ToolCallRow(
     string RowId,

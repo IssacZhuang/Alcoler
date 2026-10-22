@@ -44,6 +44,13 @@ public interface IAgentRuntime : IAsyncDisposable
 
     ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken);
 
+    ValueTask<SessionHandle> ForkSessionAsync(
+        SessionId sourceSessionId,
+        MessageId boundaryMessageId,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromException<SessionHandle>(
+            new NotSupportedException("This runtime does not support forking sessions."));
+
     ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken);
 
     ValueTask<Commands.CommandAck> SubmitAsync(Commands.ConversationCommand command, CancellationToken cancellationToken);

@@ -285,6 +285,16 @@ public partial class TimelineView : UserControl
         }
     }
 
+    private async void OnForkAssistantMessageClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: AssistantMessageItemViewModel item } || _conversation is null)
+        {
+            return;
+        }
+        e.Handled = true;
+        await _conversation.ForkFromMessageAsync(item);
+    }
+
     private async void OnRewindUserMessageClick(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: UserMessageItemViewModel item } || _conversation is null)

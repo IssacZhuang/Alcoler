@@ -122,6 +122,12 @@
     <Style Selector="StackPanel.userMessage:pointerover Button.messageAction">
       <Setter Property="Opacity" Value="1" />
     </Style>
+    <Style Selector="StackPanel.assistantRow Button.messageAction">
+      <Setter Property="Opacity" Value="0" />
+    </Style>
+    <Style Selector="StackPanel.assistantRow:pointerover Button.messageAction">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
     <Style Selector="Button.messageAction">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
@@ -352,6 +358,12 @@
                   <controls:ConversationMarkdown Markdown="{Binding MarkdownText}"
                                                  IsVisible="{Binding MarkdownText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                   <Rectangle Classes="streamingCaret" HorizontalAlignment="Left" IsVisible="{Binding IsStreaming}" />
+                  <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding CanFork}">
+                    <Button Classes="messageAction" Click="OnForkAssistantMessageClick"
+                            ToolTip.Tip="Fork from here" AutomationProperties.Name="Fork conversation from this message">
+                      <controls:Icon Data="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 9a9 9 0 0 1-9 9" />
+                    </Button>
+                  </StackPanel>
                 </StackPanel>
               </DataTemplate>
 

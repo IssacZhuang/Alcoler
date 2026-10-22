@@ -15,6 +15,7 @@ public sealed class ProjectionBuilder
     private readonly Dictionary<string, string> _streamingText = [];
     private ConversationState _state = ConversationState.Initial(string.Empty, PermissionMode.Build, null, 200_000);
     private readonly List<QueuedInput> _queue = [];
+    private string? _lastAssistantRowId;
     private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
     public ConversationState State { get { lock (_sync) return _state; } }
@@ -71,11 +72,19 @@ public sealed class ProjectionBuilder
                     break;
 
                 case TurnStartedEvent turnStarted:
+                    _lastAssistantRowId = null;
                     _state = _state with { Phase = TurnPhase.ProcessingInput, ActiveTurn = turnStarted.TurnId };
                     stateChanged = true;
                     break;
 
                 case TurnCompletedEvent turnCompleted:
+                    if (turnCompleted.Outcome == TurnOutcome.Completed && _lastAssistantRowId is not null
+                        && _rowIndex.TryGetValue(_lastAssistantRowId, out var tailIndex)
+                        && _rows[tailIndex] is AssistantMessageRow tail)
+                    {
+                        Upsert(tail with { CanFork = true }, ops);
+                    }
+                    _lastAssistantRowId = null;
                     _state = _state with
                     {
                         Phase = TurnPhase.Idle,
@@ -92,6 +101,7 @@ public sealed class ProjectionBuilder
                     break;
 
                 case TurnFailedEvent turnFailed:
+                    _lastAssistantRowId = null;
                     _state = _state with
                     {
                         Phase = TurnPhase.Error,
@@ -118,6 +128,7 @@ public sealed class ProjectionBuilder
                     break;
 
                 case ConversationRewoundEvent rewound:
+                    _lastAssistantRowId = null;
                     ApplyRewind(rewound.TargetMessageId.Value, ops);
                     _streamingText.Clear();
                     _queue.Clear();
@@ -307,6 +318,11 @@ public sealed class ProjectionBuilder
 
     private void ApplyUserMessage(ConversationMessage message, List<RowOp> ops)
     {
+        if (SessionRuntime.IsRealUserTurn(message))
+        {
+            _lastAssistantRowId = null;
+        }
+
         var text = string.Join("\n", message.Parts.OfType<TextPart>().Select(p => p.Text));
         var images = message.Parts.OfType<FilePart>()
             .Where(part => part.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -370,6 +386,7 @@ public sealed class ProjectionBuilder
             message.Parts,
             IsStreaming: false,
             message.CreatedAt), ops);
+        _lastAssistantRowId = message.Id.Value;
 
         foreach (var toolCall in message.Parts.OfType<ToolCallPart>())
         {

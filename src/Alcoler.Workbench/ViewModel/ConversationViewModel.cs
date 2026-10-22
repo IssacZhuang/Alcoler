@@ -70,6 +70,10 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     internal Func<long>? NextSubmissionSequence { get; set; }
 
+    public Func<MessageId, Task>? ForkRequested { get; set; }
+
+    private readonly HashSet<MessageId> _forkOperations = [];
+
     private bool _restoredMode;
     private bool _restoredComposer;
     private long _restoredRevision;
@@ -520,6 +524,22 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         catch (Exception exception)
         {
             Banner = $"The message could not be rewound. {exception.Message}";
+        }
+    }
+
+    public async Task ForkFromMessageAsync(AssistantMessageItemViewModel item)
+    {
+        if (!item.CanFork || ForkRequested is null || !_forkOperations.Add(item.Id))
+        {
+            return;
+        }
+        try
+        {
+            await ForkRequested(item.Id);
+        }
+        finally
+        {
+            _forkOperations.Remove(item.Id);
         }
     }
 

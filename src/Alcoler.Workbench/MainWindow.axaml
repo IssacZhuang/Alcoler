@@ -87,9 +87,6 @@
               </StackPanel>
             </Grid>
             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
-              <Button Classes="icon" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions" AutomationProperties.Name="Refresh sessions">
-                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
-              </Button>
               <Button Classes="icon" Command="{Binding ToggleTerminalCommand}"
                       Classes.active="{Binding IsTerminalVisible}" ToolTip.Tip="Toggle terminal (Ctrl+J)"
                       AutomationProperties.Name="Toggle terminal">

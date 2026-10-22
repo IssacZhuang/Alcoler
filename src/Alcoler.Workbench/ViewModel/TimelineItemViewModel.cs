@@ -54,6 +54,9 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
     [ObservableProperty]
     private bool _isReasoningExpanded;
 
+    [ObservableProperty]
+    private bool _canFork;
+
     public void UpdateFrom(AssistantMessageRow row)
     {
         var text = string.Join("\n\n", row.Parts.OfType<TextPart>().Select(p => p.Text));
@@ -61,6 +64,7 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
         MarkdownText = text;
         ReasoningBlocks = reasoning;
         IsStreaming = row.IsStreaming;
+        CanFork = row.CanFork;
     }
 }
 

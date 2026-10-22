@@ -419,6 +419,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         ObserveMode(conversation.Composer, () => sessionId);
         ObserveSelection(conversation, () => sessionId.Value);
         conversation.ModeSubmitted += mode => ClearSubmittedMode(sessionId, mode);
+        conversation.ForkRequested = boundaryId => ForkSessionAsync(sessionId, boundaryId);
         conversation.NextSubmissionSequence = () => ++_submissionSequence;
         conversation.ModelSelectionSubmitted += (selection, sequence) => RecordAcceptedSelection(workspaceRoot, sessionId, selection, sequence);
         Active = conversation;
@@ -442,9 +443,25 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
     }
 
-    public void ShowNewTask(string? workspaceRoot = null)
+    private async Task ForkSessionAsync(SessionId sourceSessionId, MessageId boundaryMessageId)
     {
-        ++_navigationVersion;
+        try
+        {
+            var handle = await _runtime.ForkSessionAsync(sourceSessionId, boundaryMessageId, CancellationToken.None);
+            _sessionRoots[handle.Id] = handle.WorkspaceRoot;
+            await OpenSessionAsync(handle.Id);
+        }
+        catch (Exception exception)
+        {
+            if (Active is { } active && active.SessionId == sourceSessionId)
+            {
+                active.Banner = $"The conversation could not be forked. {exception.Message}";
+            }
+        }
+    }
+
+    public void ShowNewTask(string? workspaceRoot = null)
+    {        ++_navigationVersion;
         var root = workspaceRoot ?? _focusedWorkspaceRoot
             ?? (Active is { } active ? _sessionRoots.GetValueOrDefault(active.SessionId) : null)
             ?? Sidebar.Groups.OrderByDescending(group => group.Sessions.Select(session => session.UpdatedAt).DefaultIfEmpty().Max())

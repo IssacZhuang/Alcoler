@@ -1787,9 +1787,11 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
 
         var messages = await _deps.Store.LoadMessagesAsync(_record.Id, CancellationToken.None).ConfigureAwait(false);
-        var activeMessages = ApplyBranch(messages);
+        var activeMessages = SessionBranches.SelectActive(messages, _record.Branch);
         var replayDurable = FilterDurableForBranch(durable);
-        foreach (var (sessionEvent, occurredAt) in ReconstructTimeline(activeMessages, replayDurable))
+        var activeMessageIds = activeMessages.Select(stored => stored.Message.Id).ToHashSet();
+        var completedTails = SessionBranches.FindCompletedTurnTails(durable, activeMessageIds);
+        foreach (var (sessionEvent, occurredAt) in ReconstructTimeline(activeMessages, replayDurable, completedTails))
         {
             _events.Append(sessionEvent, occurredAt);
         }
@@ -1846,50 +1848,6 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
     }
 
-    // A branch is the kept prefix plus every message appended after its cut; messages
-    // between that prefix and the cut belong to a discarded branch.
-    private IReadOnlyList<StoredMessage> ApplyBranch(IReadOnlyList<StoredMessage> messages)
-    {
-        if (_record.Branch is not { } branch)
-        {
-            return messages;
-        }
-
-        var byId = messages.ToDictionary(stored => stored.Message.Id);
-        var kept = new List<StoredMessage>(branch.KeptMessageIds.Count);
-        foreach (var messageId in branch.KeptMessageIds)
-        {
-            if (byId.TryGetValue(messageId, out var stored))
-            {
-                kept.Add(stored);
-            }
-        }
-
-        var cutIndex = -1;
-        for (var index = 0; index < messages.Count; index++)
-        {
-            if (messages[index].Message.Id == branch.CutAfterMessageId)
-            {
-                cutIndex = index;
-                break;
-            }
-        }
-        if (cutIndex < 0)
-        {
-            return messages;
-        }
-
-        var seen = kept.Select(stored => stored.Message.Id).ToHashSet();
-        foreach (var stored in messages.Skip(cutIndex + 1))
-        {
-            if (seen.Add(stored.Message.Id))
-            {
-                kept.Add(stored);
-            }
-        }
-        return kept;
-    }
-
     // Committed messages survive the cut as anchors for the kept prefix; every other
     // pre-cut event belongs to the discarded branch and would resurrect rejected state.
     private IReadOnlyList<SequencedEvent> FilterDurableForBranch(IReadOnlyList<SequencedEvent> durable)
@@ -1925,11 +1883,15 @@ public sealed class SessionRuntime : IAsyncDisposable
     }
 
     private static IEnumerable<(SessionEvent Event, DateTimeOffset OccurredAt)> ReconstructTimeline(
-        IReadOnlyList<StoredMessage> messages, IReadOnlyList<SequencedEvent> durable)
+        IReadOnlyList<StoredMessage> messages,
+        IReadOnlyList<SequencedEvent> durable,
+        IReadOnlyDictionary<MessageId, TurnId> completedTails)
     {
         var canonical = messages.ToDictionary(stored => stored.Message.Id, stored => stored.Message);
         var toolCalls = messages.SelectMany(stored => stored.Message.Parts).OfType<ToolCallPart>()
             .Select(call => call.ToolCallId).ToHashSet();
+        var representedCompletions = durable.Select(entry => entry.Event).OfType<TurnCompletedEvent>()
+            .Select(completed => completed.TurnId).ToHashSet();
         var timeline = new List<(SessionEvent Event, DateTimeOffset OccurredAt)>();
         var anchors = new Dictionary<MessageId, int>();
         foreach (var entry in durable.OrderBy(entry => entry.Sequence))
@@ -1944,7 +1906,14 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 // Compaction can replace or remove messages without rewriting old envelopes.
                 if (canonical.TryGetValue(committed.Id, out var message) && anchors.TryAdd(message.Id, timeline.Count))
+                {
                     timeline.Add((MessageCommitted(message), entry.OccurredAt));
+                    if (completedTails.TryGetValue(message.Id, out var turnId)
+                        && !representedCompletions.Contains(turnId))
+                    {
+                        timeline.Add((new TurnCompletedEvent(turnId, TurnOutcome.Completed), entry.OccurredAt));
+                    }
+                }
             }
             else if (entry.Event is SubagentStartedEvent or SubagentStatusChangedEvent or TurnFailedEvent or TurnCompletedEvent
                 || entry.Event is ToolCallStartedEvent started && toolCalls.Contains(started.ToolCallId)

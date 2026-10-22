@@ -30,8 +30,8 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         await using var connection = OpenRawConnection();
         Assert.Equal("wal", ExecuteScalar(connection, "PRAGMA journal_mode;"));
-        Assert.Equal(4L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
-        Assert.Equal(4L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
+        Assert.Equal(5L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
+        Assert.Equal(5L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         using var column = connection.CreateCommand();
         column.CommandText = "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('session') WHERE name = 'title_source'";
         using var reader = column.ExecuteReader();
@@ -112,13 +112,16 @@ public sealed class SqliteSessionStoreTests : IDisposable
         await using var reopened = await NewInitializedStoreAsync();
         AssertMetadata(Assert.IsType<SessionRecord>(await reopened.GetSessionAsync(record.Id, CancellationToken.None)));
         await using var raw = OpenRawConnection();
-        Assert.Equal(4L, ExecuteScalar(raw, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(5L, ExecuteScalar(raw, "SELECT MAX(version) FROM schema_version"));
         using var column = raw.CreateCommand();
         column.CommandText = "SELECT type, \"notnull\" FROM pragma_table_info('session') WHERE name = 'shell_json'";
         using var reader = column.ExecuteReader();
         Assert.True(reader.Read());
         Assert.Equal("TEXT", reader.GetString(0));
         Assert.Equal(0L, reader.GetInt64(1));
+        using var forkColumn = raw.CreateCommand();
+        forkColumn.CommandText = "SELECT COUNT(*) FROM pragma_table_info('session') WHERE name LIKE 'forked_from_%'";
+        Assert.Equal(2L, forkColumn.ExecuteScalar());
 
         void AssertMetadata(SessionRecord loaded)
         {
@@ -170,6 +173,42 @@ public sealed class SqliteSessionStoreTests : IDisposable
         Assert.Equal("renamed", replaced.Title);
         Assert.Equal(PermissionMode.Yolo, replaced.PermissionMode);
         Assert.False(replaced.IsArchived);
+    }
+
+    [Fact]
+    public async Task ForkMetadata_RoundTripsAcrossUpsertAndRestart_AndCanBeCleared()
+    {
+        var sourceId = StrongId.NewSessionId();
+        var boundaryId = StrongId.NewMessageId();
+        var record = NewRecord() with
+        {
+            ForkedFromSessionId = sourceId,
+            ForkedFromMessageId = boundaryId,
+        };
+        await using (var store = await NewInitializedStoreAsync())
+        {
+            await store.UpsertSessionAsync(record, CancellationToken.None);
+            var loaded = Assert.IsType<SessionRecord>(await store.GetSessionAsync(record.Id, CancellationToken.None));
+            Assert.Equal(sourceId, loaded.ForkedFromSessionId);
+            Assert.Equal(boundaryId, loaded.ForkedFromMessageId);
+            await using var connection = OpenRawConnection();
+            Assert.Equal(sourceId.Value, ExecuteScalar(connection, "SELECT forked_from_session_id FROM session"));
+            Assert.Equal(boundaryId.Value, ExecuteScalar(connection, "SELECT forked_from_message_id FROM session"));
+        }
+
+        await using (var store = await NewInitializedStoreAsync())
+        {
+            var loaded = Assert.IsType<SessionRecord>(await store.GetSessionAsync(record.Id, CancellationToken.None));
+            Assert.Equal(record, loaded);
+            await store.UpsertSessionAsync(
+                loaded with { ForkedFromSessionId = null, ForkedFromMessageId = null },
+                CancellationToken.None);
+        }
+
+        await using var reopened = await NewInitializedStoreAsync();
+        var cleared = Assert.IsType<SessionRecord>(await reopened.GetSessionAsync(record.Id, CancellationToken.None));
+        Assert.Null(cleared.ForkedFromSessionId);
+        Assert.Null(cleared.ForkedFromMessageId);
     }
 
     [Theory]
@@ -399,7 +438,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         foreach (var record in expected)
             Assert.Equal(record, await reopened.GetSessionAsync(record.Id, CancellationToken.None));
         await using var connection = OpenRawConnection();
-        Assert.Equal(4L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(5L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
         Assert.Equal(0L, ExecuteScalar(connection, "SELECT COUNT(*) FROM session WHERE title_source = 'legacy'"));
     }
 

@@ -392,6 +392,51 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public void AssistantMessageItem_CarriesForkAffordanceAndTracksCompletion()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var id = new MessageId("a1");
+            ApplyRows(viewModel, 1, false, new AssistantMessageRow(
+                "a1", id, [new TextPart(StrongId.NewPartId(), "answer")], false, DateTimeOffset.UtcNow));
+            var item = Assert.IsType<AssistantMessageItemViewModel>(Assert.Single(viewModel.Items));
+            Assert.False(item.CanFork);
+
+            ApplyRows(viewModel, 2, false, new AssistantMessageRow(
+                "a1", id, [new TextPart(StrongId.NewPartId(), "answer")], false, DateTimeOffset.UtcNow, CanFork: true));
+            Assert.True(item.CanFork);
+        }
+    }
+
+    [Fact]
+    public async Task ForkFromMessageAsync_InvokesCallbackOnlyForForkableAssistantMessages()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            MessageId? requested = null;
+            var calls = 0;
+            viewModel.ForkRequested = id =>
+            {
+                requested = id;
+                calls++;
+                return Task.CompletedTask;
+            };
+            var id = new MessageId("a1");
+            var item = new AssistantMessageItemViewModel("a1", id) { CanFork = true };
+
+            await viewModel.ForkFromMessageAsync(item);
+            await viewModel.ForkFromMessageAsync(new AssistantMessageItemViewModel("a2", new MessageId("a2")));
+
+            Assert.Equal(1, calls);
+            Assert.Equal(id, requested);
+        }
+    }
+
+    [Fact]
     public async Task RewindToMessageAsync_SubmitsRewindAndRestoresDraft()
     {
         var (viewModel, runtime, store) = Create();

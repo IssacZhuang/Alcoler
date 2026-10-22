@@ -54,6 +54,41 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task ForkFromAssistantMessage_OpensTheChildAndAddsItToTheSidebar()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, Reply("parent answer"), Reply("child answer"));
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        var draft = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
+        draft.Composer.Draft = "parent question";
+        await draft.SendAsync();
+        await WaitUntilAsync(() => workbench.Active is ConversationViewModel conversation
+            && conversation.Items.OfType<AssistantMessageItemViewModel>()
+                .Any(item => item.MarkdownText == "parent answer" && !item.IsStreaming), scheduler);
+
+        var parent = Assert.IsType<ConversationViewModel>(workbench.Active);
+        var assistant = Assert.Single(parent.Items.OfType<AssistantMessageItemViewModel>());
+        Assert.True(assistant.CanFork);
+
+        await parent.ForkFromMessageAsync(assistant);
+
+        await WaitUntilAsync(() => workbench.Active is ConversationViewModel child
+            && child.SessionId != parent.SessionId
+            && child.Title == "Fork of parent question"
+            && child.Items.OfType<AssistantMessageItemViewModel>()
+                .Any(item => item.MarkdownText == "parent answer" && item.CanFork), scheduler);
+        var forked = Assert.IsType<ConversationViewModel>(workbench.Active);
+        Assert.Equal(["parent question"], forked.Items.OfType<UserMessageItemViewModel>().Select(item => item.Text));
+        Assert.Empty(forked.Composer.Draft);
+        await WaitUntilAsync(
+            () => workbench.Sidebar.Groups.SelectMany(group => group.Sessions).Count() == 2,
+            scheduler);
+    }
+
+    [Fact]
     public async Task OpenSession_AfterRuntimeRestart_ResumesPersistedTimelineAndAcceptsAnotherTurn()
     {
         const string title = "Persisted session";

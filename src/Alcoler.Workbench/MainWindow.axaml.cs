@@ -466,14 +466,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OnRefreshClick(object? sender, RoutedEventArgs e)
-    {
-        if (DataContext is WorkbenchViewModel viewModel)
-        {
-            await viewModel.Sidebar.RefreshAsync();
-        }
-    }
-
     private void OnDismissWorkbenchBannerClick(object? sender, RoutedEventArgs e) => _viewModel?.ClearBanner();
 
     private sealed record PaneAnimation(DispatcherTimer Timer);

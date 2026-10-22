@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
@@ -121,6 +122,107 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             ?? throw new InvalidOperationException($"Session {sessionId.Value} not found.");
         await CreateRuntimeAsync(record, isNewSession: false, cancellationToken).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
+    }
+
+    public async ValueTask<SessionHandle> ForkSessionAsync(
+        SessionId sourceSessionId,
+        MessageId boundaryMessageId,
+        CancellationToken cancellationToken)
+    {
+        var parent = await _options.Store.GetSessionAsync(sourceSessionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Session {sourceSessionId.Value} not found.");
+        var stored = await _options.Store.LoadMessagesAsync(sourceSessionId, cancellationToken).ConfigureAwait(false);
+        var active = SessionBranches.SelectActive(stored, parent.Branch);
+        var boundaryIndex = -1;
+        for (var index = 0; index < active.Count; index++)
+        {
+            if (active[index].Message.Id == boundaryMessageId)
+            {
+                boundaryIndex = index;
+                break;
+            }
+        }
+        if (boundaryIndex < 0 || active[boundaryIndex].Message.Role != MessageRole.Assistant)
+        {
+            throw new InvalidOperationException("Fork boundary must be an assistant message in the active conversation.");
+        }
+
+        var durable = await _options.Store.LoadDurableEventsAsync(sourceSessionId, cancellationToken).ConfigureAwait(false);
+        var activeIds = active.Select(storedMessage => storedMessage.Message.Id).ToHashSet();
+        var completedTails = SessionBranches.FindCompletedTurnTails(durable, activeIds);
+        if (!completedTails.ContainsKey(boundaryMessageId))
+        {
+            throw new InvalidOperationException("Only a completed assistant turn can be forked.");
+        }
+
+        var copyEnd = boundaryIndex + 1;
+        while (copyEnd < active.Count && !SessionRuntime.IsRealUserTurn(active[copyEnd].Message))
+        {
+            copyEnd++;
+        }
+        if (copyEnd == active.Count
+            && _sessions.TryGetValue(sourceSessionId, out var activeRuntime)
+            && activeRuntime.IsTurnActive)
+        {
+            throw new InvalidOperationException("The active turn cannot be forked; wait for it to complete.");
+        }
+
+        var now = _options.Clock.GetUtcNow();
+        var child = new SessionRecord(
+            StrongId.NewSessionId(),
+            parent.WorkspaceRoot,
+            $"Fork of {parent.Title}",
+            parent.PermissionMode,
+            parent.ModelSelection,
+            now,
+            now,
+            IsArchived: false,
+            ParentSessionId: null,
+            TitleSource: SessionTitleSource.Custom,
+            Shell: parent.Shell,
+            ForkedFromSessionId: parent.Id,
+            ForkedFromMessageId: boundaryMessageId);
+        var copied = active.Take(copyEnd).Select(storedMessage => storedMessage.Message).ToList();
+        var events = new List<SequencedEvent>(copied.Count + completedTails.Count);
+        long sequence = 1;
+        foreach (var message in copied)
+        {
+            var committed = message.Role == MessageRole.User
+                ? (SessionEvent)new UserMessageCommittedEvent(message)
+                : new AssistantMessageCommittedEvent(message);
+            events.Add(new SequencedEvent(sequence++, child.Id, message.CreatedAt, committed));
+            if (completedTails.TryGetValue(message.Id, out var turnId))
+            {
+                events.Add(new SequencedEvent(sequence++, child.Id, message.CreatedAt,
+                    new TurnCompletedEvent(turnId, TurnOutcome.Completed)));
+            }
+        }
+
+        await _options.Store.UpsertSessionAsync(child, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (copied.Count > 0)
+            {
+                await _options.Store.AppendMessagesAsync(child.Id, copied, 0, cancellationToken).ConfigureAwait(false);
+            }
+            if (events.Count > 0)
+            {
+                await _options.Store.AppendDurableEventsAsync(events, cancellationToken).ConfigureAwait(false);
+            }
+            await CreateRuntimeAsync(child, isNewSession: false, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            try
+            {
+                await _options.Store.DeleteSessionAsync(child.Id, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+            throw;
+        }
+        return new SessionHandle(child.Id, child.WorkspaceRoot, child.Title);
     }
 
     public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken) =>
