@@ -28,6 +28,7 @@
     <EmbeddedResource Include="Models\ModelDefaults.json" />
     <AvaloniaResource Include="Assets\Fonts\*.ttf" />
     <AvaloniaResource Include="Assets\Icons\Alcoler-mark.png" />
+    <AvaloniaResource Include="Assets\Icons\Alcoler.ico" />
     <None Update="Assets\Fonts\OFL.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
