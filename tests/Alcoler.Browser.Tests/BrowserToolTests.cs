@@ -12,7 +12,9 @@ public class BrowserToolTests
 {
     private static readonly SessionId Session = new("sess_tool_tests");
 
+    private static readonly byte[] Png = [137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3];
     private readonly FakeBrowserController _controller = new();
+    private readonly FakeToolWorkspace _workspace = new();
     private readonly BrowserTool _tool;
 
     public BrowserToolTests() => _tool = new BrowserTool(_controller);
@@ -132,12 +134,19 @@ public class BrowserToolTests
     public async Task Execute_ScreenshotSummary_ExcludesPngBytes()
     {
         _controller.ResultFactory = _ => new BrowserActionResult(
-            Ok: true, Url: "https://example.com", ScreenshotPng: [0x89, 0x50, 0x4E, 0x47]);
+            Ok: true, Url: "https://example.com", ScreenshotPng: Png);
         var result = await Execute("""{"action":"screenshot"}""");
 
-        var text = Assert.IsType<ToolResultText>(result.Content.Single()).Text;
-        Assert.Contains("browser pane", text);
+        Assert.False(result.IsError);
+        var text = Assert.IsType<ToolResultText>(result.Content[0]).Text;
+        Assert.Contains("artifact", text);
         Assert.DoesNotContain("iVBOR", text);
+        var media = Assert.IsType<ToolResultMedia>(result.Content[1]);
+        Assert.Equal("image/png", media.MimeType);
+        var saved = Assert.Single(_workspace.SavedArtifacts);
+        Assert.Equal(Session, saved.SessionId);
+        Assert.Equal(Png, saved.Data);
+        Assert.Equal(saved.FileName, media.FileName);
     }
 
     [Fact]
@@ -190,14 +199,19 @@ public class BrowserToolTests
         var verbs = schema.GetProperty("properties").GetProperty("action").GetProperty("enum").EnumerateArray()
             .Select(v => v.GetString()!).ToArray();
         Assert.Equal(
-            ["navigate", "click", "type", "screenshot", "press", "scroll", "wait", "read_text"],
+            ["navigate", "click", "type", "screenshot", "press", "scroll", "wait", "read_text",
+                "capabilities", "tabs", "new_tab", "close_tab", "select_tab", "back", "forward", "reload",
+                "snapshot", "dom_snapshot", "dblclick", "hover", "fill", "drag", "check", "uncheck", "select_option",
+                "count", "inner_text", "text_content", "is_visible", "is_enabled", "element_info", "get_attribute",
+                "wait_for", "evaluate", "dialog", "downloads", "download_media", "viewport", "visibility", "takeover",
+                "resume", "finalize", "record_start", "record_status", "record_cancel"],
             verbs);
     }
 
     private async Task<ToolExecutionResult> Execute(string json)
     {
         var context = new ToolExecutionContext(
-            Session, @"C:\fake-workspace", Input(json), new FakeToolWorkspace(), TimeProvider.System);
+            Session, @"C:\fake-workspace", Input(json), _workspace, TimeProvider.System);
         return await _tool.ExecuteAsync(context, CancellationToken.None);
     }
 

@@ -23,54 +23,56 @@
       </Setter>
     </Style>
     <Style Selector="Button.questionOption:pointerover /template/ Border#OptionSurface">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Button.questionOption.active /template/ Border#OptionSurface">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Button.questionOption.selected /template/ Border#OptionSurface">
       <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
+    <Style Selector="Button.questionOption:focus-visible /template/ Border#OptionSurface">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Border.choiceCheck">
       <Setter Property="Width" Value="16" />
       <Setter Property="Height" Value="16" />
       <Setter Property="CornerRadius" Value="2" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
     <Style Selector="Border.choiceCheck.selected">
       <Setter Property="Background" Value="{DynamicResource AlcolerBrand}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBrand}" />
     </Style>
     <Style Selector="Border.customAnswer">
       <Setter Property="Background" Value="Transparent" />
     </Style>
     <Style Selector="Border.customAnswer:pointerover">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Border.customAnswer.active">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Border.customAnswer.selected">
       <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
     </Style>
+    <Style Selector="Border.customAnswer:focus-within">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
     <Style Selector="TextBox.questionInput /template/ Border#PART_BorderElement">
       <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
     <Style Selector="TextBox.questionInput:pointerover /template/ Border#PART_BorderElement">
       <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
     <Style Selector="TextBox.questionInput:focus /template/ Border#PART_BorderElement">
       <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
   </UserControl.Styles>
 
   <Border x:Name="QuestionCard" Background="{DynamicResource AlcolerPopover}"
-          BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+          BorderThickness="0"
           CornerRadius="16" Padding="12" Focusable="True" ClipToBounds="True" BoxShadow="0 4 12 0 #26000000">
     <Grid RowDefinitions="*,Auto" RowSpacing="12">
       <ScrollViewer x:Name="QuestionBody" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
@@ -78,7 +80,7 @@
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
             <TextBlock x:Name="QuestionHeading" FontSize="14" FontWeight="Medium" LineHeight="24" TextWrapping="Wrap">
               <InlineUIContainer>
-                <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="6"
+                <Border BorderThickness="0" CornerRadius="6"
                         Padding="7,1" Margin="0,0,8,0" MaxWidth="160" IsVisible="{Binding HasQuestions}">
                   <TextBlock Text="{Binding CurrentQuestion.Header}" FontSize="14" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
                 </Border>
@@ -151,7 +153,7 @@
             </StackPanel>
             <Border x:Name="QuestionPreviewPanel" Grid.Column="1" IsVisible="{Binding HasPreviews}"
                     MaxHeight="360" Padding="12" CornerRadius="8"
-                    Background="{DynamicResource AlcolerSurface}" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1">
+                    Background="{DynamicResource AlcolerSurface}" BorderThickness="0">
               <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                 <controls:ConversationMarkdown x:Name="QuestionPreview" Markdown="{Binding ActivePreview}">
                   <controls:ConversationMarkdown.Styles>
@@ -180,7 +182,7 @@
                      FontSize="14" TextWrapping="Wrap" Foreground="{DynamicResource AlcolerTextSecondary}" />
         </Grid>
         <StackPanel x:Name="QuestionActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-          <Button x:Name="DismissQuestionButton" Content="Dismiss" Classes="outline" Height="32" CornerRadius="8" Padding="10,0" Click="OnDismissClick" />
+          <Button x:Name="DismissQuestionButton" Content="Dismiss" Classes="secondary" Height="32" CornerRadius="8" Padding="10,0" Click="OnDismissClick" />
           <Button x:Name="SubmitAnswersButton" Content="{Binding PrimaryActionText}" Classes="primary" Height="32" CornerRadius="8" Padding="10,0" Click="OnContinueClick" />
         </StackPanel>
       </Grid>

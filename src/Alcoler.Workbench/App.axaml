@@ -8,10 +8,44 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceInclude Source="/Themes/AlcolerTheme.axaml" />
             </ResourceDictionary.MergedDictionaries>
+            <Thickness x:Key="ButtonBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="ToggleButtonBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="TextControlBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
+            <Thickness x:Key="ComboBoxBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="ComboBoxDropdownBorderThickness">0</Thickness>
+            <Thickness x:Key="ListBoxBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="CheckBoxBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="ToggleSwitchOuterBorderStrokeThickness">0</Thickness>
+            <Thickness x:Key="ToggleSwitchOnStrokeThickness">0</Thickness>
+            <Thickness x:Key="MenuFlyoutPresenterBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="FlyoutBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="ToolTipBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="ProgressBarBorderThemeThickness">0</Thickness>
+            <Thickness x:Key="ExpanderHeaderBorderThickness">0</Thickness>
+            <Thickness x:Key="ExpanderContentDownBorderThickness">0</Thickness>
+            <Thickness x:Key="ExpanderContentUpBorderThickness">0</Thickness>
+            <Thickness x:Key="ExpanderContentLeftBorderThickness">0</Thickness>
+            <Thickness x:Key="ExpanderContentRightBorderThickness">0</Thickness>
+            <Thickness x:Key="ExpanderChevronBorderThickness">0</Thickness>
+            <Thickness x:Key="SystemControlFocusVisualPrimaryThickness">0</Thickness>
+            <Thickness x:Key="SystemControlFocusVisualSecondaryThickness">0</Thickness>
+            <x:Double x:Key="RadioButtonBorderThemeThickness">0</x:Double>
         </ResourceDictionary>
     </Application.Resources>
     <Application.Styles>
-        <FluentTheme />
+        <FluentTheme>
+            <FluentTheme.Palettes>
+                <ColorPaletteResources x:Key="Dark" Accent="#35C2A1" />
+                <ColorPaletteResources x:Key="Light" Accent="#08785F" />
+            </FluentTheme.Palettes>
+        </FluentTheme>
+        <Style Selector=":is(TemplatedControl)">
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector=":is(Control)">
+            <Setter Property="FocusAdorner" Value="{x:Null}" />
+        </Style>
         <Style Selector="Window">
             <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontDefault}" />
             <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
@@ -62,7 +96,10 @@
             <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
         </Style>
         <Style Selector="Button:pressed /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+            <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+        </Style>
+        <Style Selector="Button:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
         </Style>
         <Style Selector="Button:disabled">
             <Setter Property="Opacity" Value="0.4" />
@@ -73,8 +110,14 @@
             <Setter Property="Padding" Value="12,6" />
             <Setter Property="FontWeight" Value="Medium" />
         </Style>
-        <Style Selector="Button.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+        <Style Selector="Button.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.primary:pressed /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.primary:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Background" Value="{DynamicResource AlcolerBrand}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerBrandText}" />
+        </Style>
+        <Style Selector="Button.primary:focus-visible">
+            <Setter Property="Opacity" Value="0.88" />
         </Style>
         <Style Selector="Button.primary:pointerover">
             <Setter Property="Opacity" Value="0.88" />
@@ -91,30 +134,35 @@
         <Style Selector="Button.ghost">
             <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
         </Style>
-        <Style Selector="Button.ghost:pointerover">
+        <Style Selector="Button.ghost:pointerover, Button.ghost:focus-visible">
             <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
         </Style>
-        <Style Selector="Button.outline">
-            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
+        <Style Selector="Button.secondary">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSurface}" />
+            <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
             <Setter Property="Padding" Value="12,5" />
         </Style>
-        <Style Selector="Button.outline:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+        <Style Selector="Button.secondary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
         </Style>
         <Style Selector="Button.danger">
-            <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="{DynamicResource AlcolerError}" />
+            <Setter Property="Background" Value="{DynamicResource AlcolerError}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerErrorText}" />
             <Setter Property="Padding" Value="12,5" />
         </Style>
-        <Style Selector="Button.danger:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerError}" />
+        <Style Selector="Button.danger:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.danger:pressed /template/ ContentPresenter#PART_ContentPresenter,
+                         Button.danger:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerError}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerErrorText}" />
+        </Style>
+        <Style Selector="Button.danger TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerErrorText}" />
+        </Style>
+        <Style Selector="Button.danger controls|Icon.icon">
+            <Setter Property="Stroke" Value="{DynamicResource AlcolerErrorText}" />
         </Style>
         <Style Selector="Button.icon">
             <Setter Property="Width" Value="28" />
@@ -146,21 +194,34 @@
 
         <Style Selector="TextBox">
             <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderThickness" Value="0" />
             <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
             <Setter Property="Padding" Value="10,7" />
             <Setter Property="MinHeight" Value="32" />
             <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
             <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
             <Setter Property="CaretBrush" Value="{DynamicResource AlcolerTextPrimary}" />
-            <Setter Property="SelectionBrush" Value="{DynamicResource AlcolerSurfaceHigh}" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource AlcolerSelected}" />
+            <Setter Property="SelectionForegroundBrush" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="TextBox /template/ TextPresenter#PART_TextPresenter">
+            <Setter Property="TextElement.Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource AlcolerTextPrimary}" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource AlcolerSelected}" />
+            <Setter Property="SelectionForegroundBrush" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="TextBox:pointerover, TextBox:focus">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="TextBox /template/ Border#PART_BorderElement">
+            <Setter Property="BorderThickness" Value="0" />
         </Style>
         <Style Selector="TextBox:pointerover /template/ Border#PART_BorderElement">
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
         </Style>
         <Style Selector="TextBox:focus /template/ Border#PART_BorderElement">
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+            <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Background" Value="{DynamicResource AlcolerInputFocused}" />
         </Style>
         <Style Selector="TextBox.bare">
@@ -170,24 +231,27 @@
             <Setter Property="MinHeight" Value="0" />
         </Style>
         <Style Selector="TextBox.bare:pointerover /template/ Border#PART_BorderElement">
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTransparent}" />
             <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
         </Style>
         <Style Selector="TextBox.bare:focus /template/ Border#PART_BorderElement">
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTransparent}" />
             <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
         </Style>
 
         <Style Selector="ComboBox">
             <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderThickness" Value="0" />
             <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
             <Setter Property="Padding" Value="8,4" />
             <Setter Property="MinHeight" Value="28" />
             <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
             <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="ComboBox:focus-visible /template/ Border#Background">
+            <Setter Property="Background" Value="{DynamicResource AlcolerInputFocused}" />
+        </Style>
+        <Style Selector="ComboBox:focus-visible /template/ Border#HighlightBackground">
+            <Setter Property="IsVisible" Value="False" />
         </Style>
         <Style Selector="ComboBox.ghost">
             <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
@@ -204,6 +268,94 @@
         <Style Selector="ComboBoxItem">
             <Setter Property="Padding" Value="10,6" />
             <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+        </Style>
+
+        <Style Selector="ComboBoxItem:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="ContextMenu, Menu, ListBox, FlyoutPresenter, MenuFlyoutPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerPopover}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="ToggleButton:checked, ToggleButton:checked:pointerover,
+                         ToggleButton:checked:focus-visible, ToggleButton:checked:pressed">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="ToggleButton:checked /template/ ContentPresenter#PART_ContentPresenter,
+                         ToggleButton:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         ToggleButton:checked:focus-visible /template/ ContentPresenter#PART_ContentPresenter,
+                         ToggleButton:checked:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="ListBoxItem:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="CheckBox, CheckBox:checked, CheckBox:indeterminate, CheckBox:pointerover, CheckBox:pressed, CheckBox:focus-visible,
+                         ToggleSwitch, RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="CheckBox:not(:checked):not(:indeterminate) /template/ Border#NormalRectangle">
+            <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
+        </Style>
+        <Style Selector="CheckBox:not(:checked):not(:indeterminate):pointerover /template/ Border#NormalRectangle">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="CheckBox:checked /template/ Border#NormalRectangle,
+                         CheckBox:indeterminate /template/ Border#NormalRectangle">
+            <Setter Property="Background" Value="{DynamicResource AlcolerAccent}" />
+        </Style>
+        <Style Selector="CheckBox:checked /template/ Path#CheckGlyph,
+                         CheckBox:indeterminate /template/ Path#CheckGlyph">
+            <Setter Property="Fill" Value="{DynamicResource AlcolerAccentText}" />
+        </Style>
+        <Style Selector="CheckBox:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         CheckBox:pressed /template/ ContentPresenter#PART_ContentPresenter,
+                         CheckBox:checked /template/ ContentPresenter#PART_ContentPresenter,
+                         CheckBox:indeterminate /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="CheckBox:focus-visible /template/ Border#PART_Border">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="ToggleSwitch:unchecked /template/ Border#OuterBorder">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+        </Style>
+        <Style Selector="ToggleSwitch:unchecked /template/ Ellipse#SwitchKnobOff">
+            <Setter Property="Fill" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="ToggleSwitch:checked /template/ Border#SwitchKnobBounds">
+            <Setter Property="Background" Value="{DynamicResource AlcolerAccent}" />
+        </Style>
+        <Style Selector="ToggleSwitch:checked /template/ Ellipse#SwitchKnobOn">
+            <Setter Property="Fill" Value="{DynamicResource AlcolerAccentText}" />
+        </Style>
+        <Style Selector="ToggleSwitch:focus-visible /template/ Grid#SwitchAreaGrid,
+                         ToggleSwitch:pointerover /template/ Grid#SwitchAreaGrid">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="RadioButton:not(:checked) /template/ Ellipse#OuterEllipse">
+            <Setter Property="Fill" Value="{DynamicResource AlcolerSurfaceHigh}" />
+        </Style>
+        <Style Selector="RadioButton:checked /template/ Ellipse#CheckOuterEllipse">
+            <Setter Property="Fill" Value="{DynamicResource AlcolerAccent}" />
+        </Style>
+        <Style Selector="RadioButton:checked /template/ Ellipse#CheckGlyph">
+            <Setter Property="Fill" Value="{DynamicResource AlcolerAccentText}" />
+            <Setter Property="StrokeThickness" Value="0" />
+        </Style>
+        <Style Selector="RadioButton:pointerover /template/ ContentPresenter#PART_ContentPresenter,
+                         RadioButton:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+        </Style>
+        <Style Selector="RadioButton:focus-visible /template/ Border#RootBorder">
+            <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+        </Style>
+        <Style Selector="ProgressBar">
+            <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+            <Setter Property="Foreground" Value="{DynamicResource AlcolerAccent}" />
         </Style>
 
         <Style Selector="RadioButton.segment">
@@ -244,8 +396,7 @@
         <Style Selector="ToolTip">
             <Setter Property="Background" Value="{DynamicResource AlcolerTooltip}" />
             <Setter Property="Foreground" Value="{DynamicResource AlcolerTooltipForeground}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderThickness" Value="0" />
             <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
             <Setter Property="Padding" Value="8,4" />
             <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />

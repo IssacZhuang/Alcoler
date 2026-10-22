@@ -97,14 +97,14 @@ public class ConversationMarkdownTests
         Assert.All(view.GetVisualDescendants().OfType<CTextBlock>().Where(block => block.Text is "first" or "nested" or "second"),
             block => Assert.Equal(0, block.Margin.Bottom));
         var quote = Assert.Single(view.GetVisualDescendants().OfType<Border>(), border => border.Classes.Contains("Blockquote"));
-        Assert.Equal(new Thickness(2, 0, 0, 0), quote.BorderThickness);
+        Assert.Equal(default, quote.BorderThickness);
         Assert.Equal(new Thickness(12, 0, 0, 0), quote.Padding);
         var quoteParagraphs = quote.GetVisualDescendants().OfType<CTextBlock>().ToArray();
         Assert.Equal(2, quoteParagraphs.Length);
         Assert.Equal(0, quoteParagraphs[0].Margin.Top);
         Assert.Equal(8, quoteParagraphs[1].Margin.Top);
         var table = Assert.Single(view.GetVisualDescendants().OfType<Border>(), border => border.Classes.Contains("Table"));
-        Assert.Equal(new Thickness(1), table.BorderThickness);
+        Assert.Equal(default, table.BorderThickness);
         Assert.Equal(new CornerRadius(12), table.CornerRadius);
         var tableScroll = Assert.IsType<ScrollViewer>(table.Child);
         Assert.Equal(Avalonia.Controls.Primitives.ScrollBarVisibility.Auto, tableScroll.HorizontalScrollBarVisibility);
@@ -113,17 +113,14 @@ public class ConversationMarkdownTests
         var header = Assert.Single(table.GetVisualDescendants().OfType<CTextBlock>(), block => block.Text == "Name");
         Assert.Equal(FontWeight.Normal, header.FontWeight);
         var rule = Assert.Single(view.GetVisualDescendants().OfType<Rule>());
-        Assert.Equal(1, rule.SingleLineWidth);
+        Assert.False(rule.IsVisible);
         foreach (var theme in new[] { ThemeVariant.Dark, ThemeVariant.Light })
         {
             host.Window.RequestedThemeVariant = theme;
             host.Pump();
             AssertBrush(view, theme, "AlcolerTextTertiary", markers[0].Foreground);
             AssertBrush(view, theme, "AlcolerTextSecondary", quoteParagraphs[0].Foreground);
-            AssertBrush(view, theme, "AlcolerBorder", quote.BorderBrush);
-            AssertBrush(view, theme, "AlcolerBorder", table.BorderBrush);
             AssertBrush(view, theme, "AlcolerTextTertiary", header.Foreground);
-            AssertBrush(view, theme, "AlcolerBorder", rule.Foreground);
         }
     }
 
@@ -261,7 +258,7 @@ public class ConversationMarkdownTests
             var border = Assert.Single(view.GetVisualDescendants().OfType<Border>(), border => border.Classes.Contains("CodeBlock"));
             Assert.Equal(new CornerRadius(12), border.CornerRadius);
             AssertBrush(view, theme, "AlcolerCard", border.Background);
-            AssertBrush(view, theme, "AlcolerBorder", border.BorderBrush);
+            Assert.Equal(default, border.BorderThickness);
             AssertBrush(view, theme, "AlcolerTextPrimary", block.Foreground);
         }
     }

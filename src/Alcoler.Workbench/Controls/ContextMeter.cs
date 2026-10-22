@@ -18,6 +18,8 @@ public sealed class ContextMeter : Control
 
     static ContextMeter() => AffectsRender<ContextMeter>(PercentProperty);
 
+    public ContextMeter() => ActualThemeVariantChanged += (_, _) => InvalidateVisual();
+
     public int Percent
     {
         get => GetValue(PercentProperty);
@@ -46,7 +48,7 @@ public sealed class ContextMeter : Control
             _ => ResolveBrush("AlcolerSuccess", 0xFF3FB950),
         };
         var radius = (float)(BarHeight / 2);
-        context.FillRectangle(ResolveBrush("AlcolerBorder", 0xFF3A3A3C), new Rect(0, 0, width, BarHeight), radius);
+        context.FillRectangle(ResolveBrush("AlcolerSurfaceHigh", 0xFF414141), new Rect(0, 0, width, BarHeight), radius);
         if (percent > 0)
         {
             var fillWidth = Math.Max(BarHeight, width * percent / 100.0);

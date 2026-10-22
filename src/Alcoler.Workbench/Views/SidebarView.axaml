@@ -28,6 +28,11 @@
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
     </Style>
+    <Style Selector="Button.sessionItem:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.sessionItem:focus-visible /template/ ContentPresenter#PART_ContentPresenter,
+                     Button.groupHeader:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.groupHeader:focus-visible /template/ ContentPresenter#PART_ContentPresenter,
+                     Button.sidebarAction:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.sidebarAction:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
     <Style Selector="controls|Icon.sessionSpinner.running">
       <Style.Animations>
         <Animation Duration="0:0:0.9" IterationCount="INFINITE">

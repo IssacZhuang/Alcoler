@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
 
 namespace Alcoler.Contracts.Browser;
@@ -10,13 +11,18 @@ public enum BrowserSessionState
     Failed,
 }
 
-/// <summary>
-/// One verb per record; the tool layer maps its JSON "action" property onto these,
-/// the controller dispatches with pattern matching.
-/// </summary>
 public abstract record BrowserAction
 {
     public abstract string Verb { get; }
+
+    public string? TabId { get; init; }
+
+    public bool UserInitiated { get; init; }
+}
+
+public sealed record BrowserCommandAction(string Command, JsonElement Input) : BrowserAction
+{
+    public override string Verb => Command;
 }
 
 public sealed record BrowserNavigateAction(string Url) : BrowserAction
@@ -65,18 +71,32 @@ public sealed record BrowserActionResult(
     string? Title = null,
     string? Text = null,
     byte[]? ScreenshotPng = null,
-    string? Error = null)
-{
-    /// <summary>Tool-result-friendly form of <see cref="ScreenshotPng"/>; the model-facing text never embeds it.</summary>
-    public string? ScreenshotPngBase64 => ScreenshotPng is null ? null : Convert.ToBase64String(ScreenshotPng);
-}
+    string? Error = null,
+    string? TabId = null,
+    string? StructuredOutput = null,
+    bool SideEffectUncertain = false,
+    byte[]? Media = null,
+    string? MediaType = null,
+    string? MediaFileName = null);
 
 public sealed record BrowserSessionStatus(
     BrowserSessionState State,
     string? Url = null,
     string? Title = null,
     string? LatestScreenshotUri = null,
-    DateTimeOffset UpdatedAt = default);
+    DateTimeOffset UpdatedAt = default,
+    IReadOnlyList<BrowserTabStatus>? Tabs = null,
+    string? ActiveTabId = null,
+    bool IsUserControlled = false,
+    string? Error = null);
+
+public sealed record BrowserTabStatus(
+    string Id,
+    string Url,
+    string Title,
+    bool IsActive = false,
+    bool IsLoading = false,
+    bool IsUserControlled = false);
 
 public sealed record BrowserStatusChangedEventArgs(SessionId SessionId, BrowserSessionStatus Status);
 

@@ -51,10 +51,19 @@ internal sealed class FakeToolWorkspace : IToolWorkspace
 {
     public string Root => @"C:\fake-workspace";
 
+    public List<(SessionId SessionId, string FileName, string MimeType, byte[] Data)> SavedArtifacts { get; } = [];
+
+    public CancellationToken LastSaveCancellationToken { get; private set; }
+
     public string ResolvePath(string path) => Path.Combine(Root, path);
 
     public ValueTask<ArtifactReference> SaveArtifactAsync(
         SessionId sessionId, string fileName, string mimeType,
-        ReadOnlyMemory<byte> data, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(new ArtifactReference(Path.Combine(Root, fileName), mimeType, fileName));
+        ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        LastSaveCancellationToken = cancellationToken;
+        SavedArtifacts.Add((sessionId, fileName, mimeType, data.ToArray()));
+        return ValueTask.FromResult(new ArtifactReference(Path.Combine(Root, fileName), mimeType, fileName));
+    }
 }

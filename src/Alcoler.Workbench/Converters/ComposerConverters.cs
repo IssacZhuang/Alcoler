@@ -18,8 +18,7 @@ public static class ComposerConverters
 
     public static readonly IValueConverter Not = new NotConverter();
 
-    /// <summary>Colors the risk badge from theme tokens; hardcoded fallbacks keep the badge legible when the palette is absent.</summary>
-    public static readonly IValueConverter RiskLevelBrush = new RiskLevelBrushConverter();
+    public static readonly IMultiValueConverter RiskLevelBrush = new RiskLevelBrushConverter();
 
     /// <summary>True when the first count (selected answers) reaches the second (questions).</summary>
     public static readonly IMultiValueConverter CountSatisfied = new CountSatisfiedConverter();
@@ -55,7 +54,7 @@ public static class ComposerConverters
             BindingOperations.DoNothing;
     }
 
-    private sealed class RiskLevelBrushConverter : IValueConverter
+    private sealed class RiskLevelBrushConverter : IMultiValueConverter
     {
         private static readonly IReadOnlyDictionary<RiskLevel, (string Key, uint Fallback)> Palette =
             new Dictionary<RiskLevel, (string, uint)>
@@ -66,14 +65,15 @@ public static class ComposerConverters
                 [RiskLevel.Critical] = ("AlcolerError", 0xFFD13438),
             };
 
-        public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        public object? Convert(IList<object?> values, Type targetType, object? parameter, CultureInfo culture)
         {
-            if (value is not RiskLevel level || !Palette.TryGetValue(level, out var entry))
+            if (values.Count != 2 || values[0] is not RiskLevel level || !Palette.TryGetValue(level, out var entry)
+                || values[1] is not ThemeVariant theme)
             {
                 return null;
             }
             var app = Application.Current;
-            if (app is not null && app.TryFindResource(entry.Key, app.ActualThemeVariant, out var resource))
+            if (app is not null && app.TryFindResource(entry.Key, theme, out var resource))
             {
                 return resource switch
                 {
@@ -84,9 +84,6 @@ public static class ComposerConverters
             }
             return new ImmutableSolidColorBrush(entry.Fallback);
         }
-
-        public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-            BindingOperations.DoNothing;
     }
 
     private sealed class CountSatisfiedConverter : IMultiValueConverter

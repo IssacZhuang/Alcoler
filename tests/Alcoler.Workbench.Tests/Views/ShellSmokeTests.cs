@@ -52,6 +52,7 @@ public class ShellSmokeTests
         "AlcolerSurface",
         "AlcolerSurfaceHigh",
         "AlcolerBorder",
+        "AlcolerBorderHover",
         "AlcolerTextPrimary",
         "AlcolerTextSecondary",
         "AlcolerAccent",
@@ -192,18 +193,28 @@ public class ShellSmokeTests
         var window = new Window();
         window.Show();
 
-        foreach (var key in TokenKeys)
+        try
         {
-            Assert.True(window.TryFindResource(key, ThemeVariant.Dark, out var dark), key);
-            var darkBrush = Assert.IsType<SolidColorBrush>(dark);
-            Assert.NotEqual(default, darkBrush.Color);
-
-            Assert.True(window.TryFindResource(key, ThemeVariant.Light, out var light), key);
-            var lightBrush = Assert.IsType<SolidColorBrush>(light);
-            Assert.NotEqual(darkBrush.Color, lightBrush.Color);
+            foreach (var key in TokenKeys)
+            {
+                Assert.True(window.TryFindResource(key, ThemeVariant.Dark, out var dark), key);
+                var darkBrush = Assert.IsType<SolidColorBrush>(dark);
+                Assert.True(window.TryFindResource(key, ThemeVariant.Light, out var light), key);
+                var lightBrush = Assert.IsType<SolidColorBrush>(light);
+                if (key is "AlcolerBorder" or "AlcolerBorderHover")
+                {
+                    Assert.Equal(0, darkBrush.Color.A);
+                    Assert.Equal(darkBrush.Color, lightBrush.Color);
+                }
+                else
+                {
+                    Assert.Equal(255, darkBrush.Color.A);
+                    Assert.Equal(255, lightBrush.Color.A);
+                    Assert.NotEqual(darkBrush.Color, lightBrush.Color);
+                }
+            }
         }
-
-        window.Close();
+        finally { window.Close(); }
     }
 
     [AvaloniaFact]

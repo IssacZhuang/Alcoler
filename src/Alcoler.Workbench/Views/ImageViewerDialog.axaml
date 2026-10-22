@@ -5,7 +5,7 @@
         CanResize="True" ShowInTaskbar="False" WindowStartupLocation="CenterOwner"
         Background="{DynamicResource AlcolerBackground}">
   <Grid RowDefinitions="Auto,*">
-    <Border Padding="16,8" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource AlcolerBorder}">
+    <Border Padding="16,8" BorderThickness="0">
       <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="16">
         <TextBlock x:Name="FileNameLabel" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                    Foreground="{DynamicResource AlcolerTextPrimary}" />

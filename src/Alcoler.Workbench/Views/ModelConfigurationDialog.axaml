@@ -17,8 +17,8 @@
       <Setter Property="MinHeight" Value="24" />
       <Setter Property="Template">
         <ControlTemplate>
-          <Grid Background="Transparent">
-            <Border x:Name="SwitchTrack" Height="18" CornerRadius="9" Background="{DynamicResource AlcolerBorderHover}" VerticalAlignment="Center" />
+          <Grid x:Name="SwitchSurface">
+            <Border x:Name="SwitchTrack" Height="18" CornerRadius="9" Background="{DynamicResource AlcolerSurfaceHigh}" VerticalAlignment="Center" />
             <Canvas Width="28" Height="14" HorizontalAlignment="Left" Margin="2,0,0,0" VerticalAlignment="Center">
               <Panel x:Name="PART_SwitchKnob" Width="14" Height="14" Background="Transparent" />
               <Panel x:Name="PART_MovingKnobs" Width="14" Height="14">
@@ -35,9 +35,11 @@
     <Style Selector="ToggleSwitch:checked /template/ Ellipse#SwitchThumb">
       <Setter Property="Fill" Value="{DynamicResource AlcolerBackground}" />
     </Style>
-    <Style Selector="ToggleSwitch:focus-visible /template/ Border#SwitchTrack">
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTextSecondary}" />
-      <Setter Property="BorderThickness" Value="2" />
+    <Style Selector="ToggleSwitch /template/ Grid#SwitchSurface">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="ToggleSwitch:focus-visible /template/ Grid#SwitchSurface">
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
     </Style>
     <Style Selector="ToggleSwitch:disabled">
       <Setter Property="Opacity" Value="0.45" />
@@ -66,16 +68,15 @@
       <Setter Property="Margin" Value="0,0,8,8" />
       <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
       <Setter Property="Background" Value="{DynamicResource AlcolerCard}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
       <Setter Property="Template">
         <ControlTemplate>
-          <Border x:Name="ChipSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                  BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+          <Border x:Name="ChipSurface" Background="{TemplateBinding Background}"
+                  BorderThickness="0" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
             <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
-              <Border Width="12" Height="12" BorderThickness="1" BorderBrush="{DynamicResource AlcolerTextSecondary}" CornerRadius="2" VerticalAlignment="Center">
-                <controls:Icon Width="10" Height="10" Stroke="{DynamicResource AlcolerTextPrimary}" StrokeThickness="2" Data="m5 12 4 4 10-10" IsVisible="{TemplateBinding IsChecked}" />
+              <Border x:Name="ChipCheck" Width="12" Height="12" BorderThickness="0" CornerRadius="2" VerticalAlignment="Center">
+                <controls:Icon Width="10" Height="10" Stroke="{DynamicResource AlcolerBrandText}" StrokeThickness="2" Data="m5 12 4 4 10-10" IsVisible="{TemplateBinding IsChecked}" />
               </Border>
               <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
                                 Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" />
@@ -89,7 +90,6 @@
     </Style>
     <Style Selector="ToggleButton.chip:checked">
       <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
     <Style Selector="ToggleButton.chip:checked:pointerover">
@@ -104,7 +104,13 @@
       <Setter Property="Opacity" Value="1" />
     </Style>
     <Style Selector="ToggleButton.chip:focus-visible">
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+    </Style>
+    <Style Selector="ToggleButton.chip /template/ Border#ChipCheck">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="ToggleButton.chip:checked /template/ Border#ChipCheck">
+      <Setter Property="Background" Value="{DynamicResource AlcolerBrand}" />
     </Style>
     <Style Selector="ToggleButton.disclosure">
       <Setter Property="Background" Value="Transparent" />
@@ -113,8 +119,8 @@
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
       <Setter Property="Template">
         <ControlTemplate>
-          <Border x:Name="DisclosureSurface" Background="Transparent" Padding="{TemplateBinding Padding}"
-                  BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4">
+          <Border x:Name="DisclosureSurface" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"
+                  BorderThickness="0" CornerRadius="4">
             <ContentPresenter Content="{TemplateBinding Content}" Foreground="{TemplateBinding Foreground}" HorizontalAlignment="Left" />
           </Border>
         </ControlTemplate>
@@ -136,8 +142,8 @@
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
     <Style Selector="ToggleButton.disclosure:focus-visible">
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
-      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
     </Style>
     <Style Selector="Expander.advanced">
       <Setter Property="Background" Value="Transparent" />
@@ -179,7 +185,7 @@
       <Setter Property="Padding" Value="3" />
     </Style>
   </Window.Styles>
-  <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="12" Background="{DynamicResource AlcolerBackground}">
+  <Border BorderThickness="0" CornerRadius="12" Background="{DynamicResource AlcolerBackground}">
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
     <StackPanel Spacing="16" Margin="0,0,0,20">
       <Grid ColumnDefinitions="*,Auto" Background="Transparent" PointerPressed="OnHeaderPointerPressed">
@@ -246,7 +252,7 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                   <DataTemplate x:DataType="vm:ReasoningLevelViewModel">
-                    <Border Classes="reasoningChip" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="6" Padding="4" Margin="0,0,8,8">
+                    <Border Classes="reasoningChip" BorderThickness="0" CornerRadius="6" Padding="4" Margin="0,0,8,8">
                       <Grid Width="84" RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="0">
                         <TextBox Grid.ColumnSpan="3" Text="{Binding Value, Mode=TwoWay}" MinHeight="24" Padding="4,2" BorderThickness="0" Background="Transparent" AutomationProperties.Name="Reasoning level" />
                         <Button Grid.Row="1" Grid.Column="0" Classes="icon" Command="{Binding MoveUpCommand}" ToolTip.Tip="Move reasoning level up" AutomationProperties.Name="Move reasoning level up">
@@ -265,7 +271,7 @@
               </ItemsControl>
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                 <TextBox x:Name="NewReasoningLevelBox" Text="{Binding NewReasoningLevel, Mode=TwoWay}" Watermark="New reasoning level" AutomationProperties.Name="New reasoning level" />
-                <Button x:Name="AddReasoningLevelButton" Grid.Column="1" Classes="outline action" Content="Add" Command="{Binding AddReasoningLevelCommand}" />
+                <Button x:Name="AddReasoningLevelButton" Grid.Column="1" Classes="secondary action" Content="Add" Command="{Binding AddReasoningLevelCommand}" />
               </Grid>
             </StackPanel>
             <StackPanel Spacing="8">
@@ -284,7 +290,7 @@
       <Grid ColumnDefinitions="*,Auto">
         <Button x:Name="RestoreButton" Classes="ghost action" Content="Restore defaults" Command="{Binding RestoreDefaultsCommand}" HorizontalAlignment="Left" />
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-          <Button x:Name="CancelButton" Classes="outline action" Content="Cancel" IsCancel="True" Click="OnCancelClick" />
+          <Button x:Name="CancelButton" Classes="secondary action" Content="Cancel" IsCancel="True" Click="OnCancelClick" />
           <Button x:Name="SaveButton" Classes="primary action" Content="Save" IsDefault="True" Click="OnSaveClick" />
         </StackPanel>
       </Grid>

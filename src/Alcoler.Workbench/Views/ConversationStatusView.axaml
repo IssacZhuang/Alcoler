@@ -80,6 +80,9 @@
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
+    <Style Selector="Button.statusRow:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.statusRow:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
     <Style Selector="Button.activityRow">
       <Setter Property="MinHeight" Value="56" />
       <Setter Property="Padding" Value="8" />
@@ -98,7 +101,7 @@
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
     </Style>
     <Style Selector="Border.todoRow:pointerover">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="controls|Icon.todoIcon">
       <Setter Property="Stroke" Value="{DynamicResource AlcolerTextTertiary}" />
@@ -225,16 +228,16 @@
       <Setter Property="Background" Value="Transparent" />
     </Style>
     <Style Selector="ToggleButton.sectionHeader:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="ToggleButton.sectionHeader:checked:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="ToggleButton.sectionHeader:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="ToggleButton.sectionHeader:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="ToggleButton.sectionHeader controls|Icon.sectionChevron">
       <Setter Property="Opacity" Value="0" />
@@ -266,22 +269,20 @@
     </Style>
     <Style Selector="FlyoutPresenter.statusFlyout">
       <Setter Property="Background" Value="{DynamicResource AlcolerPopover}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderThickness" Value="0" />
       <Setter Property="CornerRadius" Value="12" />
       <Setter Property="Padding" Value="8" />
     </Style>
     <Style Selector="ToolTip.statusPreview">
       <Setter Property="Background" Value="{DynamicResource AlcolerPopover}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderThickness" Value="0" />
       <Setter Property="CornerRadius" Value="12" />
       <Setter Property="Padding" Value="8" />
     </Style>
   </UserControl.Styles>
 
-  <Border x:Name="StatusShell" CornerRadius="16" BorderThickness="1"
-          BorderBrush="{DynamicResource AlcolerBorder}" Background="{DynamicResource AlcolerPopover}"
+  <Border x:Name="StatusShell" CornerRadius="16" BorderThickness="0"
+          Background="{DynamicResource AlcolerPopover}"
           BoxShadow="0 4 12 0 #26000000">
     <Grid>
       <Button x:Name="SummaryButton" Classes="summaryButton" Click="OnExpandClick"
@@ -302,7 +303,7 @@
       <ScrollViewer x:Name="StatusScroll" IsVisible="{Binding #StatusView.IsExpanded}"
                     HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="8" Spacing="8">
-          <Border x:Name="GitContainer" IsVisible="{Binding HasGit}" BorderBrush="{DynamicResource AlcolerBorder}">
+          <Border x:Name="GitContainer" IsVisible="{Binding HasGit}">
             <Expander x:Name="GitSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Git tools">
               <Expander.Header><TextBlock Classes="statusHeading" Text="Git tools" /></Expander.Header>
               <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
@@ -356,7 +357,7 @@
             </Expander>
           </Border>
 
-          <Border x:Name="PlansContainer" IsVisible="{Binding HasPlans}" BorderBrush="{DynamicResource AlcolerBorder}">
+          <Border x:Name="PlansContainer" IsVisible="{Binding HasPlans}">
             <Expander x:Name="PlansSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Plans">
               <Expander.Header><TextBlock Classes="statusHeading" Text="Plans" /></Expander.Header>
               <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
@@ -378,7 +379,7 @@
             </Expander>
           </Border>
 
-          <Border x:Name="ProgressContainer" IsVisible="{Binding HasTodos}" BorderBrush="{DynamicResource AlcolerBorder}">
+          <Border x:Name="ProgressContainer" IsVisible="{Binding HasTodos}">
             <Expander x:Name="ProgressSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Progress">
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="6">
@@ -436,7 +437,7 @@
             </Expander>
           </Border>
 
-          <Border x:Name="TerminalsContainer" IsVisible="{Binding HasTerminals}" BorderBrush="{DynamicResource AlcolerBorder}">
+          <Border x:Name="TerminalsContainer" IsVisible="{Binding HasTerminals}">
             <Expander x:Name="TerminalsSection" Classes="statusSection" IsExpanded="False" AutomationProperties.Name="Terminals">
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="6">
@@ -450,7 +451,7 @@
             </Expander>
           </Border>
 
-          <Border x:Name="AgentsContainer" IsVisible="{Binding HasAgents}" BorderBrush="{DynamicResource AlcolerBorder}">
+          <Border x:Name="AgentsContainer" IsVisible="{Binding HasAgents}">
             <Expander x:Name="AgentsSection" Classes="statusSection" IsExpanded="False" AutomationProperties.Name="Agents">
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="6">
@@ -462,8 +463,7 @@
               <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <StackPanel>
                   <ItemsControl ItemsSource="{Binding Agents}" ItemTemplate="{StaticResource AgentRow}" />
-                  <Border x:Name="EndedAgentsContainer" BorderBrush="{DynamicResource AlcolerBorder}"
-                          IsVisible="{Binding !!EndedAgents.Count}">
+                  <Border x:Name="EndedAgentsContainer" IsVisible="{Binding !!EndedAgents.Count}">
                     <Button x:Name="EndedAgentsButton" Classes="statusRow" AutomationProperties.Name="Ended agents">
                       <Grid ColumnDefinitions="16,*,Auto,14" ColumnSpacing="8">
                         <controls:Icon Classes="icon" Data="M9 12l2 2 4-4M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" />

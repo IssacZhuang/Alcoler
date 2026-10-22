@@ -3,51 +3,51 @@
                     xmlns:conv="using:Alcoler.Workbench.Converters">
   <ResourceDictionary.ThemeDictionaries>
     <ResourceDictionary x:Key="Dark">
-      <Color x:Key="AlcolerBackgroundColor">#FF161616</Color>
-      <Color x:Key="AlcolerSidebarColor">#FF2B2B2B</Color>
-      <Color x:Key="AlcolerChromeColor">#FF2B2B2B</Color>
-      <Color x:Key="AlcolerPanelColor">#FF202020</Color>
-      <Color x:Key="AlcolerCardColor">#FF2B2B2B</Color>
-      <Color x:Key="AlcolerPopoverColor">#FF2B2B2B</Color>
-      <Color x:Key="AlcolerInputColor">#FF2B2B2B</Color>
-      <Color x:Key="AlcolerInputFocusedColor">#FF2B2B2B</Color>
-      <Color x:Key="AlcolerSurfaceColor">#0DFFFFFF</Color>
-      <Color x:Key="AlcolerSurfaceHighColor">#1AFFFFFF</Color>
-      <Color x:Key="AlcolerHoverColor">#0DFFFFFF</Color>
-      <Color x:Key="AlcolerSelectedColor">#1AFFFFFF</Color>
-      <Color x:Key="AlcolerBorderColor">#1AFFFFFF</Color>
-      <Color x:Key="AlcolerBorderHoverColor">#26FFFFFF</Color>
-      <Color x:Key="AlcolerTextPrimaryColor">#FFD4D4D4</Color>
-      <Color x:Key="AlcolerTextSecondaryColor">#FF888888</Color>
-      <Color x:Key="AlcolerTextTertiaryColor">#FF4F4F4F</Color>
-      <Color x:Key="AlcolerTextInverseColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerBrandColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerBrandTextColor">#FF000000</Color>
-      <Color x:Key="AlcolerAccentColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerAccentTextColor">#FF000000</Color>
-      <Color x:Key="AlcolerSuccessColor">#FF46BF72</Color>
-      <Color x:Key="AlcolerWarningColor">#FFFF8A30</Color>
-      <Color x:Key="AlcolerErrorColor">#FFFF5C5C</Color>
-      <Color x:Key="AlcolerErrorTextColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerInfoColor">#FF4099FF</Color>
-      <SolidColorBrush x:Key="AlcolerAgentExplore">#FF67E8F9</SolidColorBrush>
-      <SolidColorBrush x:Key="AlcolerAgentGeneral">#FF7DD3FC</SolidColorBrush>
-      <Color x:Key="AlcolerPhaseIdleColor">#FF888888</Color>
-      <Color x:Key="AlcolerPhaseBusyColor">#FF4099FF</Color>
-      <Color x:Key="AlcolerPhaseToolsColor">#FFFF8A30</Color>
-      <Color x:Key="AlcolerPhaseAttentionColor">#FFFF8A30</Color>
-      <Color x:Key="AlcolerPhaseErrorColor">#FFFF5C5C</Color>
-      <Color x:Key="AlcolerDiffAddedColor">#FF46BF72</Color>
-      <Color x:Key="AlcolerDiffRemovedColor">#FFFF5C5C</Color>
-      <Color x:Key="AlcolerGitModifiedColor">#FFFF8A30</Color>
-      <Color x:Key="AlcolerGitAddedColor">#FF46BF72</Color>
-      <Color x:Key="AlcolerGitDeletedColor">#FFFF5C5C</Color>
-      <Color x:Key="AlcolerGitRenamedColor">#FF4099FF</Color>
-      <Color x:Key="AlcolerGitUntrackedColor">#FF46BF72</Color>
-      <Color x:Key="AlcolerTerminalBackgroundColor">#FF161616</Color>
-      <Color x:Key="AlcolerTerminalForegroundColor">#FFD4D4D4</Color>
-      <Color x:Key="AlcolerTooltipColor">#FF2B2B2B</Color>
-      <Color x:Key="AlcolerTooltipForegroundColor">#FFF8F8F8</Color>
+      <Color x:Key="AlcolerBackgroundColor">#FF191919</Color>
+      <Color x:Key="AlcolerSidebarColor">#FF252525</Color>
+      <Color x:Key="AlcolerChromeColor">#FF191919</Color>
+      <Color x:Key="AlcolerPanelColor">#FF252525</Color>
+      <Color x:Key="AlcolerCardColor">#FF252525</Color>
+      <Color x:Key="AlcolerPopoverColor">#FF2D2D2D</Color>
+      <Color x:Key="AlcolerInputColor">#FF343434</Color>
+      <Color x:Key="AlcolerInputFocusedColor">#FF3E6058</Color>
+      <Color x:Key="AlcolerSurfaceColor">#FF343434</Color>
+      <Color x:Key="AlcolerSurfaceHighColor">#FF414141</Color>
+      <Color x:Key="AlcolerHoverColor">#FF3E635A</Color>
+      <Color x:Key="AlcolerSelectedColor">#FF344541</Color>
+      <Color x:Key="AlcolerBorderColor">#00000000</Color>
+      <Color x:Key="AlcolerBorderHoverColor">#00000000</Color>
+      <Color x:Key="AlcolerTextPrimaryColor">#FFDEDEDE</Color>
+      <Color x:Key="AlcolerTextSecondaryColor">#FFADB6B1</Color>
+      <Color x:Key="AlcolerTextTertiaryColor">#FFA8B3AC</Color>
+      <Color x:Key="AlcolerTextInverseColor">#FF191919</Color>
+      <Color x:Key="AlcolerBrandColor">#FF35C2A1</Color>
+      <Color x:Key="AlcolerBrandTextColor">#FF191919</Color>
+      <Color x:Key="AlcolerAccentColor">#FF35C2A1</Color>
+      <Color x:Key="AlcolerAccentTextColor">#FF191919</Color>
+      <Color x:Key="AlcolerSuccessColor">#FF70C99E</Color>
+      <Color x:Key="AlcolerWarningColor">#FFE8B86D</Color>
+      <Color x:Key="AlcolerErrorColor">#FFFF6666</Color>
+      <Color x:Key="AlcolerErrorTextColor">#FF191919</Color>
+      <Color x:Key="AlcolerInfoColor">#FF7DB8D6</Color>
+      <SolidColorBrush x:Key="AlcolerAgentExplore">#FF77D6BE</SolidColorBrush>
+      <SolidColorBrush x:Key="AlcolerAgentGeneral">#FF7DB8D6</SolidColorBrush>
+      <Color x:Key="AlcolerPhaseIdleColor">#FFADB6B1</Color>
+      <Color x:Key="AlcolerPhaseBusyColor">#FF35C2A1</Color>
+      <Color x:Key="AlcolerPhaseToolsColor">#FFE8B86D</Color>
+      <Color x:Key="AlcolerPhaseAttentionColor">#FFE8B86D</Color>
+      <Color x:Key="AlcolerPhaseErrorColor">#FFFF6666</Color>
+      <Color x:Key="AlcolerDiffAddedColor">#FF70C99E</Color>
+      <Color x:Key="AlcolerDiffRemovedColor">#FFFF6666</Color>
+      <Color x:Key="AlcolerGitModifiedColor">#FFE8B86D</Color>
+      <Color x:Key="AlcolerGitAddedColor">#FF70C99E</Color>
+      <Color x:Key="AlcolerGitDeletedColor">#FFFF6666</Color>
+      <Color x:Key="AlcolerGitRenamedColor">#FF7DB8D6</Color>
+      <Color x:Key="AlcolerGitUntrackedColor">#FF70C99E</Color>
+      <Color x:Key="AlcolerTerminalBackgroundColor">#FF191919</Color>
+      <Color x:Key="AlcolerTerminalForegroundColor">#FFDEDEDE</Color>
+      <Color x:Key="AlcolerTooltipColor">#FF2D2D2D</Color>
+      <Color x:Key="AlcolerTooltipForegroundColor">#FFDEDEDE</Color>
       <Color x:Key="AlcolerOverlayColor">#B3000000</Color>
       <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
       <SolidColorBrush x:Key="AlcolerSidebar" Color="{DynamicResource AlcolerSidebarColor}" />
@@ -93,54 +93,104 @@
       <SolidColorBrush x:Key="AlcolerTooltip" Color="{DynamicResource AlcolerTooltipColor}" />
       <SolidColorBrush x:Key="AlcolerTooltipForeground" Color="{DynamicResource AlcolerTooltipForegroundColor}" />
       <SolidColorBrush x:Key="AlcolerOverlay" Color="{DynamicResource AlcolerOverlayColor}" />
+
+      <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="SystemControlForegroundBaseMediumLowBrush" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="SystemControlDisabledBaseMediumLowBrush" Color="{DynamicResource AlcolerTextTertiaryColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightAccentBrush" Color="{DynamicResource AlcolerAccentColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightAltBaseHighBrush" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListLowBrush" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListMediumBrush" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListAccentLowBrush" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListAccentMediumBrush" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListAccentHighBrush" Color="{DynamicResource AlcolerSelectedColor}" />
+
+      <SolidColorBrush x:Key="ComboBoxBackgroundPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxBackgroundPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownBackground" Color="{DynamicResource AlcolerPopoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxForegroundFocused" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxForegroundFocusedPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxPlaceHolderForeground" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxPlaceHolderForegroundFocusedPressed" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownGlyphForeground" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocused" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocusedPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForeground" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundSelected" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundSelectedPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundSelectedPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundSelected" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundSelectedPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundSelectedPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+
+      <SolidColorBrush x:Key="MenuFlyoutPresenterBackground" Color="{DynamicResource AlcolerPopoverColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemForeground" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemForegroundPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemForegroundPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForeground" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForegroundPointerOver" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForegroundPressed" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+
+      <SolidColorBrush x:Key="TextControlForeground" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="TextControlForegroundPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="TextControlForegroundFocused" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="{DynamicResource AlcolerTextTertiaryColor}" />
+      <SolidColorBrush x:Key="TextControlPlaceholderForegroundPointerOver" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="TextControlPlaceholderForegroundFocused" Color="{DynamicResource AlcolerTextSecondaryColor}" />
     </ResourceDictionary>
     <ResourceDictionary x:Key="Light">
-      <Color x:Key="AlcolerBackgroundColor">#FFF8F8F8</Color>
-      <Color x:Key="AlcolerSidebarColor">#FFECECEE</Color>
-      <Color x:Key="AlcolerChromeColor">#FFECECEE</Color>
+      <Color x:Key="AlcolerBackgroundColor">#FFF3F6F4</Color>
+      <Color x:Key="AlcolerSidebarColor">#FFE6ECE8</Color>
+      <Color x:Key="AlcolerChromeColor">#FFF3F6F4</Color>
       <Color x:Key="AlcolerPanelColor">#FFFFFFFF</Color>
       <Color x:Key="AlcolerCardColor">#FFFFFFFF</Color>
       <Color x:Key="AlcolerPopoverColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerInputColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerInputFocusedColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerSurfaceColor">#080D0D0D</Color>
-      <Color x:Key="AlcolerSurfaceHighColor">#0D0D0D0D</Color>
-      <Color x:Key="AlcolerHoverColor">#0D0D0D0D</Color>
-      <Color x:Key="AlcolerSelectedColor">#0D0D0D0D</Color>
-      <Color x:Key="AlcolerBorderColor">#1A0D0D0D</Color>
-      <Color x:Key="AlcolerBorderHoverColor">#260D0D0D</Color>
-      <Color x:Key="AlcolerTextPrimaryColor">#FF262626</Color>
-      <Color x:Key="AlcolerTextSecondaryColor">#FF7A7A7A</Color>
-      <Color x:Key="AlcolerTextTertiaryColor">#FFA4A4A4</Color>
+      <Color x:Key="AlcolerInputColor">#FFE1E9E4</Color>
+      <Color x:Key="AlcolerInputFocusedColor">#FFD5E6DE</Color>
+      <Color x:Key="AlcolerSurfaceColor">#FFDCE6E0</Color>
+      <Color x:Key="AlcolerSurfaceHighColor">#FFCFDBD3</Color>
+      <Color x:Key="AlcolerHoverColor">#FFD3E7DD</Color>
+      <Color x:Key="AlcolerSelectedColor">#FFC5E3D6</Color>
+      <Color x:Key="AlcolerBorderColor">#00000000</Color>
+      <Color x:Key="AlcolerBorderHoverColor">#00000000</Color>
+      <Color x:Key="AlcolerTextPrimaryColor">#FF24382E</Color>
+      <Color x:Key="AlcolerTextSecondaryColor">#FF425A4D</Color>
+      <Color x:Key="AlcolerTextTertiaryColor">#FF4C6054</Color>
       <Color x:Key="AlcolerTextInverseColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerBrandColor">#FF000000</Color>
+      <Color x:Key="AlcolerBrandColor">#FF08785F</Color>
       <Color x:Key="AlcolerBrandTextColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerAccentColor">#FF000000</Color>
+      <Color x:Key="AlcolerAccentColor">#FF08785F</Color>
       <Color x:Key="AlcolerAccentTextColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerSuccessColor">#FF1E8A3E</Color>
-      <Color x:Key="AlcolerWarningColor">#FFE07B00</Color>
-      <Color x:Key="AlcolerErrorColor">#FFE03131</Color>
+      <Color x:Key="AlcolerSuccessColor">#FF24734D</Color>
+      <Color x:Key="AlcolerWarningColor">#FF8A5B17</Color>
+      <Color x:Key="AlcolerErrorColor">#FFBC3E42</Color>
       <Color x:Key="AlcolerErrorTextColor">#FFFFFFFF</Color>
-      <Color x:Key="AlcolerInfoColor">#FF0B7FFF</Color>
-      <SolidColorBrush x:Key="AlcolerAgentExplore">#FF0E7490</SolidColorBrush>
-      <SolidColorBrush x:Key="AlcolerAgentGeneral">#FF0369A1</SolidColorBrush>
-      <Color x:Key="AlcolerPhaseIdleColor">#FF7A7A7A</Color>
-      <Color x:Key="AlcolerPhaseBusyColor">#FF0B7FFF</Color>
-      <Color x:Key="AlcolerPhaseToolsColor">#FFE07B00</Color>
-      <Color x:Key="AlcolerPhaseAttentionColor">#FFE07B00</Color>
-      <Color x:Key="AlcolerPhaseErrorColor">#FFE03131</Color>
-      <Color x:Key="AlcolerDiffAddedColor">#FF1E8A3E</Color>
-      <Color x:Key="AlcolerDiffRemovedColor">#FFE03131</Color>
-      <Color x:Key="AlcolerGitModifiedColor">#FFE07B00</Color>
-      <Color x:Key="AlcolerGitAddedColor">#FF1E8A3E</Color>
-      <Color x:Key="AlcolerGitDeletedColor">#FFE03131</Color>
-      <Color x:Key="AlcolerGitRenamedColor">#FF0B7FFF</Color>
-      <Color x:Key="AlcolerGitUntrackedColor">#FF1E8A3E</Color>
-      <Color x:Key="AlcolerTerminalBackgroundColor">#FFF8F8F8</Color>
-      <Color x:Key="AlcolerTerminalForegroundColor">#FF262626</Color>
-      <Color x:Key="AlcolerTooltipColor">#FFF0F0F0</Color>
-      <Color x:Key="AlcolerTooltipForegroundColor">#FF0D0D0D</Color>
-      <Color x:Key="AlcolerOverlayColor">#66000000</Color>
+      <Color x:Key="AlcolerInfoColor">#FF2B6C8A</Color>
+      <SolidColorBrush x:Key="AlcolerAgentExplore">#FF08785F</SolidColorBrush>
+      <SolidColorBrush x:Key="AlcolerAgentGeneral">#FF2B6C8A</SolidColorBrush>
+      <Color x:Key="AlcolerPhaseIdleColor">#FF425A4D</Color>
+      <Color x:Key="AlcolerPhaseBusyColor">#FF08785F</Color>
+      <Color x:Key="AlcolerPhaseToolsColor">#FF8A5B17</Color>
+      <Color x:Key="AlcolerPhaseAttentionColor">#FF8A5B17</Color>
+      <Color x:Key="AlcolerPhaseErrorColor">#FFBC3E42</Color>
+      <Color x:Key="AlcolerDiffAddedColor">#FF24734D</Color>
+      <Color x:Key="AlcolerDiffRemovedColor">#FFBC3E42</Color>
+      <Color x:Key="AlcolerGitModifiedColor">#FF8A5B17</Color>
+      <Color x:Key="AlcolerGitAddedColor">#FF24734D</Color>
+      <Color x:Key="AlcolerGitDeletedColor">#FFBC3E42</Color>
+      <Color x:Key="AlcolerGitRenamedColor">#FF2B6C8A</Color>
+      <Color x:Key="AlcolerGitUntrackedColor">#FF24734D</Color>
+      <Color x:Key="AlcolerTerminalBackgroundColor">#FFF3F6F4</Color>
+      <Color x:Key="AlcolerTerminalForegroundColor">#FF24382E</Color>
+      <Color x:Key="AlcolerTooltipColor">#FFFFFFFF</Color>
+      <Color x:Key="AlcolerTooltipForegroundColor">#FF24382E</Color>
+      <Color x:Key="AlcolerOverlayColor">#660E2119</Color>
       <SolidColorBrush x:Key="AlcolerBackground" Color="{DynamicResource AlcolerBackgroundColor}" />
       <SolidColorBrush x:Key="AlcolerSidebar" Color="{DynamicResource AlcolerSidebarColor}" />
       <SolidColorBrush x:Key="AlcolerChrome" Color="{DynamicResource AlcolerChromeColor}" />
@@ -185,6 +235,56 @@
       <SolidColorBrush x:Key="AlcolerTooltip" Color="{DynamicResource AlcolerTooltipColor}" />
       <SolidColorBrush x:Key="AlcolerTooltipForeground" Color="{DynamicResource AlcolerTooltipForegroundColor}" />
       <SolidColorBrush x:Key="AlcolerOverlay" Color="{DynamicResource AlcolerOverlayColor}" />
+
+      <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="SystemControlForegroundBaseMediumLowBrush" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="SystemControlDisabledBaseMediumLowBrush" Color="{DynamicResource AlcolerTextTertiaryColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightAccentBrush" Color="{DynamicResource AlcolerAccentColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightAltBaseHighBrush" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListLowBrush" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListMediumBrush" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListAccentLowBrush" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListAccentMediumBrush" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="SystemControlHighlightListAccentHighBrush" Color="{DynamicResource AlcolerSelectedColor}" />
+
+      <SolidColorBrush x:Key="ComboBoxBackgroundPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxBackgroundPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownBackground" Color="{DynamicResource AlcolerPopoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxForegroundFocused" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxForegroundFocusedPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxPlaceHolderForeground" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxPlaceHolderForegroundFocusedPressed" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownGlyphForeground" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocused" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocusedPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForeground" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundSelected" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundSelectedPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemForegroundSelectedPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundSelected" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundSelectedPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="ComboBoxItemBackgroundSelectedPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+
+      <SolidColorBrush x:Key="MenuFlyoutPresenterBackground" Color="{DynamicResource AlcolerPopoverColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemForeground" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemForegroundPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemForegroundPressed" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPointerOver" Color="{DynamicResource AlcolerHoverColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPressed" Color="{DynamicResource AlcolerSelectedColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForeground" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForegroundPointerOver" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="MenuFlyoutItemKeyboardAcceleratorTextForegroundPressed" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+
+      <SolidColorBrush x:Key="TextControlForeground" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="TextControlForegroundPointerOver" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="TextControlForegroundFocused" Color="{DynamicResource AlcolerTextPrimaryColor}" />
+      <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="{DynamicResource AlcolerTextTertiaryColor}" />
+      <SolidColorBrush x:Key="TextControlPlaceholderForegroundPointerOver" Color="{DynamicResource AlcolerTextSecondaryColor}" />
+      <SolidColorBrush x:Key="TextControlPlaceholderForegroundFocused" Color="{DynamicResource AlcolerTextSecondaryColor}" />
     </ResourceDictionary>
   </ResourceDictionary.ThemeDictionaries>
 

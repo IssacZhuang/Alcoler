@@ -346,12 +346,15 @@ public class ComposerAndInteractionSmokeTests
         await rendered.WaitAsync(TimeSpan.FromSeconds(5));
         input.Focus();
         await PumpAsync();
-        var expectedFocusedBorder = Assert.IsAssignableFrom<ISolidColorBrush>(shell.BorderBrush).Color;
+        var expectedActiveBackground = Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerSurfaceHigh")).Color;
 
         void AssertBackground()
         {
             Assert.Equal(0, Assert.IsAssignableFrom<ISolidColorBrush>(template.Background).Color.A);
-            Assert.Equal(expectedBackground, Assert.IsAssignableFrom<ISolidColorBrush>(shell.Background).Color);
+            Assert.Equal(shell.IsPointerOver || input.IsFocused || mode.IsFocused ? expectedActiveBackground : expectedBackground,
+                Assert.IsAssignableFrom<ISolidColorBrush>(shell.Background).Color);
+            Assert.Equal(default, shell.BorderThickness);
+            Assert.Equal(default, template.BorderThickness);
         }
 
         mode.Focus();
@@ -372,7 +375,7 @@ public class ComposerAndInteractionSmokeTests
         await PumpAsync();
         Assert.True(input.IsFocused);
         AssertBackground();
-        Assert.Equal(expectedFocusedBorder, Assert.IsAssignableFrom<ISolidColorBrush>(shell.BorderBrush).Color);
+        Assert.Equal(expectedActiveBackground, Assert.IsAssignableFrom<ISolidColorBrush>(shell.Background).Color);
 
         harness.Window.KeyTextInput("Hover-safe input");
         await PumpAsync();
@@ -1188,7 +1191,7 @@ public class ComposerAndInteractionSmokeTests
             Assert.True(actions.Bounds.Y >= hint.Bounds.Bottom + 7);
         Assert.Equal(new CornerRadius(16), card.CornerRadius);
         Assert.Equal(new Thickness(12), card.Padding);
-        Assert.Equal(new Thickness(1), card.BorderThickness);
+        Assert.Equal(default, card.BorderThickness);
         Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(harness.View.FindResource(theme, "AlcolerPopover")).Color,
             Assert.IsAssignableFrom<ISolidColorBrush>(card.Background).Color);
         Assert.InRange(card.Bounds.Width, 1, width - 30);

@@ -10,8 +10,7 @@
   <UserControl.Styles>
     <Style Selector="Border.card">
       <Setter Property="Background" Value="{DynamicResource AlcolerCard}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderThickness" Value="0" />
       <Setter Property="CornerRadius" Value="16" />
       <Setter Property="Padding" Value="12" />
     </Style>
@@ -32,8 +31,7 @@
       <Border x:Name="BannerStrip"
               IsVisible="False"
               Background="{DynamicResource AlcolerCard}"
-              BorderBrush="{DynamicResource AlcolerError}"
-              BorderThickness="1"
+              BorderThickness="0"
               CornerRadius="{DynamicResource AlcolerRadiusLarge}"
               Padding="12,8">
         <DockPanel>
@@ -62,8 +60,13 @@
                       <TextBlock Text="{Binding ToolName}" FontSize="12"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
                     </StackPanel>
-                    <Border Grid.Column="2" Classes="badge"
-                            Background="{Binding RiskLevel, Converter={x:Static converters:ComposerConverters.RiskLevelBrush}}">
+                    <Border Grid.Column="2" Classes="badge">
+                      <Border.Background>
+                        <MultiBinding Converter="{x:Static converters:ComposerConverters.RiskLevelBrush}">
+                          <Binding Path="RiskLevel" />
+                          <Binding Path="ActualThemeVariant" RelativeSource="{RelativeSource Self}" />
+                        </MultiBinding>
+                      </Border.Background>
                       <TextBlock Text="{Binding RiskLevel}" FontSize="{DynamicResource AlcolerFontXs}" FontWeight="Medium"
                                  Foreground="{DynamicResource AlcolerBrandText}" />
                     </Border>
@@ -79,7 +82,7 @@
                     <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                       <TextBlock Text="Enter to allow / Esc to deny" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
-                      <Button x:Name="DenyButton" Content="Deny" Classes="outline" MinWidth="72" Height="28" Padding="12,0" Click="OnDenyClick" />
+                      <Button x:Name="DenyButton" Content="Deny" Classes="secondary" MinWidth="72" Height="28" Padding="12,0" Click="OnDenyClick" />
                       <Button x:Name="AllowButton" Content="Allow" Classes="primary" MinWidth="72" Height="28" Padding="12,0" Click="OnAllowClick" />
                     </StackPanel>
                   </StackPanel>

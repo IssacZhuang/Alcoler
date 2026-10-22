@@ -23,10 +23,13 @@
       <Setter Property="Cursor" Value="Hand" />
     </Style>
     <Style Selector="Border.documentTab:pointerover">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Border.documentTab.active">
       <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
+    <Style Selector="Border.documentTab:focus-visible">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Border.documentTab TextBlock">
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
@@ -48,7 +51,7 @@
     </Style>
   </UserControl.Styles>
   <Grid RowDefinitions="48,*" Background="{DynamicResource AlcolerBackground}">
-    <Border x:Name="DocumentHeader" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1"
+    <Border x:Name="DocumentHeader" BorderThickness="0"
             PointerPressed="OnHeaderPointerPressed">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="8,0,6,0" ColumnSpacing="4">
         <Button x:Name="DocumentOverviewButton" Classes="icon" ToolTip.Tip="Search tabs" AutomationProperties.Name="Search tabs"
@@ -101,7 +104,6 @@
                       <MenuItem Header="Close" Click="OnCloseDocumentClick" />
                       <MenuItem Header="Close others" Click="OnCloseOthersClick" />
                       <MenuItem Header="Close all" Click="OnCloseAllClick" />
-                      <Separator />
                       <MenuItem Header="Move left" Click="OnMoveLeftClick" />
                       <MenuItem Header="Move right" Click="OnMoveRightClick" />
                     </ContextMenu>
@@ -120,7 +122,6 @@
                   <Button Classes="ghost" Content="Changes" Click="OnOpenChangesClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
                   <Button Classes="ghost" Content="Terminal" Click="OnOpenTerminalClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
                   <Button Classes="ghost" Content="Browser" Click="OnOpenBrowserClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
-                  <Separator />
                   <Button Classes="ghost" Content="Open file..." Click="OnOpenFileClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
                 </StackPanel>
               </Flyout>
@@ -142,7 +143,7 @@
         <TextBlock Text="Open a tab" FontSize="14" HorizontalAlignment="Center" />
         <TextBlock Text="Files, changes, browser, terminal and more" FontSize="12" TextWrapping="Wrap" TextAlignment="Center"
                    Foreground="{DynamicResource AlcolerTextSecondary}" />
-        <Button Classes="outline" Content="Open tab" Click="OnOpenTabClick" HorizontalAlignment="Center" />
+        <Button Classes="secondary" Content="Open tab" Click="OnOpenTabClick" HorizontalAlignment="Center" />
       </StackPanel>
       <ItemsControl x:Name="DocumentBodies" ItemsSource="{Binding Documents.Items}">
         <ItemsControl.ItemsPanel><ItemsPanelTemplate><Grid /></ItemsPanelTemplate></ItemsControl.ItemsPanel>

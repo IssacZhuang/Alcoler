@@ -20,7 +20,7 @@
     </Style>
   </UserControl.Styles>
   <DockPanel Background="{DynamicResource AlcolerBackground}">
-    <Border DockPanel.Dock="Top" Height="40" BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1" Padding="12,0">
+    <Border DockPanel.Dock="Top" Height="40" BorderThickness="0" Padding="12,0">
       <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
         <TextBlock x:Name="PART_DocumentPath" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis"
                    ToolTip.Tip="{Binding SourceLabel}" FontSize="{DynamicResource AlcolerFontSmall}"
@@ -37,8 +37,8 @@
                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
     <TextBlock DockPanel.Dock="Top" Text="Loading file..." IsVisible="{Binding IsLoading}" Margin="12,8"
                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
-    <Border DockPanel.Dock="Top" Margin="12" Padding="10" BorderBrush="{DynamicResource AlcolerError}"
-            BorderThickness="1" CornerRadius="{DynamicResource AlcolerRadius}"
+    <Border DockPanel.Dock="Top" Margin="12" Padding="10"
+            BorderThickness="0" CornerRadius="{DynamicResource AlcolerRadius}"
             IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
       <SelectableTextBlock x:Name="PART_DocumentError" Text="{Binding Error}" TextWrapping="Wrap"
                            FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerError}" />

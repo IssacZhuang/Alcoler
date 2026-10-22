@@ -7,6 +7,8 @@
     <Project Path="src/Alcoler.Workbench/Alcoler.Workbench.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Alcoler.Browser.Tests/Alcoler.Browser.Tests.csproj" />
+    <Project Path="tests/Alcoler.Browser.IntegrationTests/Alcoler.Browser.IntegrationTests.csproj" />
     <Project Path="tests/Alcoler.Kernel.Tests/Alcoler.Kernel.Tests.csproj" />
     <Project Path="tests/Alcoler.Workbench.Tests/Alcoler.Workbench.Tests.csproj" />
   </Folder>

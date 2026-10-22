@@ -120,8 +120,7 @@
     </Style>
     <Style Selector="Border.monoPane">
       <Setter Property="Background" Value="{DynamicResource AlcolerSurface}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorder}" />
-      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderThickness" Value="0" />
       <Setter Property="CornerRadius" Value="6" />
       <Setter Property="Padding" Value="12,10" />
     </Style>
@@ -144,8 +143,8 @@
       <Setter Property="HorizontalAlignment" Value="Stretch" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
     </Style>
-    <Style Selector="Button.toolRow:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+    <Style Selector="Button.toolRow:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.toolRow:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Button.toolRow:pressed /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
@@ -237,8 +236,8 @@
     <Style Selector="ToggleButton.thinkingToggle:checked /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="Transparent" />
     </Style>
-    <Style Selector="ToggleButton.thinkingToggle:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+    <Style Selector="ToggleButton.thinkingToggle:pointerover /template/ ContentPresenter#PART_ContentPresenter, ToggleButton.thinkingToggle:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="ToggleButton.thinkingToggle:pressed /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
@@ -266,8 +265,8 @@
             <ItemsControl.DataTemplates>
               <DataTemplate x:DataType="vm:UserMessageItemViewModel">
                 <Border Classes="userRow" Margin="0,0,0,20" CornerRadius="12,2,12,12"
-                        HorizontalAlignment="Right" Padding="16,12" BorderThickness="1"
-                        Background="{DynamicResource AlcolerSurface}" BorderBrush="{DynamicResource AlcolerBorder}">
+                        HorizontalAlignment="Right" Padding="16,12" BorderThickness="0"
+                        Background="{DynamicResource AlcolerSurface}">
                   <StackPanel Spacing="8">
                     <ItemsControl ItemsSource="{Binding Images}" IsVisible="{Binding HasImages}">
                       <ItemsControl.ItemsPanel>
@@ -297,7 +296,7 @@
                       <TextBlock Text="Thinking" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource AlcolerTextTertiary}" />
                     </Expander.Header>
                     <Border Classes="reasoningDetails" Margin="8,12,0,0" Padding="14,0,0,0"
-                            BorderThickness="1,0,0,0" BorderBrush="{DynamicResource AlcolerBorder}">
+                            BorderThickness="0">
                       <ScrollViewer MaxHeight="240" HorizontalScrollBarVisibility="Disabled">
                         <SelectableTextBlock TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
                                              FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
@@ -372,7 +371,7 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                   <Border Classes="toolDetails" Margin="8,12,0,0" Padding="14,0,0,0"
-                          BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1,0,0,0"
+                          BorderThickness="0"
                           IsVisible="{Binding IsExpanded}">
                     <StackPanel Spacing="12" MinWidth="0">
                       <StackPanel Spacing="6" IsVisible="{Binding InputJson, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
@@ -409,7 +408,7 @@
 
               <DataTemplate x:DataType="vm:SystemNoticeItemViewModel">
                 <Border Classes="noticeRow" Classes.error="{Binding IsError}" Margin="0,0,0,16" Padding="0,8,0,0"
-                        BorderThickness="0,1,0,0" BorderBrush="{DynamicResource AlcolerBorder}">
+                        BorderThickness="0">
                   <WrapPanel Orientation="Horizontal">
                     <TextBlock Classes="caption" Text="{Binding DisplayKind}" FontWeight="Medium" ToolTip.Tip="{Binding Kind}" />
                     <TextBlock Classes="caption" Text=": " />

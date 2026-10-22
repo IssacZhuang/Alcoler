@@ -155,15 +155,14 @@ public sealed class ConversationStatusViewTests
 
         Assert.Equal(theme, harness.View.ActualThemeVariant);
         Assert.Equal(new CornerRadius(16), shell.CornerRadius);
-        Assert.Equal(new Thickness(1), shell.BorderThickness);
+        Assert.Equal(default, shell.BorderThickness);
         Assert.Equal(32, summary.Bounds.Height);
         Assert.Equal(new CornerRadius(15), summary.CornerRadius);
         Assert.InRange(shell.Bounds.Width, 1, 319);
-        Assert.Equal(34, shell.Bounds.Height);
+        Assert.Equal(32, shell.Bounds.Height);
         Assert.Equal(320, harness.View.MaxWidth);
         Assert.Equal(512, harness.View.MaxHeight);
         AssertThemeBrush(harness.Window, theme, "AlcolerPopover", shell.Background);
-        AssertThemeBrush(harness.Window, theme, "AlcolerBorder", shell.BorderBrush);
         AssertTopRight(harness);
 
         await ClickAsync(summary);

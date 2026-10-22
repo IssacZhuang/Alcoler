@@ -190,20 +190,20 @@ public partial class ConversationStatusView : UserControl
         _agentCount = agentCount;
 
         var preceded = false;
-        SetSectionSeparator(GitContainer, viewModel?.HasGit == true, ref preceded);
-        SetSectionSeparator(PlansContainer, viewModel?.HasPlans == true, ref preceded);
-        SetSectionSeparator(ProgressContainer, viewModel?.HasTodos == true, ref preceded);
-        SetSectionSeparator(TerminalsContainer, viewModel?.HasTerminals == true, ref preceded);
-        SetSectionSeparator(AgentsContainer, viewModel?.HasAgents == true, ref preceded);
-        EndedAgentsContainer.BorderThickness = agentCount > 0 ? new Thickness(0, 1, 0, 0) : default;
+        SetSectionSpacing(GitContainer, viewModel?.HasGit == true, ref preceded);
+        SetSectionSpacing(PlansContainer, viewModel?.HasPlans == true, ref preceded);
+        SetSectionSpacing(ProgressContainer, viewModel?.HasTodos == true, ref preceded);
+        SetSectionSpacing(TerminalsContainer, viewModel?.HasTerminals == true, ref preceded);
+        SetSectionSpacing(AgentsContainer, viewModel?.HasAgents == true, ref preceded);
+        EndedAgentsContainer.BorderThickness = default;
         EndedAgentsContainer.Padding = agentCount > 0 ? new Thickness(0, 8, 0, 0) : default;
         UpdateDisplayMode();
         UpdateActivityTimer();
     }
 
-    private static void SetSectionSeparator(Border container, bool visible, ref bool preceded)
+    private static void SetSectionSpacing(Border container, bool visible, ref bool preceded)
     {
-        container.BorderThickness = visible && preceded ? new Thickness(0, 1, 0, 0) : default;
+        container.BorderThickness = default;
         container.Padding = visible && preceded ? new Thickness(0, 8, 0, 0) : default;
         preceded |= visible;
     }

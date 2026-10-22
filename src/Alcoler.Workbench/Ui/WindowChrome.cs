@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Media;
 using Avalonia.Styling;
 
 namespace Alcoler.Workbench.Ui;
@@ -11,6 +12,7 @@ internal static class WindowChrome
     private const int BorderColor = 34;
     private const int CaptionColor = 35;
     private const int TextColor = 36;
+    private const int NoBorderColor = unchecked((int)0xFFFFFFFE);
 
     public static void Attach(Window window)
     {
@@ -33,12 +35,23 @@ internal static class WindowChrome
         var dark = window.ActualThemeVariant == ThemeVariant.Dark;
         var useDark = dark ? 1 : 0;
         DwmSetWindowAttribute(handle, UseImmersiveDarkMode, ref useDark, sizeof(int));
-        var caption = dark ? 0x00161616 : 0x00F8F8F8;
-        DwmSetWindowAttribute(handle, CaptionColor, ref caption, sizeof(int));
-        var text = dark ? 0x00D4D4D4 : 0x00262626;
-        DwmSetWindowAttribute(handle, TextColor, ref text, sizeof(int));
-        var border = dark ? 0x00161616 : 0x00F8F8F8;
+        if (NativeColor(window, "AlcolerChromeColor") is { } caption)
+        {
+            DwmSetWindowAttribute(handle, CaptionColor, ref caption, sizeof(int));
+        }
+        if (NativeColor(window, "AlcolerTextPrimaryColor") is { } text)
+        {
+            DwmSetWindowAttribute(handle, TextColor, ref text, sizeof(int));
+        }
+        var border = NoBorderColor;
         DwmSetWindowAttribute(handle, BorderColor, ref border, sizeof(int));
+    }
+
+    private static int? NativeColor(Window window, string key)
+    {
+        return window.TryFindResource(key, window.ActualThemeVariant, out var value) && value is Color color
+            ? color.R | (color.G << 8) | (color.B << 16)
+            : null;
     }
 
     [DllImport("dwmapi.dll")]

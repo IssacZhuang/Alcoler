@@ -21,8 +21,7 @@
            VerticalOffset="0" IsLightDismissEnabled="False" TakesFocusFromNativeControl="False" WindowManagerAddShadowHint="False">
       <Border x:Name="ContextHoverBridge" Background="Transparent" Padding="0,0,0,2">
       <Border x:Name="ContextPopover" Width="320" Padding="12" CornerRadius="12"
-              BorderThickness="1" BorderBrush="{DynamicResource AlcolerBorder}"
-              Background="{DynamicResource AlcolerPopover}" BoxShadow="0 4 12 0 #26000000">
+              BorderThickness="0" Background="{DynamicResource AlcolerPopover}" BoxShadow="0 4 12 0 #26000000">
         <StackPanel Spacing="12">
           <StackPanel Spacing="8">
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" Margin="0,0,0,4">
@@ -41,8 +40,7 @@
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:ContextUsageSegment">
                 <Grid ColumnDefinitions="8,*,Auto" ColumnSpacing="8">
-                  <Border Width="8" Height="8" CornerRadius="2" VerticalAlignment="Center" BorderThickness="1" BorderBrush="{DynamicResource AlcolerBorder}"
-                          Background="{DynamicResource AlcolerInfo}" Opacity="{Binding ToneOpacity}" />
+                  <Border Width="8" Height="8" CornerRadius="2" VerticalAlignment="Center" BorderThickness="0" Background="{DynamicResource AlcolerInfo}" Opacity="{Binding ToneOpacity}" />
                   <TextBlock Grid.Column="1" Text="{Binding Label}" FontSize="12" TextTrimming="CharacterEllipsis"
                              Foreground="{DynamicResource AlcolerTextSecondary}" />
                   <TextBlock Grid.Column="2" Text="{Binding PercentText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"
@@ -51,8 +49,8 @@
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
-          <Border IsVisible="{Binding HasCacheHitRate}" BorderThickness="0,1,0,0"
-                  BorderBrush="{DynamicResource AlcolerBorder}" Padding="0,12,0,0">
+          <Border IsVisible="{Binding HasCacheHitRate}" BorderThickness="0"
+                  Padding="0,12,0,0">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
               <TextBlock Text="Cache hit rate" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
               <TextBlock Grid.Column="1" Text="{Binding CacheHitRateText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"

@@ -27,7 +27,7 @@
     <GridSplitter x:Name="SidebarSplitter" Grid.Column="1" ResizeDirection="Columns"
                   DragCompleted="OnSidebarSplitterDragCompleted" />
     <Border Grid.Column="2" Background="{DynamicResource AlcolerBackground}"
-            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+            BorderThickness="0"
             CornerRadius="5" ClipToBounds="True">
       <Grid x:Name="MainCard">
         <Grid.RowDefinitions>
@@ -40,7 +40,7 @@
         <Border Grid.Row="0" Margin="12,8,12,0" Padding="10,7"
                 CornerRadius="{DynamicResource AlcolerRadiusLarge}"
                 Background="{DynamicResource AlcolerCard}"
-                BorderBrush="{DynamicResource AlcolerError}" BorderThickness="1"
+                BorderThickness="0"
                 IsVisible="{Binding Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
             <StackPanel Spacing="6" VerticalAlignment="Center">
@@ -58,7 +58,7 @@
           </Grid>
         </Border>
         <Border Grid.Row="1" Background="{DynamicResource AlcolerPanel}"
-                BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,0,0,1"
+                BorderThickness="0"
                 PointerPressed="OnTitleBarPointerPressed">
           <Grid ColumnDefinitions="Auto,*,Auto" Margin="6,0,4,0" ColumnSpacing="4">
             <Button Classes="icon" Command="{Binding ToggleSidebarCommand}" ToolTip.Tip="Toggle sidebar (Ctrl+B)"
@@ -135,7 +135,6 @@
                         </ItemsControl.ItemTemplate>
                       </ItemsControl>
                     </ScrollViewer>
-                    <Separator />
                     <Button x:Name="OpenFolderButton" Classes="ghost" Content="Open Folder..." Click="OnOpenFolderClick"
                             HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
                     <Button x:Name="OutsideProjectButton" Classes="ghost" Content="Work outside project" Click="OnOutsideProjectClick"
@@ -154,7 +153,7 @@
         <GridSplitter Grid.Row="3" ResizeDirection="Rows" IsVisible="{Binding IsTerminalVisible}"
                       DragCompleted="OnTerminalSplitterDragCompleted" />
         <Border Grid.Row="4" Background="{DynamicResource AlcolerTerminalBackground}"
-                BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="0,1,0,0"
+                BorderThickness="0"
                 IsVisible="{Binding IsTerminalVisible}">
           <views:TerminalView DataContext="{Binding Terminal}" />
         </Border>
@@ -163,7 +162,7 @@
     <GridSplitter Grid.Column="3" ResizeDirection="Columns" Width="4"
                   IsVisible="{Binding IsSidePaneVisible}" DragCompleted="OnSidePaneSplitterDragCompleted" />
     <Border Grid.Column="4" Background="{DynamicResource AlcolerBackground}"
-            BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+            BorderThickness="0"
             CornerRadius="5" ClipToBounds="True" IsVisible="{Binding IsSidePaneVisible}">
       <views:DocumentWorkspaceView x:Name="DocumentsView" />
     </Border>

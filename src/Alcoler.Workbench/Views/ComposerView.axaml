@@ -9,11 +9,14 @@
              x:DataType="vm:IComposerHost"
              Background="{DynamicResource AlcolerBackground}">
   <UserControl.Styles>
+    <Style Selector="Border.composerShell">
+      <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
+    </Style>
     <Style Selector="Border.composerShell:pointerover">
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerBorderHover}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Border.composerShell:focus-within">
-      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerTextSecondary}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
     <Style Selector="Button.toolbarAction">
       <Setter Property="Width" Value="28" />
@@ -54,7 +57,7 @@
     <StackPanel Spacing="8">
       <Border x:Name="QueueStrip" IsVisible="{Binding HasQueuedInput}"
               Background="{DynamicResource AlcolerSurface}"
-              BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+              BorderThickness="0"
               CornerRadius="12" Padding="12,8" MaxHeight="96">
         <ScrollViewer HorizontalScrollBarVisibility="Disabled">
           <StackPanel Spacing="4">
@@ -75,8 +78,7 @@
       </Border>
 
       <Border x:Name="ComposerShell" Classes="composerShell"
-              Background="{DynamicResource AlcolerInput}"
-              BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1"
+              BorderThickness="0"
               CornerRadius="16" Padding="12">
         <StackPanel Spacing="12">
           <Border x:Name="SkillPanel" IsVisible="False" MaxHeight="220"
@@ -99,7 +101,7 @@
             </ItemsControl.ItemsPanel>
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:ComposerImageAttachment">
-                <Border BorderBrush="{DynamicResource AlcolerBorder}" BorderThickness="1" CornerRadius="8" Padding="4" Margin="0,0,6,6">
+                <Border BorderThickness="0" CornerRadius="8" Padding="4" Margin="0,0,6,6">
                   <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="4">
                     <Button Classes="ghost" Padding="0" Cursor="Hand" Click="OnPreviewImageClick"
                             ToolTip.Tip="{Binding Name}" AutomationProperties.Name="Preview image">

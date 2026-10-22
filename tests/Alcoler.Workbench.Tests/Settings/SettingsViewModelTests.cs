@@ -290,7 +290,7 @@ public class SettingsViewModelTests
         var window = new Window();
         window.Show();
         Assert.True(window.TryFindResource("AlcolerBackground", ThemeVariant.Light, out var lightBrush));
-        Assert.Equal(Color.Parse("#FFF8F8F8"), Assert.IsType<SolidColorBrush>(lightBrush).Color);
+        Assert.Equal(Color.Parse("#FFF3F6F4"), Assert.IsType<SolidColorBrush>(lightBrush).Color);
         window.Close();
 
         ThemeSelector.Apply(ThemeSelector.Dark);

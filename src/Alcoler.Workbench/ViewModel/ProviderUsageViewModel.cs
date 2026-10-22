@@ -1,6 +1,5 @@
 using System.Globalization;
 using Alcoler.Adapters.ProviderUsage;
-using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -258,10 +257,4 @@ public sealed class ProviderUsageTierViewModel
     public bool HasReset => ResetText.Length > 0;
     public string ResetToolTip => Tier.ResetsAt is { } date
         ? "Resets " + date.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : string.Empty;
-    public IBrush MeterBrush => Tier.Id switch
-    {
-        ProviderUsageTierId.Weekly => Brushes.SeaGreen,
-        ProviderUsageTierId.Monthly => Brushes.MediumPurple,
-        _ => Brushes.DodgerBlue,
-    };
 }

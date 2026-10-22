@@ -16,6 +16,7 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
             _ = RunAsync(desktop);
         }
         base.OnFrameworkInitializationCompleted();

@@ -10,6 +10,7 @@ using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
 using Alcoler.Workbench.Auth;
+using Alcoler.Workbench.Browser;
 using Alcoler.Workbench.Git;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
@@ -23,7 +24,19 @@ public static class Composition
         var mcp = config.McpServers is { Count: > 0 } servers
             ? new McpServerManager([.. servers.Select(s => new McpServerConfig(s.Name, s.Command, s.Args, s.Env))])
             : null;
-        var browser = new PlaywrightBrowserController();
+        var browserHost = new WebViewBrowserHost(Path.Combine(WorkbenchDataPaths.Root, "browser"));
+        var browser = new WebViewBrowserController(browserHost);
+        browserHost.NewTabRequested += async (_, request) =>
+        {
+            try
+            {
+                await browser.OpenPopupAsync(request.SessionId, request.OpenerTabId, request.Url,
+                    CancellationToken.None, request.IsUserInitiated);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+            {
+            }
+        };
         var webFetch = new WebFetchTool();
         WebSearchTool? webSearch = null;
         var extraTools = new List<ITool> { new BrowserTool(browser), webFetch };
@@ -35,8 +48,20 @@ public static class Composition
         }
         var currentConfig = config;
         var chatGptAccount = new ChatGptAccountService(Path.Combine(WorkbenchDataPaths.Root, "auth.json"));
-        var runtime = await BuildRuntimeAsync(config, ct, mcp, extraTools,
-            () => Volatile.Read(ref currentConfig).IntegratedTerminalShell, chatGptAccount);
+        AgentRuntime runtime;
+        try
+        {
+            runtime = await BuildRuntimeAsync(config, ct, mcp, extraTools,
+                () => Volatile.Read(ref currentConfig).IntegratedTerminalShell, chatGptAccount);
+        }
+        catch
+        {
+            browser.Dispose();
+            webFetch.Dispose();
+            webSearch?.Dispose();
+            if (mcp is not null) await mcp.DisposeAsync();
+            throw;
+        }
         var workbench = new WorkbenchViewModel(
             runtime,
             AvaloniaUiScheduler.Instance,
@@ -50,11 +75,8 @@ public static class Composition
                     webSearch?.Dispose();
                 })),
             chatGptAccount: chatGptAccount,
-            browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance, path =>
-            {
-                using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                return Avalonia.Media.Imaging.Bitmap.DecodeToWidth(stream, 1280);
-            }),
+            browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance,
+                pagePresenterFactory: browserHost.CreatePagePresenter),
             saveComposer: composer => (WorkbenchConfig.LoadOrDefault() with { Composer = composer }).Save(),
             applySettings: saved => Volatile.Write(ref currentConfig, saved));
         await workbench.RefreshFromRuntimeAsync();

@@ -26,6 +26,7 @@ public sealed class TerminalSurface : Control
     public TerminalSurface()
     {
         ClipToBounds = true;
+        ActualThemeVariantChanged += (_, _) => InvalidateVisual();
     }
 
     public double FontSize
