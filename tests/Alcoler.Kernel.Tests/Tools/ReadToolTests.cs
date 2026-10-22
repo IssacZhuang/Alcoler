@@ -333,17 +333,44 @@ public class ReadToolTests
     }
 
     [Fact]
-    public async Task PathEscapingWorkspace_ReturnsError()
+    public async Task ReadsFileOutsideWorkspace_ByAbsolutePath()
     {
         using var workspace = new TempWorkspace();
+        using var external = new TempDirectory();
+        var path = Path.Combine(external.Root, "outside.txt");
+        await File.WriteAllTextAsync(path, "outside");
         var tool = new ReadTool();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"file_path": "../outside.txt"}"""),
+            workspace.ContextFor(JsonSerializer.Serialize(new { file_path = path })),
             CancellationToken.None);
 
-        Assert.True(result.IsError);
-        Assert.Contains("escapes", result.SingleText());
+        Assert.False(result.IsError);
+        Assert.Equal("1\toutside", result.SingleText());
+    }
+
+    [Fact]
+    public async Task ReadsFileOutsideWorkspace_ByRelativePath()
+    {
+        using var workspace = new TempWorkspace();
+        var fileName = "outside-" + Guid.NewGuid().ToString("N") + ".txt";
+        var path = Path.GetFullPath(Path.Combine(workspace.Root, "..", fileName));
+        await File.WriteAllTextAsync(path, "outside");
+        try
+        {
+            var tool = new ReadTool();
+
+            var result = await tool.ExecuteAsync(
+                workspace.ContextFor(JsonSerializer.Serialize(new { file_path = Path.Combine("..", fileName) })),
+                CancellationToken.None);
+
+            Assert.False(result.IsError);
+            Assert.Equal("1\toutside", result.SingleText());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]

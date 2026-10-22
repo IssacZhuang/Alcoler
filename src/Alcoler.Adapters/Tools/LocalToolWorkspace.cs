@@ -6,15 +6,11 @@ namespace Alcoler.Adapters.Tools;
 public sealed class LocalToolWorkspace : IToolWorkspace
 {
     private readonly string _root;
-    private readonly string _rootPrefix;
-    private readonly StringComparison _pathComparison;
 
     public LocalToolWorkspace(string root)
     {
         ArgumentNullException.ThrowIfNull(root);
         _root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-        _rootPrefix = _root + Path.DirectorySeparatorChar;
-        _pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
     }
 
     public string Root => _root;
@@ -22,10 +18,9 @@ public sealed class LocalToolWorkspace : IToolWorkspace
     public string ResolvePath(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
-        var fullPath = Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(_root, path));
-        if (!fullPath.StartsWith(_rootPrefix, _pathComparison) && !string.Equals(fullPath, _root, _pathComparison))
-            throw new InvalidOperationException($"Path '{path}' escapes the workspace root '{_root}'.");
-        return fullPath;
+        // Paths outside _root are intentionally allowed so tools can inspect sibling repositories
+        // and user-requested external files.
+        return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(_root, path));
     }
 
     public async ValueTask<ArtifactReference> SaveArtifactAsync(

@@ -32,18 +32,17 @@ public sealed class WorkspaceToolEnvironmentTests : IDisposable
         Assert.Equal(Path.Combine(env.Root, "file.txt"), rootedInside);
     }
 
-    [Theory]
-    [InlineData("..\\escape.txt")]
-    [InlineData("sub\\..\\..\\escape.txt")]
-    [InlineData("sub/../../escape.txt")]
-    [InlineData("..")]
-    [InlineData("\\Windows\\System32\\cmd.exe")]
-    [InlineData("C:\\Windows\\System32\\cmd.exe")]
-    public void ResolvePath_EscapingRoot_ThrowsInvalidOperationException(string path)
+    [Fact]
+    public void ResolvePath_AllowsPathsOutsideRoot()
     {
         var env = NewEnv();
+        using var outside = new TempDirectory();
 
-        Assert.Throws<InvalidOperationException>(() => env.ResolvePath(path));
+        var absolute = env.ResolvePath(Path.Combine(outside.Root, "file.txt"));
+        var relative = env.ResolvePath(Path.Combine("..", "escape.txt"));
+
+        Assert.Equal(Path.Combine(outside.Root, "file.txt"), absolute);
+        Assert.Equal(Path.GetFullPath(Path.Combine(_temp.Root, "..", "escape.txt")), relative);
     }
 
     [Fact]

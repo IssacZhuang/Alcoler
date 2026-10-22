@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tests.Storage;
 using Alcoler.Kernel.Tools;
 using Xunit;
 
@@ -171,17 +173,18 @@ public class WriteToolTests
     }
 
     [Fact]
-    public async Task PathEscapingWorkspace_Rejected_NoFileWrittenOutside()
+    public async Task WritesFileOutsideWorkspace()
     {
         using var workspace = new TempWorkspace();
+        using var external = new TempDirectory();
+        var path = Path.Combine(external.Root, "outside.txt");
         var tool = new WriteTool();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"file_path": "../evil.txt", "content": "nope"}"""),
+            workspace.ContextFor(JsonSerializer.Serialize(new { file_path = path, content = "outside" })),
             CancellationToken.None);
 
-        Assert.True(result.IsError);
-        Assert.Contains("escapes", result.SingleText());
-        Assert.False(File.Exists(Path.GetFullPath(Path.Combine(workspace.Root, "..", "evil.txt"))));
+        Assert.False(result.IsError);
+        Assert.Equal("outside", await File.ReadAllTextAsync(path));
     }
 }

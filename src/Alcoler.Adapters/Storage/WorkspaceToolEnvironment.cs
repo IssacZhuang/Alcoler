@@ -31,14 +31,9 @@ public sealed class WorkspaceToolEnvironment : IToolWorkspace
             throw new ArgumentException($"Path contains invalid characters: '{path}'.", nameof(path));
         }
 
-        var candidate = Path.GetFullPath(Path.Combine(Root, path));
-        if (!PathGuard.IsUnderRoot(candidate, Root))
-        {
-            throw new InvalidOperationException(
-                $"Path '{path}' resolves to '{candidate}', outside the workspace root '{Root}'.");
-        }
-
-        return candidate;
+        // Paths outside Root are intentionally allowed so tools can inspect sibling repositories
+        // and user-requested external files.
+        return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(Root, path));
     }
 
     public ValueTask<ArtifactReference> SaveArtifactAsync(

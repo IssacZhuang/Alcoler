@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Context;
@@ -78,7 +77,7 @@ public sealed class ReadTool : ITool
         string path;
         try
         {
-            path = ResolveReadPath(context, rawPath);
+            path = context.Workspace.ResolvePath(rawPath);
         }
         catch (Exception ex)
         {
@@ -193,17 +192,6 @@ public sealed class ReadTool : ITool
 
         context.FileReads?.RecordRead(path, completeView: false);
         return ToolExecutionResult.Text($"<system-reminder>{notice}</system-reminder>\n\n{numbered}");
-    }
-
-    private static string ResolveReadPath(ToolExecutionContext context, string rawPath)
-    {
-        if (Path.IsPathRooted(rawPath) && context.ToolOutputRoot is { Length: > 0 } outputRoot)
-        {
-            var candidate = Path.GetFullPath(rawPath);
-            if (PathGuard.IsUnderRoot(candidate, Path.GetFullPath(outputRoot)))
-                return candidate;
-        }
-        return context.Workspace.ResolvePath(rawPath);
     }
 
     private static string CurrentDirectory(ToolExecutionContext context) =>

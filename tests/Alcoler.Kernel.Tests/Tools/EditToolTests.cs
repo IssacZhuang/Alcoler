@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tests.Storage;
 using Alcoler.Kernel.Tools;
 using Xunit;
 
@@ -447,17 +449,28 @@ public class EditToolTests
     }
 
     [Fact]
-    public async Task PathEscapingWorkspace_ReturnsError()
+    public async Task EditsFileOutsideWorkspace_AfterRead()
     {
         using var workspace = new TempWorkspace();
+        using var external = new TempDirectory();
+        var path = Path.Combine(external.Root, "outside.txt");
+        await File.WriteAllTextAsync(path, "alpha\nbeta");
+        var reads = new FileReadState();
+        await new ReadTool().ExecuteAsync(
+            workspace.ContextFor(JsonSerializer.Serialize(new { file_path = path })) with { FileReads = reads },
+            CancellationToken.None);
         var tool = new EditTool();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"file_path": "../outside.txt", "old_string": "a", "new_string": "b"}"""),
+            workspace.ContextFor(JsonSerializer.Serialize(new
+            {
+                file_path = path,
+                old_string = "beta",
+                new_string = "BETA",
+            })) with { FileReads = reads },
             CancellationToken.None);
 
-        Assert.True(result.IsError);
-        Assert.Contains("escapes", result.SingleText());
-        Assert.Null(result.FileChange);
+        Assert.False(result.IsError);
+        Assert.Equal("alpha\nBETA", await File.ReadAllTextAsync(path));
     }
 }

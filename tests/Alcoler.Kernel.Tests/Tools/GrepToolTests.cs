@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Xunit;
 using Alcoler.Adapters.Tools;
+using Alcoler.Kernel.Tests.Storage;
 
 namespace Alcoler.Kernel.Tests.Tools;
 
@@ -263,6 +265,27 @@ public class GrepToolTests
             CancellationToken.None);
 
         Assert.Equal("data.xyz:1:target", result.SingleText());
+    }
+
+    [Fact]
+    public async Task SearchesDirectoryOutsideWorkspace()
+    {
+        using var workspace = new TempWorkspace();
+        using var external = new TempDirectory();
+        await File.WriteAllTextAsync(Path.Combine(external.Root, "outside.txt"), "needle");
+        var tool = new GrepTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor(JsonSerializer.Serialize(new
+            {
+                pattern = "needle",
+                path = external.Root,
+                output_mode = "files_with_matches",
+            })),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("outside.txt", result.SingleText());
     }
 
     [Fact]

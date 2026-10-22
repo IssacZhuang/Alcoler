@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Xunit;
 using Alcoler.Adapters.Tools;
+using Alcoler.Kernel.Tests.Storage;
 
 namespace Alcoler.Kernel.Tests.Tools;
 
@@ -119,6 +121,22 @@ public class GlobToolTests
         Assert.Equal("f0000.tmp", lines[0]);
         Assert.Equal("f0099.tmp", lines[99]);
         Assert.Equal("(Results are truncated. Consider using a more specific path or pattern.)", lines[^1]);
+    }
+
+    [Fact]
+    public async Task SearchesDirectoryOutsideWorkspace()
+    {
+        using var workspace = new TempWorkspace();
+        using var external = new TempDirectory();
+        await File.WriteAllTextAsync(Path.Combine(external.Root, "outside.txt"), "x");
+        var tool = new GlobTool();
+
+        var result = await tool.ExecuteAsync(
+            workspace.ContextFor(JsonSerializer.Serialize(new { pattern = "*.txt", path = external.Root })),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal("outside.txt", result.SingleText());
     }
 
     [Fact]
