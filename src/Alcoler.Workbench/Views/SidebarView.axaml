@@ -149,13 +149,13 @@
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
-                  <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding HasHiddenSessions}">
+                  <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding HasSessionOverflow}">
                     <Button Classes="showMore" Click="OnShowMoreClick" IsVisible="{Binding CanShowMore}"
-                            ToolTip.Tip="Show all sessions" AutomationProperties.Name="Show more sessions">
+                            ToolTip.Tip="Show 5 more sessions" AutomationProperties.Name="Show more sessions">
                       <TextBlock Text="Show more" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
                     </Button>
                     <Button Classes="icon tiny" Click="OnCollapseSessionsClick" IsVisible="{Binding CanCollapse}"
-                            Margin="24,0,0,0" ToolTip.Tip="Show fewer sessions" AutomationProperties.Name="Show fewer sessions">
+                            ToolTip.Tip="Show fewer sessions" AutomationProperties.Name="Show fewer sessions">
                       <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronUp}" Stroke="{DynamicResource AlcolerTextSecondary}" />
                     </Button>
                   </StackPanel>

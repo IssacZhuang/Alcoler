@@ -60,7 +60,7 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
 
 public sealed partial class SessionGroupViewModel : ObservableObject
 {
-    public const int CollapsedSessionLimit = 5;
+    public const int SessionPageSize = 5;
 
     public SessionGroupViewModel(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
@@ -83,56 +83,61 @@ public sealed partial class SessionGroupViewModel : ObservableObject
     [ObservableProperty]
     private bool _isExpanded = true;
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanShowMore))]
-    [NotifyPropertyChangedFor(nameof(CanCollapse))]
-    private bool _isShowingAll;
+    public bool HasSessionOverflow => Sessions.Count > SessionPageSize;
 
-    public bool HasHiddenSessions => Sessions.Count > CollapsedSessionLimit;
+    public bool CanShowMore => VisibleSessions.Count < Sessions.Count;
 
-    public bool CanShowMore => HasHiddenSessions && !IsShowingAll;
-
-    public bool CanCollapse => HasHiddenSessions && IsShowingAll;
+    public bool CanCollapse => VisibleSessions.Count > SessionPageSize;
 
     public void AddSession(SessionSummaryViewModel session)
     {
         Sessions.Add(session);
-        if (IsShowingAll || VisibleSessions.Count < CollapsedSessionLimit)
+        if (VisibleSessions.Count < SessionPageSize)
         {
             VisibleSessions.Add(session);
         }
-        OnPropertyChanged(nameof(HasHiddenSessions));
-        OnPropertyChanged(nameof(CanShowMore));
-        OnPropertyChanged(nameof(CanCollapse));
+        OnPropertyChanged(nameof(HasSessionOverflow));
+        NotifyVisibilityChanged();
     }
 
     public void ShowMore()
     {
-        if (IsShowingAll)
-        {
-            return;
-        }
-        IsShowingAll = true;
-        SyncVisibleSessions();
+        AddVisibleThrough(Math.Min(Sessions.Count, VisibleSessions.Count + SessionPageSize));
+        NotifyVisibilityChanged();
     }
 
     public void Collapse()
     {
-        if (!IsShowingAll)
+        while (VisibleSessions.Count > SessionPageSize)
         {
-            return;
+            VisibleSessions.RemoveAt(VisibleSessions.Count - 1);
         }
-        IsShowingAll = false;
-        SyncVisibleSessions();
+        NotifyVisibilityChanged();
     }
 
-    private void SyncVisibleSessions()
+    public void SetVisibleSessionCount(int count)
     {
-        VisibleSessions.Clear();
-        foreach (var session in Sessions.Take(IsShowingAll ? Sessions.Count : CollapsedSessionLimit))
+        var target = Math.Min(Sessions.Count, Math.Max(SessionPageSize, count));
+        AddVisibleThrough(target);
+        while (VisibleSessions.Count > target)
         {
-            VisibleSessions.Add(session);
+            VisibleSessions.RemoveAt(VisibleSessions.Count - 1);
         }
+        NotifyVisibilityChanged();
+    }
+
+    private void AddVisibleThrough(int target)
+    {
+        while (VisibleSessions.Count < target)
+        {
+            VisibleSessions.Add(Sessions[VisibleSessions.Count]);
+        }
+    }
+
+    private void NotifyVisibilityChanged()
+    {
+        OnPropertyChanged(nameof(CanShowMore));
+        OnPropertyChanged(nameof(CanCollapse));
     }
 }
 
@@ -182,22 +187,32 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
 
     public void ApplySummaries(IReadOnlyList<SessionSummaryViewModel> summaries)
     {
+        if (_indicators.Count > 0)
+        {
+            // Running entries may belong to sessions created after this listing was taken.
+            var listed = summaries.Select(summary => summary.Id).ToHashSet();
+            foreach (var stale in _indicators
+                         .Where(pair => !listed.Contains(pair.Key) && pair.Value != SessionActivityIndicator.Running)
+                         .ToArray())
+            {
+                _indicators.Remove(stale.Key);
+            }
+        }
         var expansion = Groups.ToDictionary(
             g => g.WorkspaceRoot,
-            g => (g.IsExpanded, g.IsShowingAll),
+            g => (g.IsExpanded, VisibleCount: g.VisibleSessions.Count),
             StringComparer.OrdinalIgnoreCase);
         Groups.Clear();
         foreach (var group in summaries
                      .GroupBy(s => s.WorkspaceRoot, StringComparer.OrdinalIgnoreCase)
                      .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
         {
-            var (isExpanded, isShowingAll) = expansion.TryGetValue(group.Key, out var state)
+            var (isExpanded, visibleCount) = expansion.TryGetValue(group.Key, out var state)
                 ? state
-                : (true, false);
+                : (true, SessionGroupViewModel.SessionPageSize);
             var groupVm = new SessionGroupViewModel(group.Key)
             {
                 IsExpanded = isExpanded,
-                IsShowingAll = isShowingAll,
             };
             foreach (var session in group.OrderByDescending(s => s.UpdatedAt))
             {
@@ -209,6 +224,7 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
                 session.Indicator = _indicators.GetValueOrDefault(session.Id);
                 groupVm.AddSession(session);
             }
+            groupVm.SetVisibleSessionCount(visibleCount);
             Groups.Add(groupVm);
         }
     }

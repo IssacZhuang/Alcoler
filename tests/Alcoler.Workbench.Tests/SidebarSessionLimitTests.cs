@@ -7,17 +7,23 @@ namespace Alcoler.Workbench.Tests;
 public sealed class SidebarSessionLimitTests
 {
     [Fact]
-    public void ApplySummaries_LimitsVisibleSessionsUntilShowMore()
+    public void ShowMore_RevealsOnePageAtATime()
     {
         var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask);
-        sidebar.ApplySummaries(Sessions(8));
+        sidebar.ApplySummaries(Sessions(12));
 
         var group = Assert.Single(sidebar.Groups);
-        Assert.Equal(8, group.Sessions.Count);
+        Assert.Equal(12, group.Sessions.Count);
         Assert.Equal(5, group.VisibleSessions.Count);
-        Assert.True(group.HasHiddenSessions);
+        Assert.True(group.HasSessionOverflow);
         Assert.True(group.CanShowMore);
         Assert.False(group.CanCollapse);
+
+        group.ShowMore();
+
+        Assert.Equal(10, group.VisibleSessions.Count);
+        Assert.True(group.CanShowMore);
+        Assert.True(group.CanCollapse);
 
         group.ShowMore();
 
@@ -33,17 +39,18 @@ public sealed class SidebarSessionLimitTests
     }
 
     [Fact]
-    public void ApplySummaries_PreservesShowingAllState()
+    public void ApplySummaries_PreservesVisibleSessionCount()
     {
         var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask);
-        sidebar.ApplySummaries(Sessions(7));
+        sidebar.ApplySummaries(Sessions(12));
         sidebar.Groups[0].ShowMore();
 
-        sidebar.ApplySummaries(Sessions(7));
+        sidebar.ApplySummaries(Sessions(12));
 
         var group = Assert.Single(sidebar.Groups);
-        Assert.True(group.IsShowingAll);
-        Assert.Equal(7, group.VisibleSessions.Count);
+        Assert.Equal(10, group.VisibleSessions.Count);
+        Assert.True(group.CanShowMore);
+        Assert.True(group.CanCollapse);
     }
 
     [Fact]
@@ -54,7 +61,7 @@ public sealed class SidebarSessionLimitTests
 
         var group = Assert.Single(sidebar.Groups);
         Assert.Equal(5, group.VisibleSessions.Count);
-        Assert.False(group.HasHiddenSessions);
+        Assert.False(group.HasSessionOverflow);
         Assert.False(group.CanShowMore);
         Assert.False(group.CanCollapse);
     }

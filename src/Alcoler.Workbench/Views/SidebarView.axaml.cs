@@ -89,21 +89,12 @@ public partial class SidebarView : UserControl
         }
         ThemeSelector.Apply(saved.Theme);
         viewModel.ApplySettings(saved);
-        var providersChanged = ProvidersChanged(current, saved);
         var mcpChanged = McpServersChanged(current, saved);
         var skillsChanged = SkillsChanged(current, saved);
         var searchChanged = !string.Equals(current.BraveApiKey, saved.BraveApiKey, StringComparison.Ordinal);
         if (searchChanged)
         {
             viewModel.Banner = "Web search settings saved. Restart Alcoler to apply them.";
-        }
-        else if (providersChanged && mcpChanged)
-        {
-            viewModel.Banner = "Provider settings applied. MCP settings apply to new sessions; open sessions keep their current tools.";
-        }
-        else if (providersChanged)
-        {
-            viewModel.Banner = "Provider settings applied.";
         }
         else if (mcpChanged)
         {

@@ -193,9 +193,16 @@ public static class SubagentWiring
             ParentToolCallId: request.ParentToolCallId,
             AgentType: agentType);
 
-        async ValueTask StopChildAsync(CancellationToken token) =>
-            await childRuntime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), handle.Id, 0), token)
+        // The task registry outlives the agent; a strong stop closure would root the child
+        // runtime graph for the parent runtime's whole lifetime.
+        var childRuntimeRef = new WeakReference<AgentRuntime>(childRuntime);
+        async ValueTask StopChildAsync(CancellationToken token)
+        {
+            if (!childRuntimeRef.TryGetTarget(out var runtimeToStop))
+                return;
+            await runtimeToStop.SubmitAsync(new StopCommand(StrongId.NewCommandId(), handle.Id, 0), token)
                 .ConfigureAwait(false);
+        }
 
         tasks?.Register(
             new SubagentTaskInfo(

@@ -4,6 +4,7 @@ using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
@@ -176,6 +177,40 @@ public class SendMessageToolTests
         Assert.Same(channel, messenger.Find(parent, agentId.Value));
         Assert.Same(channel, messenger.Find(parent, childSession.Value));
         Assert.Null(messenger.Find(new SessionId("sess_other"), agentId.Value));
+    }
+
+    [Fact]
+    public void Messenger_Register_EvictsOldestCompleted_BeyondCapacity()
+    {
+        var messenger = new SubagentMessenger(completedChannelCapacity: 2);
+        var parent = new SessionId("sess_parent");
+        for (var i = 0; i < 4; i++)
+        {
+            messenger.Register(parent, new SubagentChannel(
+                new SubagentId($"sub_{i}"), new SessionId($"sess_child_{i}"), "d", null!));
+        }
+
+        Assert.Null(messenger.Find(parent, "sub_0"));
+        Assert.Null(messenger.Find(parent, "sub_1"));
+        Assert.Null(messenger.Find(parent, "sess_child_0"));
+        Assert.NotNull(messenger.Find(parent, "sub_2"));
+        Assert.NotNull(messenger.Find(parent, "sub_3"));
+    }
+
+    [Fact]
+    public void Messenger_Register_NeverEvictsRunningChannels()
+    {
+        var messenger = new SubagentMessenger(completedChannelCapacity: 1);
+        var parent = new SessionId("sess_parent");
+        messenger.Register(parent, new SubagentChannel(
+            new SubagentId("sub_run"), new SessionId("sess_run"), "d", null!,
+            ReadStatus: () => SubagentStatus.Running));
+        messenger.Register(parent, new SubagentChannel(new SubagentId("sub_a"), new SessionId("sess_a"), "d", null!));
+        messenger.Register(parent, new SubagentChannel(new SubagentId("sub_b"), new SessionId("sess_b"), "d", null!));
+
+        Assert.NotNull(messenger.Find(parent, "sub_run"));
+        Assert.Null(messenger.Find(parent, "sub_a"));
+        Assert.NotNull(messenger.Find(parent, "sub_b"));
     }
 
     internal static ToolExecutionContext Context(string inputJson)

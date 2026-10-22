@@ -339,9 +339,12 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         CloseActive();
         foreach (var (composer, observer) in _modeObservers)
             composer.ModeSelected -= observer;
-        foreach (var composer in _modeObservers.Keys)
-            composer.ClearAttachments();
         _modeObservers.Clear();
+        // Pending attachments are owned by the draft registries, not by observer
+        // registration; CloseActive above has re-saved the active composer.
+        foreach (var composer in _sessionDrafts.Values.Select(draft => draft.Composer)
+                     .Concat(_drafts.Values.Select(draft => draft.Composer)))
+            composer.ClearAttachments();
         foreach (var (host, observer) in _selectionObservers)
             host.ModelSelectionChanged -= observer;
         _selectionObservers.Clear();
@@ -363,7 +366,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
             return;
         }
         var navigation = ++_navigationVersion;
-        if (_runtime.TryObserve(sessionId) is null)
+        using var residentProbe = _runtime.TryObserve(sessionId);
+        if (residentProbe is null)
         {
             var handle = await _runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
             _sessionRoots[sessionId] = handle.WorkspaceRoot;
@@ -406,6 +410,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 UnsentText = saved.UnsentText;
             }
         }
+        // The saved draft is consumed on open; CloseActive re-saves whatever is still unsent.
+        _sessionDrafts.Remove(sessionId);
         if (GetSavedSelection(workspaceRoot, sessionId.Value) is { } persistedSelection)
             conversation.RestoreModelSelection(persistedSelection);
         if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
@@ -516,6 +522,12 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     {
         if (_selectionObservers.Remove(host, out var observer))
             host.ModelSelectionChanged -= observer;
+    }
+
+    private void UnobserveMode(ComposerViewModel composer)
+    {
+        if (_modeObservers.Remove(composer, out var observer))
+            composer.ModeSelected -= observer;
     }
 
     private Dictionary<string, IReadOnlyDictionary<string, ModelSelection>> CopyModelSelections() =>
@@ -670,7 +682,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
                 await OpenSessionAsync(handle.Id);
             }
             submitting = true;
-            var revision = _runtime.TryObserve(handle.Id)?.Snapshot().Revision ?? 0;
+            using var createdProjection = _runtime.TryObserve(handle.Id);
+            var revision = createdProjection?.Snapshot().Revision ?? 0;
             var ack = await _runtime.SubmitAsync(new SendTextCommand(
                 StrongId.NewCommandId(), handle.Id, revision, text, mode, selection, Images: images), CancellationToken.None);
             if (ack.Accepted)
@@ -867,6 +880,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         _sessionDrafts[sessionId] = new SessionDraft(Active.Composer, Active.CurrentSelection, Active.Banner,
             _sessionDrafts.GetValueOrDefault(sessionId)?.UnsentText);
         UnobserveSelection(Active);
+        UnobserveMode(Active.Composer);
         Active.Dispose();
         Active = null;
         _hub.Release(sessionId);
