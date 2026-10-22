@@ -186,6 +186,41 @@ public class SystemPromptAssemblyTests
     }
 
     [Fact]
+    public async Task DisabledSkillPaths_HideListingAndRejectTheSkillTool()
+    {
+        ScriptStep Load(string name, string id) => new ScriptStep.Events([
+            new ModelToolCallReady(new ToolCall(new ToolCallId(id), "Skill",
+                System.Text.Json.JsonSerializer.SerializeToElement(new { skill = name }))),
+            new ModelStreamFinished(ModelFinishReason.ToolCalls),
+        ]);
+        await using var harness = TestHarness.Create(Load("hidden-skill", "skill-hidden"), Text("done"));
+        var skillDirectory = Path.Combine(
+            harness.Root, "user-skills-base", ".agents", "skills", "hidden-skill");
+        Directory.CreateDirectory(skillDirectory);
+        var skillPath = Path.Combine(skillDirectory, "SKILL.md");
+        File.WriteAllText(
+            skillPath,
+            "---\nname: hidden-skill\ndescription: Hidden skill\n---\n\nHIDDEN_BODY\n");
+        var capturing = new TestHarness.RequestCapturingModel(harness.ScriptedModel);
+        await using var runtime = harness.BuildRuntime(options => options with
+        {
+            Providers = [new ScriptedModelProvider(capturing)],
+            DisabledSkillPathsProvider = () => [skillPath],
+        });
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "load hidden-skill"), CancellationToken.None);
+        await WaitForRequestsAsync(capturing, 2);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        Assert.DoesNotContain("- hidden-skill: Hidden skill", PromptText(capturing.Requests[0]));
+        Assert.DoesNotContain("HIDDEN_BODY", ToolResultText(capturing.Requests[1]));
+        Assert.Contains("Skill not found: hidden-skill", ToolResultText(capturing.Requests[1]));
+    }
+
+    [Fact]
     public async Task ExplicitSkillsListingOverride_IsPreserved()
     {
         var request = await RunCapturedTurnAsync(Text("done"), transform: options => options with

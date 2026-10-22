@@ -28,6 +28,16 @@
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
     </Style>
+    <Style Selector="Button.showMore">
+      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+      <Setter Property="Padding" Value="32,4,8,4" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+    <Style Selector="Button.showMore:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.showMore:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
     <Style Selector="Button.sessionItem:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.sessionItem:focus-visible /template/ ContentPresenter#PART_ContentPresenter,
                      Button.groupHeader:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.groupHeader:focus-visible /template/ ContentPresenter#PART_ContentPresenter,
                      Button.sidebarAction:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.sidebarAction:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
@@ -102,42 +112,54 @@
                     <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconCirclePlus}" />
                   </Button>
                 </Grid>
-                <ItemsControl ItemsSource="{Binding Sessions}" Margin="0,2,0,0" IsVisible="{Binding IsExpanded}">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:SessionSummaryViewModel">
-                      <Button Classes="sessionItem" Classes.active="{Binding IsActive}" Click="OnSessionClick" ToolTip.Tip="{Binding DisplayTitle}"
-                              Background="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerSelected|AlcolerTransparent}">
-                        <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
-                          <Grid Width="16" Height="16" VerticalAlignment="Center">
-                            <Border x:Name="PART_ActiveIndicator" Width="4" Height="4" CornerRadius="2" HorizontalAlignment="Center"
-                                    Background="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding ShowActiveDot}" />
-                            <Border x:Name="PART_CompletedIndicator" Width="6" Height="6" CornerRadius="3"
-                                    HorizontalAlignment="Center" VerticalAlignment="Center"
-                                    Background="{DynamicResource AlcolerInfo}" IsVisible="{Binding IsCompleted}"
-                                    ToolTip.Tip="Completed" AutomationProperties.Name="Completed" />
-                            <Border x:Name="PART_FailedIndicator" Width="6" Height="6" CornerRadius="3"
-                                    HorizontalAlignment="Center" VerticalAlignment="Center"
-                                    Background="{DynamicResource AlcolerError}" IsVisible="{Binding IsFailed}"
-                                    ToolTip.Tip="Failed" AutomationProperties.Name="Failed" />
-                            <controls:Icon x:Name="PART_RunningIndicator" Classes="icon small sessionSpinner"
-                                           Classes.running="{Binding IsRunning}" IsVisible="{Binding IsRunning}"
-                                           RenderTransformOrigin="50%,50%" Stroke="{DynamicResource AlcolerTextSecondary}"
-                                           Data="M12 3a9 9 0 1 0 9 9" ToolTip.Tip="Running"
-                                           AutomationProperties.Name="Running">
-                              <controls:Icon.RenderTransform>
-                                <RotateTransform />
-                              </controls:Icon.RenderTransform>
-                            </controls:Icon>
+                <StackPanel Margin="0,2,0,0" IsVisible="{Binding IsExpanded}">
+                  <ItemsControl ItemsSource="{Binding VisibleSessions}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:SessionSummaryViewModel">
+                        <Button Classes="sessionItem" Classes.active="{Binding IsActive}" Click="OnSessionClick" ToolTip.Tip="{Binding DisplayTitle}"
+                                Background="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerSelected|AlcolerTransparent}">
+                          <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
+                            <Grid Width="16" Height="16" VerticalAlignment="Center">
+                              <Border x:Name="PART_ActiveIndicator" Width="4" Height="4" CornerRadius="2" HorizontalAlignment="Center"
+                                      Background="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding ShowActiveDot}" />
+                              <Border x:Name="PART_CompletedIndicator" Width="6" Height="6" CornerRadius="3"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Background="{DynamicResource AlcolerInfo}" IsVisible="{Binding IsCompleted}"
+                                      ToolTip.Tip="Completed" AutomationProperties.Name="Completed" />
+                              <Border x:Name="PART_FailedIndicator" Width="6" Height="6" CornerRadius="3"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Background="{DynamicResource AlcolerError}" IsVisible="{Binding IsFailed}"
+                                      ToolTip.Tip="Failed" AutomationProperties.Name="Failed" />
+                              <controls:Icon x:Name="PART_RunningIndicator" Classes="icon small sessionSpinner"
+                                             Classes.running="{Binding IsRunning}" IsVisible="{Binding IsRunning}"
+                                             RenderTransformOrigin="50%,50%" Stroke="{DynamicResource AlcolerTextSecondary}"
+                                             Data="M12 3a9 9 0 1 0 9 9" ToolTip.Tip="Running"
+                                             AutomationProperties.Name="Running">
+                                <controls:Icon.RenderTransform>
+                                  <RotateTransform />
+                                </controls:Icon.RenderTransform>
+                              </controls:Icon>
+                            </Grid>
+                            <TextBlock Grid.Column="1" Classes="sessionTitle" Text="{Binding DisplayTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Classes="sessionTime" Text="{Binding UpdatedAtText}" FontSize="{DynamicResource AlcolerFontSmall}"
+                                       VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
                           </Grid>
-                          <TextBlock Grid.Column="1" Classes="sessionTitle" Text="{Binding DisplayTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}"
-                                     TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                          <TextBlock Grid.Column="2" Classes="sessionTime" Text="{Binding UpdatedAtText}" FontSize="{DynamicResource AlcolerFontSmall}"
-                                     VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
-                        </Grid>
-                      </Button>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                        </Button>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding HasHiddenSessions}">
+                    <Button Classes="showMore" Click="OnShowMoreClick" IsVisible="{Binding CanShowMore}"
+                            ToolTip.Tip="Show all sessions" AutomationProperties.Name="Show more sessions">
+                      <TextBlock Text="Show more" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
+                    </Button>
+                    <Button Classes="icon tiny" Click="OnCollapseSessionsClick" IsVisible="{Binding CanCollapse}"
+                            Margin="24,0,0,0" ToolTip.Tip="Show fewer sessions" AutomationProperties.Name="Show fewer sessions">
+                      <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronUp}" Stroke="{DynamicResource AlcolerTextSecondary}" />
+                    </Button>
+                  </StackPanel>
+                </StackPanel>
               </StackPanel>
             </DataTemplate>
           </ItemsControl.ItemTemplate>

@@ -49,7 +49,8 @@ public static class Composition
         try
         {
             runtime = await BuildRuntimeAsync(config, ct, mcpTools.GetToolsAsync, extraTools,
-                () => Volatile.Read(ref currentConfig).IntegratedTerminalShell, chatGptAccount);
+                () => Volatile.Read(ref currentConfig).IntegratedTerminalShell, chatGptAccount,
+                () => Volatile.Read(ref currentConfig).DisabledSkillPaths ?? []);
         }
         catch
         {
@@ -93,7 +94,8 @@ public static class Composition
         Func<CancellationToken, ValueTask<IReadOnlyList<ITool>>>? sessionTools = null,
         IReadOnlyList<ITool>? extraTools = null,
         Func<ShellEnvironment?>? shellPreference = null,
-        ChatGptAccountService? chatGptAccount = null)
+        ChatGptAccountService? chatGptAccount = null,
+        Func<IReadOnlyList<string>>? disabledSkillPathsProvider = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(WorkbenchDataPaths.DatabasePath)!);
         Directory.CreateDirectory(WorkbenchDataPaths.ArtifactsPath);
@@ -141,6 +143,7 @@ public static class Composition
             SubagentOutputRoot = WorkbenchDataPaths.ExecPath,
             ResolveShell = snapshot => ShellResolver.ResolveEnvironment(
                 shellPreference is null ? config.IntegratedTerminalShell : shellPreference(), snapshot),
+            DisabledSkillPathsProvider = disabledSkillPathsProvider,
         });
         return runtime;
     }

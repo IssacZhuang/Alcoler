@@ -8,13 +8,15 @@ namespace Alcoler.Kernel.Runtime;
 /// Resolves skill bodies for the Skill tool from the same catalog that produced the
 /// session's skills listing; the listing and the tool must agree on shadowing rules.
 /// </summary>
-internal sealed class SkillContentProvider(string workspaceRoot, string? userSkillsBase = null) : ISkillContentProvider
+internal sealed class SkillContentProvider(
+    string workspaceRoot, string? userSkillsBase = null,
+    Func<IReadOnlyList<string>>? disabledSkillPaths = null) : ISkillContentProvider
 {
     private readonly SkillsCatalog _catalog = new(userSkillsBase);
     public SkillDocument? TryLoad(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var skill = _catalog.Load(workspaceRoot).FirstOrDefault(candidate =>
+        var skill = _catalog.Load(workspaceRoot, disabledSkillPaths?.Invoke()).FirstOrDefault(candidate =>
             string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase)
             || string.Equals(candidate.Alias, name.Trim(), StringComparison.OrdinalIgnoreCase));
         if (skill is null)

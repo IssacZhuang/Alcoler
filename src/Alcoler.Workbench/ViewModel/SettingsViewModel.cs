@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Text;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Skills;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -131,6 +132,26 @@ public sealed partial class McpServerViewModel : ObservableObject
     private void RemoveServer() => _removeFromParent(this);
 }
 
+public sealed partial class SkillToggleViewModel : ObservableObject
+{
+    public SkillToggleViewModel(SkillInfo skill, bool enabled)
+    {
+        Name = skill.Name;
+        Description = skill.Description;
+        Path = skill.SkPath;
+        Enabled = enabled;
+    }
+
+    public string Name { get; }
+
+    public string Description { get; }
+
+    public string Path { get; }
+
+    [ObservableProperty]
+    private bool _enabled;
+}
+
 public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
     private const string Dark = "dark";
@@ -153,13 +174,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     {
     }
 
-    internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount)
-        : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount)
+    internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount,
+        SkillsCatalog? skillsCatalog = null)
+        : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount, skillsCatalog)
     {
     }
 
     internal SettingsViewModel(WorkbenchConfig config, IReadOnlyList<ShellEnvironment> shells, bool isWindows,
-        Auth.ChatGptAccountService? chatGptAccount = null)
+        Auth.ChatGptAccountService? chatGptAccount = null, SkillsCatalog? skillsCatalog = null)
     {
         _config = config;
         SupportsShellSelection = isWindows;
@@ -173,6 +195,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ShellChoices = choices;
         SelectedShell = choices.FirstOrDefault(choice => choice.Environment == config.IntegratedTerminalShell) ?? choices[0];
         Theme = config.Theme == Light ? Light : Dark;
+        LoadUserSkills(skillsCatalog ?? new SkillsCatalog());
         foreach (var provider in config.Providers ?? [])
         {
             var providerItem = new ProviderViewModel(RemoveProviderItem)
@@ -209,6 +232,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public ObservableCollection<ProviderViewModel> Providers { get; } = [];
 
     public ObservableCollection<McpServerViewModel> McpServers { get; } = [];
+
+    public ObservableCollection<SkillToggleViewModel> UserSkills { get; } = [];
+
+    public string UserSkillSummary => UserSkills.Count == 1 ? "1 skill" : $"{UserSkills.Count} skills";
 
     public ChatGptAccountViewModel? ChatGpt { get; }
 
@@ -337,7 +364,56 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         McpServers = McpServers.Select(ToMcpServerConfig).ToList(),
         Theme = Theme,
         IntegratedTerminalShell = SupportsShellSelection ? SelectedShell?.Environment : _config.IntegratedTerminalShell,
+        DisabledSkillPaths = BuildDisabledSkillPaths(),
     };
+
+    private void LoadUserSkills(SkillsCatalog catalog)
+    {
+        IReadOnlyList<SkillInfo> skills;
+        try
+        {
+            skills = catalog.LoadUserSkills();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+        var disabled = new HashSet<string>(
+            (_config.DisabledSkillPaths ?? []).Select(SkillsCatalog.NormalizePath), DisabledPathComparer);
+        foreach (var skill in skills
+                     .OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(skill => skill.Name, StringComparer.Ordinal))
+        {
+            UserSkills.Add(new SkillToggleViewModel(
+                skill, !disabled.Contains(SkillsCatalog.NormalizePath(skill.SkPath))));
+        }
+    }
+
+    private IReadOnlyList<string>? BuildDisabledSkillPaths()
+    {
+        var listed = new HashSet<string>(
+            UserSkills.Select(skill => SkillsCatalog.NormalizePath(skill.Path)), DisabledPathComparer);
+        var disabled = new List<string>();
+        var seen = new HashSet<string>(DisabledPathComparer);
+        void Add(string path)
+        {
+            var normalized = SkillsCatalog.NormalizePath(path);
+            if (seen.Add(normalized))
+                disabled.Add(normalized);
+        }
+
+        foreach (var path in _config.DisabledSkillPaths ?? [])
+        {
+            if (!listed.Contains(SkillsCatalog.NormalizePath(path)))
+                Add(path);
+        }
+        foreach (var skill in UserSkills.Where(skill => !skill.Enabled))
+            Add(skill.Path);
+        return disabled.Count == 0 ? null : disabled;
+    }
+
+    private static StringComparer DisabledPathComparer =>
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private static WorkbenchProviderConfig ToProviderConfig(ProviderViewModel provider) => provider.ToConfig();
 

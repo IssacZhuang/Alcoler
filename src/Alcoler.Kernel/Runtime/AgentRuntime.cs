@@ -56,6 +56,8 @@ public sealed record AgentRuntimeOptions
 
     public string? UserSkillsBase { get; init; }
 
+    public Func<IReadOnlyList<string>>? DisabledSkillPathsProvider { get; init; }
+
     public ITodoStore? TodoStore { get; init; }
 
     public TimeProvider Clock { get; init; } = TimeProvider.System;
@@ -208,6 +210,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 GitSnapshot = _options.GitSnapshotProvider?.Invoke(record.WorkspaceRoot),
                 SkillsListing = _options.SkillsListing,
                 UserSkillsBase = _options.UserSkillsBase,
+                DisabledSkillPathsProvider = _options.DisabledSkillPathsProvider,
                 DefaultModel = Volatile.Read(ref _defaultModel),
                 SessionTitleGenerationEnabled = _options.SessionTitleGenerationEnabled,
                 SessionTitleGenerationTimeout = _options.SessionTitleGenerationTimeout,

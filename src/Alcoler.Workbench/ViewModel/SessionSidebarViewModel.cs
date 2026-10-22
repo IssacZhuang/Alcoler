@@ -60,6 +60,8 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
 
 public sealed partial class SessionGroupViewModel : ObservableObject
 {
+    public const int CollapsedSessionLimit = 5;
+
     public SessionGroupViewModel(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
     public string WorkspaceRoot { get; }
@@ -76,8 +78,62 @@ public sealed partial class SessionGroupViewModel : ObservableObject
 
     public ObservableCollection<SessionSummaryViewModel> Sessions { get; } = [];
 
+    public ObservableCollection<SessionSummaryViewModel> VisibleSessions { get; } = [];
+
     [ObservableProperty]
     private bool _isExpanded = true;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanShowMore))]
+    [NotifyPropertyChangedFor(nameof(CanCollapse))]
+    private bool _isShowingAll;
+
+    public bool HasHiddenSessions => Sessions.Count > CollapsedSessionLimit;
+
+    public bool CanShowMore => HasHiddenSessions && !IsShowingAll;
+
+    public bool CanCollapse => HasHiddenSessions && IsShowingAll;
+
+    public void AddSession(SessionSummaryViewModel session)
+    {
+        Sessions.Add(session);
+        if (IsShowingAll || VisibleSessions.Count < CollapsedSessionLimit)
+        {
+            VisibleSessions.Add(session);
+        }
+        OnPropertyChanged(nameof(HasHiddenSessions));
+        OnPropertyChanged(nameof(CanShowMore));
+        OnPropertyChanged(nameof(CanCollapse));
+    }
+
+    public void ShowMore()
+    {
+        if (IsShowingAll)
+        {
+            return;
+        }
+        IsShowingAll = true;
+        SyncVisibleSessions();
+    }
+
+    public void Collapse()
+    {
+        if (!IsShowingAll)
+        {
+            return;
+        }
+        IsShowingAll = false;
+        SyncVisibleSessions();
+    }
+
+    private void SyncVisibleSessions()
+    {
+        VisibleSessions.Clear();
+        foreach (var session in Sessions.Take(IsShowingAll ? Sessions.Count : CollapsedSessionLimit))
+        {
+            VisibleSessions.Add(session);
+        }
+    }
 }
 
 public static class RelativeTime
@@ -126,15 +182,22 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
 
     public void ApplySummaries(IReadOnlyList<SessionSummaryViewModel> summaries)
     {
-        var expansion = Groups.ToDictionary(g => g.WorkspaceRoot, g => g.IsExpanded, StringComparer.OrdinalIgnoreCase);
+        var expansion = Groups.ToDictionary(
+            g => g.WorkspaceRoot,
+            g => (g.IsExpanded, g.IsShowingAll),
+            StringComparer.OrdinalIgnoreCase);
         Groups.Clear();
         foreach (var group in summaries
                      .GroupBy(s => s.WorkspaceRoot, StringComparer.OrdinalIgnoreCase)
                      .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
         {
+            var (isExpanded, isShowingAll) = expansion.TryGetValue(group.Key, out var state)
+                ? state
+                : (true, false);
             var groupVm = new SessionGroupViewModel(group.Key)
             {
-                IsExpanded = !expansion.TryGetValue(group.Key, out var expanded) || expanded,
+                IsExpanded = isExpanded,
+                IsShowingAll = isShowingAll,
             };
             foreach (var session in group.OrderByDescending(s => s.UpdatedAt))
             {
@@ -144,7 +207,7 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
                     _indicators.Remove(session.Id);
                 }
                 session.Indicator = _indicators.GetValueOrDefault(session.Id);
-                groupVm.Sessions.Add(session);
+                groupVm.AddSession(session);
             }
             Groups.Add(groupVm);
         }

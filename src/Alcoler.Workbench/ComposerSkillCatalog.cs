@@ -8,7 +8,8 @@ public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
 {
     private readonly SkillsCatalog _catalog = catalog ?? new SkillsCatalog();
 
-    public IReadOnlyList<ComposerSkillEntry> GetEntries(string workspaceRoot)
+    public IReadOnlyList<ComposerSkillEntry> GetEntries(
+        string workspaceRoot, IReadOnlyList<string>? disabledSkillPaths = null)
     {
         if (string.IsNullOrWhiteSpace(workspaceRoot))
         {
@@ -16,7 +17,7 @@ public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
         }
         try
         {
-            return _catalog.Load(Path.GetFullPath(workspaceRoot))
+            return _catalog.Load(Path.GetFullPath(workspaceRoot), disabledSkillPaths)
                 .OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(skill => skill.Name, StringComparer.Ordinal)
                 .Select(skill => new ComposerSkillEntry(skill.Name, skill.Description, skill.SkPath))
@@ -28,7 +29,8 @@ public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
         }
     }
 
-    public IReadOnlyList<ComposerSkillEntry> Query(string workspaceRoot, string text)
+    public IReadOnlyList<ComposerSkillEntry> Query(
+        string workspaceRoot, string text, IReadOnlyList<string>? disabledSkillPaths = null)
     {
         if (string.IsNullOrEmpty(text) || text[0] != '/')
         {
@@ -39,7 +41,7 @@ public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
         {
             return [];
         }
-        return GetEntries(workspaceRoot)
+        return GetEntries(workspaceRoot, disabledSkillPaths)
             .Where(skill => skill.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
             .ToArray();
     }

@@ -398,7 +398,7 @@ public partial class ComposerView : UserControl
             return;
         }
         _dismissedSkillToken = null;
-        var entries = _skills.Query(host.WorkspaceRoot, token.Token);
+        var entries = _skills.Query(host.WorkspaceRoot, token.Token, _workbench?.DisabledSkillPaths);
         SkillSuggestions.ItemsSource = entries;
         SkillSuggestions.SelectedIndex = entries.Count > 0 ? 0 : -1;
         SkillPanel.IsVisible = entries.Count > 0;

@@ -160,6 +160,7 @@ public static class SubagentWiring
             ResolveShell = options.ResolveShell,
             GitSnapshotProvider = options.GitSnapshotProvider,
             UserSkillsBase = options.UserSkillsBase,
+            DisabledSkillPathsProvider = options.DisabledSkillPathsProvider,
         });
 
         var handle = await childRuntime.CreateSessionAsync(

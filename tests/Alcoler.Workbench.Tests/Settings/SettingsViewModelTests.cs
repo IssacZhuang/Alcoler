@@ -1,4 +1,5 @@
 using Alcoler.Contracts.Permissions;
+using Alcoler.Kernel.Skills;
 using Alcoler.Workbench.Themes;
 using Alcoler.Workbench.ViewModel;
 using Avalonia;
@@ -92,6 +93,58 @@ public class SettingsViewModelTests
                 File.Delete(path);
             }
         }
+    }
+
+    [Fact]
+    public async Task SaveAsync_RoundTripsDisabledUserSkillPaths()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "alcoler-skill-settings-" + Guid.NewGuid().ToString("N"));
+        var userSkills = Path.Combine(directory, ".agents", "skills");
+        var configPath = Path.Combine(directory, "config.json");
+        try
+        {
+            WriteUserSkill(userSkills, "alpha", "First skill.");
+            WriteUserSkill(userSkills, "beta", "Second skill.");
+            var catalog = new SkillsCatalog(userSkillsBase: directory);
+            var workspaceSkillPath = Path.Combine(directory, "workspace", ".alcoler", "skills", "local", "SKILL.md");
+            var config = new WorkbenchConfig([], DisabledSkillPaths: [workspaceSkillPath]);
+            using var settings = new SettingsViewModel(config, [], isWindows: false, skillsCatalog: catalog);
+
+            Assert.Equal(["alpha", "beta"], settings.UserSkills.Select(skill => skill.Name));
+            Assert.All(settings.UserSkills, skill => Assert.True(skill.Enabled));
+            settings.UserSkills.Single(skill => skill.Name == "beta").Enabled = false;
+
+            var saved = await settings.SaveAsync(configPath);
+
+            var betaPath = SkillsCatalog.NormalizePath(Path.Combine(userSkills, "beta", "SKILL.md"));
+            Assert.Equal([SkillsCatalog.NormalizePath(workspaceSkillPath), betaPath], saved!.DisabledSkillPaths);
+            var loaded = WorkbenchConfig.LoadOrDefault(configPath);
+            Assert.Equal(saved.DisabledSkillPaths, loaded.DisabledSkillPaths);
+
+            using var reopened = new SettingsViewModel(loaded, [], isWindows: false, skillsCatalog: catalog);
+            Assert.True(reopened.UserSkills.Single(skill => skill.Name == "alpha").Enabled);
+            Assert.False(reopened.UserSkills.Single(skill => skill.Name == "beta").Enabled);
+
+            reopened.UserSkills.Single(skill => skill.Name == "beta").Enabled = true;
+            var savedAgain = await reopened.SaveAsync(configPath);
+            Assert.Equal([SkillsCatalog.NormalizePath(workspaceSkillPath)], savedAgain!.DisabledSkillPaths);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    private static void WriteUserSkill(string root, string name, string description)
+    {
+        var directory = Path.Combine(root, name);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, "SKILL.md"),
+            $"---\nname: {name}\ndescription: {description}\n---\nBody.");
     }
 
     [Fact]
@@ -360,6 +413,50 @@ public class SettingsViewModelTests
     }
 
     [AvaloniaFact]
+    public void SettingsDialog_SkillToggleUpdatesTheViewModel()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "alcoler-skill-dialog-" + Guid.NewGuid().ToString("N"));
+        var userSkills = Path.Combine(directory, ".agents", "skills");
+        try
+        {
+            WriteUserSkill(userSkills, "alpha", "First skill.");
+            WriteUserSkill(userSkills, "beta", "Second skill.");
+            var catalog = new SkillsCatalog(userSkillsBase: directory);
+            var alphaPath = SkillsCatalog.NormalizePath(Path.Combine(userSkills, "alpha", "SKILL.md"));
+            var dialog = new Workbench.Views.SettingsDialog(
+                new WorkbenchConfig([], DisabledSkillPaths: [alphaPath]), skillsCatalog: catalog);
+            try
+            {
+                dialog.Show();
+                Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+                var viewModel = Assert.IsType<SettingsViewModel>(dialog.DataContext);
+                dialog.FindControl<RadioButton>("SkillsTab")!.IsChecked = true;
+                Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+                var toggle = dialog.GetVisualDescendants().OfType<ToggleSwitch>()
+                    .Single(control => control.DataContext is SkillToggleViewModel { Name: "alpha" });
+                Assert.False(toggle.IsChecked);
+                toggle.IsChecked = true;
+                Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+                Assert.True(viewModel.UserSkills.Single(skill => skill.Name == "alpha").Enabled);
+                Assert.True(viewModel.UserSkills.Single(skill => skill.Name == "beta").Enabled);
+            }
+            finally
+            {
+                dialog.Close();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [AvaloniaFact]
     public void SettingsDialog_SwitchesSupportedSectionsAndPreservesProviderDraft()
     {
         var dialog = new Workbench.Views.SettingsDialog(SampleConfig());
@@ -380,6 +477,11 @@ public class SettingsViewModelTests
             Assert.True(dialog.FindControl<ScrollViewer>("McpPanel")!.IsVisible);
             Assert.False(dialog.FindControl<Grid>("ProvidersPanel")!.IsVisible);
             Assert.Equal("MCP servers", dialog.FindControl<TextBlock>("SectionTitle")!.Text);
+
+            dialog.FindControl<RadioButton>("SkillsTab")!.IsChecked = true;
+            Assert.True(dialog.FindControl<ScrollViewer>("SkillsPanel")!.IsVisible);
+            Assert.False(dialog.FindControl<ScrollViewer>("McpPanel")!.IsVisible);
+            Assert.Equal("Skills", dialog.FindControl<TextBlock>("SectionTitle")!.Text);
 
             dialog.FindControl<RadioButton>("AppearanceTab")!.IsChecked = true;
             Assert.True(dialog.FindControl<ScrollViewer>("AppearancePanel")!.IsVisible);

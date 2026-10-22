@@ -83,6 +83,8 @@
     <Style Selector="RadioButton.settingsTab">
       <Setter Property="Height" Value="32" />
       <Setter Property="Margin" Value="0,2" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
       <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
       <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
       <Setter Property="Cursor" Value="Hand" />
@@ -164,6 +166,13 @@
           <StackPanel Orientation="Horizontal" Spacing="8">
             <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconWrench}" />
             <TextBlock Text="MCP servers" />
+          </StackPanel>
+        </RadioButton>
+        <RadioButton x:Name="SkillsTab" Classes="settingsTab" GroupName="SettingsSection"
+                     Tag="skills" IsCheckedChanged="OnSectionChanged">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <controls:Icon Classes="icon" Data="M15 4V2M15 10V8M8 7h2M20 7h2M17.5 4.5 19 3M17.5 9.5 19 11M3 21l9-9M12.5 8.5l3 3" />
+            <TextBlock Text="Skills" />
           </StackPanel>
         </RadioButton>
       </StackPanel>
@@ -449,6 +458,49 @@
                           </StackPanel>
                         </Border>
                       </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+
+          <ScrollViewer x:Name="SkillsPanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="20">
+              <TextBlock Classes="sectionTitle" Text="Skills" />
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <TextBlock Classes="description" VerticalAlignment="Center"
+                           Text="Enable or disable the user skills available to the agent and the composer slash menu." />
+                <TextBlock Grid.Column="1" Classes="description" Text="{Binding UserSkillSummary}" VerticalAlignment="Center" />
+              </Grid>
+              <Border IsVisible="{Binding !UserSkills.Count}" BorderThickness="0"
+                      Background="{DynamicResource AlcolerCard}" CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="24">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="No user skills installed" FontWeight="Medium" />
+                  <TextBlock Classes="description"
+                             Text="Add a skill under ~/.alcoler/skills or ~/.agents/skills to make it available here." />
+                </StackPanel>
+              </Border>
+              <ItemsControl ItemsSource="{Binding UserSkills}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:SkillToggleViewModel">
+                    <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
+                            CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16,12" Margin="0,0,0,8">
+                      <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <Border Width="36" Height="36" CornerRadius="18" Background="{DynamicResource AlcolerSurfaceHigh}"
+                                VerticalAlignment="Center">
+                          <controls:Icon Classes="icon" Data="M15 4V2M15 10V8M8 7h2M20 7h2M17.5 4.5 19 3M17.5 9.5 19 11M3 21l9-9M12.5 8.5l3 3"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding Name}" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
+                          <TextBlock Text="{Binding Description}" Classes="description" TextWrapping="NoWrap"
+                                     TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Description}" />
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="2" IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                      VerticalAlignment="Center" ToolTip.Tip="Enable skill"
+                                      AutomationProperties.Name="Enable skill" />
+                      </Grid>
                     </Border>
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>

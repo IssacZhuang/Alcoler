@@ -258,6 +258,85 @@ public class SkillsCatalogTests : IDisposable
     }
 
     [Fact]
+    public void Load_ExcludesDisabledSkillPaths_WithPlatformPathComparison()
+    {
+        WriteSkill(WorkspaceSkills, "disabled", """
+            ---
+            name: disabled
+            description: disabled skill
+            ---
+            """);
+        WriteSkill(WorkspaceSkills, "kept", """
+            ---
+            name: kept
+            description: kept skill
+            ---
+            """);
+        var disabledPath = Path.Combine(WorkspaceSkills, "disabled", "SKILL.md");
+        var recordedPath = OperatingSystem.IsWindows()
+            ? disabledPath.Replace('\\', '/').ToUpperInvariant()
+            : disabledPath.Replace('\\', '/');
+
+        var skills = Catalog().Load(_workspaceRoot.Root, [recordedPath]);
+
+        Assert.Equal(["kept"], skills.Select(skill => skill.Name));
+    }
+
+    [Fact]
+    public void Load_DisabledPathOnlyAffectsTheWinningSkill()
+    {
+        WriteSkill(WorkspaceSkills, "deploy", """
+            ---
+            name: deploy
+            description: workspace deploy
+            ---
+            """);
+        WriteSkill(UserSkills, "deploy", """
+            ---
+            name: deploy
+            description: user deploy
+            ---
+            """);
+
+        var userPath = Path.Combine(UserSkills, "deploy", "SKILL.md");
+        var skills = Catalog().Load(_workspaceRoot.Root, [userPath]);
+
+        var skill = Assert.Single(skills);
+        Assert.Equal("workspace deploy", skill.Description);
+        Assert.Equal(SkillSource.Workspace, skill.Source);
+    }
+
+    [Fact]
+    public void LoadUserSkills_ReturnsOnlyUserLevelAndHonorsDisabledPaths()
+    {
+        WriteSkill(WorkspaceSkills, "workspace-only", """
+            ---
+            name: workspace-only
+            description: workspace skill
+            ---
+            """);
+        WriteSkill(UserSkills, "user-brand", """
+            ---
+            name: user-brand
+            description: user brand skill
+            ---
+            """);
+        WriteSkill(UserAgentsSkills, "user-agents", """
+            ---
+            name: user-agents
+            description: user agents skill
+            ---
+            """);
+        var disabledPath = Path.Combine(UserAgentsSkills, "user-agents", "SKILL.md");
+
+        var skills = Catalog().LoadUserSkills([disabledPath]);
+
+        var skill = Assert.Single(skills);
+        Assert.Equal("user-brand", skill.Name);
+        Assert.Equal(SkillSource.User, skill.Source);
+    }
+
+    [Fact]
     public void RenderListing_ListsSkillsWithSource()
     {
         WriteSkill(

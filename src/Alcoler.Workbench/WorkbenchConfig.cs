@@ -67,7 +67,8 @@ public sealed record WorkbenchConfig(
     string Theme = "dark",
     string? BraveApiKey = null,
     WorkbenchComposerConfig? Composer = null,
-    ShellEnvironment? IntegratedTerminalShell = null)
+    ShellEnvironment? IntegratedTerminalShell = null,
+    IReadOnlyList<string>? DisabledSkillPaths = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

@@ -116,6 +116,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<ModelChoice> ModelChoices { get; private set; }
 
+    public IReadOnlyList<string> DisabledSkillPaths => _config.DisabledSkillPaths ?? [];
+
     public static string OutsideProjectRoot => Path.Combine(WorkbenchDataPaths.Root, "workspace", "default");
 
     public WorkbenchProviderConfig? FindProvider(string id) =>

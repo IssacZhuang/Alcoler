@@ -37,15 +37,49 @@ public sealed class SkillsCatalog
     public static string DefaultUserSkillsBase() =>
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-    public IReadOnlyList<SkillInfo> Load(string workspaceRoot)
+    public IReadOnlyList<SkillInfo> Load(string workspaceRoot, IReadOnlyList<string>? disabledSkillPaths = null)
     {
         var byName = new Dictionary<string, SkillInfo>(StringComparer.OrdinalIgnoreCase);
         foreach (var skill in LoadLevel(workspaceRoot, SkillSource.Workspace))
             byName.TryAdd(skill.Name, skill);
         foreach (var skill in LoadLevel(_userSkillsBase, SkillSource.User))
             byName.TryAdd(skill.Name, skill);
-        return [.. byName.Values];
+        return Visible(byName, disabledSkillPaths);
     }
+
+    public IReadOnlyList<SkillInfo> LoadUserSkills(IReadOnlyList<string>? disabledSkillPaths = null)
+    {
+        var byName = new Dictionary<string, SkillInfo>(StringComparer.OrdinalIgnoreCase);
+        foreach (var skill in LoadLevel(_userSkillsBase, SkillSource.User))
+            byName.TryAdd(skill.Name, skill);
+        return Visible(byName, disabledSkillPaths);
+    }
+
+    public static string NormalizePath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path).Replace('\\', '/');
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or IOException
+            or System.Security.SecurityException)
+        {
+            return path.Replace('\\', '/');
+        }
+    }
+
+    private static IReadOnlyList<SkillInfo> Visible(
+        Dictionary<string, SkillInfo> byName, IReadOnlyList<string>? disabledSkillPaths)
+    {
+        if (disabledSkillPaths is not { Count: > 0 })
+            return [.. byName.Values];
+
+        var disabled = new HashSet<string>(disabledSkillPaths.Select(NormalizePath), PathComparer);
+        return [.. byName.Values.Where(skill => !disabled.Contains(NormalizePath(skill.SkPath)))];
+    }
+
+    private static StringComparer PathComparer =>
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private static IEnumerable<SkillInfo> LoadLevel(string baseDirectory, SkillSource source) =>
         new[] { BrandDirectoryName, AgentsDirectoryName }

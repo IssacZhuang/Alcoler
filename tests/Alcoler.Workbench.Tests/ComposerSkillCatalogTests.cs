@@ -51,6 +51,19 @@ public sealed class ComposerSkillCatalogTests : IDisposable
     }
 
     [Fact]
+    public void GetEntries_ExcludesDisabledSkillPaths()
+    {
+        var kept = WriteSkill(WorkspaceSkills, "kept", "Kept skill.");
+        var disabled = WriteSkill(UserSkills, "disabled", "Disabled skill.");
+
+        var entries = Catalog().GetEntries(WorkspaceRoot, [disabled]);
+
+        Assert.Equal([new ComposerSkillEntry("kept", "Kept skill.", kept)], entries);
+        Assert.Empty(Catalog().Query(WorkspaceRoot, "/disabled", [disabled]));
+        Assert.Single(Catalog().Query(WorkspaceRoot, "/kept", [disabled]));
+    }
+
+    [Fact]
     public void GetEntries_ReusesCaseInsensitiveWorkspacePrecedenceFromKernelCatalog()
     {
         WriteSkill(UserSkills, "deploy", "User deployment.");

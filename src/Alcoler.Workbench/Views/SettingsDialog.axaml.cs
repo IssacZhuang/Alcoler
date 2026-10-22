@@ -1,3 +1,4 @@
+using Alcoler.Kernel.Skills;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Avalonia.Controls;
@@ -17,10 +18,11 @@ public partial class SettingsDialog : Window
     {
     }
 
-    internal SettingsDialog(WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null)
+    internal SettingsDialog(WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null,
+        SkillsCatalog? skillsCatalog = null)
     {
         InitializeComponent();
-        _viewModel = new SettingsViewModel(current, chatGptAccount: chatGptAccount);
+        _viewModel = new SettingsViewModel(current, chatGptAccount: chatGptAccount, skillsCatalog: skillsCatalog);
         DataContext = _viewModel;
         if (_viewModel.ChatGpt is { } chatGpt)
             chatGpt.OpenAuthorizeUrl = uri => Launcher.LaunchUriAsync(uri);
@@ -163,6 +165,7 @@ public partial class SettingsDialog : Window
         var section = tab.Tag as string;
         ProvidersPanel.IsVisible = section == "providers";
         McpPanel.IsVisible = section == "mcp";
+        SkillsPanel.IsVisible = section == "skills";
         AppearancePanel.IsVisible = section == "appearance";
         RuntimePanel.IsVisible = section == "runtime";
         SectionTitle.Text = section switch
@@ -170,6 +173,7 @@ public partial class SettingsDialog : Window
             "runtime" => "Runtime",
             "appearance" => "Appearance",
             "mcp" => "MCP servers",
+            "skills" => "Skills",
             _ => "Model providers",
         };
     }
