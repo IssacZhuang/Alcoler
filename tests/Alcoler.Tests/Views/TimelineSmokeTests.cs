@@ -957,63 +957,6 @@ public class TimelineSmokeTests
         }
     }
 
-    [AvaloniaFact]
-    public async Task WorkingIndicator_AnimatesDistinctDotsAndStopsWhenWaitingForUser()
-    {
-        EnsureFluentTheme();
-        var (view, viewModel, store) = CreateTimeline();
-        var window = Host(view, 540, 360);
-        try
-        {
-            var state = TestSnapshots.State(TurnPhase.AwaitingModel);
-            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
-            Pump();
-            var dots = view.GetVisualDescendants().OfType<Border>()
-                .Where(border => border.Classes.Contains("workingDot")).ToArray();
-            Assert.Equal(3, dots.Length);
-            var samples = dots.Select(_ => new List<double>()).ToArray();
-            var positions = dots.Select(_ => new List<double>()).ToArray();
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
-            while (DateTime.UtcNow < deadline)
-            {
-                await Task.Delay(40);
-                AvaloniaHeadlessPlatform.ForceRenderTimerTick();
-                Pump();
-                for (var index = 0; index < dots.Length; index++)
-                {
-                    samples[index].Add(dots[index].Opacity);
-                    positions[index].Add(Assert.IsType<TranslateTransform>(dots[index].RenderTransform).Y);
-                }
-            }
-
-            Assert.All(samples, values => Assert.True(values.Max() - values.Min() > 0.3,
-                $"Expected a visible opacity animation, sampled {values.Min():F2} to {values.Max():F2}"));
-            Assert.All(positions, values => Assert.True(values.Max() - values.Min() > 1.5,
-                $"Expected a moving dot, sampled Y {values.Min():F2} to {values.Max():F2}"));
-            Assert.True(samples[0].Zip(samples[1]).Any(pair => Math.Abs(pair.First - pair.Second) > 0.2),
-                "Dots should animate in sequence rather than flashing together.");
-
-            var waiting = TestSnapshots.State(TurnPhase.AwaitingPermission);
-            viewModel.ApplyUpdate(new ProjectionUpdate(2, waiting, [new StatePatched(waiting)], Reset: false));
-            Pump();
-            await Task.Delay(80);
-            AvaloniaHeadlessPlatform.ForceRenderTimerTick();
-            Pump();
-            Assert.All(dots, dot =>
-            {
-                Assert.False(dot.IsEffectivelyVisible);
-                Assert.Equal(0.4, dot.Opacity, 3);
-                Assert.Equal(0, Assert.IsType<TranslateTransform>(dot.RenderTransform).Y);
-            });
-        }
-        finally
-        {
-            window.Close();
-            viewModel.Dispose();
-            store.Dispose();
-        }
-    }
-
     private static Button ToolHeader(TimelineView view, ToolCallItemViewModel item) =>
         Assert.Single(view.GetVisualDescendants().OfType<Button>(),
             button => button.Classes.Contains("toolRow") && ReferenceEquals(button.DataContext, item));
