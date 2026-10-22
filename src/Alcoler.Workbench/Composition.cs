@@ -35,14 +35,9 @@ public static class Composition
             }
         };
         var webFetch = new WebFetchTool();
-        WebSearchTool? webSearch = null;
-        var extraTools = new List<ITool> { new BrowserTool(browser), webFetch };
-        var braveKey = config.BraveApiKey ?? Environment.GetEnvironmentVariable("ALCOLER_BRAVE_API_KEY");
-        if (!string.IsNullOrWhiteSpace(braveKey))
-        {
-            webSearch = new WebSearchTool(braveKey);
-            extraTools.Add(webSearch);
-        }
+        var webSearch = new WebSearchTool(
+            config.BraveApiKey ?? Environment.GetEnvironmentVariable("ALCOLER_BRAVE_API_KEY"));
+        var extraTools = new List<ITool> { new BrowserTool(browser), webFetch, webSearch };
         var currentConfig = config;
         var chatGptAccount = new ChatGptAccountService(Path.Combine(WorkbenchDataPaths.Root, "auth.json"));
         AgentRuntime runtime;
@@ -56,7 +51,7 @@ public static class Composition
         {
             browser.Dispose();
             webFetch.Dispose();
-            webSearch?.Dispose();
+            webSearch.Dispose();
             await mcpTools.DisposeAsync();
             throw;
         }
@@ -70,7 +65,7 @@ public static class Composition
                 {
                     browser.Dispose();
                     webFetch.Dispose();
-                    webSearch?.Dispose();
+                    webSearch.Dispose();
                 })),
             chatGptAccount: chatGptAccount,
             browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance,

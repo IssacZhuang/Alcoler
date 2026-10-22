@@ -1,22 +1,28 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Alcoler.Adapters.Web;
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Adapters.Tools;
 
-public sealed class WebSearchTool : ITool, IDisposable
+public sealed class WebSearchTool : ITool, IModelGatedTool, IDisposable
 {
     private const int MaxSourceLinks = 20;
     private const string SourceReminder =
         "REMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks.";
+    private static readonly Regex MarkdownLinkPattern = new(
+        @"\[(?<title>[^\]\n]+)\]\((?<url>https?://[^\s)]+)\)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private readonly BraveWebSearchClient _client;
+    private readonly BraveWebSearchClient? _client;
     private readonly TimeProvider _clock;
 
-    public WebSearchTool(string apiKey, HttpMessageHandler? handler = null, TimeProvider? clock = null)
+    public WebSearchTool(string? apiKey, HttpMessageHandler? handler = null, TimeProvider? clock = null)
     {
-        _client = new BraveWebSearchClient(apiKey, handler);
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            _client = new BraveWebSearchClient(apiKey, handler);
         // The description is computed once at construction so a long-lived process never
         // advertises a stale month to the model.
         _clock = clock ?? TimeProvider.System;
@@ -39,6 +45,9 @@ public sealed class WebSearchTool : ITool, IDisposable
     }
 
     public ToolContract Contract { get; }
+
+    public bool IsAvailable(ModelProperties properties) =>
+        properties.SupportsNativeWebSearch || _client is not null;
 
     public ToolMetadata Metadata { get; } = new(
         ReadOnly: true,
@@ -69,6 +78,15 @@ public sealed class WebSearchTool : ITool, IDisposable
         var allowed = ReadDomains(context.Input, "allowed_domains");
         var blocked = ReadDomains(context.Input, "blocked_domains");
 
+        if (context.ProviderSearch is { IsAvailable: true } providerSearch)
+            return await ExecuteProviderNativeAsync(providerSearch, query, allowed, blocked, cancellationToken)
+                .ConfigureAwait(false);
+
+        if (_client is null)
+            return ToolExecutionResult.Text(
+                "WebSearch is unavailable: the current model does not support provider-native web search, and no Brave API key is configured.",
+                isError: true);
+
         IReadOnlyList<WebSearchResult> results;
         try
         {
@@ -83,8 +101,51 @@ public sealed class WebSearchTool : ITool, IDisposable
             .Where(result => !MatchesAnyDomain(result.Url, blocked))
             .Where(result => allowed.Count == 0 || MatchesAnyDomain(result.Url, allowed))
             .ToList();
+        var summary = string.Join("\n", filtered
+            .Select(result => result.Description?.Trim())
+            .Where(description => !string.IsNullOrEmpty(description)));
+        var links = filtered.Select(result => (result.Url, result.Title)).ToList();
+        return Format(query, summary, links);
+    }
 
-        if (filtered.Count == 0)
+    public void Dispose() => _client?.Dispose();
+
+    private static async ValueTask<ToolExecutionResult> ExecuteProviderNativeAsync(
+        IProviderWebSearch providerSearch,
+        string query,
+        IReadOnlyList<string> allowed,
+        IReadOnlyList<string> blocked,
+        CancellationToken cancellationToken)
+    {
+        ProviderWebSearchResponse response;
+        try
+        {
+            response = await providerSearch.SearchAsync(
+                new ProviderWebSearchRequest(query, allowed, blocked), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            return ToolExecutionResult.Text(ex.Message, isError: true);
+        }
+
+        var links = response.Sources
+            .Where(source => !MatchesAnyDomain(source.Url, blocked))
+            .Where(source => allowed.Count == 0 || MatchesAnyDomain(source.Url, allowed))
+            .Select(source => (source.Url, source.Title))
+            .Concat(ExtractMarkdownLinks(response.Summary))
+            .ToList();
+        return Format(query, response.Summary, links);
+    }
+
+    private static ToolExecutionResult Format(
+        string query,
+        string? summary,
+        IReadOnlyList<(string Url, string? Title)> links)
+    {
+        var deduped = DedupeLinks(links);
+        var trimmed = summary?.Trim();
+        if (deduped.Count == 0 && string.IsNullOrEmpty(trimmed))
+        {
             return ToolExecutionResult.Text(string.Join("\n",
                 $"Web search results for query: \"{query}\"",
                 "",
@@ -92,23 +153,20 @@ public sealed class WebSearchTool : ITool, IDisposable
                 "- No links found.",
                 "",
                 SourceReminder).Trim());
+        }
 
         var lines = new List<string> { $"Web search results for query: \"{query}\"", "" };
-        var summary = string.Join("\n", filtered
-            .Select(result => result.Description?.Trim())
-            .Where(description => !string.IsNullOrEmpty(description)));
-        if (summary.Length > 0)
-            lines.AddRange(["Summary:", summary, ""]);
-
+        if (!string.IsNullOrEmpty(trimmed))
+            lines.AddRange(["Summary:", trimmed, ""]);
         lines.Add("Links:");
-        foreach (var link in DedupedByUrl(filtered).Take(MaxSourceLinks))
-            lines.Add($"- [{(string.IsNullOrWhiteSpace(link.Title) ? link.Url : link.Title!)}]({link.Url})");
+        if (deduped.Count == 0)
+            lines.Add("- No links found.");
+        else
+            foreach (var link in deduped.Take(MaxSourceLinks))
+                lines.Add($"- [{(string.IsNullOrWhiteSpace(link.Title) ? link.Url : link.Title!)}]({link.Url})");
         lines.AddRange(["", SourceReminder]);
-
         return ToolExecutionResult.Text(string.Join("\n", lines).Trim());
     }
-
-    public void Dispose() => _client.Dispose();
 
     private static string BuildDescription(DateTimeOffset now) => string.Join("\n",
         "Search the web. Returns result blocks with titles and URLs. US-only.",
@@ -142,11 +200,27 @@ public sealed class WebSearchTool : ITool, IDisposable
                 && host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase)));
     }
 
-    private static IEnumerable<WebSearchResult> DedupedByUrl(IEnumerable<WebSearchResult> results)
+    private static List<(string Url, string? Title)> DedupeLinks(
+        IEnumerable<(string Url, string? Title)> links)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var result in results)
-            if (seen.Add(result.Url))
-                yield return result;
+        var result = new List<(string Url, string? Title)>();
+        foreach (var link in links)
+            if (!string.IsNullOrWhiteSpace(link.Url) && seen.Add(link.Url))
+                result.Add(link);
+        return result;
+    }
+
+    private static IEnumerable<(string Url, string? Title)> ExtractMarkdownLinks(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            yield break;
+        foreach (Match match in MarkdownLinkPattern.Matches(text))
+        {
+            if (match.Index > 0 && text[match.Index - 1] == '!')
+                continue;
+            var title = match.Groups["title"].Value.Trim();
+            yield return (match.Groups["url"].Value, title.Length > 0 ? title : null);
+        }
     }
 }

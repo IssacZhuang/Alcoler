@@ -4,7 +4,9 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tools;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.Tools;
@@ -13,13 +15,14 @@ public sealed class WebSearchToolTests : IDisposable
 {
     private readonly TempWorkspace _workspace = new();
 
-    private ToolExecutionContext Context(string json) =>
+    private ToolExecutionContext Context(string json, IProviderWebSearch? providerSearch = null) =>
         new(
             new SessionId("sess_websearch"),
             _workspace.Root,
             JsonDocument.Parse(json).RootElement.Clone(),
             _workspace.Workspace,
-            TimeProvider.System);
+            TimeProvider.System,
+            ProviderSearch: providerSearch);
 
     private static string QueryCall(
         string query,
@@ -231,5 +234,124 @@ public sealed class WebSearchToolTests : IDisposable
             "",
             "REMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks."),
             result.SingleText());
+    }
+
+    [Fact]
+    public void AvailabilityRequiresNativeSupportOrBraveKey()
+    {
+        using var withoutBackends = new WebSearchTool(null);
+        Assert.False(withoutBackends.IsAvailable(new ModelProperties()));
+        Assert.True(withoutBackends.IsAvailable(new ModelProperties(SupportsNativeWebSearch: true)));
+
+        using var withBrave = new WebSearchTool("key");
+        Assert.True(withBrave.IsAvailable(new ModelProperties()));
+    }
+
+    [Fact]
+    public void RegistryHidesWebSearchWhenTheModelHasNoBackend()
+    {
+        using var tool = new WebSearchTool(null);
+        var registry = new ToolRegistry([tool]);
+        Assert.Empty(registry.VisibleContractsFor(new ModelProperties()));
+        Assert.Single(registry.VisibleContractsFor(new ModelProperties(SupportsNativeWebSearch: true)));
+        Assert.Single(registry.VisibleContractsFor(null));
+    }
+
+    [Fact]
+    public async Task UsesProviderNativeSearchWhenAvailable()
+    {
+        var handler = new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Brave must not be called."));
+        using var tool = new WebSearchTool("key", handler);
+        var provider = new FakeProviderSearch(new ProviderWebSearchResponse(
+            "Native summary.",
+            [
+                new ProviderWebSearchSource("https://native.example/a", "Native A"),
+                new ProviderWebSearchSource("https://native.example/b", "Native B"),
+            ],
+            1));
+
+        var result = await tool.ExecuteAsync(
+            Context(QueryCall("native query", allowedDomains: """["native.example"]"""), provider),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var text = result.SingleText();
+        Assert.Contains("Native summary.", text);
+        Assert.Contains("- [Native A](https://native.example/a)", text);
+        Assert.Contains("- [Native B](https://native.example/b)", text);
+        Assert.NotNull(provider.Request);
+        Assert.Equal("native query", provider.Request!.Query);
+        Assert.Equal(["native.example"], provider.Request.AllowedDomains);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ReadsMarkdownLinksFromNativeSummary()
+    {
+        using var tool = new WebSearchTool(null);
+        var provider = new FakeProviderSearch(new ProviderWebSearchResponse(
+            "See [Example](https://example.com/a) for details.",
+            []));
+
+        var result = await tool.ExecuteAsync(Context(QueryCall("native"), provider), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("- [Example](https://example.com/a)", result.SingleText());
+    }
+
+    [Fact]
+    public async Task DedupesNativeSourcesAgainstSummaryLinks()
+    {
+        using var tool = new WebSearchTool(null);
+        var provider = new FakeProviderSearch(new ProviderWebSearchResponse(
+            "See [Example](https://example.com/a).",
+            [new ProviderWebSearchSource("https://example.com/a", "Example")]));
+
+        var result = await tool.ExecuteAsync(Context(QueryCall("native"), provider), CancellationToken.None);
+
+        Assert.Single(Regex.Matches(result.SingleText(), @"(?m)^- \[[^\]]+\]\(https://example\.com/a\)"));
+    }
+
+    [Fact]
+    public async Task FallsBackToBraveWhenNativeSearchIsUnavailable()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"web":{"results":[{"title":"Brave","url":"https://brave.example/a","description":"fallback"}]}}""",
+                Encoding.UTF8,
+                "application/json"),
+        });
+        using var tool = new WebSearchTool("key", handler);
+        var provider = new FakeProviderSearch(new ProviderWebSearchResponse("", []), available: false);
+
+        var result = await tool.ExecuteAsync(Context(QueryCall("fallback"), provider), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Contains("(https://brave.example/a)", result.SingleText());
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ReturnsErrorWhenNoBackendIsAvailable()
+    {
+        using var tool = new WebSearchTool(null);
+        var result = await tool.ExecuteAsync(Context(QueryCall("x")), CancellationToken.None);
+        Assert.True(result.IsError);
+        Assert.Contains("no Brave API key", result.SingleText());
+    }
+
+    private sealed class FakeProviderSearch(ProviderWebSearchResponse response, bool available = true) : IProviderWebSearch
+    {
+        public bool IsAvailable { get; } = available;
+
+        public ProviderWebSearchRequest? Request { get; private set; }
+
+        public ValueTask<ProviderWebSearchResponse> SearchAsync(
+            ProviderWebSearchRequest request, CancellationToken cancellationToken)
+        {
+            Request = request;
+            return ValueTask.FromResult(response);
+        }
     }
 }

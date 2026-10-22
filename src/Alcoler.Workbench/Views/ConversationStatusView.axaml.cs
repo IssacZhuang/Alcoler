@@ -47,7 +47,7 @@ public partial class ConversationStatusView : UserControl
 
     public void ExpandAndOpenRunningSections()
     {
-        if (ViewModel?.HasContent != true)
+        if (ViewModel?.IsCardVisible != true)
         {
             return;
         }
@@ -210,7 +210,9 @@ public partial class ConversationStatusView : UserControl
 
     private void UpdateDisplayMode()
     {
-        var expanded = ViewModel?.HasContent == true && (ExpandedOverride ?? ConversationWidth >= 1280);
+        var viewModel = ViewModel;
+        var expanded = viewModel is { IsCardVisible: true }
+            && (ExpandedOverride ?? (viewModel.HasContent && ConversationWidth >= 1280));
         var changed = IsExpanded != expanded;
         IsExpanded = expanded;
         StatusShell.MaxWidth = ConversationWidth > 0 ? Math.Clamp(ConversationWidth - 32, 0, 320) : 320;
@@ -223,7 +225,7 @@ public partial class ConversationStatusView : UserControl
 
     private void UpdateActivityTimer()
     {
-        var shouldTick = _attached && IsEffectivelyVisible && ViewModel?.HasContent == true
+        var shouldTick = _attached && IsEffectivelyVisible && ViewModel?.IsCardVisible == true
             && (_terminalCount > 0 || _agentCount > 0);
         if (shouldTick && !_activityTimer.IsEnabled)
         {
@@ -237,7 +239,7 @@ public partial class ConversationStatusView : UserControl
 
     private void RefreshVisibleActivities()
     {
-        if (_attached && IsEffectivelyVisible && ViewModel?.HasContent == true)
+        if (_attached && IsEffectivelyVisible && ViewModel?.IsCardVisible == true)
         {
             ViewModel.RefreshActivities();
         }

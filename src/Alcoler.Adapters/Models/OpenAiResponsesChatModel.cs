@@ -238,6 +238,8 @@ public sealed class OpenAiResponsesChatModel(
             ["store"] = false,
             ["include"] = new[] { "reasoning.encrypted_content" },
         };
+        if (request.Tools.Any(t => t.ProviderNative is not null))
+            throw new ArgumentException("Provider-native tools are not supported by this model API.");
         if (request.Tools.Count > 0)
             payload["tools"] = request.Tools.Select(t => new Dictionary<string, object?>
             {

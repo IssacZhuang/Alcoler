@@ -2,6 +2,7 @@ using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Context;
 using Xunit;
 
@@ -154,6 +155,18 @@ public class TokenEstimatorTests
         Assert.Equal(("ToolName{}".Length + 2) / 3, TokenEstimator.EstimateModelMessageTokens(
             new ModelInputMessage(MessageRole.Assistant,
                 [new InputToolCallBlock(StrongId.NewToolCallId(), "ToolName", default)])));
+    }
+
+    [Fact]
+    public void EstimateRequestTokens_KeepsMarkdownAndNonAsciiLiteral()
+    {
+        var tool = new ToolContract("Describe", "don't use `x` — 中文", TestJson.Element(new { type = "object" }));
+        var request = new ModelRequest([], [tool], new ModelCallOptions());
+
+        var expected = TokenEstimator.EstimateTokens(
+            "{\"name\":\"Describe\",\"description\":\"don't use `x` — 中文\",\"inputSchema\":{\"type\":\"object\"}}");
+
+        Assert.Equal(expected, TokenEstimator.EstimateRequestTokens(request));
     }
 
     [Fact]

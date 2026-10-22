@@ -67,6 +67,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
     private IReadOnlyList<StatusActivity> _terminals = [];
     private IReadOnlyList<StatusActivity> _agents = [];
     private IReadOnlyList<StatusActivity> _endedAgents = [];
+    private bool _hasStarted;
     private bool _hasContent;
     private string _summaryText = string.Empty;
     private string _summaryIconPath = string.Empty;
@@ -78,6 +79,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
     }
 
     public bool HasContent => _hasContent;
+    public bool IsCardVisible => _hasStarted || _hasContent;
     public string SummaryText => _summaryText;
     public string SummaryIconPath => _summaryIconPath;
     public GitPaneViewModel? Git => _git;
@@ -116,6 +118,11 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         }
 
         var changes = Changes.None;
+        var started = update.Reset
+            ? update.ResetRows is { Count: > 0 }
+            : update.Ops.Any(op => op is RowAppended or RowUpserted);
+        var becameStarted = started && !_hasStarted;
+        _hasStarted |= started;
         if (update.Reset)
         {
             var previous = new Dictionary<string, StatusRow>(_rows);
@@ -166,6 +173,10 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         else if (changes != Changes.None)
         {
             UpdateSummary();
+        }
+        if (becameStarted)
+        {
+            OnPropertyChanged(nameof(IsCardVisible));
         }
 
         var refreshGit = update.State.Phase == TurnPhase.Idle && _phase is not null
@@ -567,7 +578,10 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         }
         SetProperty(ref _summaryText, text, nameof(SummaryText));
         SetProperty(ref _summaryIconPath, icon, nameof(SummaryIconPath));
-        SetProperty(ref _hasContent, HasTodos || HasGit || HasPlans || HasTerminals || HasAgents, nameof(HasContent));
+        if (SetProperty(ref _hasContent, HasTodos || HasGit || HasPlans || HasTerminals || HasAgents, nameof(HasContent)))
+        {
+            OnPropertyChanged(nameof(IsCardVisible));
+        }
     }
 
     private bool SetList<T>(ref IReadOnlyList<T> field, IReadOnlyList<T> value, string propertyName) =>

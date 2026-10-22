@@ -20,7 +20,8 @@ public sealed record TokenUsage(
     int? OutputTokens = null,
     int? ContextUsageTokens = null,
     int? CacheReadTokens = null,
-    int? CacheWriteTokens = null);
+    int? CacheWriteTokens = null,
+    int? ServerWebSearchRequests = null);
 
 public enum ModelFailureKind
 {
@@ -61,6 +62,7 @@ public sealed record ModelFailure(
 [JsonDerivedType(typeof(ModelTextStarted), "text_start")]
 [JsonDerivedType(typeof(ModelTextDelta), "text_delta")]
 [JsonDerivedType(typeof(ModelTextEnded), "text_end")]
+[JsonDerivedType(typeof(ModelSourceFound), "source")]
 [JsonDerivedType(typeof(ModelReasoningStarted), "reasoning_start")]
 [JsonDerivedType(typeof(ModelReasoningDelta), "reasoning_delta")]
 [JsonDerivedType(typeof(ModelReasoningEnded), "reasoning_end")]
@@ -76,6 +78,7 @@ public sealed record ModelStreamStarted : ModelStreamEvent;
 public sealed record ModelTextStarted : ModelStreamEvent;
 public sealed record ModelTextDelta(string Delta) : ModelStreamEvent;
 public sealed record ModelTextEnded : ModelStreamEvent;
+public sealed record ModelSourceFound(string Url, string? Title = null, string? PageAge = null) : ModelStreamEvent;
 public sealed record ModelReasoningStarted : ModelStreamEvent;
 public sealed record ModelReasoningDelta(string Delta) : ModelStreamEvent;
 public sealed record ModelReasoningEnded(

@@ -121,7 +121,8 @@ public partial class MainWindow : Window
 
     private void OnStatusPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(ConversationStatusViewModel.HasContent))
+        if (e.PropertyName is nameof(ConversationStatusViewModel.HasContent)
+            or nameof(ConversationStatusViewModel.IsCardVisible))
         {
             ApplyConversationOverlays();
         }
@@ -167,7 +168,7 @@ public partial class MainWindow : Window
         SessionStatus.MaxHeight = Math.Max(80, Math.Min(512, Math.Min(Bounds.Height * .64, ConversationArea.Bounds.Height - 32)));
         SessionStatus.SetConversationWidth(ConversationArea.Bounds.Width);
         ConversationLayout.SetReserveStatusPanelSpace(ConversationArea,
-            _conversation?.Status.HasContent == true && SessionStatus.IsExpanded && ConversationArea.Bounds.Width >= 1280);
+            _conversation?.Status.IsCardVisible == true && SessionStatus.IsExpanded && ConversationArea.Bounds.Width >= 1280);
     }
 
     internal void FocusComposer() => MainComposer.FocusInput();

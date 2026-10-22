@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Alcoler.Contracts.Models;
@@ -6,6 +7,12 @@ namespace Alcoler.Adapters.Models;
 
 internal static class ModelRequestOptions
 {
+    // Matches JSON.stringify: the body is sent as application/json, never embedded in HTML.
+    internal static readonly JsonSerializerOptions RequestJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     internal static int EffectiveMax(ModelProperties properties, ModelCallOptions options, int fallback)
     {
         properties.ValidateOptions(options);
@@ -38,7 +45,7 @@ internal static class ModelRequestOptions
         if (properties.MaxOutputTokensMapping is { } output)
             ModelOptionMapping.MergePatch(body, ModelOptionMapping.Evaluate(output, options.ReasoningLevel, max));
         CapOutputLimits(body, max);
-        return body.ToJsonString();
+        return body.ToJsonString(RequestJsonOptions);
     }
 
     private static JsonNode? ToNode(object? value) => value switch
@@ -75,6 +82,8 @@ internal static class ModelRequestOptions
     {
         if (!properties.SupportsToolCall && (request.Tools.Count > 0 || request.Messages.Any(m => m.Content.Any(b => b is InputToolCallBlock or InputToolResultBlock))))
             throw new ArgumentException("This model does not support tool calls. Choose a tool-capable model or remove tools from the request.");
+        if (!properties.SupportsNativeWebSearch && request.Tools.Any(t => t.ProviderNative is not null))
+            throw new ArgumentException("This model does not support provider-native WebSearch.");
         foreach (var message in request.Messages)
             foreach (var block in message.Content)
                 if (block is not (InputTextBlock or InputReasoningBlock or InputImageBlock or InputToolCallBlock or InputToolResultBlock))

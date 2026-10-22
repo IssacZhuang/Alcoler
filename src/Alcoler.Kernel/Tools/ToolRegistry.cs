@@ -1,3 +1,4 @@
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Tools;
@@ -29,6 +30,12 @@ public sealed class ToolRegistry
 
     public IReadOnlyList<ToolContract> VisibleContracts =>
         Tools.Where(static tool => tool.Metadata.ProviderVisible)
+            .Select(static tool => tool.Contract)
+            .ToArray();
+
+    public IReadOnlyList<ToolContract> VisibleContractsFor(ModelProperties? properties) =>
+        Tools.Where(static tool => tool.Metadata.ProviderVisible)
+            .Where(tool => properties is null || tool is not IModelGatedTool gated || gated.IsAvailable(properties))
             .Select(static tool => tool.Contract)
             .ToArray();
 

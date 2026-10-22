@@ -150,7 +150,7 @@
         </Grid>
         <views:ConversationStatusView x:Name="SessionStatus" Grid.Row="2" ZIndex="10"
                                       DataContext="{Binding Active.Status}"
-                                      IsVisible="{Binding HasContent, FallbackValue=False}"
+                                      IsVisible="{Binding IsCardVisible, FallbackValue=False}"
                                       HorizontalAlignment="Right" VerticalAlignment="Top" Margin="16" />
         <GridSplitter Grid.Row="3" ResizeDirection="Rows" IsVisible="{Binding IsTerminalVisible}"
                       DragCompleted="OnTerminalSplitterDragCompleted" />

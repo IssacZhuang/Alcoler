@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Models;
 
 namespace Alcoler.Contracts.Tools;
 
@@ -41,6 +42,31 @@ public enum ToolSource
     Mcp,
 }
 
-public sealed record ToolContract(string Name, string Description, JsonElement InputSchema, ToolSource Source = ToolSource.System);
+public static class ProviderNativeWebSearch
+{
+    public const string ToolType = "web_search_20260209";
+    public const string ToolName = "web_search";
+    public const string BetaHeader = "code-execution-web-tools-2026-02-09";
+}
+
+public sealed record ProviderNativeToolSpec(
+    string Type,
+    string Name,
+    IReadOnlyDictionary<string, object?> Args);
+
+public sealed record ToolContract(
+    string Name,
+    string Description,
+    JsonElement InputSchema,
+    ToolSource Source = ToolSource.System,
+    ProviderNativeToolSpec? ProviderNative = null);
+
+/// <summary>
+/// Hides a tool from models that cannot run any of its backends.
+/// </summary>
+public interface IModelGatedTool
+{
+    bool IsAvailable(ModelProperties properties);
+}
 
 public sealed record ToolInputIssue(string Code, string Message);

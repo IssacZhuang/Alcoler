@@ -132,6 +132,32 @@ public interface IAuxModelClient
     ValueTask<string> CompleteAsync(AuxModelRequest request, CancellationToken cancellationToken);
 }
 
+public sealed record ProviderWebSearchRequest(
+    string Query,
+    IReadOnlyList<string> AllowedDomains,
+    IReadOnlyList<string> BlockedDomains,
+    int MaxUses = 8);
+
+public sealed record ProviderWebSearchSource(string Url, string? Title = null, string? PageAge = null);
+
+public sealed record ProviderWebSearchResponse(
+    string Summary,
+    IReadOnlyList<ProviderWebSearchSource> Sources,
+    int? WebSearchRequests = null);
+
+/// <summary>
+/// Runs one web search on the session model's provider-native search capability.
+/// Availability is resolved against the session's current model.
+/// </summary>
+public interface IProviderWebSearch
+{
+    bool IsAvailable { get; }
+
+    ValueTask<ProviderWebSearchResponse> SearchAsync(
+        ProviderWebSearchRequest request,
+        CancellationToken cancellationToken);
+}
+
 public sealed record SkillDocument(string Name, string Description, string BaseDirectory, string Content, bool Truncated = false);
 
 /// <summary>

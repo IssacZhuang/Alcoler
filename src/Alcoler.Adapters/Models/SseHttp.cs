@@ -23,6 +23,11 @@ internal static class SseHttp
             ? value
             : null;
 
+    internal static string? ReadString(JsonElement parent, string name) =>
+        parent.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : null;
+
     /// <summary>
     /// Reads an HTTP response body as SSE frames. Exceptions translate into a failure
     /// result instead of propagating; end of body flushes the parser. A non-success

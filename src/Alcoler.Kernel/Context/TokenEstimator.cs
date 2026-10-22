@@ -98,7 +98,7 @@ public static class TokenEstimator
     internal static string SerializeTool(ToolContract tool)
     {
         using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
+        using (var writer = new Utf8JsonWriter(buffer, RelaxedWriterOptions))
         {
             writer.WriteStartObject();
             writer.WriteString("name", tool.Name);
@@ -120,7 +120,7 @@ public static class TokenEstimator
     internal static string SerializeMessage(ModelInputMessage message)
     {
         using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
+        using (var writer = new Utf8JsonWriter(buffer, RelaxedWriterOptions))
         {
             writer.WriteStartObject();
             writer.WriteString("role", message.Role.ToString().ToLowerInvariant());
@@ -170,6 +170,12 @@ public static class TokenEstimator
 
     internal static string RawJson(JsonElement element) =>
         element.ValueKind == JsonValueKind.Undefined ? string.Empty : element.GetRawText();
+
+    // Must match the provider request encoder so estimates track the bytes actually sent.
+    private static readonly JsonWriterOptions RelaxedWriterOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     private static readonly JsonSerializerOptions CompactJsonOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 

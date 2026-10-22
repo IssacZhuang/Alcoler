@@ -167,6 +167,8 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         };
         if (stream)
             payload["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true };
+        if (request.Tools.Any(t => t.ProviderNative is not null))
+            throw new ArgumentException("Provider-native tools are not supported by this model API.");
         if (request.Tools.Count > 0)
             payload["tools"] = request.Tools.Select(t => new Dictionary<string, object?>
             {

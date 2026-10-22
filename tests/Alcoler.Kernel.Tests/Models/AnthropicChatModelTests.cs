@@ -12,8 +12,8 @@ namespace Alcoler.Kernel.Tests.Models;
 
 public class AnthropicChatModelTests
 {
-    private static AnthropicChatModel CreateModel(RecordingHandler handler) =>
-        new(new HttpClient(handler), new AnthropicModelOptions("claude-sonnet-4", "test-key", "https://unit.test"));
+    private static AnthropicChatModel CreateModel(RecordingHandler handler, ModelProperties? properties = null) =>
+        new(new HttpClient(handler), new AnthropicModelOptions("claude-sonnet-4", "test-key", "https://unit.test"), properties);
 
     private static async Task<List<ModelStreamEvent>> CollectAsync(
         AnthropicChatModel model, ModelRequest request)
@@ -301,6 +301,112 @@ public class AnthropicChatModelTests
         var failure = Assert.IsType<ModelStreamFailed>(Assert.Single(events)).Failure;
         Assert.Equal(ModelFailureKind.InvalidRequest, failure.Kind);
         Assert.False(failure.IsRetryable);
+    }
+
+    [Fact]
+    public async Task ProviderNativeTool_SerializesWebSearchAndBetaHeader()
+    {
+        var handler = new RecordingHandler((_, _) => SegmentedStream.ToResponse(TerminalSse));
+        var model = CreateModel(handler, new ModelProperties(SupportsNativeWebSearch: true));
+        var tool = new ToolContract(
+            ProviderNativeWebSearch.ToolName,
+            "native",
+            JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone(),
+            ProviderNative: new ProviderNativeToolSpec(
+                ProviderNativeWebSearch.ToolType,
+                ProviderNativeWebSearch.ToolName,
+                new Dictionary<string, object?>
+                {
+                    ["max_uses"] = 8,
+                    ["allowed_domains"] = new object?[] { "example.com" },
+                }));
+        var request = new ModelRequest(
+            [new ModelInputMessage(MessageRole.User, [new InputTextBlock("search")])],
+            [tool],
+            new ModelCallOptions());
+
+        await CollectAsync(model, request);
+
+        using var body = JsonDocument.Parse(handler.RequestBodies.Single()!);
+        var sent = Assert.Single(body.RootElement.GetProperty("tools").EnumerateArray());
+        Assert.Equal(ProviderNativeWebSearch.ToolType, sent.GetProperty("type").GetString());
+        Assert.Equal(ProviderNativeWebSearch.ToolName, sent.GetProperty("name").GetString());
+        Assert.Equal(8, sent.GetProperty("max_uses").GetInt32());
+        Assert.Equal("example.com", sent.GetProperty("allowed_domains")[0].GetString());
+        Assert.False(sent.TryGetProperty("input_schema", out _));
+        Assert.Contains(ProviderNativeWebSearch.BetaHeader,
+            handler.Requests.Single().Headers.GetValues("anthropic-beta"));
+    }
+
+    [Fact]
+    public async Task ProviderNativeTool_IsRejectedForModelsWithoutNativeSearch()
+    {
+        var handler = new RecordingHandler((_, _) => SegmentedStream.ToResponse(TerminalSse));
+        var model = CreateModel(handler);
+        var tool = new ToolContract(
+            ProviderNativeWebSearch.ToolName,
+            "native",
+            JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone(),
+            ProviderNative: new ProviderNativeToolSpec(
+                ProviderNativeWebSearch.ToolType,
+                ProviderNativeWebSearch.ToolName,
+                new Dictionary<string, object?>()));
+        var request = new ModelRequest(
+            [new ModelInputMessage(MessageRole.User, [new InputTextBlock("search")])],
+            [tool],
+            new ModelCallOptions());
+
+        var events = await CollectAsync(model, request);
+
+        var failure = Assert.IsType<ModelStreamFailed>(Assert.Single(events)).Failure;
+        Assert.Equal(ModelFailureKind.InvalidRequest, failure.Kind);
+        Assert.Contains("provider-native WebSearch", failure.Message);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ProviderNativeWebSearch_EmitsSourcesAndServerToolUsage()
+    {
+        var sse = string.Join("\n",
+            """data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}""",
+            "",
+            """data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}""",
+            "",
+            """data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"dotnet\"}"}}""",
+            "",
+            """data: {"type":"content_block_stop","index":0}""",
+            "",
+            """data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","title":"Example","url":"https://example.com/a","page_age":"2 days"}]}}""",
+            "",
+            """data: {"type":"content_block_stop","index":1}""",
+            "",
+            """data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}""",
+            "",
+            """data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Answer"}}""",
+            "",
+            """data: {"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.com/a","title":"Example"}}}""",
+            "",
+            """data: {"type":"content_block_stop","index":2}""",
+            "",
+            """data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"server_tool_use":{"web_search_requests":1}}}""",
+            "",
+            """data: {"type":"message_stop"}""",
+            "",
+            "");
+        var handler = new RecordingHandler((_, _) => SegmentedStream.ToResponse(sse, segmentSize: 11));
+        var model = CreateModel(handler, new ModelProperties(SupportsNativeWebSearch: true));
+
+        var events = await CollectAsync(model, BasicRequest());
+
+        var sources = events.OfType<ModelSourceFound>().ToList();
+        Assert.Equal(2, sources.Count);
+        Assert.Equal("https://example.com/a", sources[0].Url);
+        Assert.Equal("Example", sources[0].Title);
+        Assert.Equal("2 days", sources[0].PageAge);
+        Assert.Equal("Answer", Assert.IsType<ModelTextDelta>(events.Single(e => e is ModelTextDelta)).Delta);
+        var finish = Assert.IsType<ModelStreamFinished>(events[^1]);
+        Assert.Equal(1, finish.Usage?.ServerWebSearchRequests);
+        Assert.DoesNotContain(events, e => e is ModelToolCallReady);
     }
 
     [Fact]

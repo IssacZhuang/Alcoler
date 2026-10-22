@@ -134,6 +134,22 @@ public class ModelRequestOptionsTests
     }
 
     [Fact]
+    public void Encode_KeepsMarkdownAndNonAsciiLiteral()
+    {
+        var encoded = ModelRequestOptions.Encode(
+            new Dictionary<string, object?> { ["value"] = "don't use `x` — 中文" },
+            new ModelProperties(),
+            new ModelCallOptions(),
+            "max_tokens",
+            128);
+
+        Assert.Contains("\"value\":\"don't use `x` — 中文\"", encoded);
+        Assert.DoesNotContain("\\u0027", encoded);
+        Assert.DoesNotContain("\\u0060", encoded);
+        Assert.DoesNotContain("\\u2014", encoded);
+    }
+
+    [Fact]
     public void MfjsSchemas_HoistNonDefsLocalReferencesWithoutChangingContract()
     {
         var schema = JsonSerializer.SerializeToElement(new { type = "object", properties = new { value = new { type = "string" }, alias = new Dictionary<string, string> { ["$ref"] = "#/properties/value" } } });

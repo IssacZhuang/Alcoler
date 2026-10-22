@@ -44,6 +44,6 @@ internal static class OpenAiResponsesAccountShaping
                     message["role"] = "developer";
             }
         }
-        return root.ToJsonString();
+        return root.ToJsonString(ModelRequestOptions.RequestJsonOptions);
     }
 }

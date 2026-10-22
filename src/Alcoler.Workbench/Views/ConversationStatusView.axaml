@@ -8,7 +8,7 @@
              x:DataType="vm:ConversationStatusViewModel"
              AutomationProperties.Name="Status"
              HorizontalAlignment="Right" VerticalAlignment="Top"
-             MaxWidth="320" MaxHeight="512" IsVisible="{Binding HasContent, FallbackValue=False}">
+             MaxWidth="320" MaxHeight="512" IsVisible="{Binding IsCardVisible, FallbackValue=False}">
   <UserControl.Resources>
     <views:ConversationIconConverter x:Key="ConversationIcon" />
     <DataTemplate x:Key="TodoRow" x:DataType="vm:StatusTodo">

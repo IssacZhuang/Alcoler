@@ -31,14 +31,14 @@ public sealed class ConversationStatusViewTests
     private static readonly DateTimeOffset StartedAt = new(2026, 10, 20, 12, 0, 0, TimeSpan.Zero);
 
     [AvaloniaFact]
-    public async Task EmptyOrUnrelatedContent_HidesCard_AndLastContentRemovalHidesManualExpansion()
+    public async Task StartedSession_KeepsCardVisible_WhenLastStatusContentIsRemoved()
     {
         using var harness = new Harness(1400,
             new UserMessageRow("user", "Not status content", StartedAt),
             new SystemNoticeRow("notice", "notice", "Not a typed activity"));
         await RenderAsync(harness.Window);
 
-        Assert.False(harness.View.IsVisible);
+        Assert.True(harness.View.IsVisible);
         Assert.False(harness.View.IsExpanded);
         Assert.Null(harness.View.ExpandedOverride);
 
@@ -53,8 +53,8 @@ public sealed class ConversationStatusViewTests
 
         Apply(harness.Model, new RowRemoved("todos"));
         await RenderAsync(harness.Window);
-        Assert.False(harness.View.IsVisible);
-        Assert.False(harness.View.IsExpanded);
+        Assert.True(harness.View.IsVisible);
+        Assert.True(harness.View.IsExpanded);
         Assert.Equal(true, harness.View.ExpandedOverride);
 
         Apply(harness.Model, new RowAppended(Todo("replacement", "Status returns")));

@@ -1213,7 +1213,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     private ToolExecutionContext CreateToolExecutionContext(ToolCall call) =>
         new(_record.Id, _record.WorkspaceRoot, call.Input, _deps.Workspace, _deps.Clock,
             _sessionCommands, _fileReads, _shell, _backgroundJobs, _auxModel, _skills, _broker,
-            call.Id, Subagents: _subagentTasks, ToolOutputRoot: _deps.Options.ToolOutputRoot);
+            call.Id, Subagents: _subagentTasks, ToolOutputRoot: _deps.Options.ToolOutputRoot,
+            ProviderSearch: _auxModel);
 
     private async ValueTask HandleToolNotificationAsync(TurnId turnId, ToolExecutionNotification notification)
     {
@@ -1271,7 +1272,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             EffectiveTokens: effectiveTokens,
             ContextWindowTokens: contextWindow,
             Model: model.Descriptor,
-            Tools: _deps.Tools.VisibleContracts,
+            Tools: _deps.Tools.VisibleContractsFor(model.Descriptor.Properties),
             LastProviderUsage: _lastProviderUsage,
             AnchorIndex: _usageAnchorIndex,
             ManualInstructions: instructions,
@@ -1495,7 +1496,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         var custom = _deps.Options.CustomSystemPromptFactory?.Invoke(Shell) ?? _deps.Options.CustomSystemPrompt;
         var currentDate = EnvironmentSections.FormatLocalIsoDate(_deps.Clock.GetLocalNow().LocalDateTime);
         var media = await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
-        var skillsListing = _deps.Tools.VisibleContracts.Any(tool => tool.Name == "Skill")
+        var visibleContracts = _deps.Tools.VisibleContractsFor(model?.Descriptor.Properties);
+        var skillsListing = visibleContracts.Any(tool => tool.Name == "Skill")
             ? _deps.Options.SkillsListing ?? SkillsListing.Render(new SkillsCatalog(_deps.Options.UserSkillsBase)
                 .Load(_record.WorkspaceRoot, _deps.Options.DisabledSkillPathsProvider?.Invoke()))
             : null;
@@ -1506,7 +1508,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             AgentInstructions: _deps.Options.AgentInstructions,
             SkillsListing: skillsListing,
             History: history,
-            Tools: _deps.Tools.VisibleContracts,
+            Tools: visibleContracts,
             Options: options,
             CurrentDate: currentDate,
             Media: media,

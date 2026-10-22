@@ -32,6 +32,7 @@ public sealed class ConversationStatusViewModelTests
         model.RefreshActivities(Now);
 
         Assert.False(model.HasContent);
+        Assert.True(model.IsCardVisible);
         Assert.Empty(model.SummaryText);
         Assert.Empty(model.SummaryIconPath);
         Assert.False(model.HasTodos);
@@ -42,6 +43,29 @@ public sealed class ConversationStatusViewModelTests
         Assert.Equal("0/0", model.TodoCountText);
         Assert.Equal("0", model.TerminalCountText);
         Assert.Empty(model.AgentCountText);
+    }
+
+    [Fact]
+    public void SessionStart_KeepsCardVisibleAfterStatusContentDisappears()
+    {
+        using var model = Create();
+        Assert.False(model.IsCardVisible);
+
+        Reset(model, new UserMessageRow("user", "hello", Now));
+        Assert.False(model.HasContent);
+        Assert.True(model.IsCardVisible);
+
+        Apply(model, new RowUpserted(Todo("todos", ("Task", "pending"))));
+        Assert.True(model.HasContent);
+        Assert.True(model.IsCardVisible);
+
+        Apply(model, new RowRemoved("todos"));
+        Assert.False(model.HasContent);
+        Assert.True(model.IsCardVisible);
+
+        Reset(model);
+        Assert.False(model.HasContent);
+        Assert.True(model.IsCardVisible);
     }
 
     [Fact]

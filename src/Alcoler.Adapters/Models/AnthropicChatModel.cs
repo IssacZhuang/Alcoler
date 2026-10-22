@@ -143,7 +143,13 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
             var type = block.GetProperty("type").GetString();
             Dispatch(new { type = "content_block_start", index, content_block = block });
             if (type == "text")
+            {
                 Dispatch(new { type = "content_block_delta", index, delta = new { type = "text_delta", text = block.GetProperty("text").GetString() } });
+                if (block.TryGetProperty("citations", out var citations) && citations.ValueKind == JsonValueKind.Array)
+                    foreach (var citation in citations.EnumerateArray())
+                        if (ToWebSearchSource(citation) is { } source)
+                            events.Add(source);
+            }
             else if (type == "thinking")
                 Dispatch(new { type = "content_block_delta", index, delta = new { type = "thinking_delta", thinking = block.GetProperty("thinking").GetString() } });
             else if (type == "tool_use")
@@ -255,12 +261,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                 ["cache_control"] = new Dictionary<string, object?> { ["type"] = "ephemeral" },
             }).ToList();
         if (request.Tools.Count > 0)
-            payload["tools"] = request.Tools.Select(t => new Dictionary<string, object?>
-            {
-                ["name"] = t.Name,
-                ["description"] = t.Description,
-                ["input_schema"] = ModelRequestOptions.ToolSchema(t.InputSchema, Descriptor.Properties),
-            }).ToList();
+            payload["tools"] = request.Tools.Select(ToProviderTool).ToList();
 
         var message = new HttpRequestMessage(HttpMethod.Post, options.MessagesUrl)
         {
@@ -269,8 +270,42 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         };
         AnthropicEndpoint.AddAuthHeaders(message, options.ApiKey);
         message.Headers.Add("anthropic-version", AnthropicVersion);
+        AddBetaHeaders(message, request.Tools);
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
         return message;
+    }
+
+    private Dictionary<string, object?> ToProviderTool(ToolContract tool)
+    {
+        if (tool.ProviderNative is not { } native)
+            return new Dictionary<string, object?>
+            {
+                ["name"] = tool.Name,
+                ["description"] = tool.Description,
+                ["input_schema"] = ModelRequestOptions.ToolSchema(tool.InputSchema, Descriptor.Properties),
+            };
+
+        var providerTool = new Dictionary<string, object?>
+        {
+            ["type"] = native.Type,
+            ["name"] = native.Name,
+        };
+        foreach (var (key, value) in native.Args)
+            providerTool[key] = value;
+        return providerTool;
+    }
+
+    private static void AddBetaHeaders(HttpRequestMessage message, IReadOnlyList<ToolContract> tools)
+    {
+        var betas = tools
+            .Select(tool => tool.ProviderNative?.Type == ProviderNativeWebSearch.ToolType
+                ? ProviderNativeWebSearch.BetaHeader
+                : null)
+            .Where(beta => beta is not null)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (betas.Length > 0)
+            message.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", betas));
     }
 
     private static object ToProviderMessage(ModelInputMessage message)
@@ -361,6 +396,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         private int? _outputTokens;
         private int? _cacheReadTokens;
         private int? _cacheWriteTokens;
+        private int? _webSearchRequests;
         private string? _stopReason;
 
         public bool SawTerminal { get; private set; }
@@ -410,6 +446,14 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                                     yield return new ModelToolInputStarted(id, name);
                                     break;
                                 }
+                            case "server_tool_use":
+                                _blocks[index] = new OpenBlock("server_tool_use");
+                                break;
+                            case "web_search_tool_result":
+                                _blocks[index] = new OpenBlock("web_search_tool_result");
+                                foreach (var source in ReadWebSearchResults(block))
+                                    yield return source;
+                                break;
                         }
                         yield break;
                     }
@@ -442,6 +486,11 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                                     }
                                     break;
                                 }
+                            case "citations_delta":
+                                if (delta.TryGetProperty("citation", out var citation) &&
+                                    ToWebSearchSource(citation) is { } source)
+                                    yield return source;
+                                break;
                         }
                         yield break;
                     }
@@ -504,13 +553,16 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
             _inputTokens = SseHttp.ReadInt(usage, "input_tokens") ?? _inputTokens;
             _cacheReadTokens = SseHttp.ReadInt(usage, "cache_read_input_tokens") ?? _cacheReadTokens;
             _cacheWriteTokens = SseHttp.ReadInt(usage, "cache_creation_input_tokens") ?? _cacheWriteTokens;
+            if (usage.TryGetProperty("server_tool_use", out var serverToolUse))
+                _webSearchRequests = SseHttp.ReadInt(serverToolUse, "web_search_requests") ?? _webSearchRequests;
             if (includeOutput)
                 _outputTokens = SseHttp.ReadInt(usage, "output_tokens") ?? _outputTokens;
         }
 
         private TokenUsage? BuildUsage()
         {
-            if (_inputTokens is null && _outputTokens is null && _cacheReadTokens is null && _cacheWriteTokens is null)
+            if (_inputTokens is null && _outputTokens is null && _cacheReadTokens is null
+                && _cacheWriteTokens is null && _webSearchRequests is null)
                 return null;
             var contextUsage = (_inputTokens ?? 0) + (_cacheReadTokens ?? 0) + (_cacheWriteTokens ?? 0);
             return new TokenUsage(
@@ -518,7 +570,8 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                 OutputTokens: _outputTokens,
                 ContextUsageTokens: contextUsage,
                 CacheReadTokens: _cacheReadTokens,
-                CacheWriteTokens: _cacheWriteTokens);
+                CacheWriteTokens: _cacheWriteTokens,
+                ServerWebSearchRequests: _webSearchRequests);
         }
 
         private static ModelFinishReason MapStopReason(string? stopReason) => stopReason switch
@@ -552,6 +605,25 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
     }
 
     private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
+
+    private static IEnumerable<ModelSourceFound> ReadWebSearchResults(JsonElement block)
+    {
+        if (!block.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            yield break;
+        foreach (var result in content.EnumerateArray())
+            if (ToWebSearchSource(result) is { } source)
+                yield return source;
+    }
+
+    private static ModelSourceFound? ToWebSearchSource(JsonElement result)
+    {
+        if (result.ValueKind != JsonValueKind.Object)
+            return null;
+        var url = SseHttp.ReadString(result, "url");
+        return string.IsNullOrEmpty(url)
+            ? null
+            : new ModelSourceFound(url, SseHttp.ReadString(result, "title"), SseHttp.ReadString(result, "page_age"));
+    }
 
     private static JsonElement ParseInput(StringBuilder json)
     {

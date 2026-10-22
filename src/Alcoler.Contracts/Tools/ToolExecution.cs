@@ -37,7 +37,8 @@ public sealed record ToolExecutionContext(
     IUserInteractionPort? Interactions = null,
     ToolCallId? ToolCallId = null,
     ISubagentTasks? Subagents = null,
-    string? ToolOutputRoot = null);
+    string? ToolOutputRoot = null,
+    IProviderWebSearch? ProviderSearch = null);
 
 public sealed record ToolExecutionResult(
     IReadOnlyList<ToolResultBlock> Content,
