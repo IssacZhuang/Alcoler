@@ -93,6 +93,41 @@ public sealed partial class DraftConversationViewModel : ObservableObject, IComp
         OnPropertyChanged(nameof(Selection));
     }
 
+    internal void UpdateModelChoices(IReadOnlyList<ModelChoice> modelChoices, ModelSelection? defaultSelection)
+    {
+        if (_selection is not { } selection)
+        {
+            return;
+        }
+        var choice = modelChoices.FirstOrDefault(model =>
+            model.ProviderId == selection.ProviderId && model.ModelId == selection.ModelId);
+        if (choice is not null)
+        {
+            ConfigureModel(choice);
+            return;
+        }
+
+        var fallback = defaultSelection is { } desired
+            ? modelChoices.FirstOrDefault(model =>
+                model.ProviderId == desired.ProviderId && model.ModelId == desired.ModelId)
+            : null;
+        fallback ??= modelChoices.FirstOrDefault();
+        if (fallback is null)
+        {
+            _configuredModel = null;
+            _selection = null;
+            ModelText = "default model";
+            ThoughtLevels = [];
+            ThoughtLevel = "off";
+            OnPropertyChanged(nameof(CurrentSelection));
+            OnPropertyChanged(nameof(Selection));
+            return;
+        }
+        ConfigureModel(fallback, useDefaultReasoning: true);
+        RestoreModelSelection(ApplyThoughtLevel(fallback.Selection));
+        ModelSelectionChanged?.Invoke(_selection!);
+    }
+
     public ModelSelection ApplyThoughtLevel(ModelSelection selection) => selection with
     {
         Options = (selection.Options ?? new ModelCallOptions()) with

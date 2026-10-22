@@ -1,4 +1,3 @@
-using Alcoler.Adapters.Mcp;
 using Alcoler.Adapters.Models;
 using Alcoler.Adapters.Storage;
 using Alcoler.Adapters.Tools;
@@ -21,9 +20,7 @@ public static class Composition
 {
     public static async Task<WorkbenchViewModel> BuildWorkbenchAsync(WorkbenchConfig config, CancellationToken ct)
     {
-        var mcp = config.McpServers is { Count: > 0 } servers
-            ? new McpServerManager([.. servers.Select(s => new McpServerConfig(s.Name, s.Command, s.Args, s.Env))])
-            : null;
+        var mcpTools = new McpToolSource(config.McpServers);
         var browserHost = new WebViewBrowserHost(Path.Combine(WorkbenchDataPaths.Root, "browser"));
         var browser = new WebViewBrowserController(browserHost);
         browserHost.NewTabRequested += async (_, request) =>
@@ -51,7 +48,7 @@ public static class Composition
         AgentRuntime runtime;
         try
         {
-            runtime = await BuildRuntimeAsync(config, ct, mcp, extraTools,
+            runtime = await BuildRuntimeAsync(config, ct, mcpTools.GetToolsAsync, extraTools,
                 () => Volatile.Read(ref currentConfig).IntegratedTerminalShell, chatGptAccount);
         }
         catch
@@ -59,7 +56,7 @@ public static class Composition
             browser.Dispose();
             webFetch.Dispose();
             webSearch?.Dispose();
-            if (mcp is not null) await mcp.DisposeAsync();
+            await mcpTools.DisposeAsync();
             throw;
         }
         var workbench = new WorkbenchViewModel(
@@ -67,7 +64,7 @@ public static class Composition
             AvaloniaUiScheduler.Instance,
             config,
             CombineDisposables(
-                mcp,
+                mcpTools,
                 new AsyncActionDisposable(() =>
                 {
                     browser.Dispose();
@@ -78,7 +75,14 @@ public static class Composition
             browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance,
                 pagePresenterFactory: browserHost.CreatePagePresenter),
             saveComposer: composer => (WorkbenchConfig.LoadOrDefault() with { Composer = composer }).Save(),
-            applySettings: saved => Volatile.Write(ref currentConfig, saved));
+            applySettings: saved =>
+            {
+                Volatile.Write(ref currentConfig, saved);
+                runtime.ApplyProviderConfiguration(
+                    BuildProviders(saved, chatGptAccount),
+                    WorkbenchModelCatalog.DefaultSelection(saved));
+                mcpTools.Update(saved.McpServers);
+            });
         await workbench.RefreshFromRuntimeAsync();
         return workbench;
     }
@@ -86,7 +90,7 @@ public static class Composition
     public static async Task<AgentRuntime> BuildRuntimeAsync(
         WorkbenchConfig config,
         CancellationToken ct,
-        McpServerManager? mcp = null,
+        Func<CancellationToken, ValueTask<IReadOnlyList<ITool>>>? sessionTools = null,
         IReadOnlyList<ITool>? extraTools = null,
         Func<ShellEnvironment?>? shellPreference = null,
         ChatGptAccountService? chatGptAccount = null)
@@ -117,10 +121,6 @@ public static class Composition
                 () => runtime ?? throw new InvalidOperationException("runtime is not initialized"),
                 messenger),
         };
-        if (mcp is not null)
-        {
-            tools.AddRange(await mcp.GetToolsAsync(ct));
-        }
         if (extraTools is not null)
         {
             tools.AddRange(extraTools);
@@ -132,6 +132,7 @@ public static class Composition
             Artifacts = artifacts,
             Providers = BuildProviders(config, chatGptAccount),
             Tools = tools,
+            SessionToolsProvider = sessionTools,
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
             DefaultModel = WorkbenchModelCatalog.DefaultSelection(config),
             SessionTitleGenerationEnabled = true,

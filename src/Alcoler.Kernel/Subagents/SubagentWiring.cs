@@ -122,7 +122,7 @@ public static class SubagentWiring
                 $"parent session {request.ParentSessionId} was not found; subagents need a WorkspaceRoot");
         var inheritedShell = parentRuntime?.Shell ?? parentRecord?.Shell;
 
-        var selection = request.ModelSelection ?? options.DefaultModel;
+        var selection = request.ModelSelection ?? runtime.CurrentDefaultModel;
         string BuildChildPrompt(ShellEnvironment? shell) => SubagentPrompts.BuildChildSystemPrompt(
             request.AgentType,
             new SubagentEnvironmentFacts(
@@ -148,8 +148,8 @@ public static class SubagentWiring
         {
             Store = options.Store,
             Artifacts = options.Artifacts,
-            Providers = options.Providers,
-            Tools = SelectChildTools(options.Tools, request, responseTool),
+            Providers = runtime.CurrentProviders,
+            Tools = SelectChildTools(parentRuntime?.ToolRegistry.Tools ?? options.Tools, request, responseTool),
             WorkspaceFactory = options.WorkspaceFactory,
             PermissionRules = options.PermissionRules,
             Clock = options.Clock,

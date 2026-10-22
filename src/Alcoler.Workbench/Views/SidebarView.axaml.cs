@@ -71,9 +71,24 @@ public partial class SidebarView : UserControl
         }
         ThemeSelector.Apply(saved.Theme);
         viewModel.ApplySettings(saved);
-        if (ProvidersChanged(current, saved))
+        var providersChanged = ProvidersChanged(current, saved);
+        var mcpChanged = McpServersChanged(current, saved);
+        var searchChanged = !string.Equals(current.BraveApiKey, saved.BraveApiKey, StringComparison.Ordinal);
+        if (searchChanged)
         {
-            viewModel.Banner = "Settings saved. Restart Alcoler to apply provider and MCP changes.";
+            viewModel.Banner = "Web search settings saved. Restart Alcoler to apply them.";
+        }
+        else if (providersChanged && mcpChanged)
+        {
+            viewModel.Banner = "Provider settings applied. MCP settings apply to new sessions; open sessions keep their current tools.";
+        }
+        else if (providersChanged)
+        {
+            viewModel.Banner = "Provider settings applied.";
+        }
+        else if (mcpChanged)
+        {
+            viewModel.Banner = "MCP settings saved. They apply to new sessions; open sessions keep their current tools.";
         }
         else if (current.IntegratedTerminalShell != saved.IntegratedTerminalShell)
         {
@@ -82,8 +97,16 @@ public partial class SidebarView : UserControl
     }
 
     internal static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
-        JsonSerializer.Serialize(before with { Theme = "dark", IntegratedTerminalShell = null }, WorkbenchConfig.JsonOptions)
-        != JsonSerializer.Serialize(after with { Theme = "dark", IntegratedTerminalShell = null }, WorkbenchConfig.JsonOptions);
+        SerializeProviderSettings(before) != SerializeProviderSettings(after);
+
+    internal static bool McpServersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
+        SerializeMcpSettings(before) != SerializeMcpSettings(after);
+
+    private static string SerializeProviderSettings(WorkbenchConfig config) =>
+        JsonSerializer.Serialize(new WorkbenchConfig(config.Providers, config.DefaultModel), WorkbenchConfig.JsonOptions);
+
+    private static string SerializeMcpSettings(WorkbenchConfig config) =>
+        JsonSerializer.Serialize(new WorkbenchConfig([], McpServers: config.McpServers), WorkbenchConfig.JsonOptions);
 
     private async void OnRefreshClick(object? sender, RoutedEventArgs e)
     {

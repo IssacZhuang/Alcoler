@@ -39,7 +39,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 {
     private readonly IAgentRuntime _runtime;
     private readonly SessionProjectionHub _hub;
-    private readonly WorkbenchConfig _config;
+    private WorkbenchConfig _config;
     private readonly Action<WorkbenchComposerConfig>? _saveComposer;
     private readonly Action<WorkbenchConfig>? _applySettings;
     private ShellEnvironment? _shellPreference;
@@ -114,7 +114,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public ChatGptAccountService? ChatGptAccount { get; }
 
-    public IReadOnlyList<ModelChoice> ModelChoices { get; }
+    public IReadOnlyList<ModelChoice> ModelChoices { get; private set; }
 
     public static string OutsideProjectRoot => Path.Combine(WorkbenchDataPaths.Root, "workspace", "default");
 
@@ -123,7 +123,16 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
 
     public void ApplySettings(WorkbenchConfig config)
     {
+        _config = config;
         _shellPreference = config.IntegratedTerminalShell;
+        ModelChoices = BuildModelChoices(config);
+        OnPropertyChanged(nameof(ModelChoices));
+        var defaultSelection = WorkbenchModelCatalog.DefaultSelection(config);
+        Active?.UpdateModelChoices(ModelChoices, defaultSelection);
+        foreach (var draft in _drafts.Values)
+        {
+            draft.UpdateModelChoices(ModelChoices, defaultSelection);
+        }
         _applySettings?.Invoke(config);
     }
 

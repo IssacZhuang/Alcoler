@@ -192,6 +192,8 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     public IConversationProjection CreateProjection() => new LiveConversationProjection(_events, 0, () => Revision);
 
+    internal ToolRegistry ToolRegistry => _deps.Tools;
+
     internal IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs() =>
         Volatile.Read(ref _disposed) ? [] : _backgroundJobs.List();
 

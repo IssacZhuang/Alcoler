@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Alcoler</title>
+  <desc id="description">A tilted green bottle on a black rounded square.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#191919" />
+  <g transform="rotate(12 256 256)">
+    <path d="M220 96Q220 88 228 88H284Q292 88 292 96L288 136H224Z" fill="#35C2A1" />
+    <path d="M224 128H288V172C288 185 294 194 307 205L328 223C344 236 352 251 352 272V380C352 407 335 424 308 424H204C177 424 160 407 160 380V272C160 251 168 236 184 223L205 205C218 194 224 185 224 172Z" fill="#35C2A1" />
+  </g>
+</svg>

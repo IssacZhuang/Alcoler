@@ -26,6 +26,8 @@ public sealed record AgentRuntimeOptions
 
     public required IReadOnlyList<ITool> Tools { get; init; }
 
+    public Func<CancellationToken, ValueTask<IReadOnlyList<ITool>>>? SessionToolsProvider { get; init; }
+
     public required Func<string, IToolWorkspace> WorkspaceFactory { get; init; }
 
     public PermissionRuleset PermissionRules { get; init; } = PermissionRuleset.Empty;
@@ -67,14 +69,19 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     private readonly ConcurrentDictionary<SessionId, SessionRuntime> _sessions = new();
     private readonly ConcurrentDictionary<(SessionId Parent, SessionId Child), WeakReference<AgentRuntime>> _subagentRuntimes = new();
     private readonly ToolRegistry _tools;
-    private readonly ConcurrentDictionary<(string ProviderId, string ModelId), IChatModel> _modelCache = new();
+    private readonly ConcurrentDictionary<(long Generation, string ProviderId, string ModelId), IChatModel> _modelCache = new();
     private readonly ILoggerFactory _logging;
+    private IReadOnlyList<IModelProvider> _providers;
+    private ModelSelection? _defaultModel;
+    private long _providerGeneration;
     private bool _disposed;
 
     public AgentRuntime(AgentRuntimeOptions options)
     {
         _options = options;
         _tools = new ToolRegistry(options.Tools);
+        _providers = options.Providers;
+        _defaultModel = options.DefaultModel;
         _logging = options.Logging ?? NullLoggerFactory.Instance;
     }
 
@@ -82,7 +89,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     {
         var now = _options.Clock.GetUtcNow();
         var title = options.Title ?? "New session";
-        var selection = options.ModelSelection ?? _options.DefaultModel;
+        var selection = options.ModelSelection ?? Volatile.Read(ref _defaultModel);
         var record = new SessionRecord(
             StrongId.NewSessionId(),
             options.WorkspaceRoot,
@@ -95,7 +102,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             TitleSource: options.Title is null ? SessionTitleSource.Default : SessionTitleSource.Custom,
             Shell: options.Shell);
         await _options.Store.UpsertSessionAsync(record, cancellationToken).ConfigureAwait(false);
-        await CreateRuntimeAsync(record, isNewSession: true).ConfigureAwait(false);
+        await CreateRuntimeAsync(record, isNewSession: true, cancellationToken).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
     }
 
@@ -108,7 +115,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 
         var record = await _options.Store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Session {sessionId.Value} not found.");
-        await CreateRuntimeAsync(record, isNewSession: false).ConfigureAwait(false);
+        await CreateRuntimeAsync(record, isNewSession: false, cancellationToken).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
     }
 
@@ -174,12 +181,19 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     private SessionRuntime? GetActiveRuntime(SessionId sessionId) =>
         _sessions.TryGetValue(sessionId, out var runtime) ? runtime : null;
 
-    private async Task<SessionRuntime> CreateRuntimeAsync(SessionRecord record, bool isNewSession)
+    private async Task<SessionRuntime> CreateRuntimeAsync(SessionRecord record, bool isNewSession, CancellationToken cancellationToken)
     {
+        var tools = _tools;
+        if (_options.SessionToolsProvider is { } sessionTools)
+        {
+            var additional = await sessionTools(cancellationToken).ConfigureAwait(false);
+            if (additional.Count > 0)
+                tools = new ToolRegistry([.. _options.Tools, .. additional]);
+        }
         var runtime = await SessionRuntime.CreateAsync(record, new SessionRuntimeDeps(
             _options.Store,
             ResolveModel,
-            _tools,
+            tools,
             _options.WorkspaceFactory(record.WorkspaceRoot),
             _options.PermissionRules,
             _options.Clock,
@@ -194,7 +208,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 GitSnapshot = _options.GitSnapshotProvider?.Invoke(record.WorkspaceRoot),
                 SkillsListing = _options.SkillsListing,
                 UserSkillsBase = _options.UserSkillsBase,
-                DefaultModel = _options.DefaultModel,
+                DefaultModel = Volatile.Read(ref _defaultModel),
                 SessionTitleGenerationEnabled = _options.SessionTitleGenerationEnabled,
                 SessionTitleGenerationTimeout = _options.SessionTitleGenerationTimeout,
             },
@@ -247,13 +261,27 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     internal SessionRuntime? GetSession(SessionId sessionId) =>
         _sessions.TryGetValue(sessionId, out var runtime) ? runtime : null;
 
+    internal IReadOnlyList<IModelProvider> CurrentProviders => Volatile.Read(ref _providers);
+
+    internal ModelSelection? CurrentDefaultModel => Volatile.Read(ref _defaultModel);
+
+    public void ApplyProviderConfiguration(IReadOnlyList<IModelProvider> providers, ModelSelection? defaultModel)
+    {
+        ArgumentNullException.ThrowIfNull(providers);
+        Volatile.Write(ref _providers, providers);
+        Volatile.Write(ref _defaultModel, defaultModel);
+        Interlocked.Increment(ref _providerGeneration);
+        _modelCache.Clear();
+    }
+
     internal IChatModel ResolveModel(ModelSelection? selection)
     {
-        selection ??= _options.DefaultModel ?? throw new InvalidOperationException("No model configured.");
-        return _modelCache.GetOrAdd((selection.ProviderId, selection.ModelId), static (key, state) =>
+        selection ??= Volatile.Read(ref _defaultModel) ?? throw new InvalidOperationException("No model configured.");
+        var generation = Volatile.Read(ref _providerGeneration);
+        return _modelCache.GetOrAdd((generation, selection.ProviderId, selection.ModelId), static (key, state) =>
         {
             var (self, sel) = state;
-            var provider = self._options.Providers.FirstOrDefault(p => string.Equals(p.Id, sel.ProviderId, StringComparison.OrdinalIgnoreCase))
+            var provider = self.CurrentProviders.FirstOrDefault(p => string.Equals(p.Id, sel.ProviderId, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException($"No provider registered for '{sel.ProviderId}'.");
             return provider.BindAsync(sel, CancellationToken.None).AsTask().GetAwaiter().GetResult();
         }, (this, selection));

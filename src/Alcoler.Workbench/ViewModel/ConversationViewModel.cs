@@ -28,8 +28,8 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
     private readonly Dictionary<string, SystemNoticeRow> _agentRows = [];
     private readonly List<string> _rowOrder = [];
-    private readonly IReadOnlyList<ModelChoice>? _modelChoices;
-    private readonly ModelSelection? _defaultSelection;
+    private IReadOnlyList<ModelChoice>? _modelChoices;
+    private ModelSelection? _defaultSelection;
     private bool _hasLocalSelection;
 
     public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store, ComposerViewModel? composer = null,
@@ -469,6 +469,28 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     }
 
     internal void RestoreModelSelection(ModelSelection? selection) => SetModelSelection(selection, local: true);
+
+    internal void UpdateModelChoices(IReadOnlyList<ModelChoice> modelChoices, ModelSelection? defaultSelection)
+    {
+        _modelChoices = modelChoices;
+        _defaultSelection = defaultSelection;
+        if (_currentSelection is not { } selection)
+        {
+            return;
+        }
+        var choice = modelChoices.FirstOrDefault(model =>
+            model.ProviderId == selection.ProviderId && model.ModelId == selection.ModelId);
+        if (choice is null)
+        {
+            SetModelSelection(null, local: false);
+            if (_hasLocalSelection && _currentSelection is { } fallback)
+            {
+                ModelSelectionChanged?.Invoke(fallback);
+            }
+            return;
+        }
+        ConfigureModel(choice);
+    }
 
     private void SetModelSelection(ModelSelection? selection, bool local)
     {
