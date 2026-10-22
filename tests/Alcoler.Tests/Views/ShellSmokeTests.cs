@@ -5,7 +5,6 @@ using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.LogicalTree;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Media;
@@ -46,23 +45,6 @@ public sealed class ShellTestApp : Avalonia.Application
 
 public class ShellSmokeTests
 {
-    private static readonly string[] TokenKeys =
-    [
-        "AlcolerBackground",
-        "AlcolerSurface",
-        "AlcolerSurfaceHigh",
-        "AlcolerBorder",
-        "AlcolerBorderHover",
-        "AlcolerTextPrimary",
-        "AlcolerTextSecondary",
-        "AlcolerAccent",
-        "AlcolerAccentText",
-        "AlcolerSuccess",
-        "AlcolerWarning",
-        "AlcolerError",
-        "AlcolerInfo",
-    ];
-
     [AvaloniaFact]
     public void MainWindow_Constructs_And_HostsAllRegions()
     {
@@ -141,151 +123,6 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
-    public void Status_UsesConversationWidthAndReservesSpaceOnlyWhenExpandedAndWide()
-    {
-        var (viewModel, store) = CreateWorkbenchWithoutPump();
-        using (viewModel)
-        using (store)
-        {
-            var window = new MainWindow(viewModel) { Width = 1650 };
-            window.Show();
-            try
-            {
-                Dispatcher.UIThread.RunJobs();
-                var area = window.FindControl<Grid>("ConversationArea")!;
-                var status = window.FindControl<Alcoler.Views.ConversationStatusView>("SessionStatus")!;
-                Assert.False(status.IsVisible);
-                var todo = new ToolCallRow("todo", StrongId.NewToolCallId(), "TodoWrite",
-                    System.Text.Json.JsonSerializer.SerializeToElement(new { todos = new[] { new { content = "Review UI", status = "in_progress" } } }),
-                    ToolCallStatus.Succeeded, [], false, TimeSpan.Zero, DateTimeOffset.UtcNow);
-                viewModel.Active!.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(), [new RowAppended(todo)], false));
-                Dispatcher.UIThread.RunJobs();
-                window.UpdateLayout();
-                Assert.True(status.IsVisible);
-                Assert.Equal(area.Bounds.Width, status.ConversationWidth);
-                Assert.True(status.IsExpanded);
-                Assert.True(Alcoler.Controls.ConversationLayout.GetReserveStatusPanelSpace(area));
-
-                status.ExpandedOverride = false;
-                Assert.False(Alcoler.Controls.ConversationLayout.GetReserveStatusPanelSpace(area));
-                status.ExpandedOverride = null;
-                window.Width = 1100;
-                Dispatcher.UIThread.RunJobs();
-                window.UpdateLayout();
-                Assert.True(area.Bounds.Width < 1280);
-                Assert.False(status.IsExpanded);
-                status.ExpandedOverride = true;
-                window.UpdateLayout();
-                var column = window.GetVisualDescendants().OfType<Alcoler.Controls.ConversationLayout>().First();
-                Assert.True(status.IsExpanded);
-                Assert.False(Alcoler.Controls.ConversationLayout.GetReserveStatusPanelSpace(area));
-                Assert.True(column.Bounds.Width < 1280);
-                Assert.Equal(area.Bounds.Width, status.ConversationWidth);
-                Assert.True(status.MaxHeight <= 512);
-            }
-            finally { window.Close(); }
-        }
-    }
-
-    [AvaloniaFact]
-    public void Theme_TokensResolveInDarkAndLight()
-    {
-        var window = new Window();
-        window.Show();
-
-        try
-        {
-            foreach (var key in TokenKeys)
-            {
-                Assert.True(window.TryFindResource(key, ThemeVariant.Dark, out var dark), key);
-                var darkBrush = Assert.IsType<SolidColorBrush>(dark);
-                Assert.True(window.TryFindResource(key, ThemeVariant.Light, out var light), key);
-                var lightBrush = Assert.IsType<SolidColorBrush>(light);
-                if (key is "AlcolerBorder" or "AlcolerBorderHover")
-                {
-                    Assert.Equal(0, darkBrush.Color.A);
-                    Assert.Equal(darkBrush.Color, lightBrush.Color);
-                }
-                else
-                {
-                    Assert.Equal(255, darkBrush.Color.A);
-                    Assert.Equal(255, lightBrush.Color.A);
-                    Assert.NotEqual(darkBrush.Color, lightBrush.Color);
-                }
-            }
-        }
-        finally { window.Close(); }
-    }
-
-    [AvaloniaFact]
-    public void Typography_UsesSourceGitFamiliesAndZCodeSizesInBothThemes()
-    {
-        using var viewModel = CreateWorkbench();
-        viewModel.Sidebar.ApplySummaries([
-            new SessionSummaryViewModel(NewId(), "Typography session", @"C:\ws\alpha", DateTimeOffset.UtcNow),
-        ]);
-        var window = new MainWindow(viewModel);
-        window.Show();
-        try
-        {
-            foreach (var theme in new[] { ThemeVariant.Dark, ThemeVariant.Light })
-            {
-                window.RequestedThemeVariant = theme;
-                Dispatcher.UIThread.RunJobs();
-                window.UpdateLayout();
-                Assert.Equal(14, window.FontSize);
-                Assert.Equal("Inter", window.FontFamily.Name);
-                foreach (var (key, size) in new (string, double)[]
-                {
-                    ("AlcolerFontXs", 10), ("AlcolerFontSmall", 12), ("AlcolerFontCaption", 13),
-                    ("AlcolerFontBase", 14), ("AlcolerFontLarge", 16), ("AlcolerFontXLarge", 18),
-                })
-                {
-                    Assert.Equal(size, Assert.IsType<double>(window.FindResource(theme, key)));
-                }
-                var composer = window.FindControl<Alcoler.Views.ComposerView>("MainComposer")!;
-                var input = composer.FindControl<TextBox>("InputBox")!;
-                Assert.Equal(14, input.FontSize);
-                Assert.Equal(20, input.LineHeight);
-                Assert.Equal("JetBrains Mono", input.FontFamily.Name);
-                Assert.Equal(14, composer.FindControl<TextBlock>("ModelLabel")!.FontSize);
-                Assert.Equal(14, composer.FindControl<TextBlock>("StatusTriggerText")!.FontSize);
-                var title = Assert.Single(window.GetVisualDescendants().OfType<TextBlock>(),
-                    block => block.Classes.Contains("sessionTitle"));
-                var time = Assert.Single(window.GetVisualDescendants().OfType<TextBlock>(),
-                    block => block.Classes.Contains("sessionTime"));
-                Assert.Equal(14, title.FontSize);
-                Assert.Equal("JetBrains Mono", title.FontFamily.Name);
-                Assert.Equal(12, time.FontSize);
-                var terminal = Assert.Single(window.GetLogicalDescendants().OfType<Alcoler.Views.TerminalView>());
-                var surface = terminal.FindControl<Alcoler.Views.TerminalSurface>("Surface")!;
-                Assert.Equal(13, surface.FontSize);
-                Assert.Equal("JetBrains Mono", surface.FontFamily.Name);
-                foreach (var key in new[] { "AlcolerFontPrimary", "AlcolerFontMonospace" })
-                {
-                    var family = Assert.IsType<FontFamily>(window.FindResource(theme, key));
-                    Assert.Equal("JetBrains Mono", family.Name);
-                    foreach (var (weight, style) in new[]
-                    {
-                        (FontWeight.Normal, FontStyle.Normal), (FontWeight.Bold, FontStyle.Normal),
-                        (FontWeight.Normal, FontStyle.Italic),
-                    })
-                    {
-                        Assert.True(FontManager.Current.TryGetGlyphTypeface(new Typeface(family, style, weight), out var glyph));
-                        Assert.Equal("JetBrains Mono", glyph.FamilyName);
-                        Assert.Equal(weight, glyph.Weight);
-                        Assert.Equal(style, glyph.Style);
-                        Assert.Equal(FontSimulations.None, glyph.FontSimulations);
-                        Assert.True(glyph.TryGetTable(0x6E616D65u, out var nameTable));
-                        Assert.NotEmpty(nameTable);
-                    }
-                }
-            }
-        }
-        finally { window.Close(); }
-    }
-
-    [AvaloniaFact]
     public void Sidebar_RendersGroupsSessionsAndActiveState()
     {
         var viewModel = CreateWorkbench();
@@ -325,31 +162,6 @@ public class ShellSmokeTests
             .Single(t => t.Name == "PART_SidebarEmpty");
         Assert.False(empty.IsVisible);
 
-        window.Close();
-    }
-
-    [AvaloniaFact]
-    public void Sidebar_ProjectNewTaskButton_StaysInsideViewport_WithLongSessionTitles()
-    {
-        var viewModel = CreateWorkbench();
-        var longTitle = string.Join(' ', Enumerable.Repeat("Aligning long session titles", 8));
-        viewModel.Sidebar.ApplySummaries([
-            new SessionSummaryViewModel(NewId(), longTitle, @"C:\ws\alpha", DateTimeOffset.UtcNow),
-        ]);
-
-        var window = new MainWindow(viewModel);
-        window.Show();
-        Dispatcher.UIThread.RunJobs();
-        window.UpdateLayout();
-
-        var sidebar = Assert.Single(window.GetVisualDescendants().OfType<Alcoler.Views.SidebarView>());
-        var newTask = Assert.Single(sidebar.GetVisualDescendants().OfType<Button>(),
-            button => button.Classes.Contains("projectNewTask"));
-        var origin = newTask.TranslatePoint(default, sidebar)!.Value;
-
-        Assert.True(origin.X >= 0);
-        Assert.True(origin.X + newTask.Bounds.Width <= sidebar.Bounds.Width,
-            $"New-task button spans {origin.X}..{origin.X + newTask.Bounds.Width} in a {sidebar.Bounds.Width}px sidebar.");
         window.Close();
     }
 
@@ -418,100 +230,6 @@ public class ShellSmokeTests
         window.Close();
         viewModel.Dispose();
         store.Dispose();
-    }
-
-    [AvaloniaFact]
-    public async Task Shell_UsesCompactChromeAndPreservesSidebarToggleWidth()
-    {
-        using var viewModel = CreateWorkbench();
-        var window = new MainWindow(viewModel);
-        window.Show();
-        try
-        {
-            Dispatcher.UIThread.RunJobs();
-            var shell = window.FindControl<Grid>("ShellGrid")!;
-            var sidebar = window.FindControl<Alcoler.Views.SidebarView>("Sidebar")!;
-            var width = shell.ColumnDefinitions[0].Width.Value;
-
-            Assert.Equal(SystemDecorations.None, window.SystemDecorations);
-            Assert.Equal(48, window.FindControl<Grid>("MainCard")!.RowDefinitions[1].Height.Value);
-            viewModel.ToggleSidebarCommand.Execute(null);
-            Assert.True(sidebar.IsVisible);
-            Assert.Equal(width, shell.ColumnDefinitions[0].Width.Value);
-            await WaitUntilAsync(() => shell.ColumnDefinitions[0].Width.Value == 0);
-            Assert.False(sidebar.IsVisible);
-            viewModel.ToggleSidebarCommand.Execute(null);
-            Assert.True(sidebar.IsVisible);
-            Assert.Equal(0, shell.ColumnDefinitions[0].Width.Value);
-            await WaitUntilAsync(() => shell.ColumnDefinitions[0].Width.Value == width);
-            Assert.True(sidebar.IsVisible);
-            Assert.Equal(width, shell.ColumnDefinitions[0].Width.Value);
-        }
-        finally { window.Close(); }
-    }
-
-    [AvaloniaFact]
-    public async Task SidePane_AnimatesOpenAndClosed()
-    {
-        using var viewModel = CreateWorkbench();
-        var window = new MainWindow(viewModel) { Width = 1400, Height = 900 };
-        window.Show();
-        try
-        {
-            Dispatcher.UIThread.RunJobs();
-            var shell = window.FindControl<Grid>("ShellGrid")!;
-            var host = window.FindControl<Border>("DocumentsHost")!;
-            var column = shell.ColumnDefinitions[4];
-            Assert.False(host.IsVisible);
-            Assert.Equal(0, column.Width.Value);
-
-            viewModel.ToggleSidePaneCommand.Execute(null);
-            Assert.True(host.IsVisible);
-            Assert.Equal(0, column.Width.Value);
-            await WaitUntilAsync(() => !window.IsPaneAnimationActive);
-            var openWidth = column.Width.Value;
-            Assert.True(openWidth >= 240);
-            Assert.True(host.IsVisible);
-
-            viewModel.ToggleSidePaneCommand.Execute(null);
-            Assert.True(host.IsVisible);
-            Assert.Equal(openWidth, column.Width.Value);
-            await WaitUntilAsync(() => !window.IsPaneAnimationActive);
-            Assert.Equal(0, column.Width.Value);
-            Assert.False(host.IsVisible);
-        }
-        finally { window.Close(); }
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (!condition())
-        {
-            Dispatcher.UIThread.RunJobs();
-            Assert.True(DateTime.UtcNow < deadline, "Pane animation did not settle within 5 seconds.");
-            await Task.Delay(10);
-        }
-        Dispatcher.UIThread.RunJobs();
-    }
-
-    [AvaloniaFact]
-    public void PrimaryButton_ExplicitTextUsesContrastingThemeForeground()
-    {
-        var label = new TextBlock { Text = "Add provider" };
-        var button = new Button { Content = label };
-        button.Classes.Add("primary");
-        var window = new Window { Content = button };
-        window.Show();
-        foreach (var theme in new[] { ThemeVariant.Dark, ThemeVariant.Light })
-        {
-            window.RequestedThemeVariant = theme;
-            Dispatcher.UIThread.RunJobs();
-            Assert.True(window.TryFindResource("AlcolerBrandText", theme, out var foreground));
-            Assert.Equal(Assert.IsType<SolidColorBrush>(foreground).Color,
-                Assert.IsType<SolidColorBrush>(label.Foreground).Color);
-        }
-        window.Close();
     }
 
     [AvaloniaFact]

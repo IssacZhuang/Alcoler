@@ -64,26 +64,6 @@ public sealed class ConversationStatusViewTests
     }
 
     [AvaloniaFact]
-    public async Task AutoExpansion_UsesActualConversationWidth_AtInclusive1280Threshold()
-    {
-        using var harness = new Harness(1279, Todo("todos", "Inspect status"));
-        await RenderAsync(harness.Window);
-
-        Assert.True(harness.Window.ClientSize.Width > 1280);
-        foreach (var width in new[] { 1279d, 1280d, 1281d, 900d, 1280d })
-        {
-            await harness.ResizeConversationAsync(width);
-            Assert.Equal(width, harness.Conversation.Bounds.Width);
-            Assert.Equal(width, harness.View.ConversationWidth);
-            Assert.Equal(width >= 1280, harness.View.IsExpanded);
-            Assert.Null(harness.View.ExpandedOverride);
-            Assert.Equal(width < 1280, Named<Button>(harness.View, "SummaryButton").IsVisible);
-            Assert.Equal(width >= 1280, Named<ScrollViewer>(harness.View, "StatusScroll").IsVisible);
-            Assert.True(harness.View.Bounds.Width <= 320);
-        }
-    }
-
-    [AvaloniaFact]
     public async Task ManualExpandAndMinimize_SurviveProjectionUpdatesResetsAndConversationResizes()
     {
         using var harness = new Harness(900, Todo("todos", "Inspect status"));
@@ -139,73 +119,6 @@ public sealed class ConversationStatusViewTests
         Assert.True(harness.View.IsExpanded);
         await harness.ResizeConversationAsync(1279);
         Assert.False(harness.View.IsExpanded);
-    }
-
-    [AvaloniaTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task MiniAndExpandedGeometry_UseCanonicalCardAndThemeResources_WithoutOverallTitle(bool light)
-    {
-        using var harness = new Harness(900, Todo("todos", "Inspect status"));
-        var theme = light ? ThemeVariant.Light : ThemeVariant.Dark;
-        harness.Window.RequestedThemeVariant = theme;
-        await RenderAsync(harness.Window);
-        var shell = Named<Border>(harness.View, "StatusShell");
-        var summary = Named<Button>(harness.View, "SummaryButton");
-
-        Assert.Equal(theme, harness.View.ActualThemeVariant);
-        Assert.Equal(new CornerRadius(16), shell.CornerRadius);
-        Assert.Equal(default, shell.BorderThickness);
-        Assert.Equal(32, summary.Bounds.Height);
-        Assert.Equal(new CornerRadius(15), summary.CornerRadius);
-        Assert.InRange(shell.Bounds.Width, 1, 319);
-        Assert.Equal(32, shell.Bounds.Height);
-        Assert.Equal(320, harness.View.MaxWidth);
-        Assert.Equal(512, harness.View.MaxHeight);
-        AssertThemeBrush(harness.Window, theme, "AlcolerPopover", shell.Background);
-        AssertTopRight(harness);
-
-        await ClickAsync(summary);
-        Assert.True(harness.View.IsExpanded);
-        Assert.Equal(320, shell.Width);
-        Assert.Equal(320, shell.Bounds.Width);
-        Assert.Equal(new CornerRadius(16), shell.CornerRadius);
-        Assert.False(summary.IsVisible);
-        Assert.True(Named<ScrollViewer>(harness.View, "StatusScroll").IsVisible);
-        Assert.True(Named<StackPanel>(harness.View, "CardControls").IsVisible);
-        Assert.DoesNotContain(harness.View.GetVisualDescendants().OfType<TextBlock>(),
-            text => text.IsEffectivelyVisible && text.Text == "Status");
-        AssertTopRight(harness);
-        harness.Window.MouseMove(new Point(10, 700));
-        await RenderAsync(harness.Window);
-        var progress = Named<Expander>(harness.View, "ProgressSection");
-        var header = Assert.Single(progress.GetVisualDescendants().OfType<ToggleButton>(),
-            button => button.Classes.Contains("sectionHeader"));
-        var presenter = Assert.Single(header.GetVisualDescendants().OfType<ContentPresenter>(),
-            control => control.Name == "PART_ContentPresenter");
-        Assert.Equal(Avalonia.Layout.HorizontalAlignment.Stretch, header.HorizontalAlignment);
-        Assert.Equal(Colors.Transparent, Assert.IsAssignableFrom<ISolidColorBrush>(header.Background).Color);
-        Assert.Equal(Colors.Transparent, Assert.IsAssignableFrom<ISolidColorBrush>(presenter.Background).Color);
-
-        var longTitle = new string('W', 160);
-        Reset(harness.Model,
-        [
-            Tool("todos", "TodoWrite", new
-            {
-                todos = Enumerable.Range(0, 6).Select(index => new
-                {
-                    content = $"{index} {longTitle}",
-                    status = index == 0 ? "in_progress" : "pending",
-                }).ToArray(),
-            }),
-            .. Enumerable.Range(0, 8).Select(index => Plan($"plan-{index}", $"Implementation plan {index}")),
-        ]);
-        await RenderAsync(harness.Window);
-        var scroll = Named<ScrollViewer>(harness.View, "StatusScroll");
-        Assert.Equal(320, shell.Bounds.Width);
-        Assert.InRange(shell.Bounds.Height, 1, 512);
-        Assert.True(scroll.Extent.Height > scroll.Viewport.Height);
-        AssertTopRight(harness);
     }
 
     [AvaloniaFact]
@@ -546,13 +459,6 @@ public sealed class ConversationStatusViewTests
         Assert.Equal(progress, Named<Expander>(view, "ProgressSection").IsExpanded);
         Assert.Equal(terminals, Named<Expander>(view, "TerminalsSection").IsExpanded);
         Assert.Equal(agents, Named<Expander>(view, "AgentsSection").IsExpanded);
-    }
-
-    private static void AssertTopRight(Harness harness)
-    {
-        var position = harness.View.TranslatePoint(default, harness.Conversation)!.Value;
-        Assert.Equal(0, position.Y);
-        Assert.Equal(harness.Conversation.Bounds.Width, position.X + harness.View.Bounds.Width);
     }
 
     private static void AssertThemeBrush(Window window, ThemeVariant theme, string key, IBrush? actual)

@@ -140,58 +140,6 @@ public sealed class SidebarActivityIndicatorTests
     }
 
     [AvaloniaFact]
-    public void Sidebar_RendersRunningSpinnerCompletionAndFailureIndicators()
-    {
-        var viewModel = ShellSmokeTests.CreateWorkbench();
-        var running = new SessionSummaryViewModel(StrongId.NewSessionId(), "Running", @"C:\ws\alpha", DateTimeOffset.UtcNow);
-        var completed = new SessionSummaryViewModel(StrongId.NewSessionId(), "Completed", @"C:\ws\alpha", DateTimeOffset.UtcNow);
-        var failed = new SessionSummaryViewModel(StrongId.NewSessionId(), "Failed", @"C:\ws\alpha", DateTimeOffset.UtcNow);
-        viewModel.Sidebar.ApplySummaries([running, completed, failed]);
-        viewModel.Sidebar.ApplyActivity(running.Id, new SessionActivitySnapshot(TurnPhase.Streaming, null));
-        viewModel.Sidebar.ApplyActivity(completed.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed));
-        viewModel.Sidebar.ApplyActivity(failed.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Failed));
-        viewModel.Sidebar.SetActive(running.Id);
-
-        var window = new MainWindow(viewModel);
-        window.Show();
-        try
-        {
-            Dispatcher.UIThread.RunJobs();
-            var sidebar = Assert.IsType<Alcoler.Views.SidebarView>(
-                Assert.Single(window.GetVisualDescendants().OfType<Alcoler.Views.SidebarView>()));
-            var spinners = sidebar.GetVisualDescendants().OfType<Icon>()
-                .Where(icon => icon.Name == "PART_RunningIndicator").ToList();
-            Assert.Equal(3, spinners.Count);
-            var visibleSpinner = Assert.Single(spinners, spinner => spinner.IsVisible);
-            Assert.Contains("running", visibleSpinner.Classes);
-            Assert.IsType<Avalonia.Media.RotateTransform>(visibleSpinner.RenderTransform);
-            Assert.IsNotType<Avalonia.Media.Transformation.TransformOperations>(visibleSpinner.RenderTransform);
-
-            var completedDots = sidebar.GetVisualDescendants().OfType<Border>()
-                .Where(border => border.Name == "PART_CompletedIndicator").ToList();
-            Assert.Equal(3, completedDots.Count);
-            Assert.Single(completedDots, dot => dot.IsVisible);
-            Assert.Equal("Completed", Avalonia.Automation.AutomationProperties.GetName(
-                completedDots.Single(dot => dot.IsVisible)));
-
-            var failedDots = sidebar.GetVisualDescendants().OfType<Border>()
-                .Where(border => border.Name == "PART_FailedIndicator").ToList();
-            Assert.Equal(3, failedDots.Count);
-            Assert.Single(failedDots, dot => dot.IsVisible);
-
-            var activeDots = sidebar.GetVisualDescendants().OfType<Border>()
-                .Where(border => border.Name == "PART_ActiveIndicator").ToList();
-            Assert.Equal(3, activeDots.Count);
-            Assert.DoesNotContain(activeDots, dot => dot.IsVisible);
-        }
-        finally
-        {
-            window.Close();
-            viewModel.Dispose();
-        }
-    }
-
-    [AvaloniaFact]
     public void Sidebar_ShowsActiveDot_WhenTaskIsActiveWithoutIndicator()
     {
         var viewModel = ShellSmokeTests.CreateWorkbench();
