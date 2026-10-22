@@ -1,20 +1,28 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Browser;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tools;
+using Alcoler.Workbench;
 using Alcoler.Workbench.Browser;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Alcoler.Workbench.Views;
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Data;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 
 namespace Alcoler.Browser.IntegrationTests;
 
@@ -34,6 +42,7 @@ internal sealed class NativeBrowserSuite
     private TaskCompletionSource<(BrowserNewTabRequestedEventArgs Request, BrowserActionResult Result)>? _popup;
     private string _tab = "";
     private string _otherTab = "";
+    private Window? _parkingWindow;
     private int _passed;
 
     private NativeBrowserSuite(Window window, LoopbackFixture fixture, WebViewBrowserHost host,
@@ -98,6 +107,7 @@ internal sealed class NativeBrowserSuite
         await CaseAsync("Evaluate expression with JSON argument", EvaluateAsync);
         await CaseAsync("Timed-out JavaScript drains pending native command", CancellationAsync);
         await CaseAsync("Viewport, clipped and full-page decoded PNG screenshots", ScreenshotsAsync);
+        await CaseAsync("Hidden parking window renders changing screenshot content", HiddenRenderingAsync);
         await CaseAsync("BrowserTool screenshot emits model-visible artifact media", ToolScreenshotAsync);
         await RecordMemoryAsync();
         await CaseAsync("Tab lifecycle, session access and profile isolation", SessionsAsync);
@@ -107,6 +117,7 @@ internal sealed class NativeBrowserSuite
         await CaseAsync("Bounded local media artifact and download observation", DownloadsAsync);
         await CaseAsync("Short real WebM recording completion and cancellation", RecordingAsync);
         await CaseAsync("Embedded presenter and pane detach preserve native adapter and JS state", PresenterAsync);
+        await CaseAsync("Kernel Browser tool automatically opens Workbench native document and preserves adapter", WorkbenchDocumentAsync);
         await CaseAsync("History navigation and stale snapshot reference rejection", HistoryAsync);
         await CaseAsync("Cross-origin iframe CDP context click and fill", CrossOriginFrameAsync);
         await CaseAsync("Close all tabs releases native pages", CloseAsync);
@@ -120,6 +131,7 @@ internal sealed class NativeBrowserSuite
             _ct.ThrowIfCancellationRequested();
             await test();
             _fixture.AssertHealthy();
+            AssertParkingWindowHidden();
             _passed++;
             Console.WriteLine($"PASS {title}");
         }
@@ -139,6 +151,16 @@ internal sealed class NativeBrowserSuite
         _tab = created.TabId ?? throw new InvalidOperationException("new_tab omitted its tab ID.");
         Check(_host.GetPageControl(_tab) is NativeWebView, "Parked creation did not create a NativeWebView.");
         Check(_host.GetPageControl(_tab)!.Parent is Panel, "New tab was not parked before presenter attachment.");
+        _parkingWindow = TopLevel.GetTopLevel(_host.GetPageControl(_tab)!) as Window
+            ?? throw new InvalidOperationException("Parked native page has no live window.");
+        AssertParkingWindowHidden();
+        _parkingWindow.Width = 1296;
+        _parkingWindow.Height = 816;
+        await UiTurnAsync();
+        AssertParkingWindowHidden();
+        _parkingWindow.Width = 1280;
+        _parkingWindow.Height = 800;
+        await UiTurnAsync();
         Equal(1, Tabs(await CommandAsync("tabs")).Length, "Session tab count after parked creation");
     }
 
@@ -305,6 +327,45 @@ internal sealed class NativeBrowserSuite
         Check(full.Height >= 1900 && full.Height > viewport.Height, "Full-page PNG did not include content below viewport.");
     }
 
+    private async Task HiddenRenderingAsync()
+    {
+        Check(ReferenceEquals(_parkingWindow, TopLevel.GetTopLevel(_host.GetPageControl(_tab)!)),
+            "Screenshot rendering test did not use the parked native page.");
+        AssertParkingWindowHidden();
+        await CommandAsync("evaluate", D(("expression", "const marker=document.createElement('div');marker.id='parking-render-marker';marker.style.cssText='position:fixed;inset:0;background:rgb(255,0,0);z-index:2147483647';document.body.append(marker);true")), _tab);
+        try
+        {
+            await AssertColorAsync(0xffff0000);
+            await CommandAsync("evaluate", D(("expression", "document.querySelector('#parking-render-marker').style.background='rgb(0,0,255)';true")), _tab);
+            await AssertColorAsync(0xff0000ff);
+        }
+        finally
+        {
+            await CommandAsync("evaluate", D(("expression", "document.querySelector('#parking-render-marker')?.remove();true")), _tab);
+        }
+
+        async Task AssertColorAsync(uint expected)
+        {
+            var clock = Stopwatch.StartNew();
+            uint actual = 0;
+            do
+            {
+                var result = await CommandAsync("screenshot", D(("clip", D(("x", 100), ("y", 100), ("width", 16), ("height", 16)))), _tab);
+                var bytes = result.ScreenshotPng ?? throw new InvalidOperationException("Hidden page screenshot omitted PNG bytes.");
+                using var stream = new MemoryStream(bytes, writable: false);
+                using var decoded = new Bitmap(stream);
+                using var converted = new WriteableBitmap(decoded.PixelSize, decoded.Dpi, Avalonia.Platform.PixelFormat.Bgra8888,
+                    Avalonia.Platform.AlphaFormat.Unpremul);
+                using var pixels = converted.Lock();
+                decoded.CopyPixels(pixels, Avalonia.Platform.AlphaFormat.Unpremul);
+                actual = unchecked((uint)Marshal.ReadInt32(pixels.Address));
+                if (actual == expected) return;
+                await Task.Delay(100, _ct);
+            } while (clock.Elapsed < TimeSpan.FromSeconds(5));
+            throw new InvalidOperationException($"Hidden browser did not render changing content: expected {expected:X8}, actual {actual:X8}.");
+        }
+    }
+
     private async Task ToolScreenshotAsync()
     {
         var tool = new BrowserTool(_controller);
@@ -405,6 +466,138 @@ internal sealed class NativeBrowserSuite
             Check(ReferenceEquals(adapter, NativeAdapter(native)), "Reparenting replaced the native adapter instance.");
             Check(ReferenceEquals(native, _host.GetPageControl(_tab)), "Reparenting replaced the native control.");
             Equal(sentinel, Structured(await CommandAsync("evaluate", D(("expression", "globalThis.__integrationSentinel")), _tab)).GetString(), "Reparented JavaScript sentinel");
+        }
+    }
+
+    private async Task WorkbenchDocumentAsync()
+    {
+        var application = new Alcoler.Workbench.App();
+        application.Initialize();
+        var resources = application.Resources;
+        application.Resources = new ResourceDictionary();
+        _window.Resources.MergedDictionaries.Add(resources);
+        var directory = Directory.CreateTempSubdirectory("Alcoler-Browser-Workbench-").FullName;
+        SessionId? sessionId = null;
+        string? tabId = null;
+        try
+        {
+            await using var store = new SqliteSessionStore(Path.Combine(directory, "sessions.sqlite"));
+            await store.InitializeAsync(_ct);
+            var artifacts = new FileArtifactStore(Path.Combine(directory, "artifacts"));
+            var tool = new BrowserTool(_controller);
+            await using var runtime = new AgentRuntime(new AgentRuntimeOptions
+            {
+                Store = store,
+                Artifacts = artifacts,
+                Providers = [],
+                Tools = [tool],
+                WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
+            });
+            var session = await runtime.CreateSessionAsync(new SessionOptions(directory, "Native browser document"), _ct);
+            sessionId = session.Id;
+            var presenterCount = 0;
+            var rootBrowser = new BrowserPaneViewModel(_controller, AvaloniaUiScheduler.Instance, pagePresenterFactory: id =>
+            {
+                presenterCount++;
+                return _host.CreatePagePresenter(id);
+            });
+            using var workbench = new WorkbenchViewModel(runtime, AvaloniaUiScheduler.Instance,
+                new WorkbenchConfig([]), browserPane: rootBrowser);
+            await workbench.OpenSessionAsync(session.Id);
+            Check(workbench.Documents.Items.Count == 0, "Opening a session manually opened a browser document.");
+            var gate = new IntegrationPermissionGate();
+            var executor = new ToolCallExecutor(new ToolRegistry([tool]), gate);
+            var input = BrowserJson.Element(D(("action", "navigate"), ("url", _fixture.Url())));
+            var outcome = await executor.ExecuteAsync(new ToolCall(StrongId.NewToolCallId(), "Browser", input),
+                (call, ct) => ValueTask.FromResult(new ToolExecutionContext(session.Id, directory, call.Input,
+                    new WorkspaceToolEnvironment(directory, artifacts), TimeProvider.System)),
+                _ => ValueTask.CompletedTask, _ct);
+            Check(!outcome.Result.IsError, "Kernel Browser navigation failed: " +
+                string.Join("\n", outcome.Result.Content.OfType<ToolResultText>().Select(text => text.Text)));
+            Equal(session.Id, gate.Requests.Single().SessionId, "Workbench tool permission owner");
+            await UiTurnAsync();
+            var status = _controller.GetStatus(session.Id) ?? throw new InvalidOperationException("Tool navigation did not publish browser status.");
+            tabId = status.ActiveTabId ?? throw new InvalidOperationException("Tool navigation did not create an active tab.");
+            var document = workbench.Documents.Items.Single();
+            Equal("browser", document.Kind, "Automatically opened document kind");
+            Equal("browser", document.Id, "Automatically opened document ID");
+            Equal(session.Id.Value, document.OwnerId, "Automatically opened document owner");
+            Equal(Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)), document.WorkspaceRoot, "Browser document workspace");
+            Check(ReferenceEquals(document, workbench.Documents.ActiveDocument) && workbench.Documents.IsVisible,
+                "Tool navigation did not activate and expand the Workbench browser document.");
+            var browser = document.Content as BrowserPaneViewModel
+                ?? throw new InvalidOperationException("Browser document did not contain its bound view-model.");
+            Check(!ReferenceEquals(rootBrowser, browser), "Workbench document reused the root browser view-model.");
+            Equal(session.Id, browser.ActiveSessionId, "Document clone session");
+            Equal(tabId, browser.ActiveTabId, "Document clone active tab");
+            Equal(0, presenterCount, "Presenters created before document rendering");
+            Check(rootBrowser.PagePresenter is null && browser.PagePresenter is null, "An unrendered browser created a presenter.");
+            var native = _host.GetPageControl(tabId) as NativeWebView
+                ?? throw new InvalidOperationException("Kernel Browser navigation did not create a native page.");
+            var adapter = NativeAdapter(native);
+            var sentinel = Guid.NewGuid().ToString("N");
+            await CommandAsync("evaluate", D(("expression", "arg => {globalThis.__workbenchSentinel=arg;return true;}"),
+                ("arg", sentinel)), tabId, session.Id);
+            var destroyed = 0;
+            native.AdapterDestroyed += OnDestroyed;
+            try
+            {
+                var view = new DocumentWorkspaceView { DataContext = workbench };
+                view.Bind(Visual.IsVisibleProperty, new Binding("Documents.IsVisible"));
+                _window.Content = view;
+                await UiTurnAsync();
+                _window.UpdateLayout();
+                var pane = view.GetVisualDescendants().OfType<BrowserPaneView>().Single();
+                Check(ReferenceEquals(browser, pane.DataContext) && pane.IsEffectivelyVisible
+                    && pane.Bounds.Width > 0 && pane.Bounds.Height > 0, "Workbench browser document did not render a visible pane.");
+                Equal(1, presenterCount, "Document presenter factory calls");
+                Check(browser.HasPagePresenter && !browser.ShowScreenshot && rootBrowser.PagePresenter is null,
+                    "Native presenter was not created exclusively in the document clone.");
+                Check(ReferenceEquals(native.Parent, browser.PagePresenter) && pane.GetVisualDescendants().Contains(native)
+                    && native.IsEffectivelyVisible && native.Bounds.Width > 0 && native.Bounds.Height > 0,
+                    "Workbench document did not attach its actual native page.");
+                await VerifyAsync();
+                _window.Content = null;
+                await UiTurnAsync();
+                Check(!browser.HasPagePresenter && native.Parent is Panel, "Detached workspace did not release its page to parking.");
+                await VerifyAsync();
+                _window.Content = view;
+                await UiTurnAsync();
+                Equal(2, presenterCount, "Reattached document presenter factory calls");
+                Check(browser.HasPagePresenter && ReferenceEquals(native.Parent, browser.PagePresenter)
+                    && rootBrowser.PagePresenter is null, "Reattached workspace did not restore the clone's native page.");
+                Check(ReferenceEquals(document, workbench.Documents.ActiveDocument) && workbench.Documents.Items.Count == 1,
+                    "Browser updates replaced or duplicated the Workbench-owned document.");
+                await VerifyAsync();
+                Console.WriteLine($"PROOF Kernel Browser -> owner={document.OwnerId} -> DocumentWorkspaceView -> NativeWebView tab={tabId}; adapter preserved across detach/reattach.");
+            }
+            finally
+            {
+                native.AdapterDestroyed -= OnDestroyed;
+                _window.Content = null;
+                await UiTurnAsync();
+            }
+
+            void OnDestroyed(object? sender, WebViewAdapterEventArgs args) => destroyed++;
+            async Task VerifyAsync()
+            {
+                Equal(0, destroyed, "Workbench document adapter destruction count");
+                Check(ReferenceEquals(adapter, NativeAdapter(native)) && ReferenceEquals(native, _host.GetPageControl(tabId)),
+                    "Workbench document attachment replaced the native control or adapter.");
+                Equal(sentinel, Structured(await CommandAsync("evaluate", D(("expression", "globalThis.__workbenchSentinel")),
+                    tabId, session.Id)).GetString(), "Workbench document JavaScript state");
+            }
+        }
+        finally
+        {
+            _window.Content = null;
+            _window.Resources.MergedDictionaries.Remove(resources);
+            if (sessionId is { } owner)
+            {
+                foreach (var tab in _controller.GetStatus(owner)?.Tabs ?? [])
+                    await CommandAsync("close_tab", tab: tab.Id, session: owner);
+            }
+            await DeleteOwnedDirectoryAsync(directory);
         }
     }
 
@@ -691,6 +884,22 @@ internal sealed class NativeBrowserSuite
     }
 
     private static JsonElement[] Tabs(BrowserActionResult result) => Structured(result).GetProperty("tabs").EnumerateArray().Select(t => t.Clone()).ToArray();
+
+    private void AssertParkingWindowHidden()
+    {
+        var parking = _parkingWindow ?? throw new InvalidOperationException("Parking window was not captured.");
+        var handle = parking.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+        Check(handle != IntPtr.Zero, "Parking window lost its native handle.");
+        Check(!IsWindowVisible(handle), "The browser parking window is visible on the desktop.");
+        Check(GetForegroundWindow() != handle, "The browser parking window took foreground focus.");
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     private static object NativeAdapter(NativeWebView native) => native.TryGetPlatformHandle()
         ?? throw new InvalidOperationException("Native WebView has no live adapter.");

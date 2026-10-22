@@ -56,6 +56,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private readonly List<Dictionary<SessionId, string>> _refreshTitleOverrides = [];
     private readonly Dictionary<string, DraftConversationViewModel> _drafts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<SessionId, SessionDraft> _sessionDrafts = [];
+    private readonly HashSet<SessionId> _autoOpenedBrowserSessions = [];
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DraftConversationViewModel, DraftDocumentOwner> _draftDocumentOwners = new();
     private string? _focusedWorkspaceRoot;
     private long _navigationVersion;
@@ -101,7 +102,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         ModelChoices = BuildModelChoices(config);
         Draft = GetOrCreateDraft(Environment.CurrentDirectory);
         Documents.PropertyChanged += OnDocumentsPropertyChanged;
-        BrowserPane?.Bind(null);
+        if (BrowserPane is not null)
+        {
+            BrowserPane.Bind(null);
+            BrowserPane.PropertyChanged += OnBrowserPanePropertyChanged;
+        }
         EnsureDocumentContext();
     }
 
@@ -251,6 +256,23 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         }
     }
 
+    private void OnBrowserPanePropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(BrowserPaneViewModel.ActiveTabId))
+        {
+            TryShowActiveBrowserDocument();
+        }
+    }
+
+    private void TryShowActiveBrowserDocument()
+    {
+        if (!_disposed && Active is { } active && BrowserPane is { ActiveTabId: not null } browser
+            && browser.ActiveSessionId == active.SessionId && _autoOpenedBrowserSessions.Add(active.SessionId))
+        {
+            ShowBrowserPane();
+        }
+    }
+
     private void EnsureDocumentContext() => Documents.SetContext(CurrentWorkspaceRoot, CurrentDocumentOwnerId);
 
     private string GetDraftDocumentOwnerId(DraftConversationViewModel draft) =>
@@ -292,6 +314,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _disposed = true;
+        if (BrowserPane is not null)
+        {
+            BrowserPane.PropertyChanged -= OnBrowserPanePropertyChanged;
+        }
+        _autoOpenedBrowserSessions.Clear();
         _runtime.SessionTitleChanged -= OnSessionTitleChanged;
         _refreshTitleOverrides.Clear();
         if (_activities is not null)
@@ -382,6 +409,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         Sidebar.SyncRunningState(sessionId, _activities?.GetSessionActivity(sessionId));
         BrowserPane?.Bind(sessionId);
         EnsureDocumentContext();
+        TryShowActiveBrowserDocument();
         if (_sessionRoots.TryGetValue(sessionId, out var root))
         {
             _focusedWorkspaceRoot = root;

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using Alcoler.Browser;
@@ -87,39 +88,49 @@ public sealed class WebViewBrowserHost : IBrowserHost
         }
     }, cancellationToken);
 
-    public Task ShowPageAsync(string tabId, CancellationToken cancellationToken) => OnUiAsync(() =>
+    public async Task ShowPageAsync(string tabId, CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        var page = GetPage(tabId);
-        if (_presenters.TryGetValue(tabId, out var attached) && attached.IsEffectivelyVisible)
+        await OnUiAsync(() =>
         {
-            if (TopLevel.GetTopLevel(attached) is Window parent)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _ = GetPage(tabId);
+            if (_presenters.TryGetValue(tabId, out var attached) && attached.IsEffectivelyVisible)
             {
-                parent.Activate();
+                if (TopLevel.GetTopLevel(attached) is Window parent)
+                {
+                    parent.Activate();
+                }
+                return;
             }
-            page.WebView.Focus();
-            return;
-        }
-        if (!_userWindows.TryGetValue(tabId, out var window))
-        {
-            window = new Window
+            if (!_userWindows.TryGetValue(tabId, out var window))
             {
-                Title = "Alcoler Browser",
-                Width = 1100,
-                Height = 800,
-                Content = CreatePagePresenter(tabId)
-            };
-            _userWindows.Add(tabId, window);
-            window.Closed += (_, _) => _userWindows.Remove(tabId);
-            window.Show();
-        }
-        else
+                window = new Window
+                {
+                    Title = "Alcoler Browser",
+                    Width = 1100,
+                    Height = 800,
+                    Content = CreatePagePresenter(tabId)
+                };
+                _userWindows.Add(tabId, window);
+                window.Closed += (_, _) => _userWindows.Remove(tabId);
+                window.Show();
+            }
+            else
+            {
+                window.Show();
+            }
+            window.Activate();
+        }, cancellationToken).ConfigureAwait(false);
+        await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            window.Show();
-        }
-        window.Activate();
-        page.WebView.Focus();
-    }, cancellationToken);
+            if (!_disposed && _pages.TryGetValue(tabId, out var page)
+                && _presenters.TryGetValue(tabId, out var presenter) && presenter.IsEffectivelyVisible
+                && ReferenceEquals(page.WebView.Parent, presenter))
+            {
+                page.WebView.Focus();
+            }
+        }, DispatcherPriority.Loaded, cancellationToken);
+    }
 
     public Control? GetPageControl(string tabId)
     {
@@ -210,7 +221,7 @@ public sealed class WebViewBrowserHost : IBrowserHost
             Title = "Alcoler Browser Parking",
             Width = 1280,
             Height = 800,
-            Position = new PixelPoint(-32000, -32000),
+            Opacity = 0,
             ShowActivated = false,
             ShowInTaskbar = false,
             CanResize = false,
@@ -219,7 +230,15 @@ public sealed class WebViewBrowserHost : IBrowserHost
             Content = _parkingDeck
         };
         _parkingWindow.Show();
+        // Managed visibility must remain true for WebView layout and native attachment.
+        var handle = _parkingWindow.TryGetPlatformHandle()?.Handle
+            ?? throw new InvalidOperationException("The browser parking window has no native handle.");
+        ShowWindow(handle, 0);
     }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hwnd, int command);
 
     private void ParkPage(WebViewBrowserPage page)
     {

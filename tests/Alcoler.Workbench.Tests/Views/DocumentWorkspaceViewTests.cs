@@ -1,5 +1,8 @@
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Browser;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Sessions;
+using Alcoler.Kernel.Runtime;
 using Alcoler.Workbench.Git;
 using Alcoler.Workbench.Terminal;
 using Alcoler.Workbench.Ui;
@@ -421,6 +424,123 @@ public class DocumentWorkspaceViewTests
         Assert.True(harness.Window.IsVisible);
     }
 
+    [AvaloniaTheory]
+    [Xunit.InlineData(false)]
+    [Xunit.InlineData(true)]
+    public async Task AgentBrowserStatus_OpensRenderedOwnerDocumentWithoutManualBrowserOpen(bool statusBeforeBind)
+    {
+        var directory = Directory.CreateTempSubdirectory("alcoler-document-browser-").FullName;
+        try
+        {
+            await using var store = new SqliteSessionStore(Path.Combine(directory, "sessions.sqlite"));
+            await store.InitializeAsync(CancellationToken.None);
+            var artifacts = new FileArtifactStore(Path.Combine(directory, "artifacts"));
+            await using var runtime = new AgentRuntime(new AgentRuntimeOptions
+            {
+                Store = store,
+                Artifacts = artifacts,
+                Providers = [],
+                Tools = [],
+                WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
+            });
+            var session = await runtime.CreateSessionAsync(new SessionOptions(directory, "Browser owner"), CancellationToken.None);
+            var other = await runtime.CreateSessionAsync(new SessionOptions(directory, "Other owner"), CancellationToken.None);
+            using var controller = new InertBrowserController();
+            var presenters = new List<(string TabId, Border Presenter)>();
+            var rootBrowser = new BrowserPaneViewModel(controller, AvaloniaUiScheduler.Instance, pagePresenterFactory: tabId =>
+            {
+                var presenter = new Border { Child = new TextBlock { Text = $"Live page {tabId}" } };
+                presenters.Add((tabId, presenter));
+                return presenter;
+            });
+            using var harness = new Harness(shell: true, workbench: new WorkbenchViewModel(runtime,
+                AvaloniaUiScheduler.Instance, new WorkbenchConfig([]), browserPane: rootBrowser));
+            controller.Publish(other.Id, BrowserStatus("other-tab"));
+            if (statusBeforeBind)
+                controller.Publish(session.Id, BrowserStatus("agent-tab"));
+            await RenderAsync(harness.Window);
+            Assert.Empty(harness.Documents.Items);
+            Assert.Empty(presenters);
+
+            await harness.Workbench.OpenSessionAsync(session.Id);
+            await RenderAsync(harness.Window);
+            if (!statusBeforeBind)
+            {
+                Assert.Empty(harness.Documents.Items);
+                Assert.False(harness.Documents.IsVisible);
+                controller.Publish(session.Id, BrowserStatus("agent-tab"));
+                await RenderAsync(harness.Window);
+            }
+
+            var document = Assert.Single(harness.Documents.Items);
+            Assert.Equal("browser", document.Id);
+            Assert.Equal("browser", document.Kind);
+            Assert.Equal(session.Id.Value, document.OwnerId);
+            Assert.Equal(DocumentViewModel.NormalizeWorkspaceRoot(directory), document.WorkspaceRoot);
+            Assert.Same(document, harness.Documents.ActiveDocument);
+            Assert.Same(document, Assert.Single(harness.Documents.VisibleItems));
+            Assert.True(harness.Documents.IsVisible);
+            Assert.True(harness.View.IsEffectivelyVisible);
+            var browser = Assert.IsType<BrowserPaneViewModel>(document.Content);
+            Assert.NotSame(rootBrowser, browser);
+            Assert.Equal(session.Id, browser.ActiveSessionId);
+            Assert.Equal("agent-tab", browser.ActiveTabId);
+            var pane = Assert.Single(Body(harness.View, document).GetVisualDescendants().OfType<BrowserPaneView>());
+            Assert.Same(browser, pane.DataContext);
+            Assert.True(pane.IsEffectivelyVisible);
+            Assert.True(pane.Bounds.Width > 0 && pane.Bounds.Height > 0);
+            var created = Assert.Single(presenters);
+            Assert.Equal("agent-tab", created.TabId);
+            Assert.Same(created.Presenter, browser.PagePresenter);
+            Assert.Contains(created.Presenter, pane.GetVisualDescendants());
+            Assert.True(created.Presenter.IsEffectivelyVisible);
+            Assert.True(created.Presenter.Bounds.Width > 0 && created.Presenter.Bounds.Height > 0);
+            Assert.Null(rootBrowser.PagePresenter);
+            Assert.False(rootBrowser.HasPagePresenter);
+
+            var notes = harness.Workbench.OpenDocument(new DocumentViewModel("notes", "extension", "User notes", "M0 0L1 1",
+                new TextBox { Text = "Keep my document selected" }, directory, session.Id.Value));
+            await RenderAsync(harness.Window);
+            controller.Publish(session.Id, BrowserStatus("next-agent-tab"));
+            await RenderAsync(harness.Window);
+            Assert.Same(notes, harness.Documents.ActiveDocument);
+            Assert.True(Body(harness.View, notes).IsEffectivelyVisible);
+            Assert.False(pane.IsEffectivelyVisible);
+            Assert.Equal("next-agent-tab", browser.ActiveTabId);
+            Assert.Same(document, Assert.Single(harness.Documents.Items, item => item.Id == "browser"));
+
+            await ClickAsync(Named<Button>(harness.View, "CollapseDocumentsButton"));
+            await RenderAsync(harness.Window);
+            controller.Publish(session.Id, BrowserStatus("collapsed-agent-tab"));
+            await RenderAsync(harness.Window);
+            Assert.False(harness.Documents.IsVisible);
+            Assert.False(harness.View.IsEffectivelyVisible);
+            Assert.Same(notes, harness.Documents.ActiveDocument);
+            harness.Documents.IsVisible = true;
+            await RenderAsync(harness.Window);
+            await ClickAsync(CloseButton(Tab(harness.View, document)));
+            await RenderAsync(harness.Window);
+            var presenterCount = presenters.Count;
+            controller.Publish(session.Id, BrowserStatus("closed-agent-tab"));
+            await RenderAsync(harness.Window);
+            Assert.Same(notes, Assert.Single(harness.Documents.Items));
+            Assert.Same(notes, harness.Documents.ActiveDocument);
+            Assert.Equal(presenterCount, presenters.Count);
+            Assert.Null(browser.PagePresenter);
+            Assert.Null(rootBrowser.PagePresenter);
+            Assert.Equal(0, controller.ActionCount);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static BrowserSessionStatus BrowserStatus(string tabId) => new(BrowserSessionState.Launched,
+        UpdatedAt: DateTimeOffset.UtcNow,
+        Tabs: [new BrowserTabStatus(tabId, $"https://fixture.test/{tabId}", $"Agent page {tabId}", IsActive: true)],
+        ActiveTabId: tabId);
+
     [AvaloniaFact]
     public async Task NativeTemplates_RenderGitBrowserTextAndFakeTerminalWithoutStartingResources()
     {
@@ -561,9 +681,9 @@ public class DocumentWorkspaceViewTests
 
     private sealed class Harness : IDisposable
     {
-        public Harness(bool shell = false)
+        public Harness(bool shell = false, WorkbenchViewModel? workbench = null)
         {
-            Workbench = ShellSmokeTests.CreateWorkbench();
+            Workbench = workbench ?? ShellSmokeTests.CreateWorkbench();
             Root = Workbench.CurrentWorkspaceRoot;
             OwnerId = Workbench.CurrentDocumentOwnerId;
             if (shell)
@@ -622,8 +742,14 @@ public class DocumentWorkspaceViewTests
 
     private sealed class InertBrowserController : IBrowserController
     {
+        private readonly Dictionary<SessionId, BrowserSessionStatus> _statuses = [];
         public int ActionCount { get; private set; }
-        public event EventHandler<BrowserStatusChangedEventArgs>? StatusChanged { add { } remove { } }
+        public event EventHandler<BrowserStatusChangedEventArgs>? StatusChanged;
+        public void Publish(SessionId sessionId, BrowserSessionStatus status)
+        {
+            _statuses[sessionId] = status;
+            StatusChanged?.Invoke(this, new BrowserStatusChangedEventArgs(sessionId, status));
+        }
         public Task<BrowserActionResult> ExecuteAsync(SessionId sessionId, BrowserAction action, CancellationToken cancellationToken)
         {
             ActionCount++;
@@ -631,7 +757,7 @@ public class DocumentWorkspaceViewTests
         }
         public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken) { ActionCount++; return Task.CompletedTask; }
         public Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken) { ActionCount++; return Task.CompletedTask; }
-        public BrowserSessionStatus? GetStatus(SessionId sessionId) => null;
+        public BrowserSessionStatus? GetStatus(SessionId sessionId) => _statuses.GetValueOrDefault(sessionId);
         public void Dispose() { }
     }
 

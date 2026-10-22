@@ -429,6 +429,168 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task BrowserActivity_OpensSessionDocumentAfterStatusReachesUiScheduler()
+    {
+        var sessionId = StrongId.NewSessionId();
+        var runtime = new FakeAgentRuntime();
+        runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        var scheduler = new QueuedUiScheduler();
+        using var controller = new TrackingBrowserController();
+        using var browser = new BrowserPaneViewModel(controller, scheduler);
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]), browserPane: browser);
+        await workbench.OpenSessionAsync(sessionId);
+        controller.RaiseStatusChanged(sessionId, new BrowserSessionStatus(BrowserSessionState.Busy));
+        scheduler.RunPending();
+        Assert.Empty(workbench.Documents.Items);
+        Assert.False(workbench.IsSidePaneVisible);
+
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("first"));
+        Assert.Empty(workbench.Documents.Items);
+        scheduler.RunPending();
+
+        var document = Assert.Single(workbench.Documents.VisibleItems);
+        var view = Assert.IsType<BrowserPaneViewModel>(document.Content);
+        Assert.Equal("browser", document.Kind);
+        Assert.Equal(sessionId.Value, document.OwnerId);
+        Assert.Equal(sessionId, view.ActiveSessionId);
+        Assert.Equal("first", view.ActiveTabId);
+        Assert.NotSame(browser, view);
+        Assert.Null(browser.PagePresenter);
+        Assert.Same(document, workbench.Documents.ActiveDocument);
+        Assert.True(workbench.Documents.IsVisible);
+        Assert.True(workbench.IsSidePaneVisible);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BrowserActivity_ExistingTabsOpenOnSessionBindingWithoutMixingOwners(bool sameTabId)
+    {
+        var first = StrongId.NewSessionId();
+        var second = StrongId.NewSessionId();
+        var runtime = new FakeAgentRuntime();
+        runtime.RegisterSession(first, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        runtime.RegisterSession(second, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        var scheduler = new QueuedUiScheduler();
+        using var controller = new TrackingBrowserController();
+        controller.RaiseStatusChanged(first, BrowserStatus("first"));
+        controller.RaiseStatusChanged(second, BrowserStatus(sameTabId ? "first" : "second"));
+        using var browser = new BrowserPaneViewModel(controller, scheduler);
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]), browserPane: browser);
+
+        await workbench.OpenSessionAsync(first);
+
+        var firstDocument = Assert.Single(workbench.Documents.VisibleItems);
+        Assert.Equal(first.Value, firstDocument.OwnerId);
+        await workbench.OpenSessionAsync(second);
+        var secondDocument = Assert.Single(workbench.Documents.VisibleItems);
+        Assert.Equal(second.Value, secondDocument.OwnerId);
+        Assert.NotSame(firstDocument, secondDocument);
+        Assert.Equal(second, Assert.IsType<BrowserPaneViewModel>(secondDocument.Content).ActiveSessionId);
+        await workbench.OpenSessionAsync(first);
+        Assert.Same(firstDocument, workbench.Documents.ActiveDocument);
+        Assert.Equal(2, workbench.Documents.Items.Count);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
+    public async Task BrowserActivity_LaterTabsAndStatusDoNotOverrideDocumentSelectionOrDismissal()
+    {
+        var sessionId = StrongId.NewSessionId();
+        var runtime = new FakeAgentRuntime();
+        runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        var scheduler = new QueuedUiScheduler();
+        using var controller = new TrackingBrowserController();
+        using var browser = new BrowserPaneViewModel(controller, scheduler);
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]), browserPane: browser);
+        await workbench.OpenSessionAsync(sessionId);
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("first"));
+        scheduler.RunPending();
+        var browserDocument = Assert.Single(workbench.Documents.VisibleItems);
+        var other = workbench.OpenDocument(new DocumentViewModel("text", "text", "Notes", "", new object(),
+            workbench.CurrentWorkspaceRoot, workbench.CurrentDocumentOwnerId));
+
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("first") with { State = BrowserSessionState.Busy });
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("second"));
+        scheduler.RunPending();
+
+        Assert.Same(other, workbench.Documents.ActiveDocument);
+        Assert.Equal(2, workbench.Documents.Items.Count);
+        workbench.Documents.Collapse();
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("third"));
+        scheduler.RunPending();
+        Assert.False(workbench.IsSidePaneVisible);
+        workbench.Documents.Close(browserDocument);
+        controller.RaiseStatusChanged(sessionId, new BrowserSessionStatus(BrowserSessionState.Idle, Tabs: []));
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("fourth"));
+        scheduler.RunPending();
+        Assert.Same(other, Assert.Single(workbench.Documents.Items));
+        Assert.False(workbench.IsSidePaneVisible);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
+    public async Task BrowserActivity_BackgroundAndStaleQueuedStatusCannotOpenWrongSessionDocument()
+    {
+        var first = StrongId.NewSessionId();
+        var second = StrongId.NewSessionId();
+        var runtime = new FakeAgentRuntime();
+        runtime.RegisterSession(first, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        runtime.RegisterSession(second, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        var scheduler = new QueuedUiScheduler();
+        using var controller = new TrackingBrowserController();
+        using var browser = new BrowserPaneViewModel(controller, scheduler);
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]), browserPane: browser);
+        await workbench.OpenSessionAsync(first);
+        controller.RaiseStatusChanged(first, BrowserStatus("first"));
+
+        await workbench.OpenSessionAsync(second);
+        scheduler.RunPending();
+        controller.RaiseStatusChanged(first, BrowserStatus("background"));
+        scheduler.RunPending();
+
+        Assert.Empty(workbench.Documents.Items);
+        Assert.False(workbench.IsSidePaneVisible);
+        await workbench.OpenSessionAsync(first);
+        Assert.Equal(first.Value, Assert.Single(workbench.Documents.VisibleItems).OwnerId);
+        Assert.Equal("background", browser.ActiveTabId);
+        workbench.ShowNewTask(_root);
+        controller.RaiseStatusChanged(first, BrowserStatus("after-draft"));
+        scheduler.RunPending();
+        Assert.Empty(workbench.Documents.VisibleItems);
+        Assert.False(workbench.IsSidePaneVisible);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
+    public async Task BrowserActivity_DisposeReleasesAutomaticDocumentSubscription()
+    {
+        var sessionId = StrongId.NewSessionId();
+        var runtime = new FakeAgentRuntime();
+        runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        var scheduler = new QueuedUiScheduler();
+        using var controller = new TrackingBrowserController();
+        using var browser = new BrowserPaneViewModel(controller, scheduler);
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]), browserPane: browser);
+        await workbench.OpenSessionAsync(sessionId);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("queued"));
+
+        workbench.Dispose();
+        scheduler.RunPending();
+        browser.ActiveTabId = "after-disposal";
+        controller.RaiseStatusChanged(sessionId, BrowserStatus("after-disposal"));
+        scheduler.RunPending();
+
+        Assert.Empty(workbench.Documents.Items);
+        Assert.Equal(0, controller.SubscriberCount);
+    }
+
+    private static BrowserSessionStatus BrowserStatus(string tabId) => new(BrowserSessionState.Launched,
+        Tabs: [new BrowserTabStatus(tabId, "https://example.com", "Example", IsActive: true)], ActiveTabId: tabId);
+
+    [Fact]
     public async Task NewDraft_UnbindsLegacyBrowser_AndOpensUnboundPlaceholderPresentation()
     {
         await using var store = new SqliteSessionStore(DatabasePath);
@@ -570,7 +732,15 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
         public int DisposeCount { get; private set; }
 
-        public BrowserSessionStatus? GetStatus(SessionId sessionId) => new(
+        private readonly Dictionary<SessionId, BrowserSessionStatus> _statuses = [];
+
+        public void RaiseStatusChanged(SessionId sessionId, BrowserSessionStatus status)
+        {
+            _statuses[sessionId] = status;
+            StatusChanged?.Invoke(this, new BrowserStatusChangedEventArgs(sessionId, status));
+        }
+
+        public BrowserSessionStatus? GetStatus(SessionId sessionId) => _statuses.GetValueOrDefault(sessionId) ?? new(
             BrowserSessionState.Launched, LatestScreenshotUri: "screenshot.png", UpdatedAt: DateTimeOffset.UtcNow);
 
         public Task<BrowserActionResult> ExecuteAsync(SessionId sessionId, BrowserAction action, CancellationToken cancellationToken) =>
