@@ -69,9 +69,17 @@ public sealed class McpTool : ITool
                 $"MCP server '{_connection.ServerName}' is no longer connected; tool '{Contract.Name}' cannot run.",
                 isError: true);
         }
-        List<ToolResultBlock> blocks = outcome.TextParts.Count == 0
-            ? [new ToolResultText("")]
-            : outcome.TextParts.Select(static text => (ToolResultBlock)new ToolResultText(text)).ToList();
+        List<ToolResultBlock> blocks;
+        if (outcome.TextParts.Count == 0)
+        {
+            blocks = [new ToolResultText("")];
+        }
+        else
+        {
+            blocks = new List<ToolResultBlock>(outcome.TextParts.Count);
+            foreach (var text in outcome.TextParts)
+                blocks.Add(new ToolResultText(text));
+        }
         return new ToolExecutionResult(blocks, outcome.IsError);
     }
 

@@ -53,6 +53,25 @@ public interface IAgentRuntime : IAsyncDisposable
 
     ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken);
 
+    ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
+        string? workspaceRoot,
+        int limit,
+        SessionListKind kind,
+        CancellationToken cancellationToken) =>
+        kind == SessionListKind.Active
+            ? ListSessionsAsync(workspaceRoot, limit, cancellationToken)
+            : ValueTask.FromException<IReadOnlyList<SessionSummary>>(
+                new NotSupportedException("This runtime does not support archived session listings."));
+
+    ValueTask SetSessionArchivedAsync(SessionId sessionId, bool archived, CancellationToken cancellationToken) =>
+        ValueTask.FromException(new NotSupportedException("This runtime does not support archiving sessions."));
+
+    ValueTask<int> ArchiveStaleSessionsAsync(
+        TimeSpan olderThan,
+        SessionId? keepOpen,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromException<int>(new NotSupportedException("This runtime does not support automatic session archiving."));
+
     ValueTask<Commands.CommandAck> SubmitAsync(Commands.ConversationCommand command, CancellationToken cancellationToken);
 
     event Action<SessionId, string>? SessionTitleChanged

@@ -169,6 +169,14 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private readonly WorkbenchConfig _config;
 
+    public ObservableCollection<int> AutoArchiveDayOptions { get; } = [3, 7, 14, 30];
+
+    [ObservableProperty]
+    private bool _autoArchiveSessions;
+
+    [ObservableProperty]
+    private int _autoArchiveOlderThanDays = 7;
+
     public SettingsViewModel(WorkbenchConfig config)
         : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows())
     {
@@ -195,6 +203,17 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ShellChoices = choices;
         SelectedShell = choices.FirstOrDefault(choice => choice.Environment == config.IntegratedTerminalShell) ?? choices[0];
         Theme = config.Theme == Light ? Light : Dark;
+        AutoArchiveSessions = config.AutoArchiveSessions;
+        AutoArchiveOlderThanDays = Math.Clamp(config.AutoArchiveOlderThanDays, 1, 365);
+        if (!AutoArchiveDayOptions.Contains(AutoArchiveOlderThanDays))
+        {
+            var options = AutoArchiveDayOptions.Append(AutoArchiveOlderThanDays).Order().ToArray();
+            AutoArchiveDayOptions.Clear();
+            foreach (var option in options)
+            {
+                AutoArchiveDayOptions.Add(option);
+            }
+        }
         LoadUserSkills(skillsCatalog ?? new SkillsCatalog());
         foreach (var provider in config.Providers ?? [])
         {
@@ -365,6 +384,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         Theme = Theme,
         IntegratedTerminalShell = SupportsShellSelection ? SelectedShell?.Environment : _config.IntegratedTerminalShell,
         DisabledSkillPaths = BuildDisabledSkillPaths(),
+        AutoArchiveSessions = AutoArchiveSessions,
+        AutoArchiveOlderThanDays = Math.Clamp(AutoArchiveOlderThanDays, 1, 365),
     };
 
     private void LoadUserSkills(SkillsCatalog catalog)

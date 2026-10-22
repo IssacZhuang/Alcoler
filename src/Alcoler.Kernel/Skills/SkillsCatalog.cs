@@ -29,6 +29,9 @@ public sealed class SkillsCatalog
     private const string BrandDirectoryName = ".alcoler";
     private const string AgentsDirectoryName = ".agents";
 
+    private static readonly object CacheLock = new();
+    private static readonly Dictionary<CacheKey, CacheEntry> Cache = [];
+
     private readonly string _userSkillsBase;
 
     public SkillsCatalog(string? userSkillsBase = null) =>
@@ -39,13 +42,44 @@ public sealed class SkillsCatalog
 
     public IReadOnlyList<SkillInfo> Load(string workspaceRoot, IReadOnlyList<string>? disabledSkillPaths = null)
     {
+        var key = new CacheKey(
+            NormalizePath(workspaceRoot),
+            NormalizePath(_userSkillsBase),
+            DisabledKey(disabledSkillPaths));
+        lock (CacheLock)
+        {
+            if (Cache.TryGetValue(key, out var cached) && cached.IsCurrent())
+                return cached.Skills;
+        }
+
         var byName = new Dictionary<string, SkillInfo>(StringComparer.OrdinalIgnoreCase);
         foreach (var skill in LoadLevel(workspaceRoot, SkillSource.Workspace))
             byName.TryAdd(skill.Name, skill);
         foreach (var skill in LoadLevel(_userSkillsBase, SkillSource.User))
             byName.TryAdd(skill.Name, skill);
-        return Visible(byName, disabledSkillPaths);
+        var skills = Visible(byName, disabledSkillPaths);
+        var entry = CacheEntry.Capture(workspaceRoot, _userSkillsBase, skills);
+        lock (CacheLock)
+        {
+            Cache[key] = entry;
+        }
+        return skills;
     }
+
+    private static string DisabledKey(IReadOnlyList<string>? disabledSkillPaths)
+    {
+        if (disabledSkillPaths is not { Count: > 0 })
+            return string.Empty;
+        return string.Join('\0', disabledSkillPaths.Select(NormalizePath).OrderBy(path => path, PathComparer));
+    }
+
+    private static string[] SkillRoots(string workspaceRoot, string userSkillsBase) =>
+    [
+        Path.Combine(workspaceRoot, BrandDirectoryName, "skills"),
+        Path.Combine(workspaceRoot, AgentsDirectoryName, "skills"),
+        Path.Combine(userSkillsBase, BrandDirectoryName, "skills"),
+        Path.Combine(userSkillsBase, AgentsDirectoryName, "skills"),
+    ];
 
     public IReadOnlyList<SkillInfo> LoadUserSkills(IReadOnlyList<string>? disabledSkillPaths = null)
     {
@@ -101,6 +135,57 @@ public sealed class SkillsCatalog
 
     public static string StripFrontMatterForTool(string text) =>
         StripFrontMatter(text, out _);
+
+    private readonly record struct CacheKey(string WorkspaceRoot, string UserSkillsBase, string DisabledPaths);
+
+    private sealed record CacheEntry(
+        IReadOnlyList<SkillInfo> Skills,
+        (string Path, bool Exists, DateTime LastWriteUtc)[] Roots,
+        (string Path, DateTime LastWriteUtc, long Length)[] Files)
+    {
+        public bool IsCurrent()
+        {
+            foreach (var root in Roots)
+            {
+                var exists = Directory.Exists(root.Path);
+                if (exists != root.Exists)
+                    return false;
+                if (exists && Directory.GetLastWriteTimeUtc(root.Path) != root.LastWriteUtc)
+                    return false;
+            }
+            foreach (var file in Files)
+            {
+                if (!File.Exists(file.Path))
+                    return false;
+                var info = new FileInfo(file.Path);
+                if (info.Length != file.Length || info.LastWriteTimeUtc != file.LastWriteUtc)
+                    return false;
+            }
+            return true;
+        }
+
+        public static CacheEntry Capture(string workspaceRoot, string userSkillsBase, IReadOnlyList<SkillInfo> skills)
+        {
+            var roots = SkillRoots(workspaceRoot, userSkillsBase)
+                .Select(path => (path, Directory.Exists(path),
+                    Directory.Exists(path) ? Directory.GetLastWriteTimeUtc(path) : DateTime.MinValue))
+                .ToArray();
+            var files = new List<(string, DateTime, long)>();
+            foreach (var root in roots)
+            {
+                if (!root.Item2)
+                    continue;
+                foreach (var directory in Directory.EnumerateDirectories(root.Item1))
+                {
+                    var path = Path.Combine(directory, SkillFileName);
+                    var info = new FileInfo(path);
+                    if (info.Exists)
+                        files.Add((path, info.LastWriteTimeUtc, info.Length));
+                }
+            }
+            return new CacheEntry(skills, roots, [.. files]);
+        }
+    }
 
     private static IReadOnlyList<SkillInfo> LoadFrom(string root, SkillSource source)
     {

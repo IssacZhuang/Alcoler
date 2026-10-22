@@ -27,7 +27,9 @@ public sealed class FileArtifactStore : IArtifactStore
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentException.ThrowIfNullOrWhiteSpace(mimeType);
 
-        var storedName = $"{Guid.NewGuid().ToString("N")[..8]}-{SanitizeFileName(fileName)}";
+        Span<char> guidChars = stackalloc char[32];
+        Guid.NewGuid().TryFormat(guidChars, out _, "N");
+        var storedName = $"{new string(guidChars[..8])}-{SanitizeFileName(fileName)}";
         var directory = Path.Combine(_root, session);
         Directory.CreateDirectory(directory);
         await File.WriteAllBytesAsync(Path.Combine(directory, storedName), data, cancellationToken)
@@ -99,8 +101,12 @@ public sealed class FileArtifactStore : IArtifactStore
     private static string SanitizeFileName(string fileName)
     {
         var invalid = Path.GetInvalidFileNameChars();
-        var sanitized = new string(fileName.Select(c => invalid.Contains(c) ? '_' : c).ToArray())
-            .TrimEnd(' ', '.');
-        return sanitized.Length > 0 ? sanitized : "artifact";
+        var sanitized = new char[fileName.Length];
+        for (var index = 0; index < fileName.Length; index++)
+            sanitized[index] = Array.IndexOf(invalid, fileName[index]) >= 0 ? '_' : fileName[index];
+        var length = sanitized.Length;
+        while (length > 0 && sanitized[length - 1] is ' ' or '.')
+            length--;
+        return length > 0 ? new string(sanitized, 0, length) : "artifact";
     }
 }

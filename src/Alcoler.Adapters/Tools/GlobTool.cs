@@ -71,7 +71,9 @@ public sealed class GlobTool : ITool
         var matches = new List<(DateTime MtimeUtc, string RelativePath)>();
         foreach (var file in FileSearchSupport.EnumerateFiles(searchRoot))
         {
-            var relative = Path.GetRelativePath(searchRoot, file).Replace('\\', '/');
+            var relative = Path.GetRelativePath(searchRoot, file);
+            if (relative.Contains('\\'))
+                relative = relative.Replace('\\', '/');
             if (regex.IsMatch(relative))
                 matches.Add((FileSearchSupport.GetLastWriteTimeUtcSafe(file), relative));
         }
@@ -79,7 +81,10 @@ public sealed class GlobTool : ITool
         cancellationToken.ThrowIfCancellationRequested();
         matches.Sort(FileSearchSupport.CompareNewestFirst);
         var truncated = matches.Count > MaxEntries;
-        var filenames = matches.Take(MaxEntries).Select(static match => match.RelativePath).ToList();
+        var pageCount = Math.Min(matches.Count, MaxEntries);
+        var filenames = new List<string>(pageCount);
+        for (var index = 0; index < pageCount; index++)
+            filenames.Add(matches[index].RelativePath);
 
         if (filenames.Count == 0)
             return ValueTask.FromResult(ToolExecutionResult.Text("No files found"));

@@ -8,6 +8,7 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Stores;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -31,6 +32,13 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
     private readonly Dictionary<string, SystemNoticeRow> _agentRows = [];
     private readonly List<string> _rowOrder = [];
+    private readonly Dictionary<string, int> _rowOrderIndex = new(StringComparer.Ordinal);
+    private readonly List<AgentCallItemViewModel> _dispatches = [];
+    private readonly Dictionary<ToolCallId, AgentCallItemViewModel> _dispatchByToolId = [];
+    private readonly Dictionary<string, AgentCallItemViewModel> _dispatchByLegacyId = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _legacyIdCounts = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _pairedAgentRows = new(StringComparer.Ordinal);
+    private readonly Dictionary<AgentCallItemViewModel, SubagentState> _agentStates = [];
     private readonly HashSet<CommandId> _queueOperations = [];
     private readonly IArtifactStore _artifacts;
     private IReadOnlyList<ModelChoice>? _modelChoices;
@@ -155,21 +163,35 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
 
         var appendedDelta = false;
+        var reconcileAgents = false;
+        var rowsRemoved = false;
+        var statePatched = false;
         foreach (var op in update.Ops)
         {
             appendedDelta |= ApplyOp(op);
-        }
-        if (update.Ops.Any(op => op switch
+            switch (op)
             {
-                RowAppended { Row: SystemNoticeRow { Subagent: not null } } => true,
-                RowUpserted { Row: SystemNoticeRow { Subagent: not null } } => true,
-                RowAppended { Row: ToolCallRow tool } => AgentCallItemViewModel.IsAgentTool(tool.ToolName),
-                RowUpserted { Row: ToolCallRow tool } => AgentCallItemViewModel.IsAgentTool(tool.ToolName),
-                RowRemoved => _agentRows.Count > 0 || Items.OfType<AgentCallItemViewModel>().Any(),
-                _ => false,
-            }))
+                case RowAppended { Row: SystemNoticeRow { Subagent: not null } }:
+                case RowUpserted { Row: SystemNoticeRow { Subagent: not null } }:
+                    reconcileAgents = true;
+                    break;
+                case RowAppended { Row: ToolCallRow appendedTool } when AgentCallItemViewModel.IsAgentTool(appendedTool.ToolName):
+                case RowUpserted { Row: ToolCallRow upsertedTool } when AgentCallItemViewModel.IsAgentTool(upsertedTool.ToolName):
+                    reconcileAgents = true;
+                    break;
+                case RowRemoved:
+                    rowsRemoved = true;
+                    break;
+                case StatePatched:
+                    statePatched = true;
+                    break;
+            }
+        }
+        if (rowsRemoved && (_agentRows.Count > 0 || Items.OfType<AgentCallItemViewModel>().Any()))
+            reconcileAgents = true;
+        if (reconcileAgents)
             ReconcileAgents();
-        if (update.Ops.OfType<StatePatched>().Any())
+        if (statePatched)
         {
             ApplyState(update.State);
         }
@@ -184,8 +206,10 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         List<TimelineItemViewModel> items = [];
         _agentRows.Clear();
         _rowOrder.Clear();
+        _rowOrderIndex.Clear();
         foreach (var row in rows)
         {
+            _rowOrderIndex[row.RowId] = _rowOrder.Count;
             _rowOrder.Add(row.RowId);
             if (row is SystemNoticeRow { Subagent: not null } agent)
                 _agentRows[row.RowId] = agent;
@@ -234,38 +258,59 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     private void ReconcileAgents()
     {
-        var dispatches = _itemsByRowId.Values.OfType<AgentCallItemViewModel>().Where(item => item.IsDispatch).ToArray();
-        var byToolId = dispatches.ToDictionary(item => item.Id!.Value);
-        var legacyIds = dispatches.Where(item => !string.IsNullOrEmpty(item.LegacyAgentId))
-            .GroupBy(item => item.LegacyAgentId!, StringComparer.Ordinal)
-            .Where(group => group.Count() == 1).ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
-        var paired = new HashSet<string>();
-        var states = new Dictionary<AgentCallItemViewModel, Alcoler.Contracts.Subagents.SubagentState>();
+        _dispatches.Clear();
+        _dispatchByToolId.Clear();
+        _dispatchByLegacyId.Clear();
+        _legacyIdCounts.Clear();
+        foreach (var item in _itemsByRowId.Values)
+        {
+            if (item is not AgentCallItemViewModel { IsDispatch: true } dispatch)
+                continue;
+            _dispatches.Add(dispatch);
+            _dispatchByToolId[dispatch.Id!.Value] = dispatch;
+            if (dispatch.LegacyAgentId is not { Length: > 0 } legacyId)
+                continue;
+            _legacyIdCounts[legacyId] = _legacyIdCounts.GetValueOrDefault(legacyId) + 1;
+            _dispatchByLegacyId[legacyId] = dispatch;
+        }
+
+        _pairedAgentRows.Clear();
+        _agentStates.Clear();
         foreach (var row in _agentRows.Values)
         {
             var agent = row.Subagent!;
             AgentCallItemViewModel? dispatch = null;
             if (agent.ParentToolCallId is { } toolId)
-                byToolId.TryGetValue(toolId, out dispatch);
-            else
-                legacyIds.TryGetValue(agent.Id.Value, out dispatch);
+                _dispatchByToolId.TryGetValue(toolId, out dispatch);
+            else if (_legacyIdCounts.GetValueOrDefault(agent.Id.Value) == 1)
+                _dispatchByLegacyId.TryGetValue(agent.Id.Value, out dispatch);
             if (dispatch is null)
                 continue;
-            states[dispatch] = agent;
-            paired.Add(row.RowId);
+            _agentStates[dispatch] = agent;
+            _pairedAgentRows.Add(row.RowId);
         }
-        foreach (var dispatch in dispatches)
-            dispatch.SetSubagent(states.GetValueOrDefault(dispatch));
+        foreach (var dispatch in _dispatches)
+            dispatch.SetSubagent(_agentStates.GetValueOrDefault(dispatch));
+
         for (var index = Items.Count - 1; index >= 0; index--)
-            if (paired.Contains(Items[index].RowId))
-                Items.RemoveAt(index);
-        foreach (var row in _agentRows.Values.Where(row => !paired.Contains(row.RowId)))
         {
+            if (_pairedAgentRows.Contains(Items[index].RowId))
+                Items.RemoveAt(index);
+        }
+        foreach (var row in _agentRows.Values)
+        {
+            if (_pairedAgentRows.Contains(row.RowId))
+                continue;
             var item = _itemsByRowId[row.RowId];
             if (Items.Contains(item))
                 continue;
-            var rowIndex = _rowOrder.IndexOf(row.RowId);
-            var index = Items.TakeWhile(visible => _rowOrder.IndexOf(visible.RowId) < rowIndex).Count();
+            var rowIndex = _rowOrderIndex.GetValueOrDefault(row.RowId, -1);
+            var index = 0;
+            while (index < Items.Count
+                && _rowOrderIndex.GetValueOrDefault(Items[index].RowId, -1) < rowIndex)
+            {
+                index++;
+            }
             Items.Insert(index, item);
         }
     }
@@ -304,7 +349,10 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         if (row is not null)
         {
             if (!_itemsByRowId.ContainsKey(row.RowId))
+            {
+                _rowOrderIndex[row.RowId] = _rowOrder.Count;
                 _rowOrder.Add(row.RowId);
+            }
             if (row is SystemNoticeRow { Subagent: not null } agent)
                 _agentRows[row.RowId] = agent;
             else
@@ -339,7 +387,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
             case RowRemoved removed:
                 _agentRows.Remove(removed.RowId);
-                _rowOrder.Remove(removed.RowId);
+                if (_rowOrderIndex.Remove(removed.RowId, out var removedOrder))
+                {
+                    _rowOrder.RemoveAt(removedOrder);
+                    for (var index = removedOrder; index < _rowOrder.Count; index++)
+                        _rowOrderIndex[_rowOrder[index]] = index;
+                }
                 if (_itemsByRowId.Remove(removed.RowId, out var removedItem))
                 {
                     Items.Remove(removedItem);
@@ -366,9 +419,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
         Mode = state.Mode;
         Composer.SessionMode = state.Mode;
-        ModelText = _currentSelection is { } selection
-            ? $"{selection.ProviderId}/{selection.ModelId}"
-            : "default model";
         PhaseText = state.Phase.ToString();
         ActivityText = state.Phase switch
         {
@@ -387,8 +437,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         Queue = state.Queue;
         OnPropertyChanged(nameof(HasQueuedInput));
 
-        var context = state.ContextUsage ?? (state.ContextUsageTokens is { } used
-            ? new ContextUsageState(used, state.ContextWindowTokens, state.TokenSource, []) : null);
+        var context = state.ContextUsage;
+        if (context is null && state.ContextUsageTokens is { } used)
+        {
+            var existing = ContextUsage?.Usage;
+            context = existing is { Breakdown.Count: 0 }
+                && existing.UsedTokens == used
+                && existing.MaxTokens == state.ContextWindowTokens
+                && string.Equals(existing.TokenSource, state.TokenSource, StringComparison.Ordinal)
+                ? existing
+                : new ContextUsageState(used, state.ContextWindowTokens, state.TokenSource, []);
+        }
         if (ContextUsage?.Usage != context)
             ContextUsage = context is { UsedTokens: > 0, MaxTokens: > 0 } ? new ContextUsageViewModel(context) : null;
 
@@ -660,6 +719,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     private void SetModelSelection(ModelSelection? selection, bool local)
     {
+        var previous = _currentSelection;
         _hasLocalSelection |= local && selection is not null;
         if (_modelChoices is { Count: > 0 })
         {
@@ -688,8 +748,11 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             _applyingState = false;
         }
-        ModelText = selection is null ? "default model" : $"{selection.ProviderId}/{selection.ModelId}";
-        OnPropertyChanged(nameof(CurrentSelection));
+        var selectionChanged = !Equals(previous, selection);
+        if (selectionChanged || string.IsNullOrEmpty(ModelText))
+            ModelText = selection is null ? "default model" : $"{selection.ProviderId}/{selection.ModelId}";
+        if (selectionChanged)
+            OnPropertyChanged(nameof(CurrentSelection));
     }
 
     public void ConfigureModel(ModelChoice choice, bool useDefaultReasoning = false)

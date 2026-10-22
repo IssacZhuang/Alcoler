@@ -10,6 +10,8 @@ public sealed partial class CdpBrowserAutomation : IDisposable
 {
     private const int MaxText = 24000;
     private const int MaxMedia = 32 * 1024 * 1024;
+    private const string WaitForCheckFunction =
+        "function(spec){const es=__alcolerAutomation.resolve(JSON.parse(spec));return {count:es.length,visible:es.some(__alcolerAutomation.visible)};}";
     private readonly IBrowserPage _page;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
@@ -17,7 +19,8 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     private readonly ConcurrentDictionary<string, string> _frameSessions = new();
     private readonly ConcurrentDictionary<string, FrameOwner> _frameOwners = new();
     private readonly ConcurrentDictionary<string, ElementReference> _references = new();
-    private readonly ConcurrentDictionary<string, JsonElement> _downloads = new();
+    private readonly ConcurrentDictionary<string, JsonObject> _downloads = new();
+    private readonly Lock _downloadsLock = new();
     private readonly ConcurrentDictionary<string, string> _loadStates = new();
     private JsonElement? _dialog;
     private string? _mainFrame;
@@ -56,7 +59,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         await SendAsync("Runtime.enable", null, ct);
         await SendAsync("DOM.enable", null, ct);
         await OptionalAsync("Accessibility.enable", null, ct);
-        await OptionalAsync("Page.setLifecycleEventsEnabled", D(("enabled", true)), ct);
+        await OptionalAsync("Page.setLifecycleEventsEnabled", D("enabled", true), ct);
         await OptionalAsync("Target.setAutoAttach", D(("autoAttach", true), ("waitForDebuggerOnStart", false), ("flatten", true)), ct);
         var tree = await SendAsync("Page.getFrameTree", null, ct);
         if (tree.TryGetProperty("frameTree", out var frameTree))
@@ -155,7 +158,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 await SendAsync("Emulation.setDeviceMetricsOverride", D(("width", _viewportWidth), ("height", _viewportHeight), ("deviceScaleFactor", 1), ("mobile", false)), ct);
                 return new(true);
             case "dialog": return await DialogAsync(input, ct);
-            case "downloads": return Structured(BrowserJson.Element(_downloads.Values.ToArray()));
+            case "downloads": return Structured(DownloadsElement());
             case "download_media": return await DownloadMediaAsync(input, ct);
             case "record_start": case "record_status": case "record_cancel": case "record_stop": return await RecordingAsync(command, input, ct);
             default: throw new NotSupportedException($"Unsupported browser page action '{command}'.");
@@ -171,7 +174,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         ValidateLoadState(wait);
         InvalidateDocument();
         _sideEffect = true;
-        var result = await SendAsync("Page.navigate", D(("url", url)), ct);
+        var result = await SendAsync("Page.navigate", D("url", url), ct);
         if (String(result, "errorText") is { Length: > 0 } error) throw new InvalidOperationException(error);
         var frameId = String(result, "frameId") ?? _mainFrame;
         Url = url;
@@ -187,7 +190,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         {
             InvalidateDocument();
             _sideEffect = true;
-            await SendAsync("Page.reload", D(("ignoreCache", Boolean(input, "ignoreCache"))), ct);
+            await SendAsync("Page.reload", D("ignoreCache", Boolean(input, "ignoreCache")), ct);
         }
         else
         {
@@ -197,7 +200,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             if (index < 0 || index >= entries.GetArrayLength()) return new(true, Text: "No history entry.");
             InvalidateDocument();
             _sideEffect = true;
-            await SendAsync("Page.navigateToHistoryEntry", D(("entryId", entries[index].GetProperty("id").GetInt32())), ct);
+            await SendAsync("Page.navigateToHistoryEntry", D("entryId", entries[index].GetProperty("id").GetInt32()), ct);
         }
         if (wait != "commit") await WaitLoadAsync(_mainFrame, wait, ct);
         return new(true);
@@ -251,7 +254,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 {
                     var context = await ContextForInputAsync(input, ct);
                     var locator = await RuntimeLocatorAsync(input, context, ct);
-                    var value = await EvaluateValueAsync(context, $"(() => {{const es=__alcolerAutomation.resolve({locator});return {{count:es.length,visible:es.some(__alcolerAutomation.visible)}};}})()", ct);
+                    var value = RemoteValue(await CallAsync(context, WaitForCheckFunction, [D("value", locator)], ct, true));
                     var count = value.GetProperty("count").GetInt32();
                     var visible = value.GetProperty("visible").GetBoolean();
                     if (state switch { "attached" => count > 0, "detached" => count == 0, "hidden" => !visible, _ => visible }) return new(true);
@@ -299,10 +302,10 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             foreach (var frameSelector in frames)
             {
                 var ownerContext = context;
-                var owner = await ResolveObjectAsync(BrowserJson.Element(D(("selector", frameSelector))), ownerContext, ct);
+                var owner = await ResolveObjectAsync(BrowserJson.Element(D("selector", frameSelector)), ownerContext, ct);
                 try
                 {
-                    var description = await SendAsync("DOM.describeNode", D(("objectId", owner)), ct, ownerContext.Session);
+                    var description = await SendAsync("DOM.describeNode", D("objectId", owner), ct, ownerContext.Session);
                     var node = description.GetProperty("node");
                     var frame = String(node, "frameId") ?? throw new InvalidOperationException("Frame locator did not select an iframe.");
                     _frameOwners[frame] = new(ownerContext.FrameId, node.GetProperty("backendNodeId").GetInt32());
@@ -319,21 +322,32 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     private async Task<string> RuntimeLocatorAsync(JsonElement input, FrameContext context, CancellationToken ct)
     {
         var locator = Locator(input, true)!.Value;
-        var node = JsonNode.Parse(locator.GetRawText());
-        if (node is JsonObject obj) { obj.Remove("frame"); obj.Remove("frameLocator"); }
         if (GetReference(input) is { } reference)
         {
             if (!_references.TryGetValue(reference, out var stored) || stored.Generation != _generation)
                 throw new InvalidOperationException("Stale element reference; take a new snapshot.");
             if (stored.BackendId is { } backend)
             {
-                var result = await SendAsync("DOM.resolveNode", D(("backendNodeId", backend), ("executionContextId", context.Id)), ct, context.Session);
+                var result = await SendAsync("DOM.resolveNode", D("backendNodeId", backend, "executionContextId", context.Id), ct, context.Session);
                 var objectId = String(result.GetProperty("object"), "objectId") ?? throw new InvalidOperationException("Referenced node is no longer available.");
-                try { await CallObjectAsync(context, objectId, "function(ref){globalThis.__alcolerAutomation.refs.set(ref,this);return true;}", [D(("value", reference))], ct, true); }
+                try { await CallObjectAsync(context, objectId, "function(ref){globalThis.__alcolerAutomation.refs.set(ref,this);return true;}", [D("value", reference)], ct, true); }
                 finally { await ReleaseAsync(objectId, context.Session, ct); }
             }
         }
-        return node?.ToJsonString() ?? locator.GetRawText();
+        return LocatorJson(input, locator);
+    }
+
+    private static string LocatorJson(JsonElement input, JsonElement locator)
+    {
+        if (input.ValueKind == JsonValueKind.Object && !input.TryGetProperty("locator", out _))
+        {
+            if (input.TryGetProperty("ref", out var reference)) return BrowserJson.Serialize(D("ref", reference.GetString()));
+            return locator.GetRawText();
+        }
+        if (locator.ValueKind != JsonValueKind.Object
+            || !locator.TryGetProperty("frame", out _) && !locator.TryGetProperty("frameLocator", out _))
+            return locator.GetRawText();
+        return BrowserJson.SerializeObjectWithout(locator, "frame", "frameLocator");
     }
 
     private async Task<string> ResolveObjectAsync(JsonElement input, FrameContext context, CancellationToken ct)
@@ -430,7 +444,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     private async Task ReleaseAsync(string id, string? session, CancellationToken ct)
     {
         if (ct.IsCancellationRequested || _lifetime.IsCancellationRequested) return;
-        try { await SendAsync("Runtime.releaseObject", D(("objectId", id)), ct, session); }
+        try { await SendAsync("Runtime.releaseObject", D("objectId", id), ct, session); }
         catch (Exception ex) when (ex is not OperationCanceledException) { }
     }
 
@@ -443,9 +457,10 @@ public sealed partial class CdpBrowserAutomation : IDisposable
 
     private static JsonElement RemoteValue(JsonElement result)
     {
+        // SendAsync results own their detached document; returning a child element keeps it alive.
         CheckException(result);
-        if (!result.TryGetProperty("result", out var remote)) return result.Clone();
-        if (remote.TryGetProperty("value", out var value)) return value.Clone();
+        if (!result.TryGetProperty("result", out var remote)) return result;
+        if (remote.TryGetProperty("value", out var value)) return value;
         if (String(remote, "unserializableValue") is { } special) return BrowserJson.Element(special);
         return BrowserJson.Element(null);
     }
@@ -498,13 +513,16 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             case "Browser.downloadWillBegin": case "Page.downloadWillBegin": case "Browser.downloadProgress": case "Page.downloadProgress":
                 if (String(p, "guid") is { } guid)
                 {
-                    _downloads.AddOrUpdate(guid, p.Clone(), (_, previous) =>
+                    lock (_downloadsLock)
                     {
-                        var merged = JsonNode.Parse(previous.GetRawText())!.AsObject();
-                        foreach (var property in p.EnumerateObject()) merged[property.Name] = JsonNode.Parse(property.Value.GetRawText());
-                        return JsonDocument.Parse(merged.ToJsonString()).RootElement.Clone();
-                    });
-                    while (_downloads.Count > 100 && _downloads.Keys.FirstOrDefault() is { } oldest) _downloads.TryRemove(oldest, out _);
+                        if (_downloads.TryGetValue(guid, out var merged))
+                        {
+                            foreach (var property in p.EnumerateObject())
+                                merged[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+                        }
+                        else _downloads[guid] = JsonNode.Parse(p.GetRawText())!.AsObject();
+                        while (_downloads.Count > 100 && _downloads.Keys.FirstOrDefault() is { } oldest) _downloads.TryRemove(oldest, out _);
+                    }
                 }
                 break;
         }
@@ -523,13 +541,13 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     private static (string Command, JsonElement Input) Normalize(BrowserAction action) => action switch
     {
         BrowserCommandAction c => (c.Command.ToLowerInvariant(), c.Input),
-        BrowserNavigateAction n => ("navigate", BrowserJson.Element(D(("url", n.Url)))),
-        BrowserClickAction c => ("click", BrowserJson.Element(D(("selector", c.Selector)))),
+        BrowserNavigateAction n => ("navigate", BrowserJson.Element(D("url", n.Url))),
+        BrowserClickAction c => ("click", BrowserJson.Element(D("selector", c.Selector))),
         BrowserTypeAction t => ("type", BrowserJson.Element(D(("selector", t.Selector), ("text", t.Text), ("submit", t.Submit)))),
         BrowserScreenshotAction => ("screenshot", BrowserJson.Element(D())),
-        BrowserPressAction p => ("press", BrowserJson.Element(D(("key", p.Key)))),
-        BrowserScrollAction s => ("scroll", BrowserJson.Element(D(("deltaX", s.DeltaX), ("deltaY", s.DeltaY)))),
-        BrowserWaitAction w => ("wait", BrowserJson.Element(D(("milliseconds", w.Milliseconds)))),
+        BrowserPressAction p => ("press", BrowserJson.Element(D("key", p.Key))),
+        BrowserScrollAction s => ("scroll", BrowserJson.Element(D("deltaX", s.DeltaX, "deltaY", s.DeltaY))),
+        BrowserWaitAction w => ("wait", BrowserJson.Element(D("milliseconds", w.Milliseconds))),
         BrowserReadTextAction => ("read_text", BrowserJson.Element(D())),
         _ => throw new NotSupportedException($"Unsupported browser action '{action.Verb}'.")
     };
@@ -539,7 +557,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         if (input.ValueKind == JsonValueKind.Object)
         {
             if (input.TryGetProperty("locator", out var locator)) return locator;
-            if (input.TryGetProperty("ref", out var reference)) return BrowserJson.Element(D(("ref", reference.GetString())));
+            if (input.TryGetProperty("ref", out var reference)) return reference;
             if (input.TryGetProperty("selector", out var selector)) return selector;
         }
         if (required) throw new ArgumentException("A selector, ref, or locator is required.");
@@ -548,10 +566,14 @@ public sealed partial class CdpBrowserAutomation : IDisposable
 
     private static string? GetReference(JsonElement input)
     {
-        var locator = Locator(input, false);
-        if (locator is not { } l) return null;
-        if (l.ValueKind == JsonValueKind.String && l.GetString() is { } s && s.StartsWith("ref=", StringComparison.Ordinal)) return s[4..];
-        return String(l, "ref");
+        if (input.ValueKind != JsonValueKind.Object) return null;
+        if (!input.TryGetProperty("locator", out var locator))
+        {
+            if (input.TryGetProperty("ref", out var reference)) return reference.GetString();
+            if (!input.TryGetProperty("selector", out locator)) return null;
+        }
+        if (locator.ValueKind == JsonValueKind.String && locator.GetString() is { } s && s.StartsWith("ref=", StringComparison.Ordinal)) return s[4..];
+        return String(locator, "ref");
     }
 
     private static string? String(JsonElement input, string key) => input.ValueKind == JsonValueKind.Object && input.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
@@ -567,8 +589,27 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         var value = input.ValueKind == JsonValueKind.Object && input.TryGetProperty(key, out var property) ? property.GetDouble() : fallback;
         return double.IsFinite(value) ? value : throw new ArgumentException($"'{key}' must be finite.");
     }
-    private static Dictionary<string, object?> D(params (string Key, object? Value)[] values) => values.ToDictionary(v => v.Key, v => v.Value);
+    private static Dictionary<string, object?> D(string key, object? value) => new(1) { [key] = value };
+    private static Dictionary<string, object?> D(string firstKey, object? firstValue, string secondKey, object? secondValue) =>
+        new(2) { [firstKey] = firstValue, [secondKey] = secondValue };
+    private static Dictionary<string, object?> D(params (string Key, object? Value)[] values)
+    {
+        var result = new Dictionary<string, object?>(values.Length);
+        foreach (var (key, value) in values) result.Add(key, value);
+        return result;
+    }
     private static string Truncate(string value, int max) => value.Length > max ? value[..max] : value;
+
+    private JsonElement DownloadsElement()
+    {
+        lock (_downloadsLock)
+        {
+            var array = new JsonArray();
+            foreach (var download in _downloads.Values) array.Add(download.DeepClone());
+            using var document = JsonDocument.Parse(array.ToJsonString());
+            return document.RootElement.Clone();
+        }
+    }
     private static BrowserActionResult Structured(JsonElement value)
     {
         var json = value.GetRawText();
@@ -588,7 +629,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         _contexts.Clear();
         _frameOwners.Clear();
         _frameSessions.Clear();
-        _downloads.Clear();
+        lock (_downloadsLock) _downloads.Clear();
     }
 
     private sealed record FrameContext(string FrameId, int Id, string? Session);

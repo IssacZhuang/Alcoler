@@ -54,33 +54,56 @@ public sealed class ToolCallAnomalyTracker
             "Use the existing result to take a different next step, explain the blocker, or ask the user for guidance.",
         ]);
 
-    internal static string BuildSignature(string toolName, JsonElement input) =>
-        $"{Quote(toolName)}:{CanonicalJson(input)}";
-
-    private static string Quote(string value) => $"\"{JsonEncodedText.Encode(value)}\"";
-
-    // Key-sorted JSON so property order in the model's input never masks a repeat.
-    private static string CanonicalJson(JsonElement element)
+    internal static string BuildSignature(string toolName, JsonElement input)
     {
         var builder = new StringBuilder();
-        AppendCanonical(element, builder);
+        AppendQuoted(toolName, builder);
+        builder.Append(':');
+        AppendCanonical(input, builder);
         return builder.ToString();
     }
 
+    private static void AppendQuoted(string value, StringBuilder builder)
+    {
+        builder.Append('"');
+        builder.Append(JsonEncodedText.Encode(value).Value);
+        builder.Append('"');
+    }
+
+    // Key-sorted JSON so property order in the model's input never masks a repeat.
     private static void AppendCanonical(JsonElement element, StringBuilder builder)
     {
         switch (element.ValueKind)
         {
             case JsonValueKind.Object:
                 builder.Append('{');
-                var first = true;
-                foreach (var property in element.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal))
+                var propertyCount = 0;
+                foreach (var _ in element.EnumerateObject())
+                    propertyCount++;
+                if (propertyCount <= 1)
                 {
-                    if (!first)
-                        builder.Append(',');
-                    first = false;
-                    builder.Append(Quote(property.Name)).Append(':');
-                    AppendCanonical(property.Value, builder);
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        AppendQuoted(property.Name, builder);
+                        builder.Append(':');
+                        AppendCanonical(property.Value, builder);
+                    }
+                }
+                else
+                {
+                    var properties = new JsonProperty[propertyCount];
+                    var index = 0;
+                    foreach (var property in element.EnumerateObject())
+                        properties[index++] = property;
+                    StableSortByName(properties);
+                    for (var i = 0; i < properties.Length; i++)
+                    {
+                        if (i > 0)
+                            builder.Append(',');
+                        AppendQuoted(properties[i].Name, builder);
+                        builder.Append(':');
+                        AppendCanonical(properties[i].Value, builder);
+                    }
                 }
                 builder.Append('}');
                 break;
@@ -97,6 +120,21 @@ public sealed class ToolCallAnomalyTracker
             default:
                 builder.Append(element.GetRawText());
                 break;
+        }
+    }
+
+    private static void StableSortByName(JsonProperty[] properties)
+    {
+        for (var i = 1; i < properties.Length; i++)
+        {
+            var current = properties[i];
+            var j = i - 1;
+            while (j >= 0 && string.CompareOrdinal(properties[j].Name, current.Name) > 0)
+            {
+                properties[j + 1] = properties[j];
+                j--;
+            }
+            properties[j + 1] = current;
         }
     }
 }

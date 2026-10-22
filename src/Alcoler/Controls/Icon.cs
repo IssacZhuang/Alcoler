@@ -8,6 +8,10 @@ public sealed class Icon : Control
 {
     private const double ViewportSize = 24;
 
+    private Pen? _pen;
+    private IBrush? _penStroke;
+    private double _penThickness = double.NaN;
+
     public static readonly StyledProperty<Geometry?> DataProperty =
         AvaloniaProperty.Register<Icon, Geometry?>(nameof(Data));
 
@@ -65,9 +69,17 @@ public sealed class Icon : Control
         // Geometry and stroke share Lucide's fixed viewport; geometry bounds must not affect scale.
         var scale = size / ViewportSize;
         var transform = new Matrix(scale, 0, 0, scale, (Bounds.Width - size) / 2, (Bounds.Height - size) / 2);
-        var pen = Stroke is { } stroke && StrokeThickness > 0
-            ? new Pen(stroke, StrokeThickness, lineCap: PenLineCap.Round, lineJoin: PenLineJoin.Round)
-            : null;
+        Pen? pen = null;
+        if (Stroke is { } stroke && StrokeThickness > 0)
+        {
+            if (_pen is null || !ReferenceEquals(_penStroke, stroke) || _penThickness != StrokeThickness)
+            {
+                _pen = new Pen(stroke, StrokeThickness, lineCap: PenLineCap.Round, lineJoin: PenLineJoin.Round);
+                _penStroke = stroke;
+                _penThickness = StrokeThickness;
+            }
+            pen = _pen;
+        }
         using (context.PushTransform(transform))
         {
             context.DrawGeometry(Fill, pen, data);

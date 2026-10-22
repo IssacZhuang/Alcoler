@@ -126,7 +126,9 @@ public sealed class GrepTool : ITool
             Path.GetFullPath(isSingleFile ? Path.GetDirectoryName(searchPath)! : searchPath));
 
         var engineResult = new GrepEngineResult();
-        if (!isSingleFile || SingleFilePassesFilters(searchPath, filterRoot, globPatterns, typeFilter))
+        if (!isSingleFile || SingleFilePassesFilters(searchPath, filterRoot,
+                globPatterns.Select(static candidate => new GrepGlobFilter(candidate)).ToList(),
+                typeFilter is null ? null : GrepTypeMap.CreateFilter(typeFilter)))
         {
             var request = new GrepEngineRequest
             {
@@ -166,20 +168,30 @@ public sealed class GrepTool : ITool
                 .Select(path => (MtimeUtc: FileSearchSupport.GetLastWriteTimeUtcSafe(path), Path: path))
                 .ToList();
             sorted.Sort(FileSearchSupport.CompareNewestFirst);
-            var filenames = sorted.ConvertAll(match => FileSearchSupport.ToDisplayPath(root, match.Path));
-            var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(filenames, headLimit, offset);
-            if (page.Count == 0)
+            var (start, count, appliedLimit, appliedOffset) = ApplyWindow(sorted.Count, headLimit, offset);
+            if (count == 0)
                 return ToolExecutionResult.Text("No files found");
-            text = $"Found {page.Count} {Plural(page.Count, "file")}{LimitInfoPrefix(appliedLimit, appliedOffset)}\n{string.Join("\n", page)}";
+            var builder = new StringBuilder();
+            builder.Append($"Found {count} {Plural(count, "file")}{LimitInfoPrefix(appliedLimit, appliedOffset)}\n");
+            for (var index = 0; index < count; index++)
+            {
+                if (index > 0)
+                    builder.Append('\n');
+                builder.Append(FileSearchSupport.ToDisplayPath(root, sorted[start + index].Path));
+            }
+            text = builder.ToString();
         }
         else if (mode == "count")
         {
-            var entries = engineResult.CountEntries.OrderBy(entry => entry.Path, StringComparer.Ordinal).ToList();
-            var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(entries, headLimit, offset);
-            var numMatches = entries.Sum(entry => entry.Count);
-            var body = page.Count == 0
+            var entries = engineResult.CountEntries;
+            entries.Sort(static (left, right) => string.CompareOrdinal(left.Path, right.Path));
+            var (start, count, appliedLimit, appliedOffset) = ApplyWindow(entries.Count, headLimit, offset);
+            var numMatches = 0L;
+            foreach (var entry in entries)
+                numMatches += entry.Count;
+            var body = count == 0
                 ? "No matches found"
-                : string.Join("\n", page.Select(entry => $"{FileSearchSupport.ToDisplayPath(root, entry.Path)}:{entry.Count}"));
+                : JoinCountEntries(root, entries, start, count);
             var summary = $"Found {numMatches} total {Plural((int)numMatches, "occurrence")} across {entries.Count} {Plural(entries.Count, "file")}.";
             var limitInfo = FormatLimitInfo(appliedLimit, appliedOffset);
             text = $"{body}\n\n{summary}{(limitInfo.Length > 0 ? $" with pagination = {limitInfo}" : "")}";
@@ -188,49 +200,98 @@ public sealed class GrepTool : ITool
         {
             // Stable ordering keeps within-file event order while native walk order becomes deterministic.
             var entries = engineResult.ContentEntries.OrderBy(entry => entry.Path, StringComparer.Ordinal).ToList();
-            var (page, appliedLimit, appliedOffset) = ApplyHeadLimit(entries, headLimit, offset);
-            var body = page.Count == 0
+            var (start, count, appliedLimit, appliedOffset) = ApplyWindow(entries.Count, headLimit, offset);
+            var body = count == 0
                 ? "No matches found"
-                : string.Join("\n", page.Select(entry => FormatContentEntry(root, entry, showLineNumbers)));
+                : JoinContentEntries(root, entries, start, count, showLineNumbers);
             var limitInfo = FormatLimitInfo(appliedLimit, appliedOffset);
             text = limitInfo.Length > 0 ? $"{body}\n\n[Showing results with pagination = {limitInfo}]" : body;
         }
 
-        var bytes = Encoding.UTF8.GetBytes(text);
-        if (bytes.Length > MaxModelChars)
+        var byteCount = Encoding.UTF8.GetByteCount(text);
+        if (byteCount > MaxModelChars)
         {
+            var bytes = Encoding.UTF8.GetBytes(text);
             var artifact = await context.Workspace.SaveArtifactAsync(context.SessionId, $"grep-output-{Guid.NewGuid():N}.txt",
                 "text/plain", bytes, cancellationToken).ConfigureAwait(false);
-            text = BashModelContent.FormatPersistedOutputEnvelope(text, bytes.Length, artifact.Uri, decimalBytes: true);
+            text = BashModelContent.FormatPersistedOutputEnvelope(text, byteCount, artifact.Uri, decimalBytes: true);
         }
         return ToolExecutionResult.Text(text);
     }
 
-    internal static bool SingleFilePassesFilters(string file, string filterRoot, IReadOnlyList<string> globPatterns, string? typeFilter)
+    internal static bool SingleFilePassesFilters(
+        string file,
+        string filterRoot,
+        IReadOnlyList<GrepGlobFilter> filters,
+        GrepTypeFilter? typeFilter)
     {
-        if (globPatterns.Count > 0)
+        if (filters.Count > 0)
         {
             var relativePath = GrepGlobSupport.ToPosixRelative(filterRoot, file);
-            var filters = globPatterns.Select(pattern => new GrepGlobFilter(pattern)).ToList();
             if (!filters.Any(filter => filter.Matches(relativePath, Path.GetFileName(file))))
                 return false;
         }
-        if (typeFilter is not null && !GrepTypeMap.MatchesFile(file, typeFilter))
+        if (typeFilter is { } matcher && !matcher.Matches(file))
             return false;
         return true;
     }
 
-    private static (List<T> Page, int? AppliedLimit, int? AppliedOffset) ApplyHeadLimit<T>(List<T> items, int? headLimit, int offset)
+    private static (int Start, int Count, int? AppliedLimit, int? AppliedOffset) ApplyWindow(
+        int itemCount, int? headLimit, int offset)
     {
+        var start = Math.Min(offset, itemCount);
         if (headLimit == 0)
-            return (items.Skip(offset).ToList(), null, offset > 0 ? offset : null);
+            return (start, itemCount - start, null, offset > 0 ? offset : null);
 
         var effectiveLimit = Math.Max(0, headLimit ?? DefaultHeadLimit);
-        var truncated = items.Count - offset > effectiveLimit;
+        var truncated = itemCount - offset > effectiveLimit;
         return (
-            items.Skip(offset).Take(effectiveLimit).ToList(),
+            start,
+            Math.Min(effectiveLimit, Math.Max(0, itemCount - offset)),
             truncated ? effectiveLimit : null,
             offset > 0 ? offset : null);
+    }
+
+    private static string JoinCountEntries(
+        string root, List<(string Path, long Count)> entries, int start, int count)
+    {
+        var builder = new StringBuilder();
+        for (var index = 0; index < count; index++)
+        {
+            if (index > 0)
+                builder.Append('\n');
+            var entry = entries[start + index];
+            builder.Append(FileSearchSupport.ToDisplayPath(root, entry.Path)).Append(':').Append(entry.Count);
+        }
+        return builder.ToString();
+    }
+
+    private static string JoinContentEntries(
+        string root, List<GrepContentEntry> entries, int start, int count, bool showLineNumbers)
+    {
+        var builder = new StringBuilder();
+        string? lastPath = null;
+        var displayPath = string.Empty;
+        for (var index = 0; index < count; index++)
+        {
+            var entry = entries[start + index];
+            if (!string.Equals(entry.Path, lastPath, StringComparison.Ordinal))
+            {
+                lastPath = entry.Path;
+                displayPath = FileSearchSupport.ToDisplayPath(root, entry.Path);
+            }
+            if (index > 0)
+                builder.Append('\n');
+            builder.Append(displayPath).Append(':');
+            if (showLineNumbers && entry.LineNumber is int lineNumber)
+                builder.Append(lineNumber).Append(':');
+            var line = entry.Text;
+            if (line.Length > MaxColumnChars)
+                builder.Append(line, 0, MaxColumnChars).Append(TruncationSuffix);
+            else
+                builder.Append(line);
+        }
+        return builder.ToString();
     }
 
     private static string FormatLimitInfo(int? appliedLimit, int? appliedOffset)
@@ -253,12 +314,4 @@ public sealed class GrepTool : ITool
 
     internal static string TruncateLine(string text) =>
         text.Length > MaxColumnChars ? text[..MaxColumnChars] + TruncationSuffix : text;
-
-    private static string FormatContentEntry(string root, GrepContentEntry entry, bool showLineNumbers)
-    {
-        var path = FileSearchSupport.ToDisplayPath(root, entry.Path);
-        return showLineNumbers && entry.LineNumber is int lineNumber
-            ? $"{path}:{lineNumber}:{TruncateLine(entry.Text)}"
-            : $"{path}:{TruncateLine(entry.Text)}";
-    }
 }

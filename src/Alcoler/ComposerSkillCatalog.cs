@@ -7,6 +7,9 @@ public sealed record ComposerSkillEntry(string Name, string Description, string 
 public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
 {
     private readonly SkillsCatalog _catalog = catalog ?? new SkillsCatalog();
+    private string? _cachedRoot;
+    private IReadOnlyList<string>? _cachedDisabled;
+    private ComposerSkillEntry[] _cachedEntries = [];
 
     public IReadOnlyList<ComposerSkillEntry> GetEntries(
         string workspaceRoot, IReadOnlyList<string>? disabledSkillPaths = null)
@@ -17,16 +20,55 @@ public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
         }
         try
         {
-            return _catalog.Load(Path.GetFullPath(workspaceRoot), disabledSkillPaths)
-                .OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(skill => skill.Name, StringComparer.Ordinal)
-                .Select(skill => new ComposerSkillEntry(skill.Name, skill.Description, skill.SkPath))
-                .ToArray();
+            return LoadEntries(workspaceRoot, disabledSkillPaths);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return [];
         }
+    }
+
+    private ComposerSkillEntry[] LoadEntries(string workspaceRoot, IReadOnlyList<string>? disabledSkillPaths) =>
+        _catalog.Load(Path.GetFullPath(workspaceRoot), disabledSkillPaths)
+            .OrderBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(skill => skill.Name, StringComparer.Ordinal)
+            .Select(skill => new ComposerSkillEntry(skill.Name, skill.Description, skill.SkPath))
+            .ToArray();
+
+    private ComposerSkillEntry[] CachedEntries(string workspaceRoot, IReadOnlyList<string>? disabledSkillPaths)
+    {
+        string root;
+        try
+        {
+            root = Path.GetFullPath(workspaceRoot);
+            if (string.Equals(root, _cachedRoot, StringComparison.Ordinal)
+                && SameDisabledPaths(disabledSkillPaths, _cachedDisabled))
+            {
+                return _cachedEntries;
+            }
+            _cachedEntries = LoadEntries(root, disabledSkillPaths);
+            _cachedRoot = root;
+            _cachedDisabled = disabledSkillPaths;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+        return _cachedEntries;
+    }
+
+    private static bool SameDisabledPaths(IReadOnlyList<string>? left, IReadOnlyList<string>? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left is null || right is null || left.Count != right.Count)
+            return false;
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (!string.Equals(left[index], right[index], StringComparison.Ordinal))
+                return false;
+        }
+        return true;
     }
 
     public IReadOnlyList<ComposerSkillEntry> Query(
@@ -37,12 +79,30 @@ public sealed class ComposerSkillCatalog(SkillsCatalog? catalog = null)
             return [];
         }
         var query = text[1..];
-        if (query.Any(char.IsWhiteSpace))
+        for (var index = 0; index < query.Length; index++)
         {
-            return [];
+            if (char.IsWhiteSpace(query[index]))
+                return [];
         }
-        return GetEntries(workspaceRoot, disabledSkillPaths)
-            .Where(skill => skill.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
+        if (string.IsNullOrWhiteSpace(workspaceRoot))
+            return [];
+
+        var entries = CachedEntries(workspaceRoot, disabledSkillPaths);
+        var count = 0;
+        foreach (var entry in entries)
+        {
+            if (entry.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+                count++;
+        }
+        if (count == 0)
+            return [];
+        var matches = new ComposerSkillEntry[count];
+        var matchIndex = 0;
+        foreach (var entry in entries)
+        {
+            if (entry.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+                matches[matchIndex++] = entry;
+        }
+        return matches;
     }
 }

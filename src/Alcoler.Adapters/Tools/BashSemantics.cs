@@ -42,6 +42,15 @@ public static partial class BashSemantics
         SomeDirectoriesWereInaccessible,
     ];
 
+    private static readonly string[] GitBranchDangerousValueFlags =
+        ["--contains", "--no-contains", "--points-at", "--sort"];
+
+    private static readonly string[] GitTagDangerousValueFlags =
+        ["--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format", "-n"];
+
+    private static readonly string[] GitReflogAllowedSubcommands = ["show", "list"];
+    private static readonly string[] GitReflogDangerousSubcommands = ["expire", "delete", "exists", "drop", "write"];
+
     private static readonly HashSet<string> NoMatchCommands = new(StringComparer.Ordinal)
     {
         "egrep", "fgrep", "grep", "rg",
@@ -137,9 +146,7 @@ public static partial class BashSemantics
         (["git", "blame"], new BashReadonlyCommandPolicy(SafeFlags: Flags.GitBlameSafeFlags)),
         (["git", "branch"], new BashReadonlyCommandPolicy(
             SafeFlags: Flags.GitBranchSafeFlags,
-            DangerousArgs: args => GitListLikeCommandIsDangerous(
-                args,
-                ["--contains", "--no-contains", "--points-at", "--sort"]))),
+            DangerousArgs: args => GitListLikeCommandIsDangerous(args, GitBranchDangerousValueFlags))),
         (["git", "cat-file"], new BashReadonlyCommandPolicy(SafeFlags: Flags.GitCatFileSafeFlags)),
         (["git", "config", "--get"], new BashReadonlyCommandPolicy(SafeFlags: Flags.GitConfigGetSafeFlags)),
         (["git", "describe"], new BashReadonlyCommandPolicy(SafeFlags: Flags.GitDescribeSafeFlags)),
@@ -178,9 +185,7 @@ public static partial class BashSemantics
         (["git", "status"], new BashReadonlyCommandPolicy(SafeFlags: Flags.GitStatusSafeFlags)),
         (["git", "tag"], new BashReadonlyCommandPolicy(
             SafeFlags: Flags.GitTagSafeFlags,
-            DangerousArgs: args => GitListLikeCommandIsDangerous(
-                args,
-                ["--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format", "-n"]))),
+            DangerousArgs: args => GitListLikeCommandIsDangerous(args, GitTagDangerousValueFlags))),
         (["git", "worktree", "list"], new BashReadonlyCommandPolicy(SafeFlags: Flags.GitWorktreeListSafeFlags)),
     ];
 
@@ -273,13 +278,39 @@ public static partial class BashSemantics
         var argv = StripSafeCommandWrappers(commandPart.Argv);
         var commandName = argv.Count > 0 ? argv[0] : null;
         if (commandName == "sed")
-            return argv.Skip(1).Any(IsSedInPlaceOption);
+        {
+            for (var index = 1; index < argv.Count; index++)
+            {
+                if (IsSedInPlaceOption(argv[index]))
+                    return true;
+            }
+            return false;
+        }
         if (commandName == "find")
-            return argv.Skip(1).Any(FindWriteOptions.Contains);
+        {
+            for (var index = 1; index < argv.Count; index++)
+            {
+                if (FindWriteOptions.Contains(argv[index]))
+                    return true;
+            }
+            return false;
+        }
         if (commandName == "tree")
-            return TreeArgsHaveOutputOption(argv.Skip(1).ToList());
+        {
+            var args = new List<string>(argv.Count - 1);
+            for (var index = 1; index < argv.Count; index++)
+                args.Add(argv[index]);
+            return TreeArgsHaveOutputOption(args);
+        }
         if (commandName == "git")
-            return argv.Skip(1).Any(HasDangerousGitGlobalOptionWord);
+        {
+            for (var index = 1; index < argv.Count; index++)
+            {
+                if (HasDangerousGitGlobalOptionWord(argv[index]))
+                    return true;
+            }
+            return false;
+        }
         return false;
     }
 
@@ -315,36 +346,47 @@ public static partial class BashSemantics
 
     private static IReadOnlyList<string> StripSafeCommandWrappers(IReadOnlyList<string> argv)
     {
-        var stripped = argv.ToList();
+        var start = 0;
         for (; ; )
         {
-            if (stripped.Count > 0 && stripped[0] == "command")
+            var count = argv.Count - start;
+            if (count > 0 && argv[start] == "command")
             {
-                var index = 1;
-                while (index < stripped.Count && OnlyPDashes().IsMatch(stripped[index]))
+                var index = start + 1;
+                while (index < argv.Count && OnlyPDashes().IsMatch(argv[index]))
                     index++;
-                if (index < stripped.Count && stripped[index] == "--")
+                if (index < argv.Count && argv[index] == "--")
                     index++;
-                if (index >= stripped.Count || stripped[index].StartsWith('-'))
-                    return stripped;
-                stripped = stripped.GetRange(index, stripped.Count - index);
+                if (index >= argv.Count || argv[index].StartsWith('-'))
+                    return SliceArgv(argv, start);
+                start = index;
                 continue;
             }
-            if (stripped.Count > 0 && stripped[0] == "builtin")
+            if (count > 0 && argv[start] == "builtin")
             {
-                var index = stripped.Count > 1 && stripped[1] == "--" ? 2 : 1;
-                if (index >= stripped.Count)
-                    return stripped;
-                stripped = stripped.GetRange(index, stripped.Count - index);
+                var index = start + (count > 1 && argv[start + 1] == "--" ? 2 : 1);
+                if (index >= argv.Count)
+                    return SliceArgv(argv, start);
+                start = index;
                 continue;
             }
-            if (stripped.Count > 1 && stripped[0] == "noglob")
+            if (count > 1 && argv[start] == "noglob")
             {
-                stripped = stripped.GetRange(1, stripped.Count - 1);
+                start++;
                 continue;
             }
-            return stripped;
+            return SliceArgv(argv, start);
         }
+    }
+
+    private static IReadOnlyList<string> SliceArgv(IReadOnlyList<string> argv, int start)
+    {
+        if (start == 0)
+            return argv;
+        var slice = new List<string>(argv.Count - start);
+        for (var index = start; index < argv.Count; index++)
+            slice.Add(argv[index]);
+        return slice;
     }
 
     private static bool IsGitReadOnlyCommand(IReadOnlyList<string> argv)
@@ -356,12 +398,25 @@ public static partial class BashSemantics
         {
             if (normalized.Count < prefix.Length)
                 continue;
-            var matches = prefix.Select((word, index) => normalized[index] == word).All(equal => equal);
+            var matches = true;
+            for (var index = 0; index < prefix.Length; index++)
+            {
+                if (normalized[index] != prefix[index])
+                {
+                    matches = false;
+                    break;
+                }
+            }
             if (!matches)
                 continue;
-            var args = normalized.Skip(prefix.Length).ToList();
-            if (policy.DangerousArgs is { } dangerous && dangerous(args))
-                return false;
+            if (policy.DangerousArgs is { } dangerous)
+            {
+                var args = new List<string>(normalized.Count - prefix.Length);
+                for (var index = prefix.Length; index < normalized.Count; index++)
+                    args.Add(normalized[index]);
+                if (dangerous(args))
+                    return false;
+            }
             return IsArgvAllowedByPolicy(normalized, policy, "git", startIndex: prefix.Length);
         }
 
@@ -380,7 +435,8 @@ public static partial class BashSemantics
                 return null;
             if (word.StartsWith('-'))
                 return null;
-            normalized.AddRange(argv.Skip(index));
+            for (var tail = index; tail < argv.Count; tail++)
+                normalized.Add(argv[tail]);
             return normalized;
         }
 
@@ -665,12 +721,10 @@ public static partial class BashSemantics
 
     private static bool GitReflogCommandIsDangerous(IReadOnlyList<string> args)
     {
-        string[] allowed = ["show", "list"];
-        string[] dangerous = ["expire", "delete", "exists", "drop", "write"];
         var firstPositional = args.FirstOrDefault(arg => arg.Length > 0 && !arg.StartsWith('-'));
-        if (firstPositional is not null && !allowed.Contains(firstPositional))
+        if (firstPositional is not null && !GitReflogAllowedSubcommands.Contains(firstPositional))
             return true;
-        return args.Any(dangerous.Contains);
+        return args.Any(GitReflogDangerousSubcommands.Contains);
     }
 
     private static bool GitLsRemoteCommandIsDangerous(IReadOnlyList<string> args)

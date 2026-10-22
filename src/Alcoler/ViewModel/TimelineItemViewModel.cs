@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Projections;
@@ -59,10 +60,43 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
 
     public void UpdateFrom(AssistantMessageRow row)
     {
-        var text = string.Join("\n\n", row.Parts.OfType<TextPart>().Select(p => p.Text));
-        string[] reasoning = [.. row.Parts.OfType<ReasoningPart>().Select(p => p.Text)];
-        MarkdownText = text;
-        ReasoningBlocks = reasoning;
+        var textBuilder = new StringBuilder();
+        var reasoning = new List<string>();
+        var firstText = true;
+        foreach (var part in row.Parts)
+        {
+            switch (part)
+            {
+                case TextPart textPart:
+                    if (!firstText)
+                        textBuilder.Append("\n\n");
+                    textBuilder.Append(textPart.Text);
+                    firstText = false;
+                    break;
+                case ReasoningPart reasoningPart:
+                    reasoning.Add(reasoningPart.Text);
+                    break;
+            }
+        }
+        var text = textBuilder.ToString();
+        if (!string.Equals(MarkdownText, text, StringComparison.Ordinal))
+            MarkdownText = text;
+
+        var reasoningUnchanged = ReasoningBlocks.Count == reasoning.Count;
+        if (reasoningUnchanged)
+        {
+            for (var index = 0; index < reasoning.Count; index++)
+            {
+                if (!string.Equals(ReasoningBlocks[index], reasoning[index], StringComparison.Ordinal))
+                {
+                    reasoningUnchanged = false;
+                    break;
+                }
+            }
+        }
+        if (!reasoningUnchanged)
+            ReasoningBlocks = reasoning.ToArray();
+
         IsStreaming = row.IsStreaming;
         CanFork = row.CanFork;
     }
@@ -154,11 +188,26 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         TypeInfoResolver = JsonElementContext.Default,
     };
 
+    private static readonly string[] SummaryKeys =
+        ["description", "file_path", "path", "command", "pattern", "query", "url"];
+
+    private JsonElement _inputSource;
+    private bool _hasInputSource;
+    private IReadOnlyList<ToolResultBlock>? _outputSource;
+    private bool _hasOutputSource;
+
     public void UpdateFrom(ToolCallRow row)
     {
-        InputJson = JsonSerializer.Serialize(row.Input, IndentedJson);
+        if (!_hasInputSource || !JsonElement.DeepEquals(_inputSource, row.Input))
+        {
+            _hasInputSource = true;
+            _inputSource = row.Input.Clone();
+            InputJson = JsonSerializer.Serialize(row.Input, IndentedJson);
+        }
+
+        var statusChanged = row.Status != Status;
         Status = row.Status;
-        StatusText = row.Status.ToString().ToLowerInvariant();
+        StatusText = StatusKey(row.Status);
         Summary = GetSummary(row.Input);
         FileChange = row.FileChange;
         IsError = row.IsError;
@@ -167,15 +216,33 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
                 ? $"{duration.TotalMilliseconds:F0}ms"
                 : $"{duration.TotalSeconds:F1}s"
             : string.Empty;
-        OutputText = row.Output is null
-            ? string.Empty
-            : string.Join("\n", row.Output.OfType<ToolResultText>().Select(b => b.Text));
-        ToolResultMedia[] images = row.Output is null
-            ? []
-            : [.. row.Output.OfType<ToolResultMedia>().Where(media => media.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))];
-        if (!ImageMedia.SequenceEqual(images))
-            ImageMedia = images;
+
+        if (statusChanged || !_hasOutputSource || !ReferenceEquals(_outputSource, row.Output)
+            || _outputSource?.Count != row.Output?.Count)
+        {
+            _hasOutputSource = true;
+            _outputSource = row.Output;
+            OutputText = row.Output is null
+                ? string.Empty
+                : string.Join("\n", row.Output.OfType<ToolResultText>().Select(b => b.Text));
+            ToolResultMedia[] images = row.Output is null
+                ? []
+                : [.. row.Output.OfType<ToolResultMedia>().Where(media => media.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))];
+            if (!ImageMedia.SequenceEqual(images))
+                ImageMedia = images;
+        }
     }
+
+    private static string StatusKey(ToolCallStatus status) => status switch
+    {
+        ToolCallStatus.Pending => "pending",
+        ToolCallStatus.Running => "running",
+        ToolCallStatus.AwaitingPermission => "awaitingpermission",
+        ToolCallStatus.Succeeded => "succeeded",
+        ToolCallStatus.Failed => "failed",
+        ToolCallStatus.Cancelled => "cancelled",
+        _ => status.ToString().ToLowerInvariant(),
+    };
 
     private static (string DisplayName, string IconPath) GetPresentation(string toolName) => toolName.ToLowerInvariant() switch
     {
@@ -211,7 +278,7 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         {
             return string.Empty;
         }
-        foreach (var key in new[] { "description", "file_path", "path", "command", "pattern", "query", "url" })
+        foreach (var key in SummaryKeys)
         {
             if (input.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
                 && !string.IsNullOrWhiteSpace(value.GetString()))

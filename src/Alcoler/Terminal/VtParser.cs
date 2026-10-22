@@ -55,13 +55,15 @@ public sealed class VtParser
     private readonly StringBuilder _text = new();
     private readonly List<int> _parameters = [];
     private readonly StringBuilder _payload = new();
+    private readonly List<VtToken> _tokens = [];
     private bool _csiPrivate;
     private char _escapeFinal;
     private char _csiIntermediate;
 
     public IReadOnlyList<VtToken> Feed(ReadOnlySpan<char> chunk)
     {
-        var tokens = new List<VtToken>(chunk.Length / 8 + 1);
+        var tokens = _tokens;
+        tokens.Clear();
         foreach (var c in chunk)
         {
             FeedChar(c, tokens);

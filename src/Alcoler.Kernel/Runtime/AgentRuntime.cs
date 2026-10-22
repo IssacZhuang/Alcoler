@@ -228,6 +228,51 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken) =>
         _options.Store.ListSessionsAsync(workspaceRoot, limit, cancellationToken);
 
+    public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
+        string? workspaceRoot,
+        int limit,
+        SessionListKind kind,
+        CancellationToken cancellationToken) =>
+        _options.Store.ListSessionsAsync(workspaceRoot, limit, kind, cancellationToken);
+
+    public async ValueTask SetSessionArchivedAsync(
+        SessionId sessionId,
+        bool archived,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+        if (_sessions.TryGetValue(sessionId, out var runtime))
+        {
+            await runtime.SetArchivedAsync(archived, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await _options.Store.SetSessionArchivedAsync(sessionId, archived, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<int> ArchiveStaleSessionsAsync(
+        TimeSpan olderThan,
+        SessionId? keepOpen,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+        if (olderThan < TimeSpan.FromDays(1))
+        {
+            olderThan = TimeSpan.FromDays(1);
+        }
+
+        var cutoff = _options.Clock.GetUtcNow() - olderThan;
+        // Resident sessions keep their record in memory and would write it back on the next turn.
+        var excluded = new HashSet<SessionId>(_sessions.Keys);
+        if (keepOpen is { } open)
+        {
+            excluded.Add(open);
+        }
+
+        return await _options.Store.ArchiveSessionsUpdatedBeforeAsync(cutoff, excluded, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken)
     {
         if (!_sessions.TryGetValue(command.SessionId, out var runtime))

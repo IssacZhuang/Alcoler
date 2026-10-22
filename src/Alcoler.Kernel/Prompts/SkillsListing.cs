@@ -16,10 +16,27 @@ public static class SkillsListing
             return null;
         // The reference sorts with localeCompare; ordinal keeps the listing deterministic across machines.
         var sorted = skills.OrderBy(skill => skill.Name, StringComparer.Ordinal).ToList();
-        var full = string.Join("\n", new[] { Header, "" }.Concat(sorted.Select(FormatLine)));
-        if (full.Length <= metadataBudget)
-            return full;
-        return string.Join("\n", new[] { Header, "" }.Concat(sorted.Select(FormatNameOnlyLine)));
+        var full = new System.Text.StringBuilder();
+        full.Append(Header).Append('\n').Append('\n');
+        for (var index = 0; index < sorted.Count; index++)
+        {
+            if (index > 0)
+                full.Append('\n');
+            full.Append(FormatLine(sorted[index]));
+        }
+        var rendered = full.ToString();
+        if (rendered.Length <= metadataBudget)
+            return rendered;
+
+        var compact = new System.Text.StringBuilder();
+        compact.Append(Header).Append('\n').Append('\n');
+        for (var index = 0; index < sorted.Count; index++)
+        {
+            if (index > 0)
+                compact.Append('\n');
+            compact.Append(FormatNameOnlyLine(sorted[index]));
+        }
+        return compact.ToString();
     }
 
     private static string FormatLine(SkillInfo skill)

@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -11,7 +13,10 @@ namespace Alcoler.Adapters.Models;
 
 public sealed record OpenAiResponsesModelOptions(string Model, string ApiKey, string BaseUrl)
 {
-    public string ResponsesUrl => $"{BaseUrl.TrimEnd('/')}/responses";
+    // Cached outside the instance so record value equality stays field-based.
+    private static readonly ConcurrentDictionary<string, string> ResponsesUrls = new(StringComparer.Ordinal);
+
+    public string ResponsesUrl => ResponsesUrls.GetOrAdd(BaseUrl, static url => $"{url.TrimEnd('/')}/responses");
 }
 
 public sealed class OpenAiResponsesChatModel(
@@ -22,6 +27,7 @@ public sealed class OpenAiResponsesChatModel(
     Func<CancellationToken, ValueTask<string>>? accessTokenSource = null) : IChatModel
 {
     private const int DefaultMaxTokens = 32768;
+    private static readonly string[] ReasoningInclude = ["reasoning.encrypted_content"];
     private readonly ModelProperties _requestProperties = properties ?? new ModelProperties();
     // ChatGPT account access: the bearer token is resolved per request because it
     // expires and rotates; options.ApiKey is only a placeholder for the static path.
@@ -72,6 +78,7 @@ public sealed class OpenAiResponsesChatModel(
         using (response!)
         {
             var state = new ResponsesStreamState();
+            var events = new List<ModelStreamEvent>();
             await foreach (var frame in SseHttp.ReadFramesAsync(response!, cancellationToken).ConfigureAwait(false))
             {
                 if (frame.Event == SseHttp.FailureEventName)
@@ -80,11 +87,11 @@ public sealed class OpenAiResponsesChatModel(
                     yield break;
                 }
                 if (frame.Data.Length == 0 || frame.Data == "[DONE]") continue;
-                List<ModelStreamEvent> events = [];
                 try
                 {
                     using var document = JsonDocument.Parse(frame.Data);
-                    events = state.Dispatch(document.RootElement, frame.Event).ToList();
+                    events.Clear();
+                    state.Dispatch(document.RootElement, frame.Event, events);
                 }
                 catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
                 {
@@ -131,7 +138,9 @@ public sealed class OpenAiResponsesChatModel(
             "incomplete" => "response.incomplete",
             _ => "response.completed",
         };
-        return new ResponsesStreamState().Dispatch(JsonSerializer.SerializeToElement(new { type, response = root }), type).ToList();
+        var events = new List<ModelStreamEvent>();
+        new ResponsesStreamState().Dispatch(JsonSerializer.SerializeToElement(new { type, response = root }), type, events);
+        return events;
     }
 
     private HttpRequestMessage BuildRequest(ModelRequest request, bool stream = true, string? apiKey = null)
@@ -141,11 +150,17 @@ public sealed class OpenAiResponsesChatModel(
         ModelRequestOptions.ValidateRequest(request with { Messages = normalized }, Descriptor.Properties);
         var input = new List<object>();
         var reasoningItems = new Dictionary<string, Dictionary<string, object?>>();
-        var encryptedReasoning = normalized.Where(message => message.Role == MessageRole.Assistant)
-            .SelectMany(message => message.Content.OfType<InputReasoningBlock>())
-            .Where(block => block.ProviderItemId is { Length: > 0 } && block.EncryptedContent is not null)
-            .GroupBy(block => block.ProviderItemId!)
-            .ToDictionary(group => group.Key, group => group.Last().EncryptedContent!);
+        Dictionary<string, string>? encryptedReasoning = null;
+        foreach (var message in normalized)
+        {
+            if (message.Role != MessageRole.Assistant)
+                continue;
+            foreach (var block in message.Content)
+            {
+                if (block is InputReasoningBlock { ProviderItemId: { Length: > 0 } providerItemId, EncryptedContent: { } encrypted })
+                    (encryptedReasoning ??= [])[providerItemId] = encrypted;
+            }
+        }
         foreach (var message in ModelRequestSystemBlocks.Normalize(normalized, Descriptor.Properties.SupportsMidConversationSystem))
         {
             var text = new List<object>();
@@ -155,9 +170,9 @@ public sealed class OpenAiResponsesChatModel(
                 input.Add(new Dictionary<string, object?>
                 {
                     ["role"] = message.Role switch { MessageRole.Assistant => "assistant", MessageRole.System => "system", _ => "user" },
-                    ["content"] = text.ToArray(),
+                    ["content"] = text,
                 });
-                text.Clear();
+                text = [];
             }
             foreach (var block in message.Content)
             {
@@ -178,10 +193,10 @@ public sealed class OpenAiResponsesChatModel(
                         });
                         break;
                     case InputReasoningBlock reasoning when reasoning.EncryptedContent is not null ||
-                        reasoning.ProviderItemId is { } replayId && encryptedReasoning.ContainsKey(replayId):
+                        reasoning.ProviderItemId is { } replayId && encryptedReasoning?.ContainsKey(replayId) == true:
                         FlushText();
                         var encryptedContent = reasoning.ProviderItemId is { } encryptedId
-                            ? encryptedReasoning.GetValueOrDefault(encryptedId) ?? reasoning.EncryptedContent
+                            ? encryptedReasoning?.GetValueOrDefault(encryptedId) ?? reasoning.EncryptedContent
                             : reasoning.EncryptedContent;
                         var summary = new List<object>();
                         if (reasoning.Text.Length > 0)
@@ -236,7 +251,7 @@ public sealed class OpenAiResponsesChatModel(
             ["input"] = input,
             ["stream"] = stream,
             ["store"] = false,
-            ["include"] = new[] { "reasoning.encrypted_content" },
+            ["include"] = ReasoningInclude,
         };
         if (request.Tools.Any(t => t.ProviderNative is not null))
             throw new ArgumentException("Provider-native tools are not supported by this model API.");
@@ -266,16 +281,17 @@ public sealed class OpenAiResponsesChatModel(
         private readonly Dictionary<int, string> _itemIds = [];
         private readonly Dictionary<string, OpenText> _texts = [];
         private readonly Dictionary<string, string?> _reasoningContent = [];
+        private readonly List<TextKeyCache> _textKeys = [];
         private bool _started;
         public bool Terminal { get; private set; }
 
-        public IEnumerable<ModelStreamEvent> Dispatch(JsonElement root, string? eventName)
+        public void Dispatch(JsonElement root, string? eventName, List<ModelStreamEvent> events)
         {
-            var type = String(root, "type") ?? eventName;
+            var type = eventName ?? String(root, "type");
             if (!_started)
             {
                 _started = true;
-                yield return new ModelStreamStarted();
+                events.Add(new ModelStreamStarted());
             }
             switch (type)
             {
@@ -285,22 +301,23 @@ public sealed class OpenAiResponsesChatModel(
                         var item = root.GetProperty("item");
                         var id = String(item, "id") ?? Key(root);
                         if (SseHttp.ReadInt(root, "output_index") is { } index) _itemIds[index] = id;
-                        if (String(item, "type") == "function_call")
+                        var itemType = String(item, "type");
+                        if (itemType == "function_call")
                         {
-                            foreach (var e in RegisterTool(id, item)) yield return e;
+                            RegisterTool(id, item, events);
                             if (type.EndsWith(".done", StringComparison.Ordinal))
-                                foreach (var e in FinishTool(_tools[id], String(item, "arguments"))) yield return e;
+                                FinishTool(_tools[id], String(item, "arguments"), events);
                         }
-                        else if (String(item, "type") == "reasoning")
+                        else if (itemType == "reasoning")
                         {
                             _reasoningContent[id] = String(item, "encrypted_content");
-                            foreach (var e in TextDelta($"{id}:r:0", "", reasoning: true)) yield return e;
+                            TextDelta(ItemTextKey(id, reasoning: true, 0), "", reasoning: true, events);
                             if (type.EndsWith(".done", StringComparison.Ordinal))
-                                foreach (var e in ItemContent(item, id)) yield return e;
+                                ItemContent(item, id, events);
                         }
                         else if (type.EndsWith(".done", StringComparison.Ordinal))
                         {
-                            foreach (var e in ItemContent(item, id)) yield return e;
+                            ItemContent(item, id, events);
                         }
                         break;
                     }
@@ -310,20 +327,22 @@ public sealed class OpenAiResponsesChatModel(
                         var delta = String(root, "delta") ?? "";
                         if (!tool.Closed && delta.Length > 0)
                         {
-                            tool.Arguments.Append(delta);
-                            yield return new ModelToolInputDelta(tool.Id, delta);
+                            SseHttp.AppendUtf8(tool.Arguments, delta);
+                            events.Add(new ModelToolInputDelta(tool.Id, delta));
                         }
                         break;
                     }
                 case "response.function_call_arguments.done":
-                    foreach (var e in FinishTool(GetTool(root), String(root, "arguments"))) yield return e;
+                    FinishTool(GetTool(root), String(root, "arguments"), events);
                     break;
                 case "response.output_text.delta":
                 case "response.reasoning_summary_text.delta":
                 case "response.reasoning_text.delta":
                     {
                         var reasoning = type != "response.output_text.delta";
-                        foreach (var e in TextDelta(TextKey(root, reasoning), String(root, "delta") ?? "", reasoning)) yield return e;
+                        var key = TextKey(root, reasoning);
+                        var delta = String(root, "delta") ?? "";
+                        TextDelta(key, delta, reasoning, events);
                         break;
                     }
                 case "response.output_text.done":
@@ -331,7 +350,9 @@ public sealed class OpenAiResponsesChatModel(
                 case "response.reasoning_text.done":
                     {
                         var reasoning = type != "response.output_text.done";
-                        foreach (var e in TextDone(TextKey(root, reasoning), String(root, "text"), reasoning, close: !reasoning)) yield return e;
+                        var key = TextKey(root, reasoning);
+                        var fullText = String(root, "text");
+                        TextDone(key, fullText, reasoning, close: !reasoning, events);
                         break;
                     }
                 case "response.completed":
@@ -344,24 +365,24 @@ public sealed class OpenAiResponsesChatModel(
                                 var id = String(item, "id") ?? "";
                                 if (String(item, "type") == "function_call")
                                 {
-                                    foreach (var e in RegisterTool(id, item)) yield return e;
-                                    foreach (var e in FinishTool(_tools[id], String(item, "arguments"))) yield return e;
+                                    RegisterTool(id, item, events);
+                                    FinishTool(_tools[id], String(item, "arguments"), events);
                                 }
-                                else foreach (var e in ItemContent(item, id)) yield return e;
+                                else ItemContent(item, id, events);
                             }
                         foreach (var text in _texts.Values)
-                            foreach (var e in CloseText(text)) yield return e;
+                            CloseText(text, events);
                         foreach (var tool in _tools.Values)
-                            foreach (var e in FinishTool(tool, null)) yield return e;
+                            FinishTool(tool, null, events);
                         var reason = type == "response.incomplete"
                             ? response.TryGetProperty("incomplete_details", out var details) ? String(details, "reason") : null
                             : null;
                         Terminal = true;
-                        yield return new ModelStreamFinished(type == "response.incomplete"
+                        events.Add(new ModelStreamFinished(type == "response.incomplete"
                             ? reason == "content_filter" ? ModelFinishReason.ContentFilter : ModelFinishReason.Length
                             : _tools.Count > 0 ? ModelFinishReason.ToolCalls : ModelFinishReason.Stop, ReadUsage(response),
                             RawFinishReason: reason ?? (type == "response.completed" ? "completed" : "incomplete"),
-                            ContextWindowExceeded: reason is "context_length_exceeded" or "model_context_window_exceeded");
+                            ContextWindowExceeded: reason is "context_length_exceeded" or "model_context_window_exceeded"));
                         break;
                     }
                 case "response.failed":
@@ -373,14 +394,14 @@ public sealed class OpenAiResponsesChatModel(
                         var code = String(error, "code") ?? String(error, "type");
                         var message = String(error, "message") ?? "Responses request failed.";
                         Terminal = true;
-                        yield return new ModelStreamFailed(new ModelFailure(code switch
+                        events.Add(new ModelStreamFailed(new ModelFailure(code switch
                         {
                             "rate_limit_exceeded" => ModelFailureKind.RateLimited,
                             "invalid_api_key" => ModelFailureKind.AuthenticationFailed,
                             "context_length_exceeded" => ModelFailureKind.ContextOverflow,
                             "invalid_request_error" or "invalid_value" => ModelFailureKind.InvalidRequest,
                             _ => ModelFailureKind.ProviderError,
-                        }, message, code, Phase: ModelFailurePhase.ResponseBody));
+                        }, message, code, Phase: ModelFailurePhase.ResponseBody)));
                         break;
                     }
             }
@@ -393,99 +414,164 @@ public sealed class OpenAiResponsesChatModel(
             return _itemIds.GetValueOrDefault(index) ?? $"index_{index}";
         }
 
-        private string TextKey(JsonElement root, bool reasoning) => $"{Key(root)}:{(reasoning ? "r" : "t")}:{SseHttp.ReadInt(root, reasoning ? "summary_index" : "content_index") ?? 0}";
+        private string TextKey(JsonElement root, bool reasoning)
+        {
+            var contentIndex = SseHttp.ReadInt(root, reasoning ? "summary_index" : "content_index") ?? 0;
+            if (root.TryGetProperty("item_id", out var itemIdElement) && itemIdElement.ValueKind == JsonValueKind.String)
+            {
+                foreach (var entry in _textKeys)
+                {
+                    if (entry.ItemId is { } itemId && entry.Reasoning == reasoning &&
+                        entry.ContentIndex == contentIndex && itemIdElement.ValueEquals(itemId))
+                        return entry.Key;
+                }
+                var id = itemIdElement.GetString()!;
+                var key = $"{id}:{(reasoning ? "r" : "t")}:{contentIndex}";
+                _textKeys.Add(new TextKeyCache
+                {
+                    ItemId = id,
+                    Reasoning = reasoning,
+                    ContentIndex = contentIndex,
+                    Key = key,
+                });
+                return key;
+            }
+
+            var outputIndex = SseHttp.ReadInt(root, "output_index") ?? 0;
+            var resolved = _itemIds.GetValueOrDefault(outputIndex) ?? $"index_{outputIndex}";
+            return ItemTextKey(resolved, reasoning, contentIndex);
+        }
+
+        private string ItemTextKey(string itemId, bool reasoning, int contentIndex)
+        {
+            foreach (var entry in _textKeys)
+            {
+                if (entry.ItemId is null && entry.Reasoning == reasoning &&
+                    entry.ContentIndex == contentIndex && string.Equals(entry.ResolvedKey, itemId, StringComparison.Ordinal))
+                    return entry.Key;
+            }
+            var key = $"{itemId}:{(reasoning ? "r" : "t")}:{contentIndex}";
+            _textKeys.Add(new TextKeyCache
+            {
+                ResolvedKey = itemId,
+                Reasoning = reasoning,
+                ContentIndex = contentIndex,
+                Key = key,
+            });
+            return key;
+        }
 
         private OpenTool GetTool(JsonElement root) => _tools.GetValueOrDefault(Key(root))
             ?? throw new JsonException("Tool arguments arrived without a function_call output item.");
 
-        private IEnumerable<ModelStreamEvent> RegisterTool(string key, JsonElement item)
+        private void RegisterTool(string key, JsonElement item, List<ModelStreamEvent> events)
         {
-            if (_tools.ContainsKey(key)) yield break;
+            if (_tools.ContainsKey(key)) return;
             var id = String(item, "call_id") ?? throw new JsonException("Function call is missing call_id.");
             var name = String(item, "name") ?? throw new JsonException("Function call is missing name.");
             var tool = new OpenTool(new ToolCallId(id), name);
             _tools.Add(key, tool);
-            yield return new ModelToolInputStarted(tool.Id, tool.Name);
+            events.Add(new ModelToolInputStarted(tool.Id, tool.Name));
         }
 
-        private static IEnumerable<ModelStreamEvent> FinishTool(OpenTool tool, string? completeArguments)
+        private static void FinishTool(OpenTool tool, string? completeArguments, List<ModelStreamEvent> events)
         {
-            if (tool.Closed) yield break;
-            if (tool.Arguments.Length == 0 && completeArguments is { Length: > 0 })
+            if (tool.Closed) return;
+            if (tool.Arguments.WrittenCount == 0 && completeArguments is { Length: > 0 })
             {
-                tool.Arguments.Append(completeArguments);
-                yield return new ModelToolInputDelta(tool.Id, completeArguments);
+                SseHttp.AppendUtf8(tool.Arguments, completeArguments);
+                events.Add(new ModelToolInputDelta(tool.Id, completeArguments));
             }
-            var arguments = completeArguments ?? tool.Arguments.ToString();
-            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
+            using var document = completeArguments is null
+                ? ParseAccumulatedArguments(tool.Arguments.WrittenMemory)
+                : JsonDocument.Parse(string.IsNullOrWhiteSpace(completeArguments) ? "{}" : completeArguments);
             if (document.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("Function arguments must be a JSON object.");
             tool.Closed = true;
-            yield return new ModelToolInputEnded(tool.Id);
-            yield return new ModelToolCallReady(new ToolCall(tool.Id, tool.Name, document.RootElement.Clone()));
+            events.Add(new ModelToolInputEnded(tool.Id));
+            events.Add(new ModelToolCallReady(new ToolCall(tool.Id, tool.Name, document.RootElement.Clone())));
         }
 
-        private IEnumerable<ModelStreamEvent> TextDelta(string key, string delta, bool reasoning)
+        private static JsonDocument ParseAccumulatedArguments(ReadOnlyMemory<byte> utf8)
+        {
+            if (SseHttp.IsNullOrWhiteSpace(utf8.Span))
+                return JsonDocument.Parse("{}");
+            try
+            {
+                return JsonDocument.Parse(utf8);
+            }
+            catch (JsonException) when (utf8.Span.ContainsAnyExceptInRange((byte)0, (byte)0x7F))
+            {
+                // Reparse the decoded text so malformed-input messages keep their previous positions.
+                return JsonDocument.Parse(Encoding.UTF8.GetString(utf8.Span));
+            }
+        }
+
+        private void TextDelta(string key, string delta, bool reasoning, List<ModelStreamEvent> events)
         {
             if (!_texts.TryGetValue(key, out var text))
             {
                 if (reasoning)
-                    foreach (var previous in _texts.Values.Where(value => value.Reasoning && !value.Closed))
-                        foreach (var e in CloseText(previous)) yield return e;
+                {
+                    foreach (var previous in _texts.Values)
+                        if (previous.Reasoning && !previous.Closed)
+                            CloseText(previous, events);
+                }
                 text = new OpenText(reasoning)
                 {
                     ItemId = reasoning ? key[..key.LastIndexOf(":r:", StringComparison.Ordinal)] : null,
                 };
                 text.EncryptedContent = text.ItemId is { } id ? _reasoningContent.GetValueOrDefault(id) : null;
                 _texts[key] = text;
-                yield return reasoning ? new ModelReasoningStarted() : new ModelTextStarted();
+                events.Add(reasoning ? new ModelReasoningStarted() : new ModelTextStarted());
             }
             if (!text.Closed && delta.Length > 0)
             {
                 text.HasDelta = true;
-                yield return reasoning ? new ModelReasoningDelta(delta) : new ModelTextDelta(delta);
+                events.Add(reasoning ? new ModelReasoningDelta(delta) : new ModelTextDelta(delta));
             }
         }
 
-        private IEnumerable<ModelStreamEvent> TextDone(string key, string? fullText, bool reasoning, bool close = true)
+        private void TextDone(string key, string? fullText, bool reasoning, bool close, List<ModelStreamEvent> events)
         {
-            if (!_texts.TryGetValue(key, out var text) || !text.HasDelta && !text.Closed)
-                foreach (var e in TextDelta(key, fullText ?? "", reasoning)) yield return e;
+            if (!_texts.TryGetValue(key, out var text) || (!text.HasDelta && !text.Closed))
+                TextDelta(key, fullText ?? "", reasoning, events);
             if (close && _texts.TryGetValue(key, out text))
-                foreach (var e in CloseText(text)) yield return e;
+                CloseText(text, events);
         }
 
-        private static IEnumerable<ModelStreamEvent> CloseText(OpenText text)
+        private static void CloseText(OpenText text, List<ModelStreamEvent> events)
         {
-            if (text.Closed) yield break;
+            if (text.Closed) return;
             text.Closed = true;
-            yield return text.Reasoning
+            events.Add(text.Reasoning
                 ? new ModelReasoningEnded(EncryptedContent: text.EncryptedContent, ProviderItemId: text.ItemId)
-                : new ModelTextEnded();
+                : new ModelTextEnded());
         }
 
-        private IEnumerable<ModelStreamEvent> ItemContent(JsonElement item, string id)
+        private void ItemContent(JsonElement item, string id, List<ModelStreamEvent> events)
         {
             var reasoning = String(item, "type") == "reasoning";
             if (reasoning)
-            {
-                foreach (var e in TextDelta($"{id}:r:0", "", reasoning: true)) yield return e;
-            }
+                TextDelta(ItemTextKey(id, reasoning: true, 0), "", reasoning: true, events);
             if (item.TryGetProperty(reasoning ? "summary" : "content", out var content) && content.ValueKind == JsonValueKind.Array)
             {
                 var i = 0;
                 foreach (var part in content.EnumerateArray())
                 {
                     if (String(part, "type") is "output_text" or "summary_text" or "reasoning_text")
-                        foreach (var e in TextDone($"{id}:{(reasoning ? "r" : "t")}:{i}", String(part, "text"), reasoning, close: !reasoning)) yield return e;
+                        TextDone(ItemTextKey(id, reasoning, i), String(part, "text"), reasoning, close: !reasoning, events);
                     i++;
                 }
             }
             if (reasoning)
             {
-                foreach (var text in _texts.Values.Where(text => text.Reasoning && text.ItemId == id && !text.Closed))
+                foreach (var text in _texts.Values)
                 {
-                    text.EncryptedContent = String(item, "encrypted_content");
-                    foreach (var e in CloseText(text)) yield return e;
+                    if (text.Reasoning && text.ItemId == id && !text.Closed)
+                    {
+                        text.EncryptedContent = String(item, "encrypted_content");
+                        CloseText(text, events);
+                    }
                 }
             }
         }
@@ -504,11 +590,20 @@ public sealed class OpenAiResponsesChatModel(
             && element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     }
 
+    private sealed class TextKeyCache
+    {
+        public string? ItemId { get; init; }
+        public string? ResolvedKey { get; init; }
+        public bool Reasoning { get; init; }
+        public int ContentIndex { get; init; }
+        public string Key { get; init; } = "";
+    }
+
     private sealed class OpenTool(ToolCallId id, string name)
     {
         public ToolCallId Id { get; } = id;
         public string Name { get; } = name;
-        public StringBuilder Arguments { get; } = new();
+        public ArrayBufferWriter<byte> Arguments { get; } = new();
         public bool Closed { get; set; }
     }
 

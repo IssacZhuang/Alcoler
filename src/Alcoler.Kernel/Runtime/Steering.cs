@@ -18,6 +18,11 @@ internal static class Steering
     private const string UserSteerSuffix =
         "This is how Alcoler surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.";
 
+    private const string UserSteerPrefix =
+        "<system-reminder>\nThe user sent a new message while you were working:\n";
+
+    private const string UserSteerClosing = "\n\n" + UserSteerSuffix + "\n</system-reminder>";
+
     public static string? ValidateInput(string text, bool hasImages = false)
     {
         if (!hasImages && string.IsNullOrWhiteSpace(text))
@@ -30,5 +35,8 @@ internal static class Steering
     public static int MeasureUtf8Bytes(string value) => Encoding.UTF8.GetByteCount(value);
 
     public static string FormatUserSteer(string body) =>
-        $"<system-reminder>\nThe user sent a new message while you were working:\n{body}\n\n{UserSteerSuffix}\n</system-reminder>";
+        string.Concat(UserSteerPrefix, body, UserSteerClosing);
+
+    public static int FormattedUserSteerLength(string body) =>
+        UserSteerPrefix.Length + body.Length + UserSteerClosing.Length;
 }

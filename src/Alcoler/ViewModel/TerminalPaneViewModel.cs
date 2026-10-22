@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Alcoler.Terminal;
 using Alcoler.Ui;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -31,6 +32,9 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
     private readonly IPtyTerminalService _service;
     private readonly IUiScheduler _scheduler;
     private readonly VtParser _parser = new();
+    private readonly ConcurrentQueue<string> _pendingOutput = new();
+    private readonly Action _drainOutput;
+    private int _outputScheduled;
     private bool _disposed;
 
     public TerminalPaneViewModel(
@@ -42,6 +46,7 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
         StartedFrom = startedFrom;
         _service = service ?? new PortaPtyTerminalService(resolveShell);
         _scheduler = scheduler ?? AvaloniaUiScheduler.Instance;
+        _drainOutput = DrainOutput;
         Buffer = new TerminalBuffer(PortaPtyTerminalService.DefaultCols, PortaPtyTerminalService.DefaultRows);
         _service.OutputReceived += OnOutputReceived;
         _service.Exited += OnExited;
@@ -187,12 +192,24 @@ public sealed partial class TerminalPaneViewModel : ObservableObject, IDisposabl
         }
     }
 
-    private void OnOutputReceived(object? sender, string chunk) =>
-        _scheduler.Post(() =>
+    private void OnOutputReceived(object? sender, string chunk)
+    {
+        _pendingOutput.Enqueue(chunk);
+        if (Interlocked.Exchange(ref _outputScheduled, 1) == 0)
+            _scheduler.Post(_drainOutput);
+    }
+
+    private void DrainOutput()
+    {
+        do
         {
-            Buffer.ApplyTokens(_parser.Feed(chunk));
+            while (_pendingOutput.TryDequeue(out var chunk))
+                Buffer.ApplyTokens(_parser.Feed(chunk));
             BufferChanged?.Invoke(this, EventArgs.Empty);
-        });
+            Volatile.Write(ref _outputScheduled, 0);
+        }
+        while (!_pendingOutput.IsEmpty && Interlocked.CompareExchange(ref _outputScheduled, 1, 0) == 0);
+    }
 
     private void OnExited(object? sender, int exitCode) => _scheduler.Post(() => IsConnected = false);
 

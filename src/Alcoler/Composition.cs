@@ -9,7 +9,6 @@ using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
 using Alcoler.Auth;
-using Alcoler.Browser;
 using Alcoler.Git;
 using Alcoler.Ui;
 using Alcoler.ViewModel;

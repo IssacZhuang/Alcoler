@@ -7,18 +7,18 @@ internal static class ProviderUsageAdapters
 {
     public static Uri GetEndpoint(ProviderUsageAdapterId adapterId, string baseUrl)
     {
-        var host = new Uri(baseUrl.Trim()).IdnHost.ToLowerInvariant();
+        var host = new Uri(baseUrl.Trim()).IdnHost;
         return new Uri(adapterId switch
         {
-            ProviderUsageAdapterId.Zhipu => host is "open.bigmodel.cn" or "bigmodel.cn"
+            ProviderUsageAdapterId.Zhipu => HostIs(host, "open.bigmodel.cn") || HostIs(host, "bigmodel.cn")
                 ? "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
                 : "https://api.z.ai/api/monitor/usage/quota/limit",
             ProviderUsageAdapterId.Kimi => "https://api.kimi.com/coding/v1/usages",
-            ProviderUsageAdapterId.MiniMax => host == "api.minimax.io"
+            ProviderUsageAdapterId.MiniMax => HostIs(host, "api.minimax.io")
                 ? "https://api.minimax.io/v1/api/openplatform/coding_plan/remains"
                 : "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains",
             ProviderUsageAdapterId.DeepSeek => "https://api.deepseek.com/user/balance",
-            ProviderUsageAdapterId.SiliconFlow => host == "api.siliconflow.com"
+            ProviderUsageAdapterId.SiliconFlow => HostIs(host, "api.siliconflow.com")
                 ? "https://api.siliconflow.com/v1/user/info"
                 : "https://api.siliconflow.cn/v1/user/info",
             ProviderUsageAdapterId.OpenRouter => "https://openrouter.ai/api/v1/credits",
@@ -238,4 +238,6 @@ internal static class ProviderUsageAdapters
             throw new JsonException();
         }
     }
+
+    private static bool HostIs(string host, string expected) => host.Equals(expected, StringComparison.OrdinalIgnoreCase);
 }

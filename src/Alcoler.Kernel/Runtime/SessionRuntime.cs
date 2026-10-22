@@ -188,6 +188,10 @@ public sealed class SessionRuntime : IAsyncDisposable
         return new SessionActivitySnapshot(Phase, outcome < 0 ? null : (TurnOutcome)outcome);
     }
 
+    internal Task SetArchivedAsync(bool archived, CancellationToken cancellationToken) =>
+        PersistRecordAsync(cancellationToken,
+            record => record.IsArchived == archived ? record : record with { IsArchived = archived });
+
     public static async Task<SessionRuntime> CreateAsync(SessionRecord record, SessionRuntimeDeps deps, CancellationToken ct, bool persistStartEvents = true)
     {
         var runtime = new SessionRuntime(record, deps);
@@ -894,7 +898,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private async Task<ModelStepOutcome> RunModelStepAsync(TurnId turnId, IChatModel model, ModelCallOptions options, CancellationToken turnCt)
     {
-        var history = _history.Snapshot();
+        var history = _history.SnapshotList();
         var contextWindow = model.Descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens;
         var threshold = CompactPolicy.AutoCompactThreshold(contextWindow);
         if (_contextModelId != model.Descriptor.FullId)
@@ -907,22 +911,24 @@ public sealed class SessionRuntime : IAsyncDisposable
         var (effectiveTokens, _) = EstimateContextTokens(initialRequest, history);
 
         var now = _deps.Clock.GetUtcNow();
-        var micro = MicroCompactor.Apply(history, _lastActivityUtc, now, threshold);
+        var historyTokens = TokenEstimator.EstimateHistoryTokens(history);
+        var micro = MicroCompactor.Apply(history, _lastActivityUtc, now, threshold, historyTokens);
         if (micro.ClearedParts.Count > 0)
         {
             _history.ReplaceAll(micro.Messages);
-            history = micro.Messages;
+            history.Clear();
+            history.AddRange(micro.Messages);
             _lastProviderUsage = null;
             _usageAnchorIndex = -1;
             var postMicro = await AssembleContextAsync(history, initialRequest.Request.Options, model, turnCt).ConfigureAwait(false);
-            effectiveTokens = TokenEstimator.EstimateRequestTokens(postMicro.Request);
+            effectiveTokens = postMicro.EstimatedRequestTokens;
             await EmitAsync(new MicrocompactAppliedEvent(micro.ClearedParts, micro.EstimatedTokensSaved), persist: true).ConfigureAwait(false);
         }
 
         var autoCompact = CompactPolicy.ShouldAutoCompact(new ShouldAutoCompactInput(
             EffectiveTokens: effectiveTokens,
             ContextWindowTokens: contextWindow,
-            AssistantLedRoundCount: history.Count(m => m.Role == MessageRole.Assistant),
+            AssistantLedRoundCount: CountAssistantMessages(history),
             ConsecutiveFailures: _consecutiveCompactFailures,
             ConsecutiveRapidRefills: _consecutiveRapidRefills,
             Disabled: false));
@@ -937,19 +943,14 @@ public sealed class SessionRuntime : IAsyncDisposable
                     CompactPolicy.RapidRefillToolTurnThreshold,
                     CompactPolicy.MaxConsecutiveRapidRefills));
             }
-            var compacted = await ExecuteCompactionAsync(CompactTrigger.Auto, null, turnCt, model, options).ConfigureAwait(false);
+            var compacted = await ExecuteCompactionWithHistoryAsync(
+                CompactTrigger.Auto, null, history, turnCt, model, options).ConfigureAwait(false);
             if (compacted)
-            {
                 _consecutiveRapidRefills = rapidRefill;
-            }
-            history = _history.Snapshot();
         }
 
         if (_outputContinuationsThisTurn == 0)
-        {
             await CommitRuntimeRemindersAsync(history).ConfigureAwait(false);
-            history = _history.Snapshot();
-        }
 
         _turnMachine.TryTransition(TurnPhase.AwaitingModel);
         var request = await AssembleContextAsync(_turnLocalRequestMessages.Merge(history), initialRequest.Request.Options, model, turnCt).ConfigureAwait(false);
@@ -1048,10 +1049,13 @@ public sealed class SessionRuntime : IAsyncDisposable
                 return ModelStepOutcome.Failed;
             }
             if (assistant.Parts.Count > 0)
+            {
                 await CommitMessageAsync(assistant).ConfigureAwait(false);
+                history.Add(assistant);
+            }
             // The Continue prompt is turn-request-local: later requests in this turn see
             // it, but it never lands in history or the store.
-            _turnLocalRequestMessages.AppendAfter(_history.Snapshot()[^1].Id, new ConversationMessage(
+            _turnLocalRequestMessages.AppendAfter(history[^1].Id, new ConversationMessage(
                 StrongId.NewMessageId(), MessageRole.User,
                 [new TextPart(StrongId.NewPartId(), OutputContinuation.ContinuePromptText)],
                 _deps.Clock.GetUtcNow()));
@@ -1140,8 +1144,8 @@ public sealed class SessionRuntime : IAsyncDisposable
                                    .WithCancellation(turnCt).ConfigureAwait(false))
                 {
                     await accumulator.ApplyAsync(streamEvent, evt => EmitAsync(evt, persist: false)).ConfigureAwait(false);
-                    if (streamEvent is ModelToolCallReady ready)
-                        await streamingTools.AcceptAsync(ready.ToolCall with { Name = ready.ToolCall.Name.Trim() }).ConfigureAwait(false);
+                    if (streamEvent is ModelToolCallReady)
+                        await streamingTools.AcceptAsync(accumulator.LastReadyToolCall!).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (turnCt.IsCancellationRequested)
@@ -1192,86 +1196,119 @@ public sealed class SessionRuntime : IAsyncDisposable
     }
 
     // Mode reminders live in canonical memory; only todo reminders are durable.
-    private async Task CommitRuntimeRemindersAsync(IReadOnlyList<ConversationMessage> history)
+    private async Task CommitRuntimeRemindersAsync(List<ConversationMessage> history)
     {
+        var counts = ScanHistoryReminders(history);
         if (_planModeExitReminderPending)
         {
             _planModeExitReminderPending = false;
-            AppendInMemoryReminder(RuntimeReminders.PlanModeExitReminder);
+            history.Add(AppendInMemoryReminder(RuntimeReminders.PlanModeExitReminder));
         }
 
         if (_permissions.Mode == PermissionMode.Plan)
         {
-            var (foundReminder, humanTurnsSince) = ScanPlanReminderCadence(history);
-            if (!foundReminder || humanTurnsSince >= RuntimeReminders.TurnsBetweenAttachments)
+            if (!counts.PlanReminderFound || counts.HumanTurnsSincePlanReminder >= RuntimeReminders.TurnsBetweenAttachments)
             {
-                var attachmentIndex = CountPlanReminders(history) + 1;
-                AppendInMemoryReminder(RuntimeReminders.BuildModeReminder(attachmentIndex));
+                var attachmentIndex = counts.PlanReminderCount + 1;
+                history.Add(AppendInMemoryReminder(RuntimeReminders.BuildModeReminder(attachmentIndex)));
             }
         }
 
-        var (sinceTodoWrite, sinceTodoReminder) = TodoCountsFromHistory(history);
-        if (TodoReminderPolicy.ShouldRemind(_deps.Tools, sinceTodoWrite, sinceTodoReminder))
+        if (TodoReminderPolicy.ShouldRemind(_deps.Tools, counts.SinceTodoWrite, counts.SinceTodoReminder))
         {
-            await CommitSyntheticReminderAsync(TodoReminderPolicy.BuildReminderBody(_deps.TodoStore?.Get(_record.Id))).ConfigureAwait(false);
+            history.Add(await CommitSyntheticReminderAsync(
+                TodoReminderPolicy.BuildReminderBody(_deps.TodoStore?.Get(_record.Id))).ConfigureAwait(false));
         }
     }
 
     // ZCode derives both counters from persisted history (committed assistant entries
     // after the last TodoWrite call / after the last committed reminder), so the cadence
     // survives restarts; the fallback is the total assistant count.
-    private static (int SinceTodoWrite, int SinceTodoReminder) TodoCountsFromHistory(
-        IReadOnlyList<ConversationMessage> history)
+    private static HistoryReminderCounts ScanHistoryReminders(IReadOnlyList<ConversationMessage> history)
     {
         var assistants = 0;
+        var planReminderCount = 0;
+        var humanTurnsSincePlanReminder = 0;
+        var planReminderFound = false;
         int? sinceWrite = null;
         int? sinceReminder = null;
         for (var i = history.Count - 1; i >= 0; i--)
         {
             var message = history[i];
-            if (sinceReminder is null
-                && message.Parts.OfType<AttachmentPart>().Any(a => TodoReminderPolicy.IsTodoReminder(a.Content)))
+            var hasPlanReminder = false;
+            var hasTodoReminder = false;
+            var hasTodoWrite = false;
+            foreach (var part in message.Parts)
             {
+                switch (part)
+                {
+                    case AttachmentPart attachment:
+                        if (RuntimeReminders.IsPlanModeReminder(attachment.Content))
+                            hasPlanReminder = true;
+                        if (TodoReminderPolicy.IsTodoReminder(attachment.Content))
+                            hasTodoReminder = true;
+                        break;
+                    case ToolCallPart call when message.Role == MessageRole.Assistant
+                        && string.Equals(call.ToolName, TodoReminderPolicy.TodoWriteToolName, StringComparison.OrdinalIgnoreCase):
+                        hasTodoWrite = true;
+                        break;
+                }
+            }
+
+            if (hasPlanReminder)
+            {
+                planReminderCount++;
+                planReminderFound = true;
+            }
+            else if (!planReminderFound && IsRealUserTurn(message))
+            {
+                humanTurnsSincePlanReminder++;
+            }
+            if (sinceReminder is null && hasTodoReminder)
                 sinceReminder = assistants;
-            }
-            if (message.Role != MessageRole.Assistant)
-                continue;
-            if (sinceWrite is null
-                && message.Parts.OfType<ToolCallPart>().Any(c =>
-                    string.Equals(c.ToolName, TodoReminderPolicy.TodoWriteToolName, StringComparison.OrdinalIgnoreCase)))
+            if (message.Role == MessageRole.Assistant)
             {
-                sinceWrite = assistants;
+                if (sinceWrite is null && hasTodoWrite)
+                    sinceWrite = assistants;
+                assistants++;
             }
-            assistants++;
         }
-        return (sinceWrite ?? assistants, sinceReminder ?? assistants);
+        return new HistoryReminderCounts(
+            planReminderFound,
+            planReminderCount,
+            humanTurnsSincePlanReminder,
+            sinceWrite ?? assistants,
+            sinceReminder ?? assistants);
     }
 
-    private async Task CommitSyntheticReminderAsync(string body)
+    private readonly record struct HistoryReminderCounts(
+        bool PlanReminderFound,
+        int PlanReminderCount,
+        int HumanTurnsSincePlanReminder,
+        int SinceTodoWrite,
+        int SinceTodoReminder);
+
+    private async Task<ConversationMessage> CommitSyntheticReminderAsync(string body)
     {
-        await CommitMessageAsync(new ConversationMessage(
+        var message = new ConversationMessage(
             StrongId.NewMessageId(),
             MessageRole.User,
             [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.SystemReminder, SystemReminder.Wrap(body), ProviderVisible: true)],
-            _deps.Clock.GetUtcNow(), Source: MessageSource.TodoReminder)).ConfigureAwait(false);
+            _deps.Clock.GetUtcNow(), Source: MessageSource.TodoReminder);
+        await CommitMessageAsync(message).ConfigureAwait(false);
+        return message;
     }
 
-    private static (bool Found, int HumanTurnsSince) ScanPlanReminderCadence(IReadOnlyList<ConversationMessage> history)
+    private static int CountAssistantMessages(IReadOnlyList<ConversationMessage> history)
     {
-        var humanTurnsSince = 0;
-        for (var i = history.Count - 1; i >= 0; i--)
+        var count = 0;
+        foreach (var message in history)
         {
-            var message = history[i];
-            if (message.Parts.OfType<AttachmentPart>().Any(a => RuntimeReminders.IsPlanModeReminder(a.Content)))
-                return (true, humanTurnsSince);
-            if (IsRealUserTurn(message))
-                humanTurnsSince++;
+            if (message.Role == MessageRole.Assistant)
+                count++;
         }
-        return (false, humanTurnsSince);
+        return count;
     }
-
-    private static int CountPlanReminders(IReadOnlyList<ConversationMessage> history) =>
-        history.Count(m => m.Parts.OfType<AttachmentPart>().Any(a => RuntimeReminders.IsPlanModeReminder(a.Content)));
 
     internal static bool IsRealUserTurn(ConversationMessage message) =>
         message.Role == MessageRole.User
@@ -1324,10 +1361,21 @@ public sealed class SessionRuntime : IAsyncDisposable
             StrongId.NewMessageId(), MessageRole.User, [.. results], _deps.Clock.GetUtcNow())).ConfigureAwait(false);
     }
 
-    private async Task<bool> ExecuteCompactionAsync(CompactTrigger trigger, string? instructions, CancellationToken ct,
-        IChatModel? frozenModel = null, ModelCallOptions? frozenOptions = null, int? declaredTokenGap = null)
+    private Task<bool> ExecuteCompactionAsync(CompactTrigger trigger, string? instructions, CancellationToken ct,
+        IChatModel? frozenModel = null, ModelCallOptions? frozenOptions = null, int? declaredTokenGap = null) =>
+        ExecuteCompactionCoreAsync(trigger, instructions, _history.Snapshot(), null, ct, frozenModel, frozenOptions,
+            declaredTokenGap);
+
+    private async Task<bool> ExecuteCompactionWithHistoryAsync(CompactTrigger trigger, string? instructions,
+        List<ConversationMessage> history, CancellationToken ct, IChatModel? frozenModel = null,
+        ModelCallOptions? frozenOptions = null, int? declaredTokenGap = null) =>
+        await ExecuteCompactionCoreAsync(trigger, instructions, history, history, ct, frozenModel, frozenOptions,
+            declaredTokenGap).ConfigureAwait(false);
+
+    private async Task<bool> ExecuteCompactionCoreAsync(CompactTrigger trigger, string? instructions,
+        IReadOnlyList<ConversationMessage> history, List<ConversationMessage>? historySink, CancellationToken ct,
+        IChatModel? frozenModel, ModelCallOptions? frozenOptions, int? declaredTokenGap)
     {
-        var history = _history.Snapshot();
         var selection = _record.ModelSelection ?? _deps.Options.DefaultModel;
         var model = frozenModel ?? _deps.ResolveModel(selection
             ?? throw new InvalidOperationException("No model configured."));
@@ -1358,7 +1406,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             try
             {
                 var failure = await ApplyCompactionAttemptAsync(plan, history, instructions, model, options, contextWindow,
-                    () => persisted = true, ct).ConfigureAwait(false);
+                    () => persisted = true, historySink, ct).ConfigureAwait(false);
                 if (failure is null)
                     return true;
                 LastTurnError = failure.Message;
@@ -1386,7 +1434,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         && (failure.IsRetryable || failure.Kind == ModelFailureKind.StreamProtocolError);
 
     private async Task<ModelFailure?> ApplyCompactionAttemptAsync(CompactionPlan plan, IReadOnlyList<ConversationMessage> history,
-        string? instructions, IChatModel model, ModelCallOptions options, int contextWindow, Action markPersisted, CancellationToken ct)
+        string? instructions, IChatModel model, ModelCallOptions options, int contextWindow, Action markPersisted,
+        List<ConversationMessage>? historySink, CancellationToken ct)
     {
         var compactionSelection = plan.Selection;
         var trigger = plan.Trigger;
@@ -1471,6 +1520,11 @@ public sealed class SessionRuntime : IAsyncDisposable
             UpdatedAt = _deps.Clock.GetUtcNow(),
         }).ConfigureAwait(false);
         _history.ReplaceAll(postCompact.Messages);
+        if (historySink is not null)
+        {
+            historySink.Clear();
+            historySink.AddRange(postCompact.Messages);
+        }
         _history.ClearRecentReads();
         _consecutiveCompactFailures = 0;
         _consecutiveRapidRefills = 0;
@@ -1480,7 +1534,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _contextUsage = null;
         await EmitAsync(new CompactBoundaryAppliedEvent(postCompact.Boundary), persist: true).ConfigureAwait(false);
         var compactedContext = await AssembleContextAsync(postCompact.Messages, options, model, ct).ConfigureAwait(false);
-        await PublishContextUsageAsync(compactedContext, TokenEstimator.EstimateRequestTokens(compactedContext.Request),
+        await PublishContextUsageAsync(compactedContext, compactedContext.EstimatedRequestTokens,
             contextWindow, TokenEstimator.EstimateSource).ConfigureAwait(false);
         return null;
     }
@@ -1572,14 +1626,15 @@ public sealed class SessionRuntime : IAsyncDisposable
         var currentDate = EnvironmentSections.FormatLocalIsoDate(_deps.Clock.GetLocalNow().LocalDateTime);
         var media = await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
         var visibleContracts = _deps.Tools.VisibleContractsFor(model?.Descriptor.Properties);
-        var skillsListing = visibleContracts.Any(tool => tool.Name == "Skill")
+        var skillToolAvailable = ContractListContains(visibleContracts, "Skill");
+        var skillsListing = skillToolAvailable
             ? _deps.Options.SkillsListing ?? SkillsListing.Render(new SkillsCatalog(_deps.Options.UserSkillsBase)
                 .Load(_record.WorkspaceRoot, _deps.Options.DisabledSkillPathsProvider?.Invoke()))
             : null;
         return ContextBuilder.Assemble(new ContextAssemblyInput(
             CliPrefix: PromptTexts.CliPrefix,
             SystemStable: custom is { Length: > 0 } body ? "\n" + body.Trim() : _deps.Options.SystemPromptStable,
-            SystemDynamic: custom is { Length: > 0 } ? null : BuildDynamicSystemSections(model, skillsListing),
+            SystemDynamic: custom is { Length: > 0 } ? null : BuildDynamicSystemSections(model, skillsListing, skillToolAvailable),
             AgentInstructions: _deps.Options.AgentInstructions,
             SkillsListing: skillsListing,
             History: history,
@@ -1598,52 +1653,65 @@ public sealed class SessionRuntime : IAsyncDisposable
         IReadOnlyList<ConversationMessage> history, CancellationToken cancellationToken)
     {
         Dictionary<string, MediaPayload>? media = null;
-        foreach (var (uri, mimeType, fileName) in history.SelectMany(MediaReferences))
+        foreach (var message in history)
+        {
+            foreach (var part in message.Parts)
+            {
+                switch (part)
+                {
+                    case ToolResultPart result:
+                        foreach (var block in result.Content)
+                        {
+                            if (block is ToolResultMedia mediaBlock)
+                            {
+                                await AddMediaAsync(mediaBlock.ArtifactUri, mediaBlock.MimeType,
+                                    mediaBlock.FileName).ConfigureAwait(false);
+                            }
+                        }
+                        break;
+                    case FilePart file:
+                        await AddMediaAsync(file.ArtifactUri, file.MimeType, file.FileName).ConfigureAwait(false);
+                        break;
+                }
+            }
+        }
+        return media;
+
+        async ValueTask AddMediaAsync(string uri, string mimeType, string? fileName)
         {
             if (media?.ContainsKey(uri) == true
                 || !mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
             {
-                continue;
+                return;
             }
             var bytes = await _deps.Artifacts.TryLoadAsync(uri, cancellationToken).ConfigureAwait(false);
             if (bytes is not { } data)
-            {
-                continue;
-            }
+                return;
             media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
             media[uri] = new MediaPayload(mimeType, Convert.ToBase64String(data.Span), fileName);
         }
-        return media;
     }
 
-    private static IEnumerable<(string Uri, string MimeType, string? FileName)> MediaReferences(
-        ConversationMessage message)
+    private static bool ContractListContains(IReadOnlyList<ToolContract> contracts, string name)
     {
-        foreach (var part in message.Parts)
+        foreach (var contract in contracts)
         {
-            switch (part)
-            {
-                case ToolResultPart result:
-                    foreach (var block in result.Content.OfType<ToolResultMedia>())
-                        yield return (block.ArtifactUri, block.MimeType, block.FileName);
-                    break;
-                case FilePart file:
-                    yield return (file.ArtifactUri, file.MimeType, file.FileName);
-                    break;
-            }
+            if (contract.Name == name)
+                return true;
         }
+        return false;
     }
 
     // Section order follows the reference builder: dynamic behavior, session guidance,
     // environment, output style (unused), context management, git snapshot.
-    private string? BuildDynamicSystemSections(IChatModel? model, string? skillsListing)
+    private string? BuildDynamicSystemSections(IChatModel? model, string? skillsListing, bool skillToolAvailable)
     {
         var sections = new List<string>
         {
             PromptTexts.DynamicBehavior,
         };
         if (PromptTexts.SessionSpecificGuidance(
-                skillToolAvailable: _deps.Tools.VisibleContracts.Any(tool => tool.Name == "Skill"),
+                skillToolAvailable: skillToolAvailable,
                 hasSkills: !string.IsNullOrEmpty(skillsListing)) is { } guidance)
         {
             sections.Add(guidance);
@@ -1667,7 +1735,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private (int Tokens, string Source) EstimateContextTokens(AssembledContext context, IReadOnlyList<ConversationMessage> history) =>
         _lastProviderUsage?.ContextUsageTokens is not null || _lastProviderUsage?.InputTokens is not null
             ? TokenEstimator.EstimateCurrentInputTokens(history, _usageAnchorIndex, _lastProviderUsage)
-            : (TokenEstimator.EstimateRequestTokens(context.Request), TokenEstimator.EstimateSource);
+            : (context.EstimatedRequestTokens, TokenEstimator.EstimateSource);
 
     private async ValueTask PublishContextUsageAsync(
         AssembledContext context, int used, int max, string source, TokenUsage? usage = null)
@@ -1701,11 +1769,15 @@ public sealed class SessionRuntime : IAsyncDisposable
             AppendInMemoryReminder(body, MessageSource.SessionReference);
     }
 
-    private void AppendInMemoryReminder(string body, MessageSource source = MessageSource.RuntimeMode) =>
-        _history.Append(new ConversationMessage(
+    private ConversationMessage AppendInMemoryReminder(string body, MessageSource source = MessageSource.RuntimeMode)
+    {
+        var message = new ConversationMessage(
             StrongId.NewMessageId(), MessageRole.User,
             [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.SystemReminder, SystemReminder.Wrap(body), ProviderVisible: true)],
-            _deps.Clock.GetUtcNow(), Source: source));
+            _deps.Clock.GetUtcNow(), Source: source);
+        _history.Append(message);
+        return message;
+    }
 
     private async Task EmitModelChangedAsync(ModelSelection selection)
     {

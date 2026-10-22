@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
@@ -55,6 +56,8 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
     private readonly SessionId _sessionId;
     private readonly ISessionActivityRuntime? _activities;
     private readonly Dictionary<string, StatusRow> _rows = [];
+    private readonly List<StatusRow> _orderedRows = [];
+    private readonly Dictionary<string, StatusRow> _latestAgents = new(StringComparer.Ordinal);
     private long _nextOrder;
     private TurnPhase? _phase;
     private bool _disposed;
@@ -118,13 +121,12 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         }
 
         var changes = Changes.None;
-        var started = update.Reset
-            ? update.ResetRows is { Count: > 0 }
-            : update.Ops.Any(op => op is RowAppended or RowUpserted);
-        var becameStarted = started && !_hasStarted;
-        _hasStarted |= started;
+        var started = false;
+        var rowsChanged = update.Reset;
         if (update.Reset)
         {
+            if (update.ResetRows is { Count: > 0 })
+                started = true;
             var previous = new Dictionary<string, StatusRow>(_rows);
             _rows.Clear();
             _nextOrder = 0;
@@ -143,18 +145,28 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
             {
                 switch (op)
                 {
-                    case RowAppended appended when !_rows.ContainsKey(appended.Row.RowId):
-                        changes |= Upsert(appended.Row);
+                    case RowAppended appended:
+                        started = true;
+                        if (_rows.ContainsKey(appended.Row.RowId))
+                            break;
+                        rowsChanged = true;
+                        changes |= Upsert(appended.Row, out _);
                         break;
                     case RowUpserted upserted:
-                        changes |= Upsert(upserted.Row);
+                        started = true;
+                        changes |= Upsert(upserted.Row, out var orderChanged);
+                        rowsChanged |= orderChanged;
                         break;
                     case RowRemoved removed when _rows.Remove(removed.RowId, out var old):
-                        changes |= old.Changes;
+                        rowsChanged = true;
+                        changes |= old.Terminal is null ? old.Changes : old.Changes | Changes.Activities;
                         break;
                 }
             }
         }
+        var becameStarted = started && !_hasStarted;
+        _hasStarted |= started;
+        SyncOrderedRows(rowsChanged);
 
         if ((changes & Changes.Todos) != 0)
         {
@@ -162,13 +174,22 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         }
         if ((changes & Changes.Plans) != 0)
         {
-            SetList(ref _plans, OrderedRows().Reverse().Where(row => row.Plan is not null)
-                .Select(row => row.Plan!).ToArray(), nameof(Plans));
+            List<StatusPlan> plans = [];
+            for (var index = _orderedRows.Count - 1; index >= 0; index--)
+            {
+                if (_orderedRows[index].Plan is { } plan)
+                    plans.Add(plan);
+            }
+            SetList(ref _plans, plans.ToArray(), nameof(Plans));
             OnPropertyChanged(nameof(HasPlans));
         }
         if ((changes & Changes.Activities) != 0)
         {
             RefreshActivities();
+        }
+        else if ((changes & Changes.ActivityOutput) != 0)
+        {
+            UpdateTerminalOutputs();
         }
         else if (changes != Changes.None)
         {
@@ -214,7 +235,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         }
         var currentTime = now ?? DateTimeOffset.UtcNow;
         List<StatusActivity> terminals = [];
-        foreach (var row in OrderedRows())
+        foreach (var row in _orderedRows)
         {
             if (row.Terminal is { } terminal)
             {
@@ -242,15 +263,26 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasTerminals));
         OnPropertyChanged(nameof(TerminalCountText));
 
-        var latestAgents = OrderedRows().Where(row => row.Subagent is not null)
-            .GroupBy(row => row.Subagent!.Id).Select(group => group.Last()).ToArray();
-        var active = latestAgents.Where(row => row.Subagent!.Status == SubagentStatus.Running)
+        _latestAgents.Clear();
+        foreach (var row in _orderedRows)
+        {
+            if (row.Subagent is { } agent)
+                _latestAgents[agent.Id.Value] = row;
+        }
+        var active = _latestAgents.Values
+            .Where(row => row.Subagent!.Status == SubagentStatus.Running)
             .OrderBy(row => row.Subagent!.StartedAt)
             .Select(row => AgentActivity(row, currentTime)).ToArray();
-        var ended = latestAgents.Reverse().Where(row => row.Subagent!.Status != SubagentStatus.Running)
-            .Select(row => AgentActivity(row, currentTime)).ToArray();
+
+        var latestAgents = _latestAgents.Values.ToArray();
+        List<StatusActivity> ended = [];
+        for (var index = latestAgents.Length - 1; index >= 0; index--)
+        {
+            if (latestAgents[index].Subagent!.Status != SubagentStatus.Running)
+                ended.Add(AgentActivity(latestAgents[index], currentTime));
+        }
         SetList(ref _agents, active, nameof(Agents));
-        SetList(ref _endedAgents, ended, nameof(EndedAgents));
+        SetList(ref _endedAgents, ended.ToArray(), nameof(EndedAgents));
         OnPropertyChanged(nameof(HasAgents));
         OnPropertyChanged(nameof(AgentCountText));
         OnPropertyChanged(nameof(HasRunningActivities));
@@ -296,14 +328,18 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
             _git.PropertyChanged -= OnGitChanged;
         }
         _rows.Clear();
+        _orderedRows.Clear();
+        _latestAgents.Clear();
     }
 
-    private Changes Upsert(ConversationRow row)
+    private Changes Upsert(ConversationRow row, out bool orderChanged)
     {
         var previous = _rows.GetValueOrDefault(row.RowId);
         var tracked = Track(row, previous, previous?.Order ?? _nextOrder++);
         var changes = previous?.Changes ?? Changes.None;
-        if (row is ToolCallRow tool && string.Equals(tool.ToolName, "Bash", StringComparison.OrdinalIgnoreCase))
+        orderChanged = (previous is null) != (tracked is null);
+        if (row is ToolCallRow tool && string.Equals(tool.ToolName, "Bash", StringComparison.OrdinalIgnoreCase)
+            && previous?.Terminal is not null && tracked?.Terminal is null)
         {
             changes |= Changes.Activities;
         }
@@ -358,7 +394,13 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         {
             return null;
         }
-        return new StatusRow(row.RowId, order, Changes.Activities)
+        var statusText = tool.Status == ToolCallStatus.Pending ? "Pending" : "Running";
+        var outputText = TerminalOutputText(tool.Output, previous, out var outputBuilder,
+            out var outputSource, out var outputTextBlocks);
+        var activityChanges = previous?.Terminal is null || previous.Terminal.StatusText != statusText
+            ? Changes.Activities
+            : Changes.ActivityOutput;
+        return new StatusRow(row.RowId, order, activityChanges)
         {
             Terminal = new StatusActivity
             {
@@ -366,11 +408,74 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
                 RowId = tool.RowId,
                 Title = ReadText(tool.Input, "description") ?? ReadText(tool.Input, "command") ?? "Terminal",
                 StartedAt = tool.StartedAt,
-                StatusText = tool.Status == ToolCallStatus.Pending ? "Pending" : "Running",
-                OutputText = tool.Output is null ? string.Empty
-                    : string.Join("\n", tool.Output.OfType<ToolResultText>().Select(block => block.Text)),
+                StatusText = statusText,
+                OutputText = outputText,
             },
+            TerminalOutputBuilder = outputBuilder,
+            TerminalOutputSource = outputSource,
+            TerminalOutputTextBlocks = outputTextBlocks,
         };
+    }
+
+    private static string TerminalOutputText(IReadOnlyList<ToolResultBlock>? output, StatusRow? previous,
+        out StringBuilder? builder, out IReadOnlyList<ToolResultBlock>? source, out int textBlocks)
+    {
+        if (output is null)
+        {
+            builder = null;
+            source = null;
+            textBlocks = 0;
+            return string.Empty;
+        }
+        if (previous is
+            {
+                TerminalOutputBuilder: { } existing,
+                TerminalOutputSource: { } previousSource,
+            }
+            && TryAppendOutput(output, previousSource, previous.TerminalOutputTextBlocks, existing, out textBlocks))
+        {
+            builder = existing;
+            source = output;
+            return existing.ToString();
+        }
+
+        builder = new StringBuilder();
+        source = output;
+        textBlocks = 0;
+        foreach (var block in output)
+        {
+            if (block is not ToolResultText text)
+                continue;
+            if (textBlocks > 0)
+                builder.Append('\n');
+            builder.Append(text.Text);
+            textBlocks++;
+        }
+        return builder.ToString();
+    }
+
+    private static bool TryAppendOutput(IReadOnlyList<ToolResultBlock> output,
+        IReadOnlyList<ToolResultBlock> previousSource, int previousTextBlocks, StringBuilder builder,
+        out int textBlocks)
+    {
+        textBlocks = previousTextBlocks;
+        if (output.Count < previousSource.Count)
+            return false;
+        for (var index = 0; index < previousSource.Count; index++)
+        {
+            if (!ReferenceEquals(output[index], previousSource[index]))
+                return false;
+        }
+        for (var index = previousSource.Count; index < output.Count; index++)
+        {
+            if (output[index] is not ToolResultText text)
+                continue;
+            if (textBlocks > 0)
+                builder.Append('\n');
+            builder.Append(text.Text);
+            textBlocks++;
+        }
+        return true;
     }
 
     private static bool IsSuccessful(ToolCallRow row) => row.Status == ToolCallStatus.Succeeded && !row.IsError;
@@ -463,11 +568,54 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
             ? value.GetString()
             : null;
 
-    private IEnumerable<StatusRow> OrderedRows() => _rows.Values.OrderBy(row => row.Order);
+    private void SyncOrderedRows(bool reorder)
+    {
+        if (reorder || _orderedRows.Count != _rows.Count)
+        {
+            _orderedRows.Clear();
+            foreach (var row in _rows.Values)
+                _orderedRows.Add(row);
+            _orderedRows.Sort(static (left, right) => left.Order.CompareTo(right.Order));
+            return;
+        }
+        for (var index = 0; index < _orderedRows.Count; index++)
+            _orderedRows[index] = _rows[_orderedRows[index].RowId];
+    }
+
+    private void UpdateTerminalOutputs()
+    {
+        if (_terminals is not StatusActivity[] terminals || terminals.Length == 0)
+            return;
+        var currentTime = DateTimeOffset.UtcNow;
+        var changed = false;
+        for (var index = 0; index < terminals.Length; index++)
+        {
+            var terminal = terminals[index];
+            if (terminal.RowId is not { } rowId || !_rows.TryGetValue(rowId, out var row)
+                || row.Terminal is not { } updated)
+            {
+                continue;
+            }
+            updated = updated with { DurationText = FormatDuration(updated.StartedAt, currentTime) };
+            if (!Equals(terminal, updated))
+            {
+                terminals[index] = updated;
+                changed = true;
+            }
+        }
+        if (changed)
+            OnPropertyChanged(nameof(Terminals));
+    }
 
     private void UpdateTodos()
     {
-        var todos = OrderedRows().LastOrDefault(row => row.Todos is not null)?.Todos ?? [];
+        StatusRow? todoRow = null;
+        foreach (var row in _orderedRows)
+        {
+            if (row.Todos is not null)
+                todoRow = row;
+        }
+        var todos = todoRow?.Todos ?? [];
         if (!SetList(ref _todos, todos, nameof(Todos)))
         {
             return;
@@ -594,6 +742,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         Todos = 1,
         Plans = 2,
         Activities = 4,
+        ActivityOutput = 8,
         All = Todos | Plans | Activities,
     }
 
@@ -602,6 +751,9 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         public IReadOnlyList<StatusTodo>? Todos { get; init; }
         public StatusPlan? Plan { get; init; }
         public StatusActivity? Terminal { get; init; }
+        public StringBuilder? TerminalOutputBuilder { get; init; }
+        public IReadOnlyList<ToolResultBlock>? TerminalOutputSource { get; init; }
+        public int TerminalOutputTextBlocks { get; init; }
         public SubagentState? Subagent { get; init; }
     }
 }

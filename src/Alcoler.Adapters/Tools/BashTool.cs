@@ -316,7 +316,8 @@ public sealed class BashTool : ITool, IToolInputPolicy
         var trimmed = command.Trim();
         if (trimmed.Length == 0)
             return false;
-        var firstToken = trimmed.Split(' ', '\t', '\n')[0];
+        var separator = trimmed.AsSpan().IndexOfAny(' ', '\t', '\n');
+        var firstToken = separator < 0 ? trimmed : trimmed[..separator];
         return firstToken != "sleep";
     }
 

@@ -15,6 +15,8 @@ public partial class ContextUsageView : UserControl
         AvaloniaProperty.Register<ContextUsageView, object?>(nameof(QuotaContent));
 
     private TopLevel? _owner;
+    private ContextUsageViewModel? _ringUsage;
+    private Geometry? _ringGeometry;
 
     public ContextUsageView()
     {
@@ -32,7 +34,21 @@ public partial class ContextUsageView : UserControl
         DataContextChanged += (_, _) =>
         {
             ContextPopover.DataContext = DataContext;
-            ContextRingFill.Data = DataContext is ContextUsageViewModel usage ? Geometry.Parse(usage.RingPath) : null;
+            if (DataContext is ContextUsageViewModel usage)
+            {
+                if (!ReferenceEquals(_ringUsage, usage))
+                {
+                    _ringUsage = usage;
+                    _ringGeometry = Geometry.Parse(usage.RingPath);
+                }
+                ContextRingFill.Data = _ringGeometry;
+            }
+            else
+            {
+                _ringUsage = null;
+                _ringGeometry = null;
+                ContextRingFill.Data = null;
+            }
             if (DataContext is not ContextUsageViewModel { IsVisible: true })
                 ContextPopup.IsOpen = false;
         };
@@ -138,8 +154,10 @@ public sealed class ContextUsageProgress : Control
             return;
         }
         var offset = 0d;
-        foreach (var segment in usage.Segments)
+        var segments = usage.Segments;
+        for (var index = 0; index < segments.Count; index++)
         {
+            var segment = segments[index];
             var width = filledWidth * segment.Fraction;
             context.FillRectangle(surface, new Rect(offset, 0, width, bounds.Height));
             using (context.PushOpacity(segment.ToneOpacity))

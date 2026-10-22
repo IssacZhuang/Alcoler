@@ -46,6 +46,34 @@ public partial class SidebarView : UserControl
         }
     }
 
+    private async void OnToggleArchivedClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is WorkbenchViewModel viewModel)
+        {
+            await viewModel.ToggleArchivedViewAsync();
+        }
+    }
+
+    private async void OnArchiveSessionClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: SessionSummaryViewModel summary }
+            && DataContext is WorkbenchViewModel viewModel)
+        {
+            e.Handled = true;
+            await viewModel.SetSessionArchivedAsync(summary.Id, archived: true);
+        }
+    }
+
+    private async void OnUnarchiveSessionClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: SessionSummaryViewModel summary }
+            && DataContext is WorkbenchViewModel viewModel)
+        {
+            e.Handled = true;
+            await viewModel.SetSessionArchivedAsync(summary.Id, archived: false);
+        }
+    }
+
     private void OnGroupClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Control { DataContext: SessionGroupViewModel group })
@@ -89,6 +117,7 @@ public partial class SidebarView : UserControl
         }
         ThemeSelector.Apply(saved.Theme);
         viewModel.ApplySettings(saved);
+        await viewModel.Sidebar.RefreshAsync();
         var mcpChanged = McpServersChanged(current, saved);
         var skillsChanged = SkillsChanged(current, saved);
         var searchChanged = !string.Equals(current.BraveApiKey, saved.BraveApiKey, StringComparison.Ordinal);

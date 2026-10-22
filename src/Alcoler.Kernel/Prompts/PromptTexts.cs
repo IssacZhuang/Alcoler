@@ -57,11 +57,8 @@ public static class PromptTexts
 
     public const string SkillSlashGuidance = "- When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section \u2014 don't guess.";
 
-    public static string? SessionSpecificGuidance(bool skillToolAvailable, bool hasSkills)
-    {
-        var lines = new List<string> { "# Session-specific guidance" };
-        if (skillToolAvailable && hasSkills)
-            lines.Add(SkillSlashGuidance);
-        return lines.Count > 1 ? string.Join("\n", lines) : null;
-    }
+    private const string SessionGuidance = "# Session-specific guidance\n" + SkillSlashGuidance;
+
+    public static string? SessionSpecificGuidance(bool skillToolAvailable, bool hasSkills) =>
+        skillToolAvailable && hasSkills ? SessionGuidance : null;
 }

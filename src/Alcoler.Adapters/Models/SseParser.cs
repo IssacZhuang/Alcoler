@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 
 namespace Alcoler.Adapters.Models;
@@ -10,106 +11,142 @@ internal readonly record struct SseFrame(string? Event, string Data);
 /// CR/LF pairs are buffered until complete. The <c>data: [DONE]</c> sentinel is
 /// surfaced as a regular frame; callers decide its meaning.
 /// </summary>
-internal sealed class SseParser
+internal sealed class SseParser : IDisposable
 {
-    private readonly List<byte> _pending = [];
+    private readonly List<SseFrame> _frames = [];
     private readonly List<string> _dataLines = [];
+    private byte[] _pending = [];
+    private int _pendingCount;
+    private bool _pendingRented;
     private string? _event;
 
     public IReadOnlyList<SseFrame> Feed(ReadOnlySpan<byte> bytes)
     {
-        var frames = new List<SseFrame>();
+        _frames.Clear();
         var consumed = 0;
         while (consumed < bytes.Length)
         {
-            var newline = bytes.Slice(consumed).IndexOf((byte)'\n');
+            var newline = bytes[consumed..].IndexOf((byte)'\n');
             if (newline < 0)
             {
-                _pending.AddRange(bytes.Slice(consumed).ToArray());
+                AppendPending(bytes[consumed..]);
                 break;
             }
-            var lineEnd = consumed + newline;
-            byte[] lineBytes;
-            if (_pending.Count > 0)
+            if (_pendingCount > 0)
             {
-                _pending.AddRange(bytes.Slice(consumed, newline).ToArray());
-                lineBytes = [.. _pending];
-                _pending.Clear();
+                AppendPending(bytes.Slice(consumed, newline));
+                FeedLine(_pending.AsSpan(0, _pendingCount));
+                _pendingCount = 0;
             }
             else
             {
-                lineBytes = bytes.Slice(consumed, newline).ToArray();
+                FeedLine(bytes.Slice(consumed, newline));
             }
-            FeedLineBytes(lineBytes, frames);
-            consumed = lineEnd + 1;
+            consumed += newline + 1;
         }
-        return frames;
+        return _frames;
     }
 
-    public IReadOnlyList<SseFrame> FeedText(ReadOnlySpan<char> text) =>
-        Feed(Encoding.UTF8.GetBytes(text.ToArray()));
+    public IReadOnlyList<SseFrame> FeedText(ReadOnlySpan<char> text)
+    {
+        var count = Encoding.UTF8.GetByteCount(text);
+        if (count == 0)
+            return Feed(ReadOnlySpan<byte>.Empty);
+        var rented = ArrayPool<byte>.Shared.Rent(count);
+        try
+        {
+            var written = Encoding.UTF8.GetBytes(text, rented);
+            return Feed(rented.AsSpan(0, written));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
 
     public IReadOnlyList<SseFrame> FeedLine(string line)
     {
-        var frames = new List<SseFrame>();
-        FeedLineBytes(Encoding.UTF8.GetBytes(line), frames);
-        return frames;
+        _frames.Clear();
+        FeedLine(Encoding.UTF8.GetBytes(line));
+        return _frames;
     }
 
     /// <summary>Dispatches a trailing frame whose last data line was not followed by a blank line.</summary>
     public IReadOnlyList<SseFrame> Flush()
     {
-        var frames = new List<SseFrame>();
-        if (_pending.Count > 0)
+        _frames.Clear();
+        if (_pendingCount > 0)
         {
-            var lineBytes = _pending.ToArray();
-            _pending.Clear();
-            FeedLineBytes(lineBytes, frames);
+            var pending = _pending.AsSpan(0, _pendingCount);
+            _pendingCount = 0;
+            FeedLine(pending);
         }
-        Dispatch(frames);
-        return frames;
+        Dispatch();
+        return _frames;
     }
 
-    private void FeedLineBytes(byte[] lineBytes, List<SseFrame> frames)
+    public void Dispose()
     {
-        var length = lineBytes.Length;
-        if (length > 0 && lineBytes[length - 1] == (byte)'\r')
-            length--;
+        if (!_pendingRented)
+            return;
+        ArrayPool<byte>.Shared.Return(_pending);
+        _pending = [];
+        _pendingRented = false;
+    }
 
-        var line = Encoding.UTF8.GetString(lineBytes, 0, length);
-        if (line.Length == 0)
+    private void AppendPending(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.IsEmpty)
+            return;
+        var required = _pendingCount + bytes.Length;
+        if (required > _pending.Length)
         {
-            Dispatch(frames);
+            var size = Math.Max(required, Math.Max(256, _pending.Length * 2));
+            var grown = ArrayPool<byte>.Shared.Rent(size);
+            if (_pendingCount > 0)
+                _pending.AsSpan(0, _pendingCount).CopyTo(grown);
+            if (_pendingRented)
+                ArrayPool<byte>.Shared.Return(_pending);
+            _pending = grown;
+            _pendingRented = true;
+        }
+        bytes.CopyTo(_pending.AsSpan(_pendingCount));
+        _pendingCount = required;
+    }
+
+    private void FeedLine(ReadOnlySpan<byte> line)
+    {
+        if (!line.IsEmpty && line[^1] == (byte)'\r')
+            line = line[..^1];
+        if (line.IsEmpty)
+        {
+            Dispatch();
             return;
         }
-        if (line[0] == ':')
+        if (line[0] == (byte)':')
             return;
 
-        var colon = line.IndexOf(':');
+        var colon = line.IndexOf((byte)':');
         var field = colon < 0 ? line : line[..colon];
-        var value = colon < 0 ? "" : line[(colon + 1)..];
-        if (value.StartsWith(' '))
+        var value = colon < 0 ? default : line[(colon + 1)..];
+        if (!value.IsEmpty && value[0] == (byte)' ')
             value = value[1..];
 
-        switch (field)
-        {
-            case "data":
-                _dataLines.Add(value);
-                break;
-            case "event":
-                _event = value;
-                break;
-        }
+        if (field.SequenceEqual("data"u8))
+            _dataLines.Add(Encoding.UTF8.GetString(value));
+        else if (field.SequenceEqual("event"u8))
+            _event = Encoding.UTF8.GetString(value);
     }
 
-    private void Dispatch(List<SseFrame> frames)
+    private void Dispatch()
     {
         if (_dataLines.Count == 0)
         {
             _event = null;
             return;
         }
-        frames.Add(new SseFrame(_event, string.Join("\n", _dataLines)));
+        _frames.Add(new SseFrame(_event,
+            _dataLines.Count == 1 ? _dataLines[0] : string.Join("\n", _dataLines)));
         _dataLines.Clear();
         _event = null;
     }

@@ -77,19 +77,27 @@ public static class ProviderUsageDetection
             return null;
         }
 
-        return uri.IdnHost.ToLowerInvariant() switch
-        {
-            "open.bigmodel.cn" or "bigmodel.cn" or "api.z.ai" => ProviderUsageAdapterId.Zhipu,
-            "api.kimi.com" => ProviderUsageAdapterId.Kimi,
-            "api.minimaxi.com" or "api.minimax.cn" or "api.minimax.io" => ProviderUsageAdapterId.MiniMax,
-            "api.deepseek.com" => ProviderUsageAdapterId.DeepSeek,
-            "api.siliconflow.cn" or "api.siliconflow.com" => ProviderUsageAdapterId.SiliconFlow,
-            "openrouter.ai" => ProviderUsageAdapterId.OpenRouter,
-            "api.stepfun.ai" or "api.stepfun.com" => ProviderUsageAdapterId.StepFun,
-            "api.novita.ai" => ProviderUsageAdapterId.Novita,
-            _ => null,
-        };
+        var host = uri.IdnHost;
+        if (HostIs(host, "open.bigmodel.cn") || HostIs(host, "bigmodel.cn") || HostIs(host, "api.z.ai"))
+            return ProviderUsageAdapterId.Zhipu;
+        if (HostIs(host, "api.kimi.com"))
+            return ProviderUsageAdapterId.Kimi;
+        if (HostIs(host, "api.minimaxi.com") || HostIs(host, "api.minimax.cn") || HostIs(host, "api.minimax.io"))
+            return ProviderUsageAdapterId.MiniMax;
+        if (HostIs(host, "api.deepseek.com"))
+            return ProviderUsageAdapterId.DeepSeek;
+        if (HostIs(host, "api.siliconflow.cn") || HostIs(host, "api.siliconflow.com"))
+            return ProviderUsageAdapterId.SiliconFlow;
+        if (HostIs(host, "openrouter.ai"))
+            return ProviderUsageAdapterId.OpenRouter;
+        if (HostIs(host, "api.stepfun.ai") || HostIs(host, "api.stepfun.com"))
+            return ProviderUsageAdapterId.StepFun;
+        if (HostIs(host, "api.novita.ai"))
+            return ProviderUsageAdapterId.Novita;
+        return null;
     }
+
+    private static bool HostIs(string host, string expected) => host.Equals(expected, StringComparison.OrdinalIgnoreCase);
 
     public static ProviderUsageKind GetKind(ProviderUsageAdapterId adapterId) =>
         adapterId is ProviderUsageAdapterId.Zhipu or ProviderUsageAdapterId.Kimi or ProviderUsageAdapterId.MiniMax

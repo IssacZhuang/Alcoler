@@ -23,13 +23,16 @@ public sealed class ConversationImage : Image
     public static readonly StyledProperty<string?> FileNameProperty =
         AvaloniaProperty.Register<ConversationImage, string?>(nameof(FileName));
 
+    private static readonly FileArtifactStore SharedArtifacts = new(WorkbenchDataPaths.ArtifactsPath);
+    private static readonly Cursor HandCursor = new(StandardCursorType.Hand);
+
     private readonly FileArtifactStore _artifacts;
     private CancellationTokenSource? _load;
     private Bitmap? _thumbnail;
     private Point? _pressedAt;
     private bool _opening;
 
-    public ConversationImage() : this(new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath))
+    public ConversationImage() : this(SharedArtifacts)
     {
     }
 
@@ -40,7 +43,7 @@ public sealed class ConversationImage : Image
         Height = 96;
         Stretch = Stretch.Uniform;
         Focusable = true;
-        Cursor = new Cursor(StandardCursorType.Hand);
+        Cursor = HandCursor;
         AutomationProperties.SetName(this, "Preview image");
     }
 

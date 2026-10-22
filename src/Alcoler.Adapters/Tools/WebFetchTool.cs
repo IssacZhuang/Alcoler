@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -294,18 +295,26 @@ public sealed class WebFetchTool : ITool, IDisposable
     private static async ValueTask<string> ReadBodyCappedAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
-        while (true)
+        var writer = new ArrayBufferWriter<byte>(81920);
+        var chunk = ArrayPool<byte>.Shared.Rent(81920);
+        try
         {
-            var read = await stream.ReadAsync(chunk.AsMemory(), cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-                break;
-            if (buffer.Length + read > MaxResponseBytes)
-                throw new InvalidOperationException($"WebFetch response exceeded the maximum of {MaxResponseBytes} bytes.");
-            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            while (true)
+            {
+                var read = await stream.ReadAsync(chunk.AsMemory(0, 81920), cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                    break;
+                if (writer.WrittenCount + read > MaxResponseBytes)
+                    throw new InvalidOperationException($"WebFetch response exceeded the maximum of {MaxResponseBytes} bytes.");
+                chunk.AsSpan(0, read).CopyTo(writer.GetSpan(read));
+                writer.Advance(read);
+            }
         }
-        return Encoding.UTF8.GetString(buffer.ToArray());
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(chunk);
+        }
+        return Encoding.UTF8.GetString(writer.WrittenSpan);
     }
 
     private static async ValueTask<ToolExecutionResult> SummarizeAsync(

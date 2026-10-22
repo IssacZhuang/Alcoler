@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Conversation;
@@ -111,22 +113,38 @@ public sealed class ReadTool : ITool
                 $"File content ({FormatFileSize(info.Length)}) exceeds maximum allowed size ({FormatFileSize(MaxFileSizeBytes)}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
                 isError: true);
 
-        var content = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-        var lines = content.Length == 0 ? [] : EditMatchers.NormalizeLineEndings(content).Split('\n');
-        var selectedEnd = (int)Math.Min((long)startLine - 1 + limit, lines.Length);
-        var selected = startLine - 1 < lines.Length ? lines[(startLine - 1)..selectedEnd] : [];
+        var fullRead = explicitLimit is < 0 || explicitLimit is null && offset <= 1;
+        string content;
+        string[] lines;
+        string[] selected;
+        int totalLines;
+        var selectedEnd = 0;
+        if (fullRead)
+        {
+            content = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+            lines = SplitNormalizedLines(content);
+            selectedEnd = (int)Math.Min((long)startLine - 1 + limit, lines.Length);
+            selected = startLine - 1 < lines.Length ? lines[(startLine - 1)..selectedEnd] : [];
+            totalLines = lines.Length;
+        }
+        else
+        {
+            content = string.Empty;
+            (selected, totalLines) = await ReadLineRangeAsync(path, startLine, limit, cancellationToken).ConfigureAwait(false);
+            lines = [];
+        }
 
         if (selected.Length == 0)
         {
-            var warning = lines.Length == 0
+            var warning = totalLines == 0
                 ? EmptyFileReminder
-                : $"<system-reminder>Warning: the file exists but is shorter than the provided offset ({startLine}). The file has {lines.Length} lines.</system-reminder>";
+                : $"<system-reminder>Warning: the file exists but is shorter than the provided offset ({startLine}). The file has {totalLines} lines.</system-reminder>";
             context.FileReads?.RecordReadView(path, completeView: true, offset, explicitLimit,
-                startLine == 1 && explicitLimit is null && lines.Length == 0 ? FileReadGuards.HashContent(content) : null);
+                startLine == 1 && explicitLimit is null && totalLines == 0 ? FileReadGuards.HashContent(content) : null);
             return ToolExecutionResult.Text(warning);
         }
 
-        var tokenCount = TokenEstimator.EstimateTokens(string.Join("\n", selected));
+        var tokenCount = EstimateJoinedTokens(selected);
         if (tokenCount > MaxOutputTokens)
         {
             // The token-cap partial view is reserved for initial whole-file reads; explicit
@@ -312,17 +330,31 @@ public sealed class ReadTool : ITool
         return UnsupportedBinaryExtensions.Contains(extension) ? extension : null;
     }
 
-    private static string AddLineNumbers(string[] lines, int startLine) =>
-        string.Join("\n", lines.Select((line, index) => $"{startLine + index}\t{line}"));
+    private static string AddLineNumbers(IReadOnlyList<string> lines, int startLine)
+    {
+        if (lines.Count == 0)
+            return string.Empty;
+        var builder = new StringBuilder();
+        for (var index = 0; index < lines.Count; index++)
+        {
+            if (index > 0)
+                builder.Append('\n');
+            builder.Append(startLine + index).Append('\t').Append(lines[index]);
+        }
+        return builder.ToString();
+    }
 
     private static int LargestPrefixWithinTokenBudget(string[] lines)
     {
+        var weightedPrefix = new int[lines.Length + 1];
+        for (var index = 0; index < lines.Length; index++)
+            weightedPrefix[index + 1] = weightedPrefix[index] + (index == 0 ? 0 : 1) + WeightedLength(lines[index]);
         var low = 0;
         var high = lines.Length;
         while (low < high)
         {
             var mid = (int)Math.Ceiling((low + (double)high) / 2);
-            if (TokenEstimator.EstimateTokens(string.Join("\n", lines, 0, mid)) <= PartialViewTokenTarget)
+            if ((weightedPrefix[mid] + 2) / 3 <= PartialViewTokenTarget)
                 low = mid;
             else
                 high = mid - 1;
@@ -337,12 +369,106 @@ public sealed class ReadTool : ITool
         while (low < high)
         {
             var mid = (int)Math.Ceiling((low + (double)high) / 2);
-            if (TokenEstimator.EstimateTokens(content[..mid]) <= PartialViewTokenTarget)
+            if ((WeightedLength(content.AsSpan(0, mid)) + 2) / 3 <= PartialViewTokenTarget)
                 low = mid;
             else
                 high = mid - 1;
         }
         return low;
+    }
+
+    // Must match TokenEstimator.EstimateTokens: CJK ideographs weigh 2, everything else 1.
+    private static int WeightedLength(ReadOnlySpan<char> text)
+    {
+        var weighted = 0;
+        foreach (var c in text)
+            weighted += c is >= '\u4E00' and <= '\u9FFF' ? 2 : 1;
+        return weighted;
+    }
+
+    private static int EstimateJoinedTokens(IReadOnlyList<string> lines)
+    {
+        if (lines.Count == 0)
+            return 0;
+        var weighted = lines.Count - 1;
+        foreach (var line in lines)
+            weighted += WeightedLength(line);
+        return (weighted + 2) / 3;
+    }
+
+    // Same line sequence as NormalizeLineEndings(content).Split('\n') without the whole-file copy.
+    private static string[] SplitNormalizedLines(string content)
+    {
+        if (content.Length == 0)
+            return [];
+        var lines = new List<string>();
+        var start = 0;
+        for (var index = 0; index < content.Length; index++)
+        {
+            if (content[index] != '\n')
+                continue;
+            var end = index;
+            if (end > start && content[end - 1] == '\r')
+                end--;
+            lines.Add(content[start..end]);
+            start = index + 1;
+        }
+        lines.Add(content[start..]);
+        return lines.ToArray();
+    }
+
+    private static async ValueTask<(string[] Lines, int TotalLines)> ReadLineRangeAsync(
+        string path,
+        int startLine,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096);
+        var chars = ArrayPool<char>.Shared.Rent(4096);
+        var line = new StringBuilder();
+        var selected = new List<string>();
+        var lineNumber = 0;
+        var anyContent = false;
+        try
+        {
+            while (true)
+            {
+                var read = await reader.ReadAsync(chars.AsMemory(0, 4096), cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                    break;
+                anyContent = true;
+                for (var index = 0; index < read; index++)
+                {
+                    var c = chars[index];
+                    if (c != '\n')
+                    {
+                        line.Append(c);
+                        continue;
+                    }
+                    if (line.Length > 0 && line[^1] == '\r')
+                        line.Length--;
+                    lineNumber++;
+                    if (lineNumber >= startLine && selected.Count < limit)
+                        selected.Add(line.ToString());
+                    line.Clear();
+                    if (limit > 0 && selected.Count == limit)
+                        return (selected.ToArray(), -1);
+                }
+            }
+            if (anyContent)
+            {
+                lineNumber++;
+                if (lineNumber >= startLine && selected.Count < limit)
+                    selected.Add(line.ToString());
+            }
+            return (selected.ToArray(), lineNumber);
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(chars);
+        }
     }
 
     private static string FormatFileSize(long bytes)

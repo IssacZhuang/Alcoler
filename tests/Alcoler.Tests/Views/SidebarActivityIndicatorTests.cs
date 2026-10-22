@@ -38,6 +38,65 @@ public sealed class SidebarActivityIndicatorTests
         Assert.Equal(SessionActivityIndicator.None, session.Indicator);
     }
 
+    [AvaloniaFact]
+    public async Task SessionContextFlyout_UsesSessionDataContextForArchiveActions()
+    {
+        using var viewModel = ShellSmokeTests.CreateWorkbench();
+        var active = new SessionSummaryViewModel(
+            StrongId.NewSessionId(), "Active", @"C:\ws\alpha", DateTimeOffset.UtcNow);
+        var archived = new SessionSummaryViewModel(
+            StrongId.NewSessionId(), "Archived", @"C:\ws\alpha", DateTimeOffset.UtcNow, isArchived: true);
+        viewModel.Sidebar.ApplySummaries([active, archived]);
+
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            await Task.Yield();
+            Dispatcher.UIThread.RunJobs();
+            var sidebar = Assert.IsType<Alcoler.Views.SidebarView>(
+                Assert.Single(window.GetVisualDescendants().OfType<Alcoler.Views.SidebarView>()));
+            var rows = sidebar.GetVisualDescendants().OfType<Button>()
+                .Where(button => button.Classes.Contains("sessionItem")
+                    && button.DataContext is SessionSummaryViewModel)
+                .ToList();
+            Assert.Equal(2, rows.Count);
+
+            await AssertFlyoutAsync(
+                rows.Single(row => ((SessionSummaryViewModel)row.DataContext!).Id == active.Id),
+                showArchive: true);
+            await AssertFlyoutAsync(
+                rows.Single(row => ((SessionSummaryViewModel)row.DataContext!).Id == archived.Id),
+                showArchive: false);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    private static async Task AssertFlyoutAsync(Button row, bool showArchive)
+    {
+        var summary = Assert.IsType<SessionSummaryViewModel>(row.DataContext);
+        var menu = Assert.IsType<MenuFlyout>(row.ContextFlyout);
+        menu.ShowAt(row);
+        await Task.Yield();
+        Dispatcher.UIThread.RunJobs();
+        try
+        {
+            var archive = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Archive"));
+            var unarchive = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "Unarchive"));
+            Assert.Same(summary, archive.DataContext);
+            Assert.Same(summary, unarchive.DataContext);
+            Assert.Equal(showArchive, archive.IsVisible);
+            Assert.Equal(!showArchive, unarchive.IsVisible);
+        }
+        finally
+        {
+            menu.Hide();
+        }
+    }
+
     [Fact]
     public void SetActive_AcknowledgesCompletionButKeepsFailureAndRunning()
     {

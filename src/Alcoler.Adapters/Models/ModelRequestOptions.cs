@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -7,6 +8,10 @@ namespace Alcoler.Adapters.Models;
 
 internal static class ModelRequestOptions
 {
+    private const int MaxCachedToolSchemas = 1024;
+    private static readonly string[] OutputLimitKeys = ["max_tokens", "max_completion_tokens", "max_output_tokens", "budget_tokens"];
+    private static readonly ConcurrentDictionary<JsonElement, JsonElement> RewrittenToolSchemas = new();
+
     // Matches JSON.stringify: the body is sent as application/json, never embedded in HTML.
     internal static readonly JsonSerializerOptions RequestJsonOptions = new()
     {
@@ -67,15 +72,25 @@ internal static class ModelRequestOptions
 
     private static void CapOutputLimits(JsonObject body, int max)
     {
-        foreach (var key in new[] { "max_tokens", "max_completion_tokens", "max_output_tokens", "budget_tokens" })
+        foreach (var key in OutputLimitKeys)
         {
             if (body[key] is null) continue;
             var value = body[key];
-            if (value is not JsonValue || !double.TryParse(value.ToJsonString(), System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out var tokens) || tokens <= 0 || Math.Truncate(tokens) != tokens)
+            if (value is not JsonValue jsonValue || !TryGetTokenCount(jsonValue, out var tokens) || tokens <= 0 || Math.Truncate(tokens) != tokens)
                 throw new ArgumentException($"Mapped {key} must be a positive integer.");
             if (tokens > max) body[key] = max;
         }
+    }
+
+    private static bool TryGetTokenCount(JsonValue value, out double tokens)
+    {
+        if (value.TryGetValue(out double number)) { tokens = number; return true; }
+        if (value.TryGetValue(out int integer)) { tokens = integer; return true; }
+        if (value.TryGetValue(out long longNumber)) { tokens = longNumber; return true; }
+        if (value.TryGetValue(out float single)) { tokens = single; return true; }
+        if (value.TryGetValue(out decimal decimalNumber)) { tokens = (double)decimalNumber; return true; }
+        return double.TryParse(value.ToJsonString(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out tokens);
     }
 
     internal static void ValidateRequest(ModelRequest request, ModelProperties properties)
@@ -93,6 +108,15 @@ internal static class ModelRequestOptions
     internal static JsonElement ToolSchema(JsonElement schema, ModelProperties properties)
     {
         if (!properties.RequiresMfjsToolSchema) return schema;
+        if (RewrittenToolSchemas.TryGetValue(schema, out var cached)) return cached;
+        var rewritten = RewriteToolSchema(schema);
+        if (RewrittenToolSchemas.Count < MaxCachedToolSchemas)
+            RewrittenToolSchemas.TryAdd(schema, rewritten);
+        return rewritten;
+    }
+
+    private static JsonElement RewriteToolSchema(JsonElement schema)
+    {
         var root = JsonNode.Parse(schema.GetRawText()) ?? throw new ArgumentException("Tool schema must be a JSON object.");
         if (root is not JsonObject obj) throw new ArgumentException("Tool schema must be a JSON object.");
         var refs = new Dictionary<string, string>(StringComparer.Ordinal);

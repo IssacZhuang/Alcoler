@@ -77,13 +77,13 @@ internal static class GrepTypeMap
         ["yaml"] = [".yaml", ".yml"],
     };
 
-    public static bool MatchesFile(string path, string type)
+    public static bool MatchesFile(string path, string type) => CreateFilter(type).Matches(path);
+
+    internal static GrepTypeFilter CreateFilter(string type)
     {
         var normalized = type.ToLowerInvariant().TrimStart('.');
-        var extension = Path.GetExtension(path).ToLowerInvariant();
-        return TypeExtensions.TryGetValue(normalized, out var extensions)
-            ? extensions.Contains(extension)
-            : extension == "." + normalized;
+        return new GrepTypeFilter(normalized,
+            TypeExtensions.TryGetValue(normalized, out var extensions) ? extensions : null);
     }
 
     // The native engine receives type filters as include globs, like the reference's
@@ -92,9 +92,39 @@ internal static class GrepTypeMap
     public static IReadOnlyList<string> ToGlobs(string type)
     {
         var normalized = type.ToLowerInvariant().TrimStart('.');
-        return TypeExtensions.TryGetValue(normalized, out var extensions)
-            ? [.. extensions.Select(static extension => "*" + extension)]
-            : ["*." + normalized];
+        if (!TypeExtensions.TryGetValue(normalized, out var extensions))
+            return ["*." + normalized];
+        var globs = new string[extensions.Length];
+        for (var index = 0; index < extensions.Length; index++)
+            globs[index] = "*" + extensions[index];
+        return globs;
+    }
+}
+
+internal readonly struct GrepTypeFilter
+{
+    private readonly string _normalized;
+    private readonly string[]? _extensions;
+
+    public GrepTypeFilter(string normalized, string[]? extensions)
+    {
+        _normalized = normalized;
+        _extensions = extensions;
+    }
+
+    public bool Matches(string path)
+    {
+        var extension = Path.GetExtension(path);
+        if (_extensions is null)
+            return extension.Length == _normalized.Length + 1
+                && extension[0] == '.'
+                && extension.AsSpan(1).Equals(_normalized, StringComparison.OrdinalIgnoreCase);
+        foreach (var candidate in _extensions)
+        {
+            if (extension.Equals(candidate, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 }
 
@@ -103,20 +133,47 @@ internal static class GrepGlobSupport
     public static List<string> SplitPatterns(string glob)
     {
         var patterns = new List<string>();
-        foreach (var raw in glob.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        var remaining = glob.AsSpan();
+        while (!remaining.IsEmpty)
         {
-            if (raw.Contains('{') && raw.Contains('}'))
-            {
-                patterns.Add(raw);
-                continue;
-            }
-            patterns.AddRange(raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+            var start = 0;
+            while (start < remaining.Length && char.IsWhiteSpace(remaining[start]))
+                start++;
+            if (start == remaining.Length)
+                break;
+            var end = start;
+            while (end < remaining.Length && !char.IsWhiteSpace(remaining[end]))
+                end++;
+            AddPattern(patterns, remaining[start..end]);
+            remaining = remaining[end..];
         }
         return patterns;
     }
 
-    public static string ToPosixRelative(string root, string filePath) =>
-        Path.GetRelativePath(root, filePath).Replace('\\', '/');
+    private static void AddPattern(List<string> patterns, ReadOnlySpan<char> token)
+    {
+        if (token.Contains('{') && token.Contains('}'))
+        {
+            patterns.Add(token.ToString());
+            return;
+        }
+        while (true)
+        {
+            var comma = token.IndexOf(',');
+            var part = (comma < 0 ? token : token[..comma]).Trim();
+            if (!part.IsEmpty)
+                patterns.Add(part.ToString());
+            if (comma < 0)
+                return;
+            token = token[(comma + 1)..];
+        }
+    }
+
+    public static string ToPosixRelative(string root, string filePath)
+    {
+        var relative = Path.GetRelativePath(root, filePath);
+        return relative.Contains('\\') ? relative.Replace('\\', '/') : relative;
+    }
 }
 
 internal sealed class GrepGlobFilter
@@ -140,7 +197,10 @@ internal sealed class GrepGlobFilter
         return normalized.StartsWith("./", StringComparison.Ordinal) ? normalized[2..] : normalized;
     }
 
-    private static Regex GlobPatternToRegex(string pattern)
+    private static Regex GlobPatternToRegex(string pattern) =>
+        GlobRegexCache.Get('g', pattern, static value => BuildGlobPatternRegex(value));
+
+    private static Regex BuildGlobPatternRegex(string pattern)
     {
         var builder = new StringBuilder("^");
         for (var index = 0; index < pattern.Length; index++)
@@ -179,16 +239,25 @@ internal sealed class GrepGlobFilter
                 var closing = pattern.IndexOf('}', index + 1);
                 if (closing > index)
                 {
-                    var alternatives = string.Join(
-                        "|",
-                        pattern.Substring(index + 1, closing - index - 1).Split(',').Select(static part => Regex.Escape(part)));
-                    builder.Append("(?:").Append(alternatives).Append(')');
+                    builder.Append("(?:");
+                    var alternatives = pattern.AsSpan(index + 1, closing - index - 1);
+                    while (true)
+                    {
+                        var comma = alternatives.IndexOf(',');
+                        var part = comma < 0 ? alternatives : alternatives[..comma];
+                        GlobRegexCache.AppendEscaped(builder, part);
+                        if (comma < 0)
+                            break;
+                        builder.Append('|');
+                        alternatives = alternatives[(comma + 1)..];
+                    }
+                    builder.Append(')');
                     index = closing;
                     continue;
                 }
             }
 
-            builder.Append(Regex.Escape(c.ToString()));
+            GlobRegexCache.AppendEscaped(builder, c);
         }
 
         builder.Append('$');

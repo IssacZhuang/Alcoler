@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace Alcoler.Adapters.Tools;
 
@@ -17,7 +16,17 @@ public static partial class BashModelContent
     {
         if (stdout.Length == 0)
             return string.Empty;
-        return LeadingBlankLines().Replace(stdout, string.Empty).TrimEnd();
+        // The regex strips the longest leading whitespace prefix ending in a newline,
+        // leaving whitespace on the first non-blank line intact.
+        var lastNewline = -1;
+        for (var index = 0; index < stdout.Length; index++)
+        {
+            if (!char.IsWhiteSpace(stdout[index]))
+                break;
+            if (stdout[index] == '\n')
+                lastNewline = index;
+        }
+        return stdout.AsSpan(lastNewline + 1).TrimEnd().ToString();
     }
 
     public static string FormatStderr(string stderr, bool interrupted)
@@ -36,7 +45,10 @@ public static partial class BashModelContent
     {
         if (suffix is null)
             return stderr;
-        var withoutTrailingNewlines = TrailingNewlines().Replace(stderr, string.Empty);
+        var end = stderr.Length;
+        while (end > 0 && stderr[end - 1] is '\r' or '\n')
+            end--;
+        var withoutTrailingNewlines = end == stderr.Length ? stderr : stderr[..end];
         if (withoutTrailingNewlines.Length == 0)
             return suffix;
         return withoutTrailingNewlines + "\n" + suffix;
@@ -136,10 +148,4 @@ public static partial class BashModelContent
         var endIndex = newlineIndex > maxChars * 0.5 ? newlineIndex : maxChars;
         return (content[..endIndex], true);
     }
-
-    [GeneratedRegex(@"^(\s*\n)+")]
-    private static partial Regex LeadingBlankLines();
-
-    [GeneratedRegex(@"[\r\n]+$")]
-    private static partial Regex TrailingNewlines();
 }

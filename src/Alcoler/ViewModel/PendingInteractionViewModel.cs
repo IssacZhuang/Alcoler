@@ -170,7 +170,17 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
         OnPropertyChanged(nameof(CanMoveNext));
         OnPropertyChanged(nameof(PrimaryActionText));
         var question = CurrentQuestion;
-        var preferred = question is null ? -1 : question.Options.ToList().FindIndex(option => option.IsSelected);
+        var preferred = -1;
+        if (question is not null)
+        {
+            for (var index = 0; index < question.Options.Count; index++)
+            {
+                if (!question.Options[index].IsSelected)
+                    continue;
+                preferred = index;
+                break;
+            }
+        }
         if (preferred < 0 && question?.IsCustomSelected == true)
             preferred = question.Options.Count;
         ActiveOptionIndex = preferred;
@@ -204,6 +214,8 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
 public sealed partial class QuestionDraftViewModel : ObservableObject
 {
     private readonly Action _answerChanged;
+    private string _answer = string.Empty;
+    private bool _answerDirty = true;
 
     internal QuestionDraftViewModel(InteractionQuestion source, Action answerChanged)
     {
@@ -221,8 +233,31 @@ public sealed partial class QuestionDraftViewModel : ObservableObject
     public string CustomNumber => $"{Options.Count + 1}.";
     public bool IsCustomSelected => !string.IsNullOrWhiteSpace(CustomAnswer);
     public bool HasAnswer => IsCustomSelected || Options.Any(option => option.IsSelected);
-    public string Answer => string.Join(", ", Options.Where(option => option.IsSelected).Select(option => option.Label)
-        .Concat(IsCustomSelected ? [CustomAnswer.Trim()] : []));
+    public string Answer
+    {
+        get
+        {
+            if (_answerDirty)
+            {
+                _answer = BuildAnswer();
+                _answerDirty = false;
+            }
+            return _answer;
+        }
+    }
+
+    private string BuildAnswer()
+    {
+        var labels = new List<string>(Options.Count + 1);
+        foreach (var option in Options)
+        {
+            if (option.IsSelected)
+                labels.Add(option.Label);
+        }
+        if (IsCustomSelected)
+            labels.Add(CustomAnswer.Trim());
+        return string.Join(", ", labels);
+    }
 
     [ObservableProperty]
     private string _customAnswer = string.Empty;
@@ -264,6 +299,7 @@ public sealed partial class QuestionDraftViewModel : ObservableObject
 
     private void NotifyAnswerChanged()
     {
+        _answerDirty = true;
         OnPropertyChanged(nameof(IsCustomSelected));
         OnPropertyChanged(nameof(HasAnswer));
         OnPropertyChanged(nameof(Answer));

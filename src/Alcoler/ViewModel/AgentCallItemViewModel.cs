@@ -11,6 +11,16 @@ public sealed class AgentCallItemViewModel : TimelineItemViewModel
     private ToolCallRow? _tool;
     private SubagentState? _subagent;
     private string? _legacyAgentId;
+    private bool _notified;
+    private string? _notifiedTitle;
+    private string? _notifiedAgentType;
+    private bool _notifiedIsExplore;
+    private bool _notifiedIsRunning;
+    private bool _notifiedHasError;
+    private string? _notifiedStatusText;
+    private string? _notifiedAccessibleText;
+    private string? _notifiedToolTipText;
+    private StatusActivity? _notifiedActivity;
 
     public AgentCallItemViewModel(ToolCallRow row) : base(row.RowId)
     {
@@ -69,15 +79,35 @@ public sealed class AgentCallItemViewModel : TimelineItemViewModel
 
     private static string? ReadLegacyAgentId(IReadOnlyList<ToolResultBlock>? output)
     {
-        foreach (var block in output?.OfType<ToolResultText>().Reverse() ?? [])
+        if (output is null)
+            return null;
+        for (var blockIndex = output.Count - 1; blockIndex >= 0; blockIndex--)
         {
-            foreach (var line in block.Text.Split('\n').Reverse())
+            if (output[blockIndex] is not ToolResultText block)
+                continue;
+            var text = block.Text;
+            var lineEnd = text.Length;
+            while (lineEnd >= 0)
             {
-                if (!line.StartsWith("agentId:", StringComparison.Ordinal))
-                    continue;
-                var value = line[8..].TrimStart();
-                var end = value.IndexOfAny([' ', '\r', '\t', '(']);
-                return end < 0 ? value : value[..end];
+                var lineStart = lineEnd == 0 ? 0 : text.LastIndexOf('\n', lineEnd - 1) + 1;
+                var line = text.AsSpan(lineStart, lineEnd - lineStart);
+                if (line.StartsWith("agentId:", StringComparison.Ordinal))
+                {
+                    var value = line[8..].TrimStart();
+                    var end = -1;
+                    for (var index = 0; index < value.Length; index++)
+                    {
+                        if (value[index] is ' ' or '\r' or '\t' or '(')
+                        {
+                            end = index;
+                            break;
+                        }
+                    }
+                    return end < 0 ? value.ToString() : value[..end].ToString();
+                }
+                if (lineStart == 0)
+                    break;
+                lineEnd = lineStart - 1;
             }
         }
         return null;
@@ -93,14 +123,60 @@ public sealed class AgentCallItemViewModel : TimelineItemViewModel
 
     private void NotifyChanged()
     {
-        OnPropertyChanged(nameof(Title));
-        OnPropertyChanged(nameof(AgentType));
-        OnPropertyChanged(nameof(IsExplore));
-        OnPropertyChanged(nameof(IsRunning));
-        OnPropertyChanged(nameof(HasError));
-        OnPropertyChanged(nameof(StatusText));
-        OnPropertyChanged(nameof(AccessibleText));
-        OnPropertyChanged(nameof(ToolTipText));
-        OnPropertyChanged(nameof(Activity));
+        var title = Title;
+        if (!_notified || !string.Equals(title, _notifiedTitle, StringComparison.Ordinal))
+        {
+            _notifiedTitle = title;
+            OnPropertyChanged(nameof(Title));
+        }
+        var agentType = AgentType;
+        if (!_notified || !string.Equals(agentType, _notifiedAgentType, StringComparison.Ordinal))
+        {
+            _notifiedAgentType = agentType;
+            OnPropertyChanged(nameof(AgentType));
+        }
+        var isExplore = IsExplore;
+        if (!_notified || isExplore != _notifiedIsExplore)
+        {
+            _notifiedIsExplore = isExplore;
+            OnPropertyChanged(nameof(IsExplore));
+        }
+        var isRunning = IsRunning;
+        if (!_notified || isRunning != _notifiedIsRunning)
+        {
+            _notifiedIsRunning = isRunning;
+            OnPropertyChanged(nameof(IsRunning));
+        }
+        var hasError = HasError;
+        if (!_notified || hasError != _notifiedHasError)
+        {
+            _notifiedHasError = hasError;
+            OnPropertyChanged(nameof(HasError));
+        }
+        var statusText = StatusText;
+        if (!_notified || !string.Equals(statusText, _notifiedStatusText, StringComparison.Ordinal))
+        {
+            _notifiedStatusText = statusText;
+            OnPropertyChanged(nameof(StatusText));
+        }
+        var accessibleText = AccessibleText;
+        if (!_notified || !string.Equals(accessibleText, _notifiedAccessibleText, StringComparison.Ordinal))
+        {
+            _notifiedAccessibleText = accessibleText;
+            OnPropertyChanged(nameof(AccessibleText));
+        }
+        var toolTipText = ToolTipText;
+        if (!_notified || !string.Equals(toolTipText, _notifiedToolTipText, StringComparison.Ordinal))
+        {
+            _notifiedToolTipText = toolTipText;
+            OnPropertyChanged(nameof(ToolTipText));
+        }
+        var activity = Activity;
+        if (!_notified || !Equals(activity, _notifiedActivity))
+        {
+            _notifiedActivity = activity;
+            OnPropertyChanged(nameof(Activity));
+        }
+        _notified = true;
     }
 }

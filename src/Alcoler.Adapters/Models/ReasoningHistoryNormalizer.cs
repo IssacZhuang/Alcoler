@@ -111,37 +111,62 @@ internal static class ReasoningHistoryNormalizer
     private static IReadOnlyList<ModelInputMessage> RemoveWhitespaceOnlyAssistants(
         IReadOnlyList<ModelInputMessage> messages)
     {
-        var removed = false;
-        var result = new List<ModelInputMessage>(messages.Count);
-        foreach (var message in messages)
+        var first = -1;
+        for (var index = 0; index < messages.Count; index++)
         {
-            if (ShouldDrop(message, block =>
-                    block is InputTextBlock text &&
-                    (text.Text.Trim().Length == 0 || text.Text.Trim() == EmptyAssistantContentFallback)))
+            if (IsWhitespaceOnlyAssistant(messages[index]))
             {
-                removed = true;
-                continue;
+                first = index;
+                break;
             }
-            result.Add(message);
         }
-        return removed ? MergeAdjacentUserMessages(result) : messages;
+        if (first < 0)
+            return messages;
+
+        var result = new List<ModelInputMessage>(messages.Count - 1);
+        for (var index = 0; index < first; index++)
+            result.Add(messages[index]);
+        for (var index = first + 1; index < messages.Count; index++)
+        {
+            if (!IsWhitespaceOnlyAssistant(messages[index]))
+                result.Add(messages[index]);
+        }
+        return MergeAdjacentUserMessages(result);
+    }
+
+    private static bool IsWhitespaceOnlyAssistant(ModelInputMessage message) =>
+        ShouldDrop(message, static block => block is InputTextBlock text && IsEmptyOrFallback(text.Text));
+
+    private static bool IsEmptyOrFallback(string text)
+    {
+        var trimmed = text.AsSpan().Trim();
+        return trimmed.IsEmpty || trimmed.SequenceEqual(EmptyAssistantContentFallback.AsSpan());
     }
 
     private static IReadOnlyList<ModelInputMessage> RemoveWhere(
         IReadOnlyList<ModelInputMessage> messages, Predicate<ModelInputMessage> shouldRemove)
     {
-        var removed = false;
-        var result = new List<ModelInputMessage>(messages.Count);
-        foreach (var message in messages)
+        var first = -1;
+        for (var index = 0; index < messages.Count; index++)
         {
-            if (shouldRemove(message))
+            if (shouldRemove(messages[index]))
             {
-                removed = true;
-                continue;
+                first = index;
+                break;
             }
-            result.Add(message);
         }
-        return removed ? result : messages;
+        if (first < 0)
+            return messages;
+
+        var result = new List<ModelInputMessage>(messages.Count - 1);
+        for (var index = 0; index < first; index++)
+            result.Add(messages[index]);
+        for (var index = first + 1; index < messages.Count; index++)
+        {
+            if (!shouldRemove(messages[index]))
+                result.Add(messages[index]);
+        }
+        return result;
     }
 
     private static bool ShouldDrop(ModelInputMessage message, Func<ModelContentBlock, bool> blockMatches) =>

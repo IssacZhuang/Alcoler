@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using Avalonia;
 using Avalonia.Data.Converters;
@@ -77,11 +78,17 @@ public sealed class PercentToWidthConverter : IValueConverter
 public sealed class BoolBrushConverter : IValueConverter
 {
     private const char Separator = '|';
+    private static readonly ConcurrentDictionary<string, (string TrueKey, string FalseKey)> ParsedParameters = new();
 
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        var keys = (parameter?.ToString() ?? string.Empty).Split(Separator, 2);
-        var key = value is true && keys.Length == 2 ? keys[0] : keys.Length == 2 ? keys[1] : string.Empty;
+        var parameterText = parameter?.ToString() ?? string.Empty;
+        var keys = ParsedParameters.GetOrAdd(parameterText, static text =>
+        {
+            var parts = text.Split(Separator, 2);
+            return parts.Length == 2 ? (parts[0], parts[1]) : (string.Empty, string.Empty);
+        });
+        var key = value is true ? keys.TrueKey : keys.FalseKey;
         return key.Length > 0 ? ShellBrushes.Resolve(key) : null;
     }
 

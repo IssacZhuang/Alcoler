@@ -64,6 +64,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     private ShellEnvironment? _paneShell;
     private bool _terminalAutoStarted;
     private bool _disposed;
+    private static readonly TimeSpan AutoArchiveInterval = TimeSpan.FromHours(1);
+    private DateTimeOffset? _lastAutoArchiveAt;
+    private bool _autoArchiveRunning;
 
     public WorkbenchViewModel(
         IAgentRuntime runtime,
@@ -126,6 +129,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
     public void ApplySettings(WorkbenchConfig config)
     {
         _config = config;
+        _lastAutoArchiveAt = null;
         _shellPreference = config.IntegratedTerminalShell;
         ModelChoices = BuildModelChoices(config);
         OnPropertyChanged(nameof(ModelChoices));
@@ -793,28 +797,42 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         {
             return;
         }
+        await TryAutoArchiveAsync();
         var titles = new Dictionary<SessionId, string>();
         _refreshTitleOverrides.Add(titles);
         try
         {
-            var summaries = await _runtime.ListSessionsAsync(null, 200, CancellationToken.None);
+            var active = await _runtime.ListSessionsAsync(
+                null, 200, SessionListKind.Active, CancellationToken.None);
+            if (_disposed)
+            {
+                return;
+            }
+            foreach (var summary in active)
+            {
+                _sessionRoots[summary.Id] = summary.WorkspaceRoot;
+            }
+
+            var displayed = Sidebar.IsArchivedView
+                ? await _runtime.ListSessionsAsync(null, 200, SessionListKind.Archived, CancellationToken.None)
+                : active;
             if (_disposed)
             {
                 return;
             }
             Sidebar.ApplySummaries(
             [
-                .. summaries.Select(s => new SessionSummaryViewModel(
-                    s.Id, titles.GetValueOrDefault(s.Id, s.Title), s.WorkspaceRoot, s.UpdatedAt))
+                .. displayed.Select(s => new SessionSummaryViewModel(
+                    s.Id, titles.GetValueOrDefault(s.Id, s.Title), s.WorkspaceRoot, s.UpdatedAt, s.IsArchived))
             ]);
-            foreach (var summary in summaries)
+            foreach (var summary in displayed)
             {
-                _sessionRoots[summary.Id] = summary.WorkspaceRoot;
+                _sessionRoots.TryAdd(summary.Id, summary.WorkspaceRoot);
                 Sidebar.SyncRunningState(summary.Id, _activities?.GetSessionActivity(summary.Id));
             }
             if (_focusedWorkspaceRoot is null && Active is null && Draft is { } initial
                 && string.IsNullOrEmpty(initial.Composer.Draft) && !initial.Composer.IsSending
-                && summaries.OrderByDescending(summary => summary.UpdatedAt).FirstOrDefault() is { } recent)
+                && active.OrderByDescending(summary => summary.UpdatedAt).FirstOrDefault() is { } recent)
             {
                 ShowNewTask(recent.WorkspaceRoot);
             }
@@ -822,6 +840,56 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable
         finally
         {
             _refreshTitleOverrides.Remove(titles);
+        }
+    }
+
+    public async Task SetSessionArchivedAsync(SessionId sessionId, bool archived)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        await _runtime.SetSessionArchivedAsync(sessionId, archived, CancellationToken.None);
+        await Sidebar.RefreshAsync();
+    }
+
+    public async Task ToggleArchivedViewAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        Sidebar.IsArchivedView = !Sidebar.IsArchivedView;
+        await Sidebar.RefreshAsync();
+    }
+
+    private async Task TryAutoArchiveAsync()
+    {
+        if (!_config.AutoArchiveSessions || _autoArchiveRunning || _disposed)
+        {
+            return;
+        }
+        var now = DateTimeOffset.UtcNow;
+        if (_lastAutoArchiveAt is { } last && now - last < AutoArchiveInterval)
+        {
+            return;
+        }
+
+        _autoArchiveRunning = true;
+        try
+        {
+            var days = Math.Clamp(_config.AutoArchiveOlderThanDays, 1, 365);
+            await _runtime.ArchiveStaleSessionsAsync(
+                TimeSpan.FromDays(days), Active?.SessionId, CancellationToken.None);
+            _lastAutoArchiveAt = now;
+        }
+        catch (Exception)
+        {
+            // Automatic cleanup must not prevent the session list from loading.
+        }
+        finally
+        {
+            _autoArchiveRunning = false;
         }
     }
 

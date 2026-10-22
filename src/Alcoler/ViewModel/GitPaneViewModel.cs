@@ -248,11 +248,19 @@ public sealed partial class GitPaneViewModel : ObservableObject
         IsRepo = true;
         _repositoryRoot = snapshot.RepositoryRoot;
         CurrentBranch = snapshot.CurrentBranch ?? string.Empty;
-        ReplaceAll(Branches, snapshot.Branches.Select(b =>
-            new GitBranchViewModel(b.Name, b.IsCurrent, b.AheadOfUpstream, b.BehindOfUpstream)));
-        ReplaceAll(Staged, snapshot.Status.Staged.Select(f => new GitFileChangeViewModel(f.Path, f.State)));
-        ReplaceAll(Unstaged, snapshot.Status.Unstaged.Select(f => new GitFileChangeViewModel(f.Path, f.State)));
-        ReplaceAll(Untracked, snapshot.Status.Untracked.Select(f => new GitFileChangeViewModel(f.Path, f.State)));
+        Reconcile(Branches, snapshot.Branches.Select(b =>
+            new GitBranchViewModel(b.Name, b.IsCurrent, b.AheadOfUpstream, b.BehindOfUpstream)).ToArray(),
+            branch => branch.Name,
+            static (existing, desired) =>
+                existing.IsCurrent == desired.IsCurrent
+                && existing.AheadOfUpstream == desired.AheadOfUpstream
+                && existing.BehindOfUpstream == desired.BehindOfUpstream);
+        Reconcile(Staged, snapshot.Status.Staged.Select(f => new GitFileChangeViewModel(f.Path, f.State)).ToArray(),
+            file => file.Path, static (existing, desired) => existing.State == desired.State);
+        Reconcile(Unstaged, snapshot.Status.Unstaged.Select(f => new GitFileChangeViewModel(f.Path, f.State)).ToArray(),
+            file => file.Path, static (existing, desired) => existing.State == desired.State);
+        Reconcile(Untracked, snapshot.Status.Untracked.Select(f => new GitFileChangeViewModel(f.Path, f.State)).ToArray(),
+            file => file.Path, static (existing, desired) => existing.State == desired.State);
         AddedLines = snapshot.ChangeSummary.AddedLines;
         RemovedLines = snapshot.ChangeSummary.RemovedLines;
         ChangedFileCount = snapshot.Status.Staged
@@ -261,17 +269,42 @@ public sealed partial class GitPaneViewModel : ObservableObject
             .Select(f => f.Path)
             .Distinct(StringComparer.Ordinal)
             .Count();
-        ReplaceAll(RecentCommits, snapshot.Commits.Select(c =>
-            new GitCommitViewModel(c.Sha, c.Message, c.Author, c.When)));
+        Reconcile(RecentCommits, snapshot.Commits.Select(c =>
+            new GitCommitViewModel(c.Sha, c.Message, c.Author, c.When)).ToArray(),
+            commit => commit.Sha,
+            static (existing, desired) =>
+                existing.Message == desired.Message
+                && existing.Author == desired.Author
+                && existing.When == desired.When);
     }
 
-    private static void ReplaceAll<T>(ObservableCollection<T> collection, IEnumerable<T> items)
+    private static void Reconcile<T>(ObservableCollection<T> collection, IReadOnlyList<T> desired,
+        Func<T, string> keySelector, Func<T, T, bool> matches)
     {
-        collection.Clear();
-        foreach (var item in items)
+        Dictionary<string, T> existing = new(StringComparer.Ordinal);
+        foreach (var item in collection)
+            existing[keySelector(item)] = item;
+        for (var index = 0; index < desired.Count; index++)
         {
-            collection.Add(item);
+            var candidate = desired[index];
+            var item = existing.TryGetValue(keySelector(candidate), out var previous) && matches(previous, candidate)
+                ? previous
+                : candidate;
+            if (index >= collection.Count)
+            {
+                collection.Add(item);
+                continue;
+            }
+            if (ReferenceEquals(collection[index], item))
+                continue;
+            var currentIndex = collection.IndexOf(item);
+            if (currentIndex >= 0)
+                collection.Move(currentIndex, index);
+            else
+                collection[index] = item;
         }
+        while (collection.Count > desired.Count)
+            collection.RemoveAt(collection.Count - 1);
     }
 
     private sealed record GitSnapshot(

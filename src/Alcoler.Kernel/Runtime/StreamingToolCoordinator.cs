@@ -23,6 +23,8 @@ public sealed class StreamingToolCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _executionSlots = new(ToolScheduler.MaxConcurrency);
     private readonly SemaphoreSlim _notificationGate = new(1);
     private readonly Dictionary<ToolCallId, AcceptedCall> _accepted = [];
+    private readonly List<AcceptedCall> _acceptedCalls = [];
+    private readonly List<ToolCall> _acceptedCallList = [];
     private Task<ToolBatchResult>? _completion;
     private bool _closed;
     private bool _disposed;
@@ -46,7 +48,7 @@ public sealed class StreamingToolCoordinator : IAsyncDisposable
 
     public bool HasAcceptedCalls => _accepted.Count > 0;
 
-    public IReadOnlyList<ToolCall> AcceptedCalls => _accepted.Values.Select(entry => entry.Call).ToArray();
+    public IReadOnlyList<ToolCall> AcceptedCalls => _acceptedCallList;
 
     // Admission and terminal operations belong to the model-stream consumer, not tool continuations.
     public ValueTask AcceptAsync(ToolCall call)
@@ -59,6 +61,8 @@ public sealed class StreamingToolCoordinator : IAsyncDisposable
 
         var entry = new AcceptedCall(call with { Input = call.Input.Clone() });
         _accepted.Add(call.Id, entry);
+        _acceptedCalls.Add(entry);
+        _acceptedCallList.Add(entry.Call);
         if (!_turnCancellation.IsCancellationRequested
             && StreamingToolPolicy.CanExecuteDuringStream(_registry.TryFind(call.Name)))
         {
@@ -99,10 +103,8 @@ public sealed class StreamingToolCoordinator : IAsyncDisposable
         finally
         {
             _disposed = true;
-            var executions = _accepted.Values.Where(entry => entry.Execution is not null)
-                .Select(entry => entry.Execution!).ToArray();
             // An abandoned handler may still hold its cancellation token or notification gate.
-            _ = DisposeAfterExecutionsAsync(Task.WhenAll(executions));
+            _ = DisposeAfterExecutionsAsync(Task.WhenAll(AcceptedExecutions()));
         }
     }
 
@@ -115,39 +117,49 @@ public sealed class StreamingToolCoordinator : IAsyncDisposable
             throw new InvalidOperationException("The model stream was abandoned.");
         _closed = true;
         var ordered = MergeCalls(calls);
-        return _completion = recover ? RecoverCoreAsync(ordered) : CompleteCoreAsync(ordered);
+        var executions = AcceptedExecutions();
+        return _completion = recover ? RecoverCoreAsync(ordered, executions) : CompleteCoreAsync(ordered, executions);
     }
 
     private IReadOnlyList<ToolCall> MergeCalls(IReadOnlyList<ToolCall> calls)
     {
         var seen = new HashSet<ToolCallId>();
-        var ordered = new List<ToolCall>();
-        foreach (var call in calls.Concat(AcceptedCalls))
+        var ordered = new List<ToolCall>(calls.Count + _acceptedCalls.Count);
+        foreach (var call in calls)
         {
             if (seen.Add(call.Id))
                 ordered.Add(_accepted.TryGetValue(call.Id, out var entry) ? entry.Call : call);
         }
+        foreach (var call in _acceptedCallList)
+        {
+            if (seen.Add(call.Id))
+                ordered.Add(call);
+        }
         return ordered;
     }
 
-    private async Task<ToolBatchResult> CompleteCoreAsync(IReadOnlyList<ToolCall> calls)
+    private async Task<ToolBatchResult> CompleteCoreAsync(
+        IReadOnlyList<ToolCall> calls, Task<ToolBatchOutcome>[] executions)
     {
-        var executions = _accepted.Values.Where(entry => entry.Execution is not null)
-            .Select(entry => entry.Execution!).ToArray();
         var completed = await Task.WhenAll(executions).ConfigureAwait(false);
+        var scheduled = new ScheduledToolCall[calls.Count];
+        for (var index = 0; index < calls.Count; index++)
+            scheduled[index] = new ScheduledToolCall(calls[index]);
         return await _runner.ExecuteAsync(
-            calls.Select(call => new ScheduledToolCall(call)).ToArray(),
+            scheduled,
             _contextFactory,
             NotifyAsync,
             _turnCancellation,
             completed).ConfigureAwait(false);
     }
 
-    private async Task<ToolBatchResult> RecoverCoreAsync(IReadOnlyList<ToolCall> calls)
+    private async Task<ToolBatchResult> RecoverCoreAsync(
+        IReadOnlyList<ToolCall> calls, Task<ToolBatchOutcome>[] executions)
     {
         await _streamCancellation.CancelAsync().ConfigureAwait(false);
-        await DrainCancelledAsync().ConfigureAwait(false);
+        await DrainCancelledAsync(executions).ConfigureAwait(false);
         var outcomes = new List<ToolBatchOutcome>(calls.Count);
+        var stopAfterResult = false;
         foreach (var call in calls)
         {
             _accepted.TryGetValue(call.Id, out var entry);
@@ -161,9 +173,29 @@ public sealed class StreamingToolCoordinator : IAsyncDisposable
                 outcome = new ToolBatchOutcome(call, result, TimeSpan.Zero, Ran: entry?.Started == true, CancelledByStop: false);
                 await NotifyAsync(new ToolExecutionResultNotification(call, result, TimeSpan.Zero)).ConfigureAwait(false);
             }
+            if (outcome.Result.StopTurnAfterResult)
+                stopAfterResult = true;
             outcomes.Add(outcome);
         }
-        return new ToolBatchResult(outcomes, outcomes.Any(outcome => outcome.Result.StopTurnAfterResult));
+        return new ToolBatchResult(outcomes, stopAfterResult);
+    }
+
+    private Task<ToolBatchOutcome>[] AcceptedExecutions()
+    {
+        var count = 0;
+        foreach (var entry in _acceptedCalls)
+        {
+            if (entry.Execution is not null)
+                count++;
+        }
+        var executions = new Task<ToolBatchOutcome>[count];
+        var index = 0;
+        foreach (var entry in _acceptedCalls)
+        {
+            if (entry.Execution is not null)
+                executions[index++] = entry.Execution;
+        }
+        return executions;
     }
 
     private async Task<ToolBatchOutcome> ExecuteDuringStreamAsync(AcceptedCall entry)
@@ -226,10 +258,9 @@ public sealed class StreamingToolCoordinator : IAsyncDisposable
         }
     }
 
-    private async Task DrainCancelledAsync()
+    private async Task DrainCancelledAsync(Task<ToolBatchOutcome>[]? executions = null)
     {
-        var executions = _accepted.Values.Where(entry => entry.Execution is not null)
-            .Select(entry => entry.Execution!).ToArray();
+        executions ??= AcceptedExecutions();
         try
         {
             await Task.WhenAll(executions).WaitAsync(CancelDrainTimeout).ConfigureAwait(false);

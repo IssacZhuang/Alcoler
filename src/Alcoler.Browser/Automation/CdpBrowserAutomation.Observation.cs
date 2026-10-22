@@ -25,9 +25,10 @@ public sealed partial class CdpBrowserAutomation
             var used = 2;
             foreach (var item in value.EnumerateArray())
             {
-                if (used + item.GetRawText().Length + 1 > maxChars) break;
-                nodes.Add(item.Clone());
-                used += item.GetRawText().Length + 1;
+                var rawLength = item.GetRawText().Length;
+                if (used + rawLength + 1 > maxChars) break;
+                nodes.Add(item);
+                used += rawLength + 1;
             }
             return Structured(BrowserJson.Element(nodes));
         }
@@ -44,9 +45,8 @@ public sealed partial class CdpBrowserAutomation
             }
             Collect(frameTree.GetProperty("frameTree"));
         }
-        var nodesById = new Dictionary<string, JsonElement>();
-        var childIds = new HashSet<string>();
-        var nodeFrames = new Dictionary<string, string>();
+        var nodesById = new Dictionary<(string Frame, string NodeId), JsonElement>();
+        var childIds = new HashSet<(string Frame, string NodeId)>();
         foreach (var frame in frames.Take(64))
         {
             var frameContext = frame == context.FrameId ? context : await ContextAsync(frame, ct);
@@ -56,10 +56,16 @@ public sealed partial class CdpBrowserAutomation
                 var id = await ResolveObjectAsync(input, frameContext, ct);
                 try
                 {
-                    var description = await SendAsync("DOM.describeNode", D(("objectId", id)), ct, frameContext.Session);
-                    tree = await SendAsync("Accessibility.getFullAXTree", D(("depth", maxDepth), ("frameId", frame)), ct, frameContext.Session);
+                    var description = await SendAsync("DOM.describeNode", D("objectId", id), ct, frameContext.Session);
+                    tree = await SendAsync("Accessibility.getFullAXTree", D("depth", maxDepth, "frameId", frame), ct, frameContext.Session);
                     var backend = description.GetProperty("node").GetProperty("backendNodeId").GetInt32();
-                    var selected = tree.GetProperty("nodes").EnumerateArray().FirstOrDefault(n => n.TryGetProperty("backendDOMNodeId", out var b) && b.GetInt32() == backend);
+                    var selected = default(JsonElement);
+                    foreach (var candidate in tree.GetProperty("nodes").EnumerateArray())
+                        if (candidate.TryGetProperty("backendDOMNodeId", out var candidateBackend) && candidateBackend.GetInt32() == backend)
+                        {
+                            selected = candidate;
+                            break;
+                        }
                     if (selected.ValueKind == JsonValueKind.Undefined) throw new InvalidOperationException("Element is not present in the accessibility tree; use dom_snapshot.");
                     var reachable = new HashSet<string>();
                     var all = tree.GetProperty("nodes").EnumerateArray().ToDictionary(n => RequiredString(n, "nodeId"));
@@ -69,29 +75,32 @@ public sealed partial class CdpBrowserAutomation
                         if (n.TryGetProperty("childIds", out var cs)) foreach (var c in cs.EnumerateArray()) if (all.TryGetValue(c.GetString()!, out var child)) Visit(child);
                     }
                     Visit(selected);
-                    tree = BrowserJson.Element(D(("nodes", all.Where(p => reachable.Contains(p.Key)).Select(p => p.Value).ToArray())));
+                    var selectedNodes = new List<JsonElement>(reachable.Count);
+                    foreach (var pair in all) if (reachable.Contains(pair.Key)) selectedNodes.Add(pair.Value);
+                    tree = BrowserJson.Element(D("nodes", selectedNodes));
                 }
                 finally { await ReleaseAsync(id, frameContext.Session, ct); }
             }
-            else tree = await SendAsync("Accessibility.getFullAXTree", D(("depth", maxDepth), ("frameId", frame)), ct, frameContext.Session);
+            else tree = await SendAsync("Accessibility.getFullAXTree", D("depth", maxDepth, "frameId", frame), ct, frameContext.Session);
             foreach (var node in tree.GetProperty("nodes").EnumerateArray())
             {
-                var key = frame + ":" + RequiredString(node, "nodeId");
-                nodesById[key] = node.Clone();
-                nodeFrames[key] = frame;
-                if (node.TryGetProperty("childIds", out var children)) foreach (var child in children.EnumerateArray()) childIds.Add(frame + ":" + child.GetString());
+                var key = (frame, RequiredString(node, "nodeId"));
+                nodesById[key] = node;
+                if (node.TryGetProperty("childIds", out var children))
+                    foreach (var child in children.EnumerateArray()) childIds.Add((frame, child.GetString() ?? ""));
             }
         }
         _references.Clear();
         var text = new StringBuilder();
-        var output = new List<Dictionary<string, object?>>();
-        var visited = new HashSet<string>();
+        var structured = new StringBuilder();
+        structured.Append("{\"generation\":").Append(generation).Append(",\"nodes\":[");
+        var visited = new HashSet<(string Frame, string NodeId)>();
         var structuredLength = 100;
         var truncated = false;
         var index = 0;
-        void Append(string key, JsonElement node, int depth)
+        void Append((string Frame, string NodeId) key, JsonElement node, int depth)
         {
-            var nodeFrame = nodeFrames[key];
+            var nodeFrame = key.Frame;
             if (depth > maxDepth || text.Length >= maxChars || !visited.Add(key)) return;
             var ignored = Boolean(node, "ignored");
             var role = AxValue(node, "role");
@@ -101,36 +110,54 @@ public sealed partial class CdpBrowserAutomation
             {
                 var reference = node.TryGetProperty("backendDOMNodeId", out var backend) ? $"a{generation}_{sequence}_{++index}" : null;
                 if (reference is not null) _references[reference] = new(generation, String(node, "frameId") ?? nodeFrame, backend.GetInt32());
-                var states = new Dictionary<string, object?>();
+                Dictionary<string, object?>? states = null;
                 if (node.TryGetProperty("properties", out var properties)) foreach (var p in properties.EnumerateArray())
                 {
                     var stateName = String(p, "name");
-                    if (stateName is not null && p.TryGetProperty("value", out var state) && state.TryGetProperty("value", out var stateValue)) states[stateName] = stateValue.Clone();
+                    if (stateName is not null && p.TryGetProperty("value", out var state) && state.TryGetProperty("value", out var stateValue))
+                        (states ??= new Dictionary<string, object?>())[stateName] = stateValue;
                 }
-                var line = new StringBuilder().Append(' ', Math.Min(depth, 100) * 2).Append(role);
-                if (name.Length > 0) line.Append(' ').Append(BrowserJson.Serialize(Truncate(name, 1000)));
-                if (reference is not null) line.Append(" [ref=").Append(reference).Append(']');
-                foreach (var state in states.Where(p => p.Key is "checked" or "disabled" or "expanded" or "selected" or "focused" or "required" or "level" or "readonly" or "pressed")) line.Append(' ').Append(state.Key).Append('=').Append(state.Value);
                 var value = AxValue(node, "value");
-                if (value.Length > 0) line.Append(" value=").Append(BrowserJson.Serialize(Truncate(value, 1000)));
-                var entry = D(("ref", reference), ("role", role), ("name", Truncate(name, 1000)), ("value", Truncate(value, 1000)), ("depth", depth), ("states", states));
-                var entryLength = BrowserJson.Serialize(entry).Length + 1;
-                if (text.Length + line.Length + 1 > maxChars || structuredLength + entryLength > MaxText)
+                var entry = new Dictionary<string, object?>(6)
+                {
+                    ["ref"] = reference, ["role"] = role, ["name"] = Truncate(name, 1000),
+                    ["value"] = Truncate(value, 1000), ["depth"] = depth, ["states"] = states ?? EmptyStates,
+                };
+                var entryJson = BrowserJson.Serialize(entry);
+                var entryLength = entryJson.Length + 1;
+                var checkpoint = text.Length;
+                text.Append(' ', Math.Min(depth, 100) * 2).Append(role);
+                if (name.Length > 0) text.Append(' ').Append(BrowserJson.Serialize(Truncate(name, 1000)));
+                if (reference is not null) text.Append(" [ref=").Append(reference).Append(']');
+                if (states is not null)
+                    foreach (var state in states)
+                        if (state.Key is "checked" or "disabled" or "expanded" or "selected" or "focused" or "required" or "level" or "readonly" or "pressed")
+                            text.Append(' ').Append(state.Key).Append('=').Append(state.Value);
+                if (value.Length > 0) text.Append(" value=").Append(BrowserJson.Serialize(Truncate(value, 1000)));
+                if (text.Length + 1 > maxChars || structuredLength + entryLength > MaxText)
                 {
                     truncated = true;
+                    text.Length = checkpoint;
                     if (reference is not null) _references.TryRemove(reference, out _);
                     return;
                 }
-                text.AppendLine(line.ToString());
-                output.Add(entry);
+                text.AppendLine();
+                if (structuredLength > 100) structured.Append(',');
+                structured.Append(entryJson);
                 structuredLength += entryLength;
             }
             if (node.TryGetProperty("childIds", out var children)) foreach (var child in children.EnumerateArray())
-                if (nodesById.TryGetValue(nodeFrame + ":" + child.GetString(), out var next)) Append(nodeFrame + ":" + child.GetString(), next, depth + (meaningful ? 1 : 0));
+            {
+                var childKey = (nodeFrame, child.GetString() ?? "");
+                if (nodesById.TryGetValue(childKey, out var next)) Append(childKey, next, depth + (meaningful ? 1 : 0));
+            }
         }
-        foreach (var root in nodesById.Where(n => !childIds.Contains(n.Key))) Append(root.Key, root.Value, 0);
-        return new(true, Text: Truncate(text.ToString(), maxChars), StructuredOutput: BrowserJson.Serialize(D(("generation", generation), ("nodes", output), ("truncated", truncated))));
+        foreach (var root in nodesById) if (!childIds.Contains(root.Key)) Append(root.Key, root.Value, 0);
+        structured.Append("],\"truncated\":").Append(truncated ? "true" : "false").Append('}');
+        return new(true, Text: Truncate(text.ToString(), maxChars), StructuredOutput: structured.ToString());
     }
+
+    private static readonly IReadOnlyDictionary<string, object?> EmptyStates = new Dictionary<string, object?>();
 
     private static string AxValue(JsonElement node, string property)
     {

@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Globalization;
 using Alcoler.Contracts.Projections;
 using Avalonia;
@@ -22,6 +23,8 @@ public static class TimelineConverters
 
 internal static class TimelineBrushes
 {
+    private static readonly ConcurrentDictionary<string, IBrush> FallbackBrushes = new();
+
     // Theme color tokens are merged at runtime; the fallback applies only while a key is absent.
     public static IBrush Resolve(string resourceKey, string fallbackHex)
     {
@@ -31,7 +34,8 @@ internal static class TimelineBrushes
         {
             return themed;
         }
-        return new ImmutableSolidColorBrush(Color.Parse(fallbackHex));
+        return FallbackBrushes.GetOrAdd(fallbackHex,
+            static hex => new ImmutableSolidColorBrush(Color.Parse(hex)));
     }
 }
 

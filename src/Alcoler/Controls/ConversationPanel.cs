@@ -19,6 +19,15 @@ public sealed class ConversationPanel : VirtualizingPanel
     private readonly Dictionary<object, int> _indices = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, RealizedRow> _realized = [];
     private readonly HashSet<Control> _ownContainers = [];
+    private readonly HashSet<int> _keepIndices = [];
+    private readonly List<int> _releaseIndices = [];
+    private readonly List<object> _heightKeys = [];
+    private readonly List<(int Index, RealizedRow Row)> _realizedSnapshot = [];
+    private readonly List<RealizedRow> _realizedValues = [];
+    private readonly List<Control> _ownContainerSnapshot = [];
+    private readonly List<Control> _realizedContainers = [];
+    private readonly List<Control> _orderedChildren = [];
+    private readonly Comparison<Control> _childComparison;
     private double[] _offsets = [0];
     private double _width = double.NaN;
     private Rect _viewport;
@@ -28,7 +37,11 @@ public sealed class ConversationPanel : VirtualizingPanel
     private int _scrollToIndex = -1;
     private bool _inLayout;
 
-    public ConversationPanel() => EffectiveViewportChanged += OnEffectiveViewportChanged;
+    public ConversationPanel()
+    {
+        _childComparison = CompareChildren;
+        EffectiveViewportChanged += OnEffectiveViewportChanged;
+    }
 
     public int FirstRealizedIndex => _realized.Count == 0 ? -1 : _realized.Keys.Min();
     public int LastRealizedIndex => _realized.Count == 0 ? -1 : _realized.Keys.Max();
@@ -55,7 +68,7 @@ public sealed class ConversationPanel : VirtualizingPanel
                 viewport = new Rect(0, Math.Max(0, -origin.Y), availableSize.Width, owner.Viewport.Height);
             var start = Math.Max(0, viewport.Top - Overscan);
             var end = Math.Max(start, viewport.Bottom) + Overscan;
-            var keep = new HashSet<int>();
+            _keepIndices.Clear();
             var width = 0d;
             _offsets[0] = 0;
             for (var i = 0; i < Items.Count; i++)
@@ -70,15 +83,20 @@ public sealed class ConversationPanel : VirtualizingPanel
                     height = MeasureRow(row, constraint);
                     width = Math.Max(width, row.Container.DesiredSize.Width);
                     if (height > 0 || retain)
-                        keep.Add(i);
+                        _keepIndices.Add(i);
                     else
                         Release(i);
                 }
                 _offsets[i + 1] = _offsets[i] + height;
             }
-            foreach (var index in _realized.Keys.ToArray())
-                if (!keep.Contains(index))
-                    Release(index);
+            _releaseIndices.Clear();
+            foreach (var index in _realized.Keys)
+            {
+                if (!_keepIndices.Contains(index))
+                    _releaseIndices.Add(index);
+            }
+            foreach (var index in _releaseIndices)
+                Release(index);
 
             return new Size(double.IsFinite(availableSize.Width) ? availableSize.Width : width, _offsets[^1]);
         }
@@ -125,13 +143,18 @@ public sealed class ConversationPanel : VirtualizingPanel
         }
         foreach (var item in _indices.Keys.OfType<INotifyPropertyChanged>())
             item.PropertyChanged += OnItemPropertyChanged;
-        foreach (var key in _heights.Keys.ToArray())
+        _heightKeys.Clear();
+        foreach (var key in _heights.Keys)
+            _heightKeys.Add(key);
+        foreach (var key in _heightKeys)
             if (!_indices.ContainsKey(key))
                 _heights.Remove(key);
 
-        var previous = _realized.ToArray();
+        _realizedSnapshot.Clear();
+        foreach (var (index, row) in _realized)
+            _realizedSnapshot.Add((index, row));
         _realized.Clear();
-        foreach (var (oldIndex, row) in previous)
+        foreach (var (oldIndex, row) in _realizedSnapshot)
         {
             if (e.Action != NotifyCollectionChangedAction.Reset && _indices.TryGetValue(row.Key, out var index))
             {
@@ -142,7 +165,10 @@ public sealed class ConversationPanel : VirtualizingPanel
             else
                 Release(row);
         }
-        foreach (var container in _ownContainers.ToArray())
+        _ownContainerSnapshot.Clear();
+        foreach (var container in _ownContainers)
+            _ownContainerSnapshot.Add(container);
+        foreach (var container in _ownContainerSnapshot)
             if (!_indices.ContainsKey(container))
             {
                 _ownContainers.Remove(container);
@@ -158,16 +184,21 @@ public sealed class ConversationPanel : VirtualizingPanel
     {
         if (oldValue is not null)
         {
-            var previous = _realized.Values.ToArray();
+            _realizedValues.Clear();
+            foreach (var row in _realized.Values)
+                _realizedValues.Add(row);
             _realized.Clear();
-            foreach (var row in previous)
+            foreach (var row in _realizedValues)
             {
                 _anchors?.UnregisterAnchorCandidate(row.Container);
                 if (row.Generated)
                     oldValue.ItemContainerGenerator.ClearItemContainer(row.Container);
             }
             var logicalChildren = (IAvaloniaList<ILogical>)((ILogical)oldValue).LogicalChildren;
-            logicalChildren.RemoveAll(Children.ToArray());
+            _orderedChildren.Clear();
+            foreach (var child in Children)
+                _orderedChildren.Add(child);
+            logicalChildren.RemoveAll(_orderedChildren);
             Children.Clear();
             foreach (var item in _indices.Keys.OfType<INotifyPropertyChanged>())
                 item.PropertyChanged -= OnItemPropertyChanged;
@@ -194,7 +225,13 @@ public sealed class ConversationPanel : VirtualizingPanel
         return _ownContainers.Contains(container) && _indices.TryGetValue(container, out var ownIndex) ? ownIndex : -1;
     }
 
-    protected override IEnumerable<Control> GetRealizedContainers() => _realized.Values.Select(row => row.Container);
+    protected override IEnumerable<Control> GetRealizedContainers()
+    {
+        _realizedContainers.Clear();
+        foreach (var row in _realized.Values)
+            _realizedContainers.Add(row.Container);
+        return _realizedContainers;
+    }
 
     protected override Control? ScrollIntoView(int index)
     {
@@ -276,7 +313,12 @@ public sealed class ConversationPanel : VirtualizingPanel
         if (generated || _ownContainers.Add(container))
         {
             generator.PrepareItemContainer(container, item, index);
-            var childIndex = Children.Count(child => IndexFromContainer(child) < index);
+            var childIndex = 0;
+            foreach (var child in Children)
+            {
+                if (IndexFromContainer(child) < index)
+                    childIndex++;
+            }
             InsertInternalChild(childIndex, container);
             generator.ItemContainerPrepared(container, item, index);
         }
@@ -287,11 +329,19 @@ public sealed class ConversationPanel : VirtualizingPanel
 
     private void OrderChildren()
     {
-        var ordered = Children.OrderBy(IndexFromContainer).ToArray();
-        for (var i = 0; i < ordered.Length; i++)
-            if (!ReferenceEquals(Children[i], ordered[i]))
-                Children.Move(Children.IndexOf(ordered[i]), i);
+        _orderedChildren.Clear();
+        foreach (var child in Children)
+            _orderedChildren.Add(child);
+        _orderedChildren.Sort(_childComparison);
+        for (var i = 0; i < _orderedChildren.Count; i++)
+        {
+            if (!ReferenceEquals(Children[i], _orderedChildren[i]))
+                Children.Move(Children.IndexOf(_orderedChildren[i]), i);
+        }
     }
+
+    private int CompareChildren(Control? left, Control? right) =>
+        IndexFromContainer(left!).CompareTo(IndexFromContainer(right!));
 
     private double MeasureRow(RealizedRow row, Size constraint)
     {

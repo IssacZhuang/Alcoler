@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Tools;
@@ -56,6 +57,8 @@ public static class ComposerConverters
 
     private sealed class RiskLevelBrushConverter : IMultiValueConverter
     {
+        private static readonly ConcurrentDictionary<Color, IBrush> Brushes = new();
+
         private static readonly IReadOnlyDictionary<RiskLevel, (string Key, uint Fallback)> Palette =
             new Dictionary<RiskLevel, (string, uint)>
             {
@@ -78,11 +81,11 @@ public static class ComposerConverters
                 return resource switch
                 {
                     IBrush brush => brush,
-                    Color color => new ImmutableSolidColorBrush(color),
-                    _ => new ImmutableSolidColorBrush(entry.Fallback),
+                    Color color => Brushes.GetOrAdd(color, static value => new ImmutableSolidColorBrush(value)),
+                    _ => Brushes.GetOrAdd(Color.FromUInt32(entry.Fallback), static value => new ImmutableSolidColorBrush(value)),
                 };
             }
-            return new ImmutableSolidColorBrush(entry.Fallback);
+            return Brushes.GetOrAdd(Color.FromUInt32(entry.Fallback), static value => new ImmutableSolidColorBrush(value));
         }
     }
 

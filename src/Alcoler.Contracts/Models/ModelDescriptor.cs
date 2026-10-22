@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Alcoler.Contracts.Models;
 
 public sealed record ModelProperties(
@@ -34,7 +36,9 @@ public sealed record ModelDescriptor(
     string DisplayName,
     ModelProperties Properties) : IEquatable<ModelDescriptor>
 {
-    public string FullId => $"{ProviderId}/{ModelId}";
+    private static readonly ConditionalWeakTable<ModelDescriptor, string> FullIds = new();
+
+    public string FullId => FullIds.GetValue(this, static descriptor => descriptor.ProviderId + "/" + descriptor.ModelId);
 }
 
 public sealed record ModelCallOptions(

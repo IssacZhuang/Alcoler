@@ -373,14 +373,19 @@ public sealed class WebViewBrowserController : IBrowserController
     {
         lock (_sync)
         {
-            var tabs = session.Tabs.Values.Select(tab => (object?)new Dictionary<string, object?>
+            var tabs = new object?[session.Tabs.Count];
+            var index = 0;
+            foreach (var tab in session.Tabs.Values)
             {
-                ["id"] = tab.Page.Id, ["url"] = tab.Automation.Url ?? "about:blank",
-                ["title"] = tab.Automation.Title ?? string.Empty,
-                ["active"] = tab.Page.Id == session.ActiveTabId,
-                ["userControlled"] = session.UserControlled,
-                ["keep"] = tab.Keep,
-            }).ToArray();
+                tabs[index++] = new Dictionary<string, object?>(6)
+                {
+                    ["id"] = tab.Page.Id, ["url"] = tab.Automation.Url ?? "about:blank",
+                    ["title"] = tab.Automation.Title ?? string.Empty,
+                    ["active"] = tab.Page.Id == session.ActiveTabId,
+                    ["userControlled"] = session.UserControlled,
+                    ["keep"] = tab.Keep,
+                };
+            }
             return new(true, TabId: session.ActiveTabId, StructuredOutput: BrowserJson.Serialize(
                 new Dictionary<string, object?> { ["tabs"] = tabs, ["activeTabId"] = session.ActiveTabId, ["userControlled"] = session.UserControlled }));
         }
@@ -392,10 +397,17 @@ public sealed class WebViewBrowserController : IBrowserController
         lock (_sync)
         {
             if (_disposed) return;
-            var tabs = session.Tabs.Values.Select(tab => new BrowserTabStatus(
-                tab.Page.Id, tab.Automation.Url ?? "about:blank", tab.Automation.Title ?? "New tab",
-                tab.Page.Id == session.ActiveTabId, IsLoading: tab.Loading, IsUserControlled: session.UserControlled)).ToArray();
-            var active = tabs.FirstOrDefault(tab => tab.IsActive);
+            var tabs = new BrowserTabStatus[session.Tabs.Count];
+            var index = 0;
+            BrowserTabStatus? active = null;
+            foreach (var tab in session.Tabs.Values)
+            {
+                var item = new BrowserTabStatus(
+                    tab.Page.Id, tab.Automation.Url ?? "about:blank", tab.Automation.Title ?? "New tab",
+                    tab.Page.Id == session.ActiveTabId, IsLoading: tab.Loading, IsUserControlled: session.UserControlled);
+                tabs[index++] = item;
+                if (active is null && item.IsActive) active = item;
+            }
             status = new BrowserSessionStatus(
                 session.Busy ? BrowserSessionState.Busy : session.Error is not null ? BrowserSessionState.Failed
                     : tabs.Length > 0 ? BrowserSessionState.Launched : BrowserSessionState.Idle,

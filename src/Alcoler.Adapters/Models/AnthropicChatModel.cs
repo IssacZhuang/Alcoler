@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
@@ -19,7 +21,10 @@ public sealed record AnthropicModelOptions(
     string ApiKey,
     string BaseUrl = "https://api.anthropic.com")
 {
-    public string MessagesUrl => $"{AnthropicEndpoint.NormalizeBaseUrl(BaseUrl)}/messages";
+    // Cached outside the instance so record value equality stays field-based.
+    private static readonly ConcurrentDictionary<string, string> MessagesUrls = new(StringComparer.Ordinal);
+
+    public string MessagesUrl => MessagesUrls.GetOrAdd(BaseUrl, static url => $"{AnthropicEndpoint.NormalizeBaseUrl(url)}/messages");
 }
 
 public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOptions options, ModelProperties? properties = null, string? providerId = null) : IChatModel
@@ -135,7 +140,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
     {
         var state = new AnthropicStreamState();
         var events = new List<ModelStreamEvent>();
-        void Dispatch(object value) => events.AddRange(state.Dispatch(JsonSerializer.SerializeToElement(value)));
+        void Dispatch(object value) => state.Dispatch(JsonSerializer.SerializeToElement(value), events);
         Dispatch(new { type = "message_start", message = root });
         var index = 0;
         foreach (var block in root.GetProperty("content").EnumerateArray())
@@ -203,6 +208,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         {
             attemptState.StatusCode = (int)response!.StatusCode;
             var state = new AnthropicStreamState();
+            var events = new List<ModelStreamEvent>();
             await foreach (var frame in SseHttp.ReadFramesAsync(response!, cancellationToken).ConfigureAwait(false))
             {
                 if (frame.Event == SseHttp.FailureEventName)
@@ -214,11 +220,11 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
                     continue;
 
                 ModelFailure? dispatchFailure = null;
-                IEnumerable<ModelStreamEvent> events = [];
                 try
                 {
                     using var document = JsonDocument.Parse(frame.Data);
-                    events = state.Dispatch(document.RootElement).ToList();
+                    events.Clear();
+                    state.Dispatch(document.RootElement, events);
                 }
                 catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
                 {
@@ -297,15 +303,14 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
     private static void AddBetaHeaders(HttpRequestMessage message, IReadOnlyList<ToolContract> tools)
     {
-        var betas = tools
-            .Select(tool => tool.ProviderNative?.Type == ProviderNativeWebSearch.ToolType
-                ? ProviderNativeWebSearch.BetaHeader
-                : null)
-            .Where(beta => beta is not null)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        if (betas.Length > 0)
-            message.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", betas));
+        foreach (var tool in tools)
+        {
+            if (tool.ProviderNative?.Type == ProviderNativeWebSearch.ToolType)
+            {
+                message.Headers.TryAddWithoutValidation("anthropic-beta", ProviderNativeWebSearch.BetaHeader);
+                return;
+            }
+        }
     }
 
     private static object ToProviderMessage(ModelInputMessage message)
@@ -401,151 +406,148 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
         public bool SawTerminal { get; private set; }
 
-        public IEnumerable<ModelStreamEvent> Dispatch(JsonElement root)
+        public void Dispatch(JsonElement root, List<ModelStreamEvent> events)
         {
-            var type = root.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
-            switch (type)
+            var hasRootType = root.TryGetProperty("type", out var rootType);
+            if (hasRootType && TypeIs(rootType, "message_start"u8))
             {
-                case "message_start":
-                    if (root.TryGetProperty("message", out var message) &&
-                        message.TryGetProperty("usage", out var usage))
-                        ReadUsage(usage, includeOutput: true);
-                    yield return new ModelStreamStarted();
-                    yield break;
-
-                case "content_block_start":
-                    {
-                        var index = root.GetProperty("index").GetInt32();
-                        var block = root.GetProperty("content_block");
-                        var blockType = block.GetProperty("type").GetString();
-                        switch (blockType)
-                        {
-                            case "text":
-                                _blocks[index] = new OpenBlock("text");
-                                yield return new ModelTextStarted();
-                                break;
-                            case "thinking":
-                                _blocks[index] = new OpenBlock("thinking")
-                                {
-                                    Signature = block.TryGetProperty("signature", out var signature) ? signature.GetString() : null,
-                                };
-                                yield return new ModelReasoningStarted();
-                                break;
-                            case "redacted_thinking":
-                                _blocks[index] = new OpenBlock("redacted_thinking")
-                                {
-                                    RedactedData = block.GetProperty("data").GetString(),
-                                };
-                                yield return new ModelReasoningStarted();
-                                break;
-                            case "tool_use":
-                                {
-                                    var id = new ToolCallId(block.GetProperty("id").GetString()!);
-                                    var name = block.GetProperty("name").GetString()!;
-                                    _blocks[index] = new OpenBlock("tool_use") { ToolId = id, ToolName = name, Json = new() };
-                                    yield return new ModelToolInputStarted(id, name);
-                                    break;
-                                }
-                            case "server_tool_use":
-                                _blocks[index] = new OpenBlock("server_tool_use");
-                                break;
-                            case "web_search_tool_result":
-                                _blocks[index] = new OpenBlock("web_search_tool_result");
-                                foreach (var source in ReadWebSearchResults(block))
-                                    yield return source;
-                                break;
-                        }
-                        yield break;
-                    }
-
-                case "content_block_delta":
-                    {
-                        var index = root.GetProperty("index").GetInt32();
-                        var delta = root.GetProperty("delta");
-                        var deltaType = delta.GetProperty("type").GetString();
-                        var open = _blocks.GetValueOrDefault(index);
-                        switch (deltaType)
-                        {
-                            case "text_delta":
-                                yield return new ModelTextDelta(delta.GetProperty("text").GetString() ?? "");
-                                break;
-                            case "thinking_delta":
-                                yield return new ModelReasoningDelta(delta.GetProperty("thinking").GetString() ?? "");
-                                break;
-                            case "signature_delta":
-                                if (open is not null)
-                                    open.Signature = delta.GetProperty("signature").GetString();
-                                break;
-                            case "input_json_delta":
-                                {
-                                    var partialJson = delta.GetProperty("partial_json").GetString() ?? "";
-                                    if (open?.ToolId is { } toolId)
-                                    {
-                                        open.Json!.Append(partialJson);
-                                        yield return new ModelToolInputDelta(toolId, partialJson);
-                                    }
-                                    break;
-                                }
-                            case "citations_delta":
-                                if (delta.TryGetProperty("citation", out var citation) &&
-                                    ToWebSearchSource(citation) is { } source)
-                                    yield return source;
-                                break;
-                        }
-                        yield break;
-                    }
-
-                case "content_block_stop":
-                    {
-                        var index = root.GetProperty("index").GetInt32();
-                        if (!_blocks.Remove(index, out var open))
-                            yield break;
-                        switch (open.Kind)
-                        {
-                            case "text":
-                                yield return new ModelTextEnded();
-                                break;
-                            case "thinking":
-                            case "redacted_thinking":
-                                yield return new ModelReasoningEnded(open.Signature, open.RedactedData);
-                                break;
-                            case "tool_use":
-                                {
-                                    var toolId = open.ToolId!.Value;
-                                    yield return new ModelToolInputEnded(toolId);
-                                    yield return new ModelToolCallReady(new ToolCall(toolId, open.ToolName!, ParseInput(open.Json!)));
-                                    break;
-                                }
-                        }
-                        yield break;
-                    }
-
-                case "message_delta":
-                    if (root.TryGetProperty("delta", out var stopDelta) &&
-                        stopDelta.TryGetProperty("stop_reason", out var stopReason) &&
-                        stopReason.ValueKind == JsonValueKind.String)
-                        _stopReason = stopReason.GetString();
-                    if (root.TryGetProperty("usage", out var deltaUsage))
-                        ReadUsage(deltaUsage, includeOutput: true);
-                    yield break;
-
-                case "message_stop":
-                    SawTerminal = true;
-                    yield return new ModelStreamFinished(MapStopReason(_stopReason), BuildUsage(), _stopReason,
-                        ContextWindowExceeded: _stopReason == "model_context_window_exceeded");
-                    yield break;
-
-                case "error":
-                    {
-                        SawTerminal = true;
-                        var error = root.GetProperty("error");
-                        var errorType = error.TryGetProperty("type", out var t) ? t.GetString() : null;
-                        var errorMessage = error.TryGetProperty("message", out var m) ? m.GetString() : null;
-                        yield return new ModelStreamFailed(new ModelFailure(
-                            MapErrorKind(errorType), errorMessage ?? "anthropic stream error", errorType, Phase: ModelFailurePhase.ResponseBody));
-                        yield break;
-                    }
+                if (root.TryGetProperty("message", out var message) &&
+                    message.TryGetProperty("usage", out var usage))
+                    ReadUsage(usage, includeOutput: true);
+                events.Add(new ModelStreamStarted());
             }
+            else if (hasRootType && TypeIs(rootType, "content_block_start"u8))
+            {
+                var index = root.GetProperty("index").GetInt32();
+                var block = root.GetProperty("content_block");
+                var blockType = block.GetProperty("type");
+                if (TypeIs(blockType, "text"u8))
+                {
+                    _blocks[index] = new OpenBlock("text");
+                    events.Add(new ModelTextStarted());
+                }
+                else if (TypeIs(blockType, "thinking"u8))
+                {
+                    _blocks[index] = new OpenBlock("thinking")
+                    {
+                        Signature = block.TryGetProperty("signature", out var signature) ? signature.GetString() : null,
+                    };
+                    events.Add(new ModelReasoningStarted());
+                }
+                else if (TypeIs(blockType, "redacted_thinking"u8))
+                {
+                    _blocks[index] = new OpenBlock("redacted_thinking")
+                    {
+                        RedactedData = block.GetProperty("data").GetString(),
+                    };
+                    events.Add(new ModelReasoningStarted());
+                }
+                else if (TypeIs(blockType, "tool_use"u8))
+                {
+                    var id = new ToolCallId(block.GetProperty("id").GetString()!);
+                    var name = block.GetProperty("name").GetString()!;
+                    _blocks[index] = new OpenBlock("tool_use") { ToolId = id, ToolName = name, Json = new() };
+                    events.Add(new ModelToolInputStarted(id, name));
+                }
+                else if (TypeIs(blockType, "server_tool_use"u8))
+                {
+                    _blocks[index] = new OpenBlock("server_tool_use");
+                }
+                else if (TypeIs(blockType, "web_search_tool_result"u8))
+                {
+                    _blocks[index] = new OpenBlock("web_search_tool_result");
+                    ReadWebSearchResults(block, events);
+                }
+            }
+            else if (hasRootType && TypeIs(rootType, "content_block_delta"u8))
+            {
+                var index = root.GetProperty("index").GetInt32();
+                var delta = root.GetProperty("delta");
+                var deltaType = delta.GetProperty("type");
+                var open = _blocks.GetValueOrDefault(index);
+                if (TypeIs(deltaType, "text_delta"u8))
+                {
+                    events.Add(new ModelTextDelta(delta.GetProperty("text").GetString() ?? ""));
+                }
+                else if (TypeIs(deltaType, "thinking_delta"u8))
+                {
+                    events.Add(new ModelReasoningDelta(delta.GetProperty("thinking").GetString() ?? ""));
+                }
+                else if (TypeIs(deltaType, "signature_delta"u8))
+                {
+                    if (open is not null)
+                        open.Signature = delta.GetProperty("signature").GetString();
+                }
+                else if (TypeIs(deltaType, "input_json_delta"u8))
+                {
+                    var partialJson = delta.GetProperty("partial_json").GetString() ?? "";
+                    if (open?.ToolId is { } toolId)
+                    {
+                        SseHttp.AppendUtf8(open.Json!, partialJson);
+                        events.Add(new ModelToolInputDelta(toolId, partialJson));
+                    }
+                }
+                else if (TypeIs(deltaType, "citations_delta"u8))
+                {
+                    if (delta.TryGetProperty("citation", out var citation) &&
+                        ToWebSearchSource(citation) is { } source)
+                        events.Add(source);
+                }
+            }
+            else if (hasRootType && TypeIs(rootType, "content_block_stop"u8))
+            {
+                var index = root.GetProperty("index").GetInt32();
+                if (!_blocks.Remove(index, out var open))
+                    return;
+                if (open.Kind == "text")
+                {
+                    events.Add(new ModelTextEnded());
+                }
+                else if (open.Kind is "thinking" or "redacted_thinking")
+                {
+                    events.Add(new ModelReasoningEnded(open.Signature, open.RedactedData));
+                }
+                else if (open.Kind == "tool_use")
+                {
+                    var toolId = open.ToolId!.Value;
+                    events.Add(new ModelToolInputEnded(toolId));
+                    events.Add(new ModelToolCallReady(new ToolCall(toolId, open.ToolName!, ParseInput(open.Json!))));
+                }
+            }
+            else if (hasRootType && TypeIs(rootType, "message_delta"u8))
+            {
+                if (root.TryGetProperty("delta", out var stopDelta) &&
+                    stopDelta.TryGetProperty("stop_reason", out var stopReason) &&
+                    stopReason.ValueKind == JsonValueKind.String)
+                    _stopReason = stopReason.GetString();
+                if (root.TryGetProperty("usage", out var deltaUsage))
+                    ReadUsage(deltaUsage, includeOutput: true);
+            }
+            else if (hasRootType && TypeIs(rootType, "message_stop"u8))
+            {
+                SawTerminal = true;
+                events.Add(new ModelStreamFinished(MapStopReason(_stopReason), BuildUsage(), _stopReason,
+                    ContextWindowExceeded: _stopReason == "model_context_window_exceeded"));
+            }
+            else if (hasRootType && TypeIs(rootType, "error"u8))
+            {
+                SawTerminal = true;
+                var error = root.GetProperty("error");
+                var errorType = error.TryGetProperty("type", out var t) ? t.GetString() : null;
+                var errorMessage = error.TryGetProperty("message", out var m) ? m.GetString() : null;
+                events.Add(new ModelStreamFailed(new ModelFailure(
+                    MapErrorKind(errorType), errorMessage ?? "anthropic stream error", errorType, Phase: ModelFailurePhase.ResponseBody)));
+            }
+        }
+
+        private static bool TypeIs(JsonElement type, ReadOnlySpan<byte> expected)
+        {
+            if (type.ValueKind == JsonValueKind.String)
+                return type.ValueEquals(expected);
+            // Preserve the parse failure the previous GetString-based switch raised for non-string types.
+            if (type.ValueKind != JsonValueKind.Null)
+                _ = type.GetString();
+            return false;
         }
 
         private void ReadUsage(JsonElement usage, bool includeOutput)
@@ -599,20 +601,20 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         public string Kind { get; } = kind;
         public ToolCallId? ToolId { get; set; }
         public string? ToolName { get; set; }
-        public StringBuilder? Json { get; set; }
+        public ArrayBufferWriter<byte>? Json { get; set; }
         public string? Signature { get; set; }
         public string? RedactedData { get; set; }
     }
 
     private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
-    private static IEnumerable<ModelSourceFound> ReadWebSearchResults(JsonElement block)
+    private static void ReadWebSearchResults(JsonElement block, List<ModelStreamEvent> events)
     {
         if (!block.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
-            yield break;
+            return;
         foreach (var result in content.EnumerateArray())
             if (ToWebSearchSource(result) is { } source)
-                yield return source;
+                events.Add(source);
     }
 
     private static ModelSourceFound? ToWebSearchSource(JsonElement result)
@@ -625,14 +627,14 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
             : new ModelSourceFound(url, SseHttp.ReadString(result, "title"), SseHttp.ReadString(result, "page_age"));
     }
 
-    private static JsonElement ParseInput(StringBuilder json)
+    private static JsonElement ParseInput(ArrayBufferWriter<byte> json)
     {
-        var text = json.ToString();
-        if (string.IsNullOrWhiteSpace(text))
+        var utf8 = json.WrittenSpan;
+        if (SseHttp.IsNullOrWhiteSpace(utf8))
             return EmptyObject;
         try
         {
-            using var document = JsonDocument.Parse(text);
+            using var document = JsonDocument.Parse(json.WrittenMemory);
             return document.RootElement.Clone();
         }
         catch (JsonException)

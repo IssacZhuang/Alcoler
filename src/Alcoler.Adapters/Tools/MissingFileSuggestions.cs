@@ -22,17 +22,21 @@ internal static class MissingFileSuggestions
             var targetStem = Path.GetFileNameWithoutExtension(filePath);
             var entries = Directory.EnumerateFiles(parent)
                 .Select(static file => Path.GetFileName(file))!
-                .Where(name => !string.Equals(name, targetName, StringComparison.Ordinal))
-                .OrderBy(static name => name, StringComparer.Ordinal)
                 .ToArray();
+            Array.Sort(entries, StringComparer.Ordinal);
 
-            var sameStem = entries.FirstOrDefault(name =>
-                string.Equals(Path.GetFileNameWithoutExtension(name), targetStem, StringComparison.Ordinal));
-            if (sameStem is not null)
-                return sameStem;
-
-            return entries.FirstOrDefault(name =>
-                EditMatchers.LevenshteinDistance(name, targetName) <= MaxSuggestionDistance);
+            string? distanceMatch = null;
+            foreach (var name in entries)
+            {
+                if (string.Equals(name, targetName, StringComparison.Ordinal))
+                    continue;
+                if (string.Equals(Path.GetFileNameWithoutExtension(name), targetStem, StringComparison.Ordinal))
+                    return name;
+                if (distanceMatch is null
+                    && EditMatchers.LevenshteinDistance(name, targetName) <= MaxSuggestionDistance)
+                    distanceMatch = name;
+            }
+            return distanceMatch;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

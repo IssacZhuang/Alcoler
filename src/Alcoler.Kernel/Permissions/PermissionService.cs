@@ -85,29 +85,36 @@ public sealed class PermissionService : IPermissionGate
 
     private (PermissionVerdict? Verdict, string? Reason) EvaluateAlwaysAskGate(PermissionCheckRequest request)
     {
-        PermissionRule[] sessionRules;
+        PermissionRule[]? sessionRules = null;
         PermissionRuleset projectRules;
         lock (_sync)
         {
-            sessionRules = [.. _sessionRules];
+            if (_sessionRules.Count > 0)
+                sessionRules = [.. _sessionRules];
             projectRules = _projectRules;
         }
 
-        foreach (var rule in sessionRules)
-            if (rule.Verdict == PermissionVerdict.Ask && Matches(rule, request))
-                return (PermissionVerdict.Ask, $"matched session ask rule {DescribeRule(rule)}");
+        if (sessionRules is not null)
+        {
+            foreach (var rule in sessionRules)
+                if (rule.Verdict == PermissionVerdict.Ask && Matches(rule, request))
+                    return (PermissionVerdict.Ask, $"matched session ask rule {DescribeRule(rule)}");
+        }
 
         if (FirstMatch(projectRules.Deny, request) is not null)
             return (PermissionVerdict.Deny, null);
 
-        foreach (var rule in sessionRules)
-            if (rule.Verdict == PermissionVerdict.Deny && Matches(rule, request))
-                return (PermissionVerdict.Deny, null);
+        if (sessionRules is not null)
+        {
+            foreach (var rule in sessionRules)
+                if (rule.Verdict == PermissionVerdict.Deny && Matches(rule, request))
+                    return (PermissionVerdict.Deny, null);
 
-        // Session allow grants must precede project ask rules, or "don't ask again" approvals would re-ask forever.
-        foreach (var rule in sessionRules)
-            if (rule.Verdict == PermissionVerdict.Allow && Matches(rule, request))
-                return (PermissionVerdict.Allow, null);
+            // Session allow grants must precede project ask rules, or "don't ask again" approvals would re-ask forever.
+            foreach (var rule in sessionRules)
+                if (rule.Verdict == PermissionVerdict.Allow && Matches(rule, request))
+                    return (PermissionVerdict.Allow, null);
+        }
 
         if (FirstMatch(projectRules.Ask, request) is { } askRule)
             return (PermissionVerdict.Ask, $"matched project ask rule {DescribeRule(askRule)}");

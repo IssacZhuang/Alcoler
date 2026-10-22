@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
@@ -23,7 +25,10 @@ public sealed record OpenAiCompatibleModelOptions(
     string BaseUrl,
     bool UseLegacyMaxTokens = false)
 {
-    public string ChatCompletionsUrl => $"{BaseUrl.TrimEnd('/')}/chat/completions";
+    // Cached outside the instance so record value equality stays field-based.
+    private static readonly ConcurrentDictionary<string, string> ChatCompletionsUrls = new(StringComparer.Ordinal);
+
+    public string ChatCompletionsUrl => ChatCompletionsUrls.GetOrAdd(BaseUrl, static url => $"{url.TrimEnd('/')}/chat/completions");
 }
 
 public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompatibleModelOptions options, ModelProperties? properties = null, string? providerId = null) : IChatModel
@@ -73,6 +78,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         using (response!)
         {
             var state = new OpenAiStreamState();
+            var events = new List<ModelStreamEvent>();
             await foreach (var frame in SseHttp.ReadFramesAsync(response!, cancellationToken).ConfigureAwait(false))
             {
                 if (frame.Event == SseHttp.FailureEventName)
@@ -84,17 +90,19 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                     continue;
                 if (frame.Data is "[DONE]")
                 {
-                    foreach (var e in state.Complete())
+                    events.Clear();
+                    state.Complete(events);
+                    foreach (var e in events)
                         yield return e;
                     yield break;
                 }
 
                 ModelFailure? dispatchFailure = null;
-                IEnumerable<ModelStreamEvent> events = [];
                 try
                 {
                     using var document = JsonDocument.Parse(frame.Data);
-                    events = state.Dispatch(document.RootElement).ToList();
+                    events.Clear();
+                    state.Dispatch(document.RootElement, events);
                 }
                 catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
                 {
@@ -109,7 +117,9 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                 foreach (var e in events)
                     yield return e;
             }
-            foreach (var e in state.Complete())
+            events.Clear();
+            state.Complete(events);
+            foreach (var e in events)
                 yield return e;
         }
     }
@@ -135,12 +145,13 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                 function = tool.GetProperty("function"),
             }).ToArray();
         var state = new OpenAiStreamState();
-        var events = state.Dispatch(JsonSerializer.SerializeToElement(new
+        var events = new List<ModelStreamEvent>();
+        state.Dispatch(JsonSerializer.SerializeToElement(new
         {
             choices = new[] { new { delta, finish_reason = choice.TryGetProperty("finish_reason", out var reason) ? reason.GetString() : null } },
             usage = root.TryGetProperty("usage", out var usage) ? usage : default(JsonElement?),
-        })).ToList();
-        events.AddRange(state.Complete());
+        }), events);
+        state.Complete(events);
         if (message.TryGetProperty("reasoning_content", out var reasoning) && reasoning.ValueKind == JsonValueKind.String && reasoning.GetString() is { Length: > 0 })
         {
             var deltaIndex = events.FindIndex(e => e is ModelReasoningDelta);
@@ -157,7 +168,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         ModelRequestOptions.ValidateRequest(request with { Messages = normalized }, Descriptor.Properties);
         var messages = new List<object>();
         foreach (var input in ModelRequestSystemBlocks.Normalize(normalized, Descriptor.Properties.SupportsMidConversationSystem))
-            messages.AddRange(ToProviderMessages(input));
+            ToProviderMessages(input, messages);
 
         var payload = new Dictionary<string, object?>
         {
@@ -192,55 +203,86 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         return message;
     }
 
-    private static IEnumerable<object> ToProviderMessages(ModelInputMessage message)
+    private static void ToProviderMessages(ModelInputMessage message, List<object> messages)
     {
         if (message.Role == MessageRole.Assistant)
         {
-            var text = string.Concat(message.Content.OfType<InputTextBlock>().Select(b => b.Text));
-            var reasoning = string.Concat(message.Content.OfType<InputReasoningBlock>().Select(b => b.Text));
-            var toolCalls = message.Content.OfType<InputToolCallBlock>().ToList();
+            string? text = null;
+            string? reasoning = null;
+            List<Dictionary<string, object?>>? toolCalls = null;
+            foreach (var block in message.Content)
+            {
+                switch (block)
+                {
+                    case InputTextBlock textBlock:
+                        text = text is null ? textBlock.Text : string.Concat(text, textBlock.Text);
+                        break;
+                    case InputReasoningBlock reasoningBlock:
+                        reasoning = reasoning is null ? reasoningBlock.Text : string.Concat(reasoning, reasoningBlock.Text);
+                        break;
+                    case InputToolCallBlock toolCall:
+                        (toolCalls ??= []).Add(new Dictionary<string, object?>
+                        {
+                            ["id"] = toolCall.Id.Value,
+                            ["type"] = "function",
+                            ["function"] = new Dictionary<string, object?>
+                            {
+                                ["name"] = toolCall.Name,
+                                ["arguments"] = toolCall.Input.GetRawText(),
+                            },
+                        });
+                        break;
+                }
+            }
             var assistant = new Dictionary<string, object?>
             {
                 ["role"] = "assistant",
-                ["content"] = text.Length > 0 ? text : null,
+                ["content"] = text is { Length: > 0 } ? text : null,
             };
-            if (reasoning.Length > 0)
+            if (reasoning is { Length: > 0 })
                 assistant["reasoning_content"] = reasoning;
-            if (toolCalls.Count > 0)
-                assistant["tool_calls"] = toolCalls.Select(t => new Dictionary<string, object?>
-                {
-                    ["id"] = t.Id.Value,
-                    ["type"] = "function",
-                    ["function"] = new Dictionary<string, object?>
-                    {
-                        ["name"] = t.Name,
-                        ["arguments"] = t.Input.GetRawText(),
-                    },
-                }).ToList();
-            yield return assistant;
-            yield break;
+            if (toolCalls is { Count: > 0 })
+                assistant["tool_calls"] = toolCalls;
+            messages.Add(assistant);
+            return;
         }
 
         foreach (var block in message.Content)
         {
             if (block is InputToolResultBlock toolResult)
             {
-                yield return new Dictionary<string, object?>
+                messages.Add(new Dictionary<string, object?>
                 {
                     ["role"] = "tool",
                     ["tool_call_id"] = toolResult.Id.Value,
                     ["content"] = toolResult.Content,
-                };
+                });
             }
         }
 
-        var textBlocks = message.Content.OfType<InputTextBlock>().ToList();
-        var imageBlocks = message.Content.OfType<InputImageBlock>().ToList();
-        if (imageBlocks.Count > 0)
+        List<InputTextBlock>? textBlocks = null;
+        List<InputImageBlock>? imageBlocks = null;
+        foreach (var block in message.Content)
         {
-            var content = new List<object>();
-            foreach (var text in textBlocks)
-                content.Add(new Dictionary<string, object?> { ["type"] = "text", ["text"] = text.Text });
+            switch (block)
+            {
+                case InputTextBlock textBlock:
+                    (textBlocks ??= []).Add(textBlock);
+                    break;
+                case InputImageBlock imageBlock:
+                    (imageBlocks ??= []).Add(imageBlock);
+                    break;
+            }
+        }
+
+        if (imageBlocks is { Count: > 0 })
+        {
+            var content = new List<object>((textBlocks?.Count ?? 0) + imageBlocks.Count);
+            if (textBlocks is not null)
+            {
+                foreach (var text in textBlocks)
+                    content.Add(new Dictionary<string, object?> { ["type"] = "text", ["text"] = text.Text });
+            }
             foreach (var image in imageBlocks)
                 content.Add(new Dictionary<string, object?>
                 {
@@ -250,15 +292,15 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                         ["url"] = $"data:{image.MimeType};base64,{image.Base64Data}",
                     },
                 });
-            yield return new Dictionary<string, object?>
+            messages.Add(new Dictionary<string, object?>
             {
                 ["role"] = message.Role == MessageRole.System ? "system" : "user",
                 ["content"] = content,
-            };
+            });
         }
-        else if (textBlocks.Count > 0)
+        else if (textBlocks is { Count: > 0 })
         {
-            yield return new Dictionary<string, object?>
+            messages.Add(new Dictionary<string, object?>
             {
                 ["role"] = message.Role == MessageRole.System ? "system" : "user",
                 ["content"] = textBlocks.Count == 1
@@ -268,7 +310,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                         ["type"] = "text",
                         ["text"] = t.Text,
                     }).ToList(),
-            };
+            });
         }
     }
 
@@ -281,91 +323,78 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         private TokenUsage? _usage;
         private bool _finished;
 
-        public IEnumerable<ModelStreamEvent> Dispatch(JsonElement root)
+        public void Dispatch(JsonElement root, List<ModelStreamEvent> events)
         {
             if (root.TryGetProperty("usage", out var usage) &&
                 usage.ValueKind == JsonValueKind.Object)
             {
-                _usage = usage.ValueKind == JsonValueKind.Object ? ReadUsage(usage) : null;
+                _usage = ReadUsage(usage);
                 if (_finishReason is not null)
-                {
-                    foreach (var e in Finish())
-                        yield return e;
-                }
+                    Finish(events);
             }
 
             if (!root.TryGetProperty("choices", out var choices) ||
                 choices.ValueKind != JsonValueKind.Array ||
                 choices.GetArrayLength() == 0)
-                yield break;
+                return;
 
             var choice = choices[0];
             if (choice.TryGetProperty("delta", out var delta) && delta.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var e in DispatchDelta(delta))
-                    yield return e;
-            }
+                DispatchDelta(delta, events);
             if (choice.TryGetProperty("finish_reason", out var finishReason) &&
                 finishReason.ValueKind == JsonValueKind.String)
             {
                 _finishReason = finishReason.GetString();
-                foreach (var e in CloseOpenContent())
-                    yield return e;
+                CloseOpenContent(events);
             }
         }
 
-        public IEnumerable<ModelStreamEvent> Complete()
+        public void Complete(List<ModelStreamEvent> events)
         {
             if (_finished)
-                yield break;
+                return;
             if (_finishReason is not null || _usage is not null)
-            {
-                foreach (var e in Finish())
-                    yield return e;
-            }
+                Finish(events);
             else
-            {
-                yield return new ModelStreamFailed(new ModelFailure(
+                events.Add(new ModelStreamFailed(new ModelFailure(
                     ModelFailureKind.StreamProtocolError,
-                    "openai-compatible stream ended without finish_reason or usage", Phase: ModelFailurePhase.ResponseBody));
-            }
+                    "openai-compatible stream ended without finish_reason or usage", Phase: ModelFailurePhase.ResponseBody)));
         }
 
-        private IEnumerable<ModelStreamEvent> Finish()
+        private void Finish(List<ModelStreamEvent> events)
         {
             _finished = true;
-            foreach (var e in CloseOpenContent())
-                yield return e;
-            yield return new ModelStreamFinished(MapFinishReason(_finishReason), _usage, _finishReason,
-                ContextWindowExceeded: _finishReason == "model_context_window_exceeded");
+            CloseOpenContent(events);
+            events.Add(new ModelStreamFinished(MapFinishReason(_finishReason), _usage, _finishReason,
+                ContextWindowExceeded: _finishReason == "model_context_window_exceeded"));
         }
 
-        private IEnumerable<ModelStreamEvent> CloseOpenContent()
+        private void CloseOpenContent(List<ModelStreamEvent> events)
         {
             if (_textOpen && !_textClosed)
             {
                 _textClosed = true;
-                yield return new ModelTextEnded();
+                events.Add(new ModelTextEnded());
             }
             foreach (var tool in _tools.Values)
             {
                 if (tool.Closed)
                     continue;
                 tool.Closed = true;
-                yield return new ModelToolInputEnded(tool.Id!.Value);
-                yield return new ModelToolCallReady(
-                    new ToolCall(tool.Id!.Value, tool.Name!, ParseArguments(tool.Arguments)));
+                events.Add(new ModelToolInputEnded(tool.Id!.Value));
+                events.Add(new ModelToolCallReady(
+                    new ToolCall(tool.Id!.Value, tool.Name!, ParseArguments(tool.Arguments))));
             }
         }
 
-        private IEnumerable<ModelStreamEvent> DispatchDelta(JsonElement delta)
+        private void DispatchDelta(JsonElement delta, List<ModelStreamEvent> events)
         {
             if (delta.TryGetProperty("reasoning_content", out var reasoning) &&
                 reasoning.ValueKind == JsonValueKind.String)
             {
                 var reasoningText = reasoning.GetString();
                 if (reasoningText is { Length: > 0 })
-                    yield return new ModelReasoningDelta(reasoningText);
+                    events.Add(new ModelReasoningDelta(reasoningText));
             }
 
             if (delta.TryGetProperty("content", out var content) &&
@@ -377,9 +406,9 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                     if (!_textOpen)
                     {
                         _textOpen = true;
-                        yield return new ModelTextStarted();
+                        events.Add(new ModelTextStarted());
                     }
-                    yield return new ModelTextDelta(text);
+                    events.Add(new ModelTextDelta(text));
                 }
             }
 
@@ -407,20 +436,21 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
                             tool.Name = nameElement.GetString();
                         if (function.TryGetProperty("arguments", out var argumentsElement) &&
                             argumentsElement.ValueKind == JsonValueKind.String)
-                            tool.Arguments.Append(argumentsElement.GetString() ?? "");
+                            SseHttp.AppendUtf8(tool.Arguments, argumentsElement.GetString() ?? "");
                     }
                     if (tool.Id is not null && tool.Name is not null)
                     {
                         if (!tool.Started)
                         {
                             tool.Started = true;
-                            yield return new ModelToolInputStarted(tool.Id.Value, tool.Name);
+                            events.Add(new ModelToolInputStarted(tool.Id.Value, tool.Name));
                         }
-                        if (tool.Arguments.Length > tool.EmittedCharacters)
+                        if (tool.Arguments.WrittenCount > tool.EmittedBytes)
                         {
-                            var fragment = tool.Arguments.ToString(tool.EmittedCharacters, tool.Arguments.Length - tool.EmittedCharacters);
-                            tool.EmittedCharacters = tool.Arguments.Length;
-                            yield return new ModelToolInputDelta(tool.Id.Value, fragment);
+                            var fragment = Encoding.UTF8.GetString(
+                                tool.Arguments.WrittenSpan[tool.EmittedBytes..]);
+                            tool.EmittedBytes = tool.Arguments.WrittenCount;
+                            events.Add(new ModelToolInputDelta(tool.Id.Value, fragment));
                         }
                     }
                 }
@@ -446,14 +476,13 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
 
         private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
-        private static JsonElement ParseArguments(StringBuilder arguments)
+        private static JsonElement ParseArguments(ArrayBufferWriter<byte> arguments)
         {
-            var text = arguments.ToString();
-            if (string.IsNullOrWhiteSpace(text))
+            if (SseHttp.IsNullOrWhiteSpace(arguments.WrittenSpan))
                 return EmptyObject;
             try
             {
-                using var document = JsonDocument.Parse(text);
+                using var document = JsonDocument.Parse(arguments.WrittenMemory);
                 return document.RootElement.Clone();
             }
             catch (JsonException)
@@ -478,9 +507,9 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
     {
         public ToolCallId? Id { get; set; }
         public string? Name { get; set; }
-        public StringBuilder Arguments { get; } = new();
+        public ArrayBufferWriter<byte> Arguments { get; } = new();
         public bool Started { get; set; }
-        public int EmittedCharacters { get; set; }
+        public int EmittedBytes { get; set; }
         public bool Closed { get; set; }
     }
 }

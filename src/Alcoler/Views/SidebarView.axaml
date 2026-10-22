@@ -38,6 +38,9 @@
     <Style Selector="Button.showMore:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.showMore:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
+    <Style Selector="Button.archiveToggle.active /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
     <Style Selector="Button.sessionItem:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.sessionItem:focus-visible /template/ ContentPresenter#PART_ContentPresenter,
                      Button.groupHeader:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.groupHeader:focus-visible /template/ ContentPresenter#PART_ContentPresenter,
                      Button.sidebarAction:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.sidebarAction:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
@@ -70,10 +73,17 @@
       </Button>
     </StackPanel>
     <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="16,0,10,4">
-      <TextBlock Text="Projects" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
-      <Button Grid.Column="1" Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions" AutomationProperties.Name="Refresh projects">
-        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
-      </Button>
+      <TextBlock Text="{Binding Sidebar.HeaderTitle}" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+        <Button Classes="icon tiny archiveToggle" Classes.active="{Binding Sidebar.IsArchivedView}"
+                Click="OnToggleArchivedClick" ToolTip.Tip="{Binding Sidebar.ArchivedToggleToolTip}"
+                AutomationProperties.Name="Toggle archived sessions">
+          <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconArchive}" />
+        </Button>
+        <Button Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions" AutomationProperties.Name="Refresh projects">
+          <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+        </Button>
+      </StackPanel>
     </Grid>
     <Border DockPanel.Dock="Bottom" Padding="8,8,8,12">
       <Button x:Name="PART_Settings" Classes="sidebarAction" Click="OnSettingsClick" AutomationProperties.Name="Settings">
@@ -85,7 +95,7 @@
       </Button>
     </Border>
     <Grid>
-      <TextBlock x:Name="PART_SidebarEmpty" Text="No sessions yet" HorizontalAlignment="Center" VerticalAlignment="Top"
+      <TextBlock x:Name="PART_SidebarEmpty" Text="{Binding Sidebar.EmptyText}" HorizontalAlignment="Center" VerticalAlignment="Top"
                  Margin="0,20,0,0" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}"
                  IsVisible="{Binding Sidebar.Groups.Count, Converter={StaticResource AlcolerZeroToVisible}}" />
       <TextBlock Text="Loading sessions..." FontSize="{DynamicResource AlcolerFontSmall}" Margin="16,8" VerticalAlignment="Top"
@@ -118,6 +128,12 @@
                       <DataTemplate x:DataType="vm:SessionSummaryViewModel">
                         <Button Classes="sessionItem" Classes.active="{Binding IsActive}" Click="OnSessionClick" ToolTip.Tip="{Binding DisplayTitle}"
                                 Background="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerSelected|AlcolerTransparent}">
+                          <Button.ContextFlyout>
+                            <MenuFlyout>
+                              <MenuItem Header="Archive" Click="OnArchiveSessionClick" IsVisible="{Binding !IsArchived}" />
+                              <MenuItem Header="Unarchive" Click="OnUnarchiveSessionClick" IsVisible="{Binding IsArchived}" />
+                            </MenuFlyout>
+                          </Button.ContextFlyout>
                           <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
                             <Grid Width="16" Height="16" VerticalAlignment="Center">
                               <Border x:Name="PART_ActiveIndicator" Width="4" Height="4" CornerRadius="2" HorizontalAlignment="Center"

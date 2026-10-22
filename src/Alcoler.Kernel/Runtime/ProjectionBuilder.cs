@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
@@ -12,9 +13,11 @@ public sealed class ProjectionBuilder
     private readonly object _sync = new();
     private readonly List<ConversationRow> _rows = [];
     private readonly Dictionary<string, int> _rowIndex = [];
-    private readonly Dictionary<string, string> _streamingText = [];
+    private readonly Dictionary<string, StringBuilder> _streamingText = [];
     private ConversationState _state = ConversationState.Initial(string.Empty, PermissionMode.Build, null, 200_000);
     private readonly List<QueuedInput> _queue = [];
+    private IReadOnlyList<QueuedInput> _queueSnapshot = Array.Empty<QueuedInput>();
+    private bool _queueDirty;
     private string? _lastAssistantRowId;
     private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
@@ -132,13 +135,15 @@ public sealed class ProjectionBuilder
                     ApplyRewind(rewound.TargetMessageId.Value, ops);
                     _streamingText.Clear();
                     _queue.Clear();
+                    _queueSnapshot = Array.Empty<QueuedInput>();
+                    _queueDirty = false;
                     _state = _state with
                     {
                         Phase = TurnPhase.Idle,
                         ActiveTurn = null,
                         PendingPermission = null,
                         PendingInteraction = null,
-                        Queue = [],
+                        Queue = _queueSnapshot,
                         ContextUsageTokens = null,
                         ContextUsage = null,
                         TokenSource = "estimate",
@@ -233,19 +238,22 @@ public sealed class ProjectionBuilder
 
                 case InputQueuedEvent queued:
                     _queue.Add(queued.Input);
-                    _state = _state with { Queue = [.. _queue] };
+                    _queueDirty = true;
+                    _state = _state with { Queue = QueueSnapshot() };
                     stateChanged = true;
                     break;
 
                 case InputDequeuedEvent dequeued:
-                    _queue.RemoveAll(input => input.CommandId == dequeued.CommandId);
-                    _state = _state with { Queue = [.. _queue] };
+                    if (_queue.RemoveAll(input => input.CommandId == dequeued.CommandId) > 0)
+                        _queueDirty = true;
+                    _state = _state with { Queue = QueueSnapshot() };
                     stateChanged = true;
                     break;
 
                 case InputDiscardedEvent discarded:
-                    _queue.RemoveAll(input => input.CommandId == discarded.CommandId);
-                    _state = _state with { Queue = [.. _queue] };
+                    if (_queue.RemoveAll(input => input.CommandId == discarded.CommandId) > 0)
+                        _queueDirty = true;
+                    _state = _state with { Queue = QueueSnapshot() };
                     stateChanged = true;
                     break;
 
@@ -277,21 +285,28 @@ public sealed class ProjectionBuilder
 
                 case ModelStreamingTextEvent streaming:
                     {
-                        _state = _state with { Phase = TurnPhase.Streaming };
                         var rowId = $"stream:{streaming.TurnId.Value}";
                         if (!_streamingText.TryGetValue(rowId, out var accumulated))
                         {
-                            accumulated = string.Empty;
+                            accumulated = new StringBuilder();
+                            _streamingText[rowId] = accumulated;
                         }
-                        accumulated += streaming.Delta;
-                        _streamingText[rowId] = accumulated;
+                        accumulated.Append(streaming.Delta);
                         Upsert(new AssistantMessageRow(
                             rowId,
                             Id: default,
-                            [new TextPart(default, accumulated)],
+                            [new TextPart(default, accumulated.ToString())],
                             IsStreaming: true,
                             At: sequenced.OccurredAt), ops);
-                        stateChanged = true;
+                        if (_state.Phase != TurnPhase.Streaming)
+                        {
+                            _state = _state with { Phase = TurnPhase.Streaming };
+                            stateChanged = true;
+                        }
+                        else
+                        {
+                            ops.Add(new StatePatched(_state));
+                        }
                         break;
                     }
 
@@ -323,21 +338,59 @@ public sealed class ProjectionBuilder
             _lastAssistantRowId = null;
         }
 
-        var text = string.Join("\n", message.Parts.OfType<TextPart>().Select(p => p.Text));
-        var images = message.Parts.OfType<FilePart>()
-            .Where(part => part.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)).ToArray();
-        if (text.Length > 0 || images.Length > 0)
+        string? singleText = null;
+        StringBuilder? textBuilder = null;
+        var textCount = 0;
+        FilePart[]? images = null;
+        var imageCount = 0;
+        foreach (var part in message.Parts)
+        {
+            switch (part)
+            {
+                case TextPart textPart:
+                    if (textCount == 0)
+                    {
+                        singleText = textPart.Text;
+                    }
+                    else
+                    {
+                        textBuilder ??= new StringBuilder(singleText);
+                        textBuilder.Append('\n').Append(textPart.Text);
+                    }
+                    textCount++;
+                    break;
+                case FilePart file
+                    when file.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase):
+                    if (images is null)
+                    {
+                        images = new FilePart[1];
+                    }
+                    else if (imageCount == images.Length)
+                    {
+                        Array.Resize(ref images, images.Length * 2);
+                    }
+                    images[imageCount++] = file;
+                    break;
+            }
+        }
+
+        if (images is not null && imageCount != images.Length)
+            Array.Resize(ref images, imageCount);
+        var text = textBuilder?.ToString() ?? singleText ?? string.Empty;
+        if (text.Length > 0 || imageCount > 0)
         {
             Append(new UserMessageRow(
                 message.Id.Value,
                 text,
                 message.CreatedAt,
-                images.Length > 0 ? images : null,
+                imageCount > 0 ? images : null,
                 SessionRuntime.IsRealUserTurn(message)), ops);
         }
 
-        foreach (var toolResult in message.Parts.OfType<ToolResultPart>())
+        foreach (var part in message.Parts)
         {
+            if (part is not ToolResultPart toolResult)
+                continue;
             var existing = _rowIndex.TryGetValue(toolResult.ToolCallId.Value, out var index)
                 ? _rows[index] as ToolCallRow
                 : null;
@@ -353,6 +406,15 @@ public sealed class ProjectionBuilder
                 existing?.StartedAt ?? message.CreatedAt,
                 existing?.FileChange), ops);
         }
+    }
+
+    private IReadOnlyList<QueuedInput> QueueSnapshot()
+    {
+        if (!_queueDirty)
+            return _queueSnapshot;
+        _queueSnapshot = [.. _queue];
+        _queueDirty = false;
+        return _queueSnapshot;
     }
 
     private void ApplyRewind(string targetRowId, List<RowOp> ops)

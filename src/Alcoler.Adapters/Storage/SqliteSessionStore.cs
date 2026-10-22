@@ -194,9 +194,22 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
     public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
         string? workspaceRoot,
         int limit,
+        CancellationToken cancellationToken) =>
+        ListSessionsAsync(workspaceRoot, limit, SessionListKind.Active, cancellationToken);
+
+    public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
+        string? workspaceRoot,
+        int limit,
+        SessionListKind kind,
         CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(limit);
+        if (!Enum.IsDefined(kind))
+        {
+            throw new ArgumentOutOfRangeException(nameof(kind));
+        }
+
+        var archived = kind == SessionListKind.Archived ? 1 : 0;
         return QueryAsync<IReadOnlyList<SessionSummary>>(connection =>
         {
             using var command = connection.CreateCommand();
@@ -205,10 +218,12 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                        created_at, updated_at, is_archived, parent_session_id
                 FROM session
                 WHERE parent_session_id IS NULL
+                  AND is_archived = $is_archived
                   AND ($workspace_root IS NULL OR workspace_root = $workspace_root)
                 ORDER BY updated_at DESC
                 LIMIT $limit
                 """;
+            command.Parameters.AddWithValue("$is_archived", archived);
             command.Parameters.AddWithValue("$workspace_root", (object?)workspaceRoot ?? DBNull.Value);
             command.Parameters.AddWithValue("$limit", (long)limit);
             using var reader = command.ExecuteReader();
@@ -222,13 +237,62 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         }, cancellationToken);
     }
 
+    public ValueTask SetSessionArchivedAsync(
+        SessionId sessionId,
+        bool archived,
+        CancellationToken cancellationToken) =>
+        RunAsync(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE session SET is_archived = $is_archived WHERE id = $id";
+            command.Parameters.AddWithValue("$id", sessionId.Value);
+            command.Parameters.AddWithValue("$is_archived", archived);
+            command.ExecuteNonQuery();
+        }, cancellationToken);
+
+    public ValueTask<int> ArchiveSessionsUpdatedBeforeAsync(
+        DateTimeOffset cutoff,
+        IReadOnlyCollection<SessionId> excludedSessionIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(excludedSessionIds);
+        var excluded = excludedSessionIds.Distinct().ToArray();
+        return QueryAsync(connection =>
+        {
+            using var command = connection.CreateCommand();
+            var exclusionClause = excluded.Length == 0
+                ? string.Empty
+                : $" AND id NOT IN ({string.Join(", ", Enumerable.Range(0, excluded.Length).Select(index => $"$excluded{index}"))})";
+            command.CommandText = $"""
+                UPDATE session
+                SET is_archived = 1
+                WHERE parent_session_id IS NULL
+                  AND is_archived = 0
+                  AND updated_at < $cutoff{exclusionClause}
+                """;
+            command.Parameters.AddWithValue("$cutoff", ToUtcIso(cutoff));
+            for (var index = 0; index < excluded.Length; index++)
+            {
+                command.Parameters.AddWithValue($"$excluded{index}", excluded[index].Value);
+            }
+
+            return command.ExecuteNonQuery();
+        }, cancellationToken);
+    }
+
     public ValueTask DeleteSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
         RunAsync(connection =>
         {
             using var transaction = connection.BeginTransaction();
-            ExecuteInTransaction(connection, transaction, "DELETE FROM message WHERE session_id = $id", sessionId);
-            ExecuteInTransaction(connection, transaction, "DELETE FROM durable_event WHERE session_id = $id", sessionId);
-            ExecuteInTransaction(connection, transaction, "DELETE FROM session WHERE id = $id", sessionId);
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.Parameters.Add("$id", SqliteType.Text).Value = sessionId.Value;
+            command.CommandText = "DELETE FROM message WHERE session_id = $id";
+            command.ExecuteNonQuery();
+            command.CommandText = "DELETE FROM durable_event WHERE session_id = $id";
+            command.ExecuteNonQuery();
+            command.CommandText = "DELETE FROM session WHERE id = $id";
+            command.ExecuteNonQuery();
             transaction.Commit();
         }, cancellationToken);
 
@@ -243,20 +307,26 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         return RunAsync(connection =>
         {
             using var transaction = connection.BeginTransaction();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO message (session_id, sequence, message_id, payload_json, created_at)
+                VALUES ($session_id, $sequence, $message_id, $payload_json, $created_at)
+                """;
+            var sessionParameter = command.Parameters.Add("$session_id", SqliteType.Text);
+            var sequenceParameter = command.Parameters.Add("$sequence", SqliteType.Integer);
+            var messageParameter = command.Parameters.Add("$message_id", SqliteType.Text);
+            var payloadParameter = command.Parameters.Add("$payload_json", SqliteType.Text);
+            var createdParameter = command.Parameters.Add("$created_at", SqliteType.Text);
+            command.Prepare();
             var sequence = startingSequence;
             foreach (var message in messages)
             {
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO message (session_id, sequence, message_id, payload_json, created_at)
-                    VALUES ($session_id, $sequence, $message_id, $payload_json, $created_at)
-                    """;
-                command.Parameters.AddWithValue("$session_id", sessionId.Value);
-                command.Parameters.AddWithValue("$sequence", sequence);
-                command.Parameters.AddWithValue("$message_id", message.Id.Value);
-                command.Parameters.AddWithValue("$payload_json", AlcolerJson.Serialize(message));
-                command.Parameters.AddWithValue("$created_at", ToUtcIso(message.CreatedAt));
+                sessionParameter.Value = sessionId.Value;
+                sequenceParameter.Value = sequence;
+                messageParameter.Value = message.Id.Value;
+                payloadParameter.Value = AlcolerJson.Serialize(message);
+                createdParameter.Value = ToUtcIso(message.CreatedAt);
                 command.ExecuteNonQuery();
                 sequence++;
             }
@@ -274,21 +344,34 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         return RunAsync(connection =>
         {
             using var transaction = connection.BeginTransaction();
-            ExecuteInTransaction(connection, transaction, "DELETE FROM message WHERE session_id = $id", sessionId);
+            using (var delete = connection.CreateCommand())
+            {
+                delete.Transaction = transaction;
+                delete.CommandText = "DELETE FROM message WHERE session_id = $id";
+                delete.Parameters.AddWithValue("$id", sessionId.Value);
+                delete.ExecuteNonQuery();
+            }
+
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO message (session_id, sequence, message_id, payload_json, created_at)
+                VALUES ($session_id, $sequence, $message_id, $payload_json, $created_at)
+                """;
+            var sessionParameter = command.Parameters.Add("$session_id", SqliteType.Text);
+            var sequenceParameter = command.Parameters.Add("$sequence", SqliteType.Integer);
+            var messageParameter = command.Parameters.Add("$message_id", SqliteType.Text);
+            var payloadParameter = command.Parameters.Add("$payload_json", SqliteType.Text);
+            var createdParameter = command.Parameters.Add("$created_at", SqliteType.Text);
+            command.Prepare();
             var sequence = 0L;
             foreach (var message in messages)
             {
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO message (session_id, sequence, message_id, payload_json, created_at)
-                    VALUES ($session_id, $sequence, $message_id, $payload_json, $created_at)
-                    """;
-                command.Parameters.AddWithValue("$session_id", sessionId.Value);
-                command.Parameters.AddWithValue("$sequence", sequence);
-                command.Parameters.AddWithValue("$message_id", message.Id.Value);
-                command.Parameters.AddWithValue("$payload_json", AlcolerJson.Serialize(message));
-                command.Parameters.AddWithValue("$created_at", ToUtcIso(message.CreatedAt));
+                sessionParameter.Value = sessionId.Value;
+                sequenceParameter.Value = sequence;
+                messageParameter.Value = message.Id.Value;
+                payloadParameter.Value = AlcolerJson.Serialize(message);
+                createdParameter.Value = ToUtcIso(message.CreatedAt);
                 command.ExecuteNonQuery();
                 sequence++;
             }
@@ -332,18 +415,23 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         return RunAsync(connection =>
         {
             using var transaction = connection.BeginTransaction();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO durable_event (session_id, sequence, occurred_at, payload_json)
+                VALUES ($session_id, $sequence, $occurred_at, $payload_json)
+                """;
+            var sessionParameter = command.Parameters.Add("$session_id", SqliteType.Text);
+            var sequenceParameter = command.Parameters.Add("$sequence", SqliteType.Integer);
+            var occurredParameter = command.Parameters.Add("$occurred_at", SqliteType.Text);
+            var payloadParameter = command.Parameters.Add("$payload_json", SqliteType.Text);
+            command.Prepare();
             foreach (var sequencedEvent in events)
             {
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO durable_event (session_id, sequence, occurred_at, payload_json)
-                    VALUES ($session_id, $sequence, $occurred_at, $payload_json)
-                    """;
-                command.Parameters.AddWithValue("$session_id", sequencedEvent.SessionId.Value);
-                command.Parameters.AddWithValue("$sequence", sequencedEvent.Sequence);
-                command.Parameters.AddWithValue("$occurred_at", ToUtcIso(sequencedEvent.OccurredAt));
-                command.Parameters.AddWithValue("$payload_json", AlcolerJson.Serialize(sequencedEvent.Event));
+                sessionParameter.Value = sequencedEvent.SessionId.Value;
+                sequenceParameter.Value = sequencedEvent.Sequence;
+                occurredParameter.Value = ToUtcIso(sequencedEvent.OccurredAt);
+                payloadParameter.Value = AlcolerJson.Serialize(sequencedEvent.Event);
                 command.ExecuteNonQuery();
             }
 
@@ -427,19 +515,6 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
     {
         using var command = connection.CreateCommand();
         command.CommandText = sql;
-        command.ExecuteNonQuery();
-    }
-
-    private static void ExecuteInTransaction(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string sql,
-        SessionId sessionId)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("$id", sessionId.Value);
         command.ExecuteNonQuery();
     }
 

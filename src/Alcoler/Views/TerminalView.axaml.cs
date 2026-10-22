@@ -20,13 +20,31 @@ public sealed class TerminalSurface : Control
             nameof(FontFamily), FontFamily.Parse("Consolas,Courier New,monospace"));
 
     private readonly Dictionary<TerminalColor, ImmutableSolidColorBrush> _brushCache = [];
+    private Typeface _typeface;
+    private FontFamily? _typefaceFamily;
+    private bool _metricsValid;
+    private double _cellWidth;
+    private double _lineHeight;
+    private IBrush? _defaultForegroundBrush;
+    private IBrush? _cursorBrush;
+    private bool _themeBrushesValid;
+    private char[] _runBuffer = [];
 
     static TerminalSurface() => FocusableProperty.OverrideDefaultValue<TerminalSurface>(true);
 
     public TerminalSurface()
     {
         ClipToBounds = true;
-        ActualThemeVariantChanged += (_, _) => InvalidateVisual();
+        ActualThemeVariantChanged += (_, _) =>
+        {
+            _themeBrushesValid = false;
+            InvalidateVisual();
+        };
+        ResourcesChanged += (_, _) =>
+        {
+            _themeBrushesValid = false;
+            InvalidateVisual();
+        };
     }
 
     public double FontSize
@@ -58,6 +76,7 @@ public sealed class TerminalSurface : Control
         base.OnPropertyChanged(change);
         if (change.Property == FontSizeProperty || change.Property == FontFamilyProperty)
         {
+            _metricsValid = false;
             ResizeToViewport(Bounds.Size);
             InvalidateVisual();
         }
@@ -83,8 +102,17 @@ public sealed class TerminalSurface : Control
             return;
         }
         GetMetrics(out var cellWidth, out var lineHeight);
-        var typeface = new Typeface(FontFamily);
-        var defaultForeground = ResolveColor("AlcolerTerminalForeground", Color.FromRgb(0xD4, 0xD4, 0xD4));
+        var typeface = CurrentTypeface();
+        if (!_themeBrushesValid)
+        {
+            var defaultForeground = ResolveColor("AlcolerTerminalForeground", Color.FromRgb(0xD4, 0xD4, 0xD4));
+            var accent = ResolveColor("AlcolerAccent", Color.FromRgb(0x4C, 0x8D, 0xFF));
+            _defaultForegroundBrush = new ImmutableSolidColorBrush(defaultForeground);
+            _cursorBrush = new ImmutableSolidColorBrush(accent, 0.4);
+            _themeBrushesValid = true;
+        }
+        var defaultBrush = _defaultForegroundBrush!;
+        var cursorBrush = _cursorBrush!;
 
         for (var row = 0; row < Buffer.Rows; row++)
         {
@@ -100,8 +128,13 @@ public sealed class TerminalSurface : Control
                 }
                 if (runStart < col)
                 {
-                    var text = new string(cells[runStart..col].Select(c => c.Char).ToArray());
-                    var foreground = runColor is { } rgb ? BrushFor(rgb) : new ImmutableSolidColorBrush(defaultForeground);
+                    var length = col - runStart;
+                    if (_runBuffer.Length < length)
+                        _runBuffer = new char[length];
+                    for (var index = 0; index < length; index++)
+                        _runBuffer[index] = cells[runStart + index].Char;
+                    var text = new string(_runBuffer, 0, length);
+                    var foreground = runColor is { } rgb ? BrushFor(rgb) : defaultBrush;
                     var formatted = new FormattedText(
                         text,
                         CultureInfo.InvariantCulture,
@@ -118,9 +151,8 @@ public sealed class TerminalSurface : Control
 
         if (Buffer.CursorVisible)
         {
-            var accent = ResolveColor("AlcolerAccent", Color.FromRgb(0x4C, 0x8D, 0xFF));
             var cursor = new Rect(Buffer.CursorCol * cellWidth, Buffer.CursorRow * lineHeight, cellWidth, lineHeight);
-            context.FillRectangle(new ImmutableSolidColorBrush(new SolidColorBrush(accent, 0.4)), cursor);
+            context.FillRectangle(cursorBrush, cursor);
         }
     }
 
@@ -224,23 +256,40 @@ public sealed class TerminalSurface : Control
             ? brush.Color
             : fallback;
 
+    private Typeface CurrentTypeface()
+    {
+        if (!Equals(_typefaceFamily, FontFamily))
+        {
+            _typeface = new Typeface(FontFamily);
+            _typefaceFamily = FontFamily;
+            _metricsValid = false;
+        }
+        return _typeface;
+    }
+
     private void GetMetrics(out double cellWidth, out double lineHeight)
     {
-        var prototype = new FormattedText(
-            "M",
-            CultureInfo.InvariantCulture,
-            FlowDirection.LeftToRight,
-            new Typeface(FontFamily),
-            FontSize,
-            Brushes.White);
-        cellWidth = prototype.Width;
-        lineHeight = prototype.Height;
-        if (cellWidth <= 0 || lineHeight <= 0)
+        if (!_metricsValid)
         {
-            // Headless renderers may report empty bounds; fall back to nominal metrics.
-            cellWidth = FontSize * 0.6;
-            lineHeight = FontSize * 1.2;
+            var prototype = new FormattedText(
+                "M",
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                CurrentTypeface(),
+                FontSize,
+                Brushes.White);
+            _cellWidth = prototype.Width;
+            _lineHeight = prototype.Height;
+            if (_cellWidth <= 0 || _lineHeight <= 0)
+            {
+                // Headless renderers may report empty bounds; fall back to nominal metrics.
+                _cellWidth = FontSize * 0.6;
+                _lineHeight = FontSize * 1.2;
+            }
+            _metricsValid = true;
         }
+        cellWidth = _cellWidth;
+        lineHeight = _lineHeight;
     }
 }
 

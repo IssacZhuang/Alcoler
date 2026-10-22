@@ -1,5 +1,8 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace Alcoler.Adapters.Models;
@@ -9,7 +12,9 @@ public static class ModelOptionMapping
     private const int MaxSourceLength = 32_768;
     private const int MaxNodes = 4_096;
     private const int MaxDepth = 64;
+    private const int MaxCachedExpressions = 256;
     private static readonly HashSet<string> ProtectedKeys = ["model", "messages", "tools", "stream", "input"];
+    private static readonly ConcurrentDictionary<string, Node> ParsedExpressions = new(StringComparer.Ordinal);
 
     public static void Validate(string expression) => Parse(expression);
 
@@ -19,7 +24,10 @@ public static class ModelOptionMapping
             throw Error("reasoningLevel exceeds maximum length of 256", 0);
         var node = Parse(expression);
         var result = (JsonObject)EvaluateNode(node, reasoningLevel, maxOutputTokens)!;
-        if (result.ToJsonString().Length > 262_144)
+        var counter = new CharCountingBufferWriter();
+        using (var writer = new Utf8JsonWriter(counter))
+            result.WriteTo(writer);
+        if (counter.GetCharCount() > 262_144)
             throw Error("Mapping result exceeds maximum size of 262144 characters", 0);
         return result;
     }
@@ -45,9 +53,13 @@ public static class ModelOptionMapping
     {
         if (string.IsNullOrWhiteSpace(expression) || expression.Length > MaxSourceLength)
             throw Error("Expression must contain 1 to 32768 characters", 0);
+        if (ParsedExpressions.TryGetValue(expression, out var cached))
+            return cached;
         var node = new Parser(expression).Parse();
         CheckDepth(node, 0);
         CheckResult(node);
+        if (ParsedExpressions.Count < MaxCachedExpressions)
+            ParsedExpressions.TryAdd(expression, node);
         return node;
     }
 
@@ -150,6 +162,41 @@ public static class ModelOptionMapping
     }
 
     private static ArgumentException Error(string message, int offset) => new($"{message} at offset {offset}.");
+
+    /// <summary>
+    /// Counts UTF-16 characters of the UTF-8 stream without materializing the JSON text;
+    /// an incremental decoder keeps multi-byte sequences split across writer buffers exact.
+    /// </summary>
+    private sealed class CharCountingBufferWriter : IBufferWriter<byte>
+    {
+        private readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
+        private byte[] _buffer = new byte[256];
+        private int _charCount;
+
+        public void Advance(int count) => _charCount += _decoder.GetCharCount(_buffer.AsSpan(0, count), flush: false);
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            Ensure(sizeHint);
+            return _buffer;
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            Ensure(sizeHint);
+            return _buffer;
+        }
+
+        public int GetCharCount() => _charCount + _decoder.GetCharCount([], flush: true);
+
+        private void Ensure(int sizeHint)
+        {
+            if (sizeHint < 1)
+                sizeHint = 1;
+            if (_buffer.Length < sizeHint)
+                Array.Resize(ref _buffer, Math.Max(sizeHint, _buffer.Length * 2));
+        }
+    }
 
     private sealed record Node(string Kind, int Offset, JsonNode? Value = null, string? Operator = null, Node[]? Operands = null, string[]? Names = null)
     {

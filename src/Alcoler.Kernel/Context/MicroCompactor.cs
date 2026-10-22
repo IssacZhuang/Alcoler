@@ -21,12 +21,19 @@ public static class MicroCompactor
         IReadOnlyList<ConversationMessage> messages,
         DateTimeOffset lastActivityUtc,
         DateTimeOffset nowUtc,
-        int autoCompactThresholdTokens)
+        int autoCompactThresholdTokens) =>
+        Apply(messages, lastActivityUtc, nowUtc, autoCompactThresholdTokens, TokenEstimator.EstimateHistoryTokens(messages));
+
+    internal static MicrocompactResult Apply(
+        IReadOnlyList<ConversationMessage> messages,
+        DateTimeOffset lastActivityUtc,
+        DateTimeOffset nowUtc,
+        int autoCompactThresholdTokens,
+        int historyTokens)
     {
         var idle = nowUtc - lastActivityUtc;
         var triggered = idle > TimeSpan.FromMinutes(CompactPolicy.MicroCompactIdleMinutes)
-            || TokenEstimator.EstimateHistoryTokens(messages)
-                >= CompactPolicy.MicroCompactTriggerTokens(autoCompactThresholdTokens);
+            || historyTokens >= CompactPolicy.MicroCompactTriggerTokens(autoCompactThresholdTokens);
         if (!triggered)
             return new MicrocompactResult(messages, [], 0);
 
@@ -79,7 +86,7 @@ public static class MicroCompactor
             }
         }
 
-        var savedTokens = Math.Max(0, TokenEstimator.EstimateHistoryTokens(messages) - TokenEstimator.EstimateHistoryTokens(result));
+        var savedTokens = Math.Max(0, historyTokens - TokenEstimator.EstimateHistoryTokens(result));
         if (clearedParts.Count == 0 || savedTokens < CompactPolicy.MicroCompactMinSavingsTokens)
             return new MicrocompactResult(messages, [], 0);
 
@@ -89,9 +96,33 @@ public static class MicroCompactor
     private static bool IsClearable(ToolResultPart part, Dictionary<ToolCallId, string> toolNames) =>
         !part.IsError
         && !part.Content.Any(b => b is ToolResultMedia)
-        && string.Join("\n\n", part.Content.OfType<ToolResultText>().Select(block => block.Text).Where(text => text.Length > 0)) != ClearedContentText
+        && !MatchesClearedContent(part.Content)
         && toolNames.TryGetValue(part.ToolCallId, out var toolName)
         && EligibleToolNames.Contains(toolName);
+
+    private static bool MatchesClearedContent(IReadOnlyList<ToolResultBlock> content)
+    {
+        var target = ClearedContentText.AsSpan();
+        var targetIndex = 0;
+        var any = false;
+        foreach (var block in content)
+        {
+            if (block is not ToolResultText text || text.Text.Length == 0)
+                continue;
+            if (any)
+            {
+                if (!target[targetIndex..].StartsWith("\n\n", StringComparison.Ordinal))
+                    return false;
+                targetIndex += 2;
+            }
+            if (targetIndex + text.Text.Length > target.Length ||
+                !target.Slice(targetIndex, text.Text.Length).SequenceEqual(text.Text))
+                return false;
+            targetIndex += text.Text.Length;
+            any = true;
+        }
+        return any && targetIndex == target.Length;
+    }
 
     private static IReadOnlyList<List<ConversationMessage>> GroupByToolCallRounds(IReadOnlyList<ConversationMessage> messages)
     {

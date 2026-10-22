@@ -43,6 +43,25 @@ public interface ISessionStore
 
     ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken);
 
+    ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
+        string? workspaceRoot,
+        int limit,
+        SessionListKind kind,
+        CancellationToken cancellationToken) =>
+        kind == SessionListKind.Active
+            ? ListSessionsAsync(workspaceRoot, limit, cancellationToken)
+            : ValueTask.FromException<IReadOnlyList<SessionSummary>>(
+                new NotSupportedException("This session store does not support archived session listings."));
+
+    ValueTask SetSessionArchivedAsync(SessionId sessionId, bool archived, CancellationToken cancellationToken) =>
+        ValueTask.FromException(new NotSupportedException("This session store does not support archiving sessions."));
+
+    ValueTask<int> ArchiveSessionsUpdatedBeforeAsync(
+        DateTimeOffset cutoff,
+        IReadOnlyCollection<SessionId> excludedSessionIds,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromException<int>(new NotSupportedException("This session store does not support automatic session archiving."));
+
     ValueTask DeleteSessionAsync(SessionId sessionId, CancellationToken cancellationToken);
 
     ValueTask AppendMessagesAsync(SessionId sessionId, IReadOnlyList<ConversationMessage> messages, long startingSequence, CancellationToken cancellationToken);

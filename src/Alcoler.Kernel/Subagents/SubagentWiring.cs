@@ -220,7 +220,7 @@ public static class SubagentWiring
                 EndedAt: null),
             StopChildAsync);
 
-        void WriteTerminalArtifacts(SubagentState terminalState, string output)
+        void WriteTerminalArtifacts(SubagentState terminalState, string output, int toolUses)
         {
             var endedAt = terminalState.EndedAt ?? options.Clock.GetUtcNow();
             switch (terminalState.Status)
@@ -230,7 +230,7 @@ public static class SubagentWiring
                         id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
                         description, request.Prompt, root, output,
                         Math.Max(0, (int)Math.Round((endedAt - terminalState.StartedAt).TotalMilliseconds)),
-                        ReadToolUseCount(childRuntime, handle.Id),
+                        toolUses,
                         terminalState.StartedAt, endedAt);
                     break;
                 case SubagentStatus.Failed:
@@ -276,8 +276,9 @@ public static class SubagentWiring
             };
             try
             {
-                var output = await ReadFinalOutputAsync(childRuntime, handle.Id, previousAssistantMessages).ConfigureAwait(false)
-                    ?? string.Empty;
+                var rows = ReadRows(childRuntime, handle.Id);
+                var output = ReadFinalOutput(rows, previousAssistantMessages) ?? string.Empty;
+                var toolUses = CountToolUses(rows);
                 if (terminal.Status == SubagentStatus.Failed && child.LastTurnError is { Length: > 0 } error)
                     output = string.IsNullOrWhiteSpace(output) ? error : $"{output}\n\n{error}";
                 finalOutput = output;
@@ -288,12 +289,12 @@ public static class SubagentWiring
                     Status = terminal.Status,
                     Result = terminal.Status == SubagentStatus.Completed ? output : null,
                     Error = terminal.Status == SubagentStatus.Failed ? output : null,
-                    ToolUses = ReadToolUseCount(childRuntime, handle.Id),
+                    ToolUses = toolUses,
                     EndedAt = terminal.EndedAt,
                 });
                 try
                 {
-                    WriteTerminalArtifacts(terminal, output);
+                    WriteTerminalArtifacts(terminal, output, toolUses);
                 }
                 catch (Exception ex)
                 {
@@ -305,7 +306,7 @@ public static class SubagentWiring
                 {
                     await NotifyParentOfBackgroundCompletionAsync(() => runtime, tasks)(runRequest,
                         new SubagentResult(terminal, output,
-                            ReadToolUseCount(childRuntime, handle.Id) - previousToolUses)).ConfigureAwait(false);
+                            toolUses - previousToolUses)).ConfigureAwait(false);
                 }
             }
             catch
@@ -332,9 +333,9 @@ public static class SubagentWiring
                 {
                     var previousState = state;
                     var previousRequest = runRequest;
-                    using var projection = childRuntime.Subscribe(handle.Id);
-                    previousAssistantMessages = projection.Snapshot().Rows.OfType<AssistantMessageRow>().Count();
-                    previousToolUses = ReadToolUseCount(childRuntime, handle.Id);
+                    var rows = ReadRows(childRuntime, handle.Id);
+                    previousAssistantMessages = CountAssistantMessages(rows);
+                    previousToolUses = CountToolUses(rows);
                     runRequest = request with
                     {
                         Prompt = prompt,
@@ -393,7 +394,7 @@ public static class SubagentWiring
             (prompt, token) => SubmitPromptAsync(childRuntime, handle.Id, prompt, token),
             finished.Task,
             () => Task.FromResult(finalOutput),
-            () => Task.FromResult(ReadToolUseCount(childRuntime, handle.Id)),
+            () => Task.FromResult(CountToolUses(ReadRows(childRuntime, handle.Id))),
             StopChildAsync,
             OutputFile: outputFile);
     }
@@ -412,19 +413,57 @@ public static class SubagentWiring
         }
     }
 
-    private static Task<string?> ReadFinalOutputAsync(AgentRuntime runtime, SessionId sessionId, int skipMessages)
+    private static IReadOnlyList<ConversationRow> ReadRows(AgentRuntime runtime, SessionId sessionId)
     {
         using var projection = runtime.Subscribe(sessionId);
-        var snapshot = projection.Snapshot();
-        var last = snapshot.Rows.OfType<AssistantMessageRow>().Skip(skipMessages).LastOrDefault();
-        return Task.FromResult(last is null
-            ? null
-            : string.Join("\n\n", last.Parts.OfType<Contracts.Conversation.TextPart>().Select(p => p.Text)));
+        return projection.Snapshot().Rows;
     }
 
-    private static int ReadToolUseCount(AgentRuntime runtime, SessionId sessionId)
+    private static string? ReadFinalOutput(IReadOnlyList<ConversationRow> rows, int skipMessages)
     {
-        using var projection = runtime.Subscribe(sessionId);
-        return projection.Snapshot().Rows.OfType<ToolCallRow>().Count();
+        AssistantMessageRow? last = null;
+        var assistantIndex = 0;
+        foreach (var row in rows)
+        {
+            if (row is AssistantMessageRow assistant && assistantIndex++ >= skipMessages)
+                last = assistant;
+        }
+        if (last is null)
+            return null;
+
+        var builder = new System.Text.StringBuilder();
+        var first = true;
+        foreach (var part in last.Parts)
+        {
+            if (part is not Contracts.Conversation.TextPart text)
+                continue;
+            if (!first)
+                builder.Append("\n\n");
+            first = false;
+            builder.Append(text.Text);
+        }
+        return builder.ToString();
+    }
+
+    private static int CountAssistantMessages(IReadOnlyList<ConversationRow> rows)
+    {
+        var count = 0;
+        foreach (var row in rows)
+        {
+            if (row is AssistantMessageRow)
+                count++;
+        }
+        return count;
+    }
+
+    private static int CountToolUses(IReadOnlyList<ConversationRow> rows)
+    {
+        var count = 0;
+        foreach (var row in rows)
+        {
+            if (row is ToolCallRow)
+                count++;
+        }
+        return count;
     }
 }

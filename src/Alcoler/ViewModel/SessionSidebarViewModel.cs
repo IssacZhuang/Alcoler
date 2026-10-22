@@ -16,12 +16,18 @@ public enum SessionActivityIndicator
 
 public sealed partial class SessionSummaryViewModel : ObservableObject
 {
-    public SessionSummaryViewModel(SessionId id, string title, string workspaceRoot, DateTimeOffset updatedAt)
+    public SessionSummaryViewModel(
+        SessionId id,
+        string title,
+        string workspaceRoot,
+        DateTimeOffset updatedAt,
+        bool isArchived = false)
     {
         Id = id;
         _title = title;
         WorkspaceRoot = workspaceRoot;
         UpdatedAt = updatedAt;
+        IsArchived = isArchived;
     }
 
     public SessionId Id { get; }
@@ -33,6 +39,8 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
     public string WorkspaceRoot { get; }
 
     public DateTimeOffset UpdatedAt { get; }
+
+    public bool IsArchived { get; }
 
     public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? "Untitled session" : Title;
 
@@ -161,6 +169,7 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
 {
     private readonly Func<Task> _refreshSource;
     private readonly Dictionary<SessionId, SessionActivityIndicator> _indicators = [];
+    private readonly Dictionary<SessionId, SessionSummaryViewModel> _sessionsById = [];
 
     public SessionSidebarViewModel(Func<Task> refreshSource) => _refreshSource = refreshSource;
 
@@ -171,6 +180,18 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
 
     [ObservableProperty]
     private SessionId? _activeSessionId;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HeaderTitle))]
+    [NotifyPropertyChangedFor(nameof(EmptyText))]
+    [NotifyPropertyChangedFor(nameof(ArchivedToggleToolTip))]
+    private bool _isArchivedView;
+
+    public string HeaderTitle => IsArchivedView ? "Archived" : "Projects";
+
+    public string EmptyText => IsArchivedView ? "No archived sessions" : "No sessions yet";
+
+    public string ArchivedToggleToolTip => IsArchivedView ? "Show active sessions" : "Show archived sessions";
 
     public async Task RefreshAsync()
     {
@@ -203,6 +224,7 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
             g => (g.IsExpanded, VisibleCount: g.VisibleSessions.Count),
             StringComparer.OrdinalIgnoreCase);
         Groups.Clear();
+        _sessionsById.Clear();
         foreach (var group in summaries
                      .GroupBy(s => s.WorkspaceRoot, StringComparer.OrdinalIgnoreCase)
                      .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
@@ -222,6 +244,7 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
                     _indicators.Remove(session.Id);
                 }
                 session.Indicator = _indicators.GetValueOrDefault(session.Id);
+                _sessionsById[session.Id] = session;
                 groupVm.AddSession(session);
             }
             groupVm.SetVisibleSessionCount(visibleCount);
@@ -231,16 +254,14 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
 
     public void ApplyTitle(SessionId sessionId, string title)
     {
-        foreach (var session in Groups.SelectMany(g => g.Sessions).Where(s => s.Id == sessionId))
-        {
+        if (_sessionsById.TryGetValue(sessionId, out var session))
             session.Title = title;
-        }
     }
 
     public void SetActive(SessionId? sessionId)
     {
         ActiveSessionId = sessionId;
-        foreach (var session in Groups.SelectMany(g => g.Sessions))
+        foreach (var session in _sessionsById.Values)
         {
             session.IsActive = session.Id == sessionId;
             if (session.IsActive && session.Indicator == SessionActivityIndicator.Completed)
@@ -288,9 +309,7 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
         {
             _indicators[sessionId] = indicator;
         }
-        foreach (var session in Groups.SelectMany(g => g.Sessions).Where(s => s.Id == sessionId))
-        {
+        if (_sessionsById.TryGetValue(sessionId, out var session))
             session.Indicator = indicator;
-        }
     }
 }

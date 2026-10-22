@@ -17,10 +17,28 @@ public sealed class ProviderUsageViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private ProviderUsageSnapshot? _snapshot;
     private IReadOnlyList<ProviderUsageTierViewModel> _quotaTiers = [];
+    private ProviderUsageSnapshot? _notifiedSnapshot;
+    private IReadOnlyList<ProviderUsageTierViewModel> _notifiedQuotaTiers = [];
+    private bool _notifiedIsSupported;
+    private bool _notifiedIsVisible;
+    private bool _notifiedIsLoading;
+    private bool _notifiedCanRefresh;
+    private bool _notifiedHasError;
+    private bool _notifiedHasData;
+    private bool _notifiedIsEmpty;
+    private bool _notifiedIsBalance;
+    private bool _notifiedShowBalance;
+    private bool _notifiedShowQuota;
+    private int _notifiedQuotaColumns;
+    private string? _notifiedBalanceText;
+    private string? _notifiedBalanceDetail;
+    private bool _notifiedHasBalanceDetail;
+    private string? _notifiedErrorMessage;
 
     public ProviderUsageViewModel(IProviderUsageService? service = null)
     {
         _service = service ?? new ProviderUsageService();
+        _notifiedQuotaTiers = _quotaTiers;
         RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => CanRefresh);
     }
 
@@ -175,23 +193,96 @@ public sealed class ProviderUsageViewModel : ObservableObject, IDisposable
 
     private void NotifyStateChanged()
     {
-        OnPropertyChanged(nameof(Snapshot));
-        OnPropertyChanged(nameof(IsSupported));
-        OnPropertyChanged(nameof(IsVisible));
-        OnPropertyChanged(nameof(IsLoading));
-        OnPropertyChanged(nameof(CanRefresh));
-        OnPropertyChanged(nameof(HasError));
-        OnPropertyChanged(nameof(HasData));
-        OnPropertyChanged(nameof(IsEmpty));
-        OnPropertyChanged(nameof(IsBalance));
-        OnPropertyChanged(nameof(ShowBalance));
-        OnPropertyChanged(nameof(ShowQuota));
-        OnPropertyChanged(nameof(QuotaTiers));
-        OnPropertyChanged(nameof(QuotaColumns));
-        OnPropertyChanged(nameof(BalanceText));
-        OnPropertyChanged(nameof(BalanceDetail));
-        OnPropertyChanged(nameof(HasBalanceDetail));
-        OnPropertyChanged(nameof(ErrorMessage));
+        if (!ReferenceEquals(_notifiedSnapshot, _snapshot))
+        {
+            _notifiedSnapshot = _snapshot;
+            OnPropertyChanged(nameof(Snapshot));
+        }
+        if (_notifiedIsSupported != IsSupported)
+        {
+            _notifiedIsSupported = IsSupported;
+            OnPropertyChanged(nameof(IsSupported));
+        }
+        if (_notifiedIsVisible != IsVisible)
+        {
+            _notifiedIsVisible = IsVisible;
+            OnPropertyChanged(nameof(IsVisible));
+        }
+        if (_notifiedIsLoading != IsLoading)
+        {
+            _notifiedIsLoading = IsLoading;
+            OnPropertyChanged(nameof(IsLoading));
+        }
+        if (_notifiedCanRefresh != CanRefresh)
+        {
+            _notifiedCanRefresh = CanRefresh;
+            OnPropertyChanged(nameof(CanRefresh));
+        }
+        if (_notifiedHasError != HasError)
+        {
+            _notifiedHasError = HasError;
+            OnPropertyChanged(nameof(HasError));
+        }
+        if (_notifiedHasData != HasData)
+        {
+            _notifiedHasData = HasData;
+            OnPropertyChanged(nameof(HasData));
+        }
+        if (_notifiedIsEmpty != IsEmpty)
+        {
+            _notifiedIsEmpty = IsEmpty;
+            OnPropertyChanged(nameof(IsEmpty));
+        }
+        if (_notifiedIsBalance != IsBalance)
+        {
+            _notifiedIsBalance = IsBalance;
+            OnPropertyChanged(nameof(IsBalance));
+        }
+        if (_notifiedShowBalance != ShowBalance)
+        {
+            _notifiedShowBalance = ShowBalance;
+            OnPropertyChanged(nameof(ShowBalance));
+        }
+        if (_notifiedShowQuota != ShowQuota)
+        {
+            _notifiedShowQuota = ShowQuota;
+            OnPropertyChanged(nameof(ShowQuota));
+        }
+        if (!ReferenceEquals(_notifiedQuotaTiers, _quotaTiers))
+        {
+            _notifiedQuotaTiers = _quotaTiers;
+            OnPropertyChanged(nameof(QuotaTiers));
+        }
+        var quotaColumns = QuotaColumns;
+        if (_notifiedQuotaColumns != quotaColumns)
+        {
+            _notifiedQuotaColumns = quotaColumns;
+            OnPropertyChanged(nameof(QuotaColumns));
+        }
+        var balanceText = BalanceText;
+        if (!string.Equals(_notifiedBalanceText, balanceText, StringComparison.Ordinal))
+        {
+            _notifiedBalanceText = balanceText;
+            OnPropertyChanged(nameof(BalanceText));
+        }
+        var balanceDetail = BalanceDetail;
+        if (!string.Equals(_notifiedBalanceDetail, balanceDetail, StringComparison.Ordinal))
+        {
+            _notifiedBalanceDetail = balanceDetail;
+            OnPropertyChanged(nameof(BalanceDetail));
+        }
+        var hasBalanceDetail = balanceDetail.Length > 0;
+        if (_notifiedHasBalanceDetail != hasBalanceDetail)
+        {
+            _notifiedHasBalanceDetail = hasBalanceDetail;
+            OnPropertyChanged(nameof(HasBalanceDetail));
+        }
+        var errorMessage = ErrorMessage;
+        if (!string.Equals(_notifiedErrorMessage, errorMessage, StringComparison.Ordinal))
+        {
+            _notifiedErrorMessage = errorMessage;
+            OnPropertyChanged(nameof(ErrorMessage));
+        }
         RefreshCommand.NotifyCanExecuteChanged();
     }
 

@@ -29,12 +29,21 @@ public sealed record MediaPayload(string MimeType, string Base64Data, string? Fi
 public sealed record AssembledContext(
     ModelRequest Request,
     int PrefixMessageCount,
-    IReadOnlyList<ContextUsageCategory> Breakdown);
+    IReadOnlyList<ContextUsageCategory> Breakdown)
+{
+    internal int EstimatedRequestTokens { get; init; }
+}
 
 public static class ContextBuilder
 {
-    public static AssembledContext Assemble(ContextAssemblyInput input)
+    public static AssembledContext Assemble(ContextAssemblyInput input) =>
+        AssembleCore(input, out _);
+
+    private static AssembledContext AssembleCore(
+        ContextAssemblyInput input, out int requestTokens)
     {
+        using var meter = new TokenEstimator.JsonLengthMeter();
+        long totalTokens = 0;
         var ephemeral = new CacheControl();
         var messages = new List<ModelInputMessage>();
 
@@ -47,6 +56,8 @@ public static class ContextBuilder
             // The dynamic system block carries its own left boundary, mirroring the reference layout.
             messages.Add(new ModelInputMessage(MessageRole.System, [new InputTextBlock("\n\n" + input.SystemDynamic)], ephemeral));
         }
+        foreach (var message in messages)
+            totalTokens += meter.MeasureMessage(message).Tokens;
 
         var breakdown = new List<ContextUsageCategory>();
         AddCategory(ContextUsageSources.SystemPrompt,
@@ -64,29 +75,44 @@ public static class ContextBuilder
             metaSections.Add((contextPrefix, false));
         foreach (var (body, isSkills) in metaSections)
         {
-            messages.Add(new ModelInputMessage(MessageRole.User, [new InputTextBlock(body)]));
+            var metaMessage = new ModelInputMessage(MessageRole.User, [new InputTextBlock(body)]);
+            messages.Add(metaMessage);
+            totalTokens += meter.MeasureMessage(metaMessage).Tokens;
             AddCategory(isSkills ? ContextUsageSources.Skills : ContextUsageSources.MetaUserContext, body.Length);
         }
 
         if (!string.IsNullOrEmpty(input.ToolPrompt))
         {
-            messages.Add(new ModelInputMessage(MessageRole.System, [new InputTextBlock(input.ToolPrompt)]));
+            var toolPromptMessage = new ModelInputMessage(MessageRole.System, [new InputTextBlock(input.ToolPrompt)]);
+            messages.Add(toolPromptMessage);
+            totalTokens += meter.MeasureMessage(toolPromptMessage).Tokens;
             AddCategory(ContextUsageSources.ToolPrompt, input.ToolPrompt.Length);
         }
         var prefixCount = messages.Count;
 
         foreach (var tools in input.Tools.GroupBy(tool => tool.Source))
         {
+            long characters = 0;
+            foreach (var tool in tools)
+            {
+                var measured = meter.MeasureTool(tool);
+                characters += measured.Characters;
+                totalTokens += measured.Tokens;
+            }
             AddCategory(tools.Key == ToolSource.Mcp ? ContextUsageSources.McpToolSchemas : ContextUsageSources.SystemToolSchemas,
-                tools.Sum(tool => (long)TokenEstimator.SerializeTool(tool).Length));
+                characters);
         }
 
         var lastNonSystemIndex = -1;
+        long historyCharacters = 0;
         foreach (var message in ProjectHistory(input.History, input.UseMidConversationSystem))
         {
             foreach (var projected in Project(message, input.Media, input.InlineToolResultImages))
             {
                 messages.Add(projected);
+                var measured = meter.MeasureMessage(projected);
+                historyCharacters += measured.Characters;
+                totalTokens += measured.Tokens;
                 if (projected.Role != MessageRole.System)
                     lastNonSystemIndex = messages.Count - 1;
             }
@@ -95,9 +121,12 @@ public static class ContextBuilder
         if (lastNonSystemIndex >= 0)
             messages[lastNonSystemIndex] = messages[lastNonSystemIndex] with { CacheControl = new CacheControl() };
 
-        AddCategory(ContextUsageSources.Messages,
-            messages.Skip(prefixCount).Sum(message => (long)TokenEstimator.SerializeMessage(message).Length));
-        return new AssembledContext(new ModelRequest(messages, input.Tools, input.Options), prefixCount, breakdown);
+        AddCategory(ContextUsageSources.Messages, historyCharacters);
+        requestTokens = (int)Math.Min(int.MaxValue, totalTokens);
+        return new AssembledContext(new ModelRequest(messages, input.Tools, input.Options), prefixCount, breakdown)
+        {
+            EstimatedRequestTokens = requestTokens,
+        };
 
         void AddCategory(string source, long characters)
         {
@@ -109,44 +138,65 @@ public static class ContextBuilder
     private static IReadOnlyList<ConversationMessage> ProjectHistory(
         IReadOnlyList<ConversationMessage> history, bool useMidConversationSystem)
     {
-        var reordered = new List<ConversationMessage>();
-        var pending = new List<ConversationMessage>();
-        for (var index = history.Count - 1; index >= 0; index--)
+        var hasRuntimeReminder = false;
+        var hasAttachmentLike = false;
+        foreach (var message in history)
         {
-            var message = history[index];
+            if (!IsRuntimeReminder(message))
+                continue;
+            hasRuntimeReminder = true;
             if (IsAttachmentLike(message))
             {
-                pending.Add(message);
-                continue;
+                hasAttachmentLike = true;
+                break;
             }
-            if ((message.Presentation is not null || message.Role is MessageRole.Assistant or MessageRole.System || HasToolResults(message)) && pending.Count > 0)
-            {
-                reordered.AddRange(pending);
-                pending.Clear();
-            }
-            reordered.Add(message);
         }
-        reordered.AddRange(pending);
-        reordered.Reverse();
+        if (!useMidConversationSystem && !hasRuntimeReminder)
+            return history;
 
-        var projected = new List<ConversationMessage>();
-        pending.Clear();
-        var systems = new HashSet<ConversationMessage>();
+        IReadOnlyList<ConversationMessage> reordered = history;
+        if (hasAttachmentLike)
+        {
+            var attachments = new List<ConversationMessage>();
+            var ordered = new List<ConversationMessage>(history.Count);
+            for (var index = history.Count - 1; index >= 0; index--)
+            {
+                var message = history[index];
+                if (IsAttachmentLike(message))
+                {
+                    attachments.Add(message);
+                    continue;
+                }
+                if ((message.Presentation is not null || message.Role is MessageRole.Assistant or MessageRole.System || HasToolResults(message)) && attachments.Count > 0)
+                {
+                    ordered.AddRange(attachments);
+                    attachments.Clear();
+                }
+                ordered.Add(message);
+            }
+            ordered.AddRange(attachments);
+            ordered.Reverse();
+            reordered = ordered;
+        }
+
+        var projected = new List<ConversationMessage>(reordered.Count);
+        var pending = new List<ConversationMessage>();
+        var systems = new List<ConversationMessage>();
         foreach (var message in reordered)
         {
             if (message.Presentation is not null ||
-                pending.Any(item => item.Presentation is not null) && message.Role == MessageRole.User && !IsRuntimeReminder(message))
-                FlushPending();
+                PendingHasPresentation(pending) && message.Role == MessageRole.User && !IsRuntimeReminder(message))
+                FlushPending(projected, pending, systems);
             if (useMidConversationSystem && IsMidConversationSource(message) && CanProjectReminder(message))
             {
                 pending.Add(message);
                 continue;
             }
             if (message.Role is MessageRole.Assistant or MessageRole.System)
-                FlushPending();
+                FlushPending(projected, pending, systems);
             projected.Add(message);
         }
-        FlushPending();
+        FlushPending(projected, pending, systems);
         for (var index = 0; index < projected.Count; index++)
         {
             var message = projected[index];
@@ -166,7 +216,10 @@ public static class ContextBuilder
             };
         }
 
-        var result = new List<ConversationMessage>();
+        if (!hasRuntimeReminder)
+            return projected;
+
+        var result = new List<ConversationMessage>(projected.Count);
         pending.Clear();
         foreach (var message in projected)
         {
@@ -185,27 +238,40 @@ public static class ContextBuilder
         }
         result.AddRange(pending);
         return result;
+    }
 
-        void FlushPending()
+    private static bool PendingHasPresentation(List<ConversationMessage> pending)
+    {
+        foreach (var message in pending)
         {
-            if (pending.Count == 0)
-                return;
-            if (projected.Count > 0 && projected[^1].Role == MessageRole.User)
-            {
-                var first = pending[0];
-                var system = first with
-                {
-                    Role = MessageRole.System,
-                    Parts = [new TextPart(first.Parts[0].Id, string.Join("\n\n", pending.Select(ReminderBody)))],
-                    Presentation = null,
-                };
-                projected.Add(system);
-                systems.Add(system);
-            }
-            else
-                projected.AddRange(pending);
-            pending.Clear();
+            if (message.Presentation is not null)
+                return true;
         }
+        return false;
+    }
+
+    private static void FlushPending(
+        List<ConversationMessage> projected,
+        List<ConversationMessage> pending,
+        List<ConversationMessage> systems)
+    {
+        if (pending.Count == 0)
+            return;
+        if (projected.Count > 0 && projected[^1].Role == MessageRole.User)
+        {
+            var first = pending[0];
+            var system = first with
+            {
+                Role = MessageRole.System,
+                Parts = [new TextPart(first.Parts[0].Id, string.Join("\n\n", pending.Select(ReminderBody)))],
+                Presentation = null,
+            };
+            projected.Add(system);
+            systems.Add(system);
+        }
+        else
+            projected.AddRange(pending);
+        pending.Clear();
     }
 
     private static bool HasToolResults(ConversationMessage message) =>

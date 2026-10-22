@@ -57,6 +57,14 @@ public sealed class MessageHistory
         }
     }
 
+    internal List<ConversationMessage> SnapshotList()
+    {
+        lock (_sync)
+        {
+            return [.. _messages];
+        }
+    }
+
     public void ReplaceAll(IReadOnlyList<ConversationMessage> messages)
     {
         lock (_sync)

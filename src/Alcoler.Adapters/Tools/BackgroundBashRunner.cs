@@ -12,6 +12,7 @@ internal sealed class BashProcessSession : IDisposable
 
     private readonly Process _process;
     private readonly object _sync = new();
+    private const int CwdTailChars = 32_768;
     private readonly StringBuilder _stdout = new();
     private readonly StringBuilder _stderr = new();
     private readonly StringBuilder _tail = new();
@@ -20,6 +21,8 @@ internal sealed class BashProcessSession : IDisposable
     private readonly Func<string, Stream> _openOutput;
     private Stream? _outputFile;
     private long _persistedBytes;
+    private int _stdoutBytes;
+    private int _stderrBytes;
     private int _tailBytes;
     private Task _stdoutPump = Task.CompletedTask;
     private Task _stderrPump = Task.CompletedTask;
@@ -168,69 +171,121 @@ internal sealed class BashProcessSession : IDisposable
     {
         var buffer = new byte[4096];
         var decoder = new BashOutputDecoder(legacyEncoding);
-        var pending = "";
-        while (true)
+        var capturePending = stdout && _captureCwd ? ArrayPool<char>.Shared.Rent(CwdTailChars + 16_384) : null;
+        var combined = capturePending is null ? ArrayPool<char>.Shared.Rent(8_192) : null;
+        var pendingCount = 0;
+        var deferredSurrogate = '\0';
+        try
         {
-            var count = await reader.ReadAsync(buffer).ConfigureAwait(false);
-            var text = decoder.Decode(buffer.AsSpan(0, count), flush: count == 0);
-            if (text.Length == 0)
+            while (true)
             {
+                var count = await reader.ReadAsync(buffer).ConfigureAwait(false);
+                var text = decoder.Decode(buffer.AsSpan(0, count), flush: count == 0);
+                if (text.Length == 0)
+                {
+                    if (count == 0)
+                        break;
+                    continue;
+                }
+                if (capturePending is not null)
+                {
+                    AppendCwdText(capturePending, ref pendingCount, text);
+                }
+                else
+                {
+                    // Retain a split surrogate until the next read so persisted UTF-8 stays intact.
+                    if (combined!.Length < text.Length + 1)
+                    {
+                        ArrayPool<char>.Shared.Return(combined);
+                        combined = ArrayPool<char>.Shared.Rent(text.Length + 1);
+                    }
+                    var offset = 0;
+                    if (deferredSurrogate != '\0')
+                    {
+                        combined[0] = deferredSurrogate;
+                        offset = 1;
+                        deferredSurrogate = '\0';
+                    }
+                    text.AsSpan().CopyTo(combined.AsSpan(offset));
+                    var length = offset + text.Length - (char.IsHighSurrogate(combined[offset + text.Length - 1]) ? 1 : 0);
+                    Append(combined.AsSpan(0, length), stdout);
+                    if (length < offset + text.Length)
+                        deferredSurrogate = combined[offset + text.Length - 1];
+                }
                 if (count == 0)
                     break;
-                continue;
             }
-            if (stdout && _captureCwd)
+            if (capturePending is not null)
             {
-                pending += text;
                 // A command may print the marker itself; only the final bounded tail is cwd plumbing.
-                var safeLength = Math.Max(0, pending.Length - 32_768);
-                if (safeLength > 0 && char.IsHighSurrogate(pending[safeLength - 1]))
-                    safeLength--;
-                Append(pending[..safeLength], stdout);
-                pending = pending[safeLength..];
+                var pending = capturePending.AsSpan(0, pendingCount);
+                var marker = pending.LastIndexOf(CwdMarker.AsSpan(), StringComparison.Ordinal);
+                if (marker >= 0)
+                {
+                    _capturedCwd = new string(pending[(marker + CwdMarker.Length)..]);
+                    pending = pending[..marker];
+                }
+                Append(pending, stdout);
             }
-            else
+            else if (deferredSurrogate != '\0')
             {
-                // Retain a split surrogate until the next read so persisted UTF-8 stays intact.
-                text = pending + text;
-                var length = text.Length - (char.IsHighSurrogate(text[^1]) ? 1 : 0);
-                Append(text[..length], stdout);
-                pending = text[length..];
+                var trailing = combined!;
+                trailing[0] = deferredSurrogate;
+                Append(trailing.AsSpan(0, 1), stdout);
             }
-            if (count == 0)
-                break;
         }
-        if (stdout && _captureCwd && pending.LastIndexOf(CwdMarker, StringComparison.Ordinal) is >= 0 and var marker)
+        finally
         {
-            _capturedCwd = pending[(marker + CwdMarker.Length)..];
-            pending = pending[..marker];
+            if (capturePending is not null)
+                ArrayPool<char>.Shared.Return(capturePending);
+            if (combined is not null)
+                ArrayPool<char>.Shared.Return(combined);
         }
-        Append(pending, stdout);
     }
 
-    private void Append(string text, bool stdout)
+    private void AppendCwdText(char[] pending, ref int pendingCount, string text)
     {
-        if (text.Length == 0)
+        text.AsSpan().CopyTo(pending.AsSpan(pendingCount));
+        pendingCount += text.Length;
+        if (pendingCount <= CwdTailChars)
+            return;
+        var safeLength = pendingCount - CwdTailChars;
+        if (char.IsHighSurrogate(pending[safeLength - 1]))
+            safeLength--;
+        if (safeLength <= 0)
+            return;
+        Append(pending.AsSpan(0, safeLength), stdout: true);
+        pending.AsSpan(safeLength, pendingCount - safeLength).CopyTo(pending);
+        pendingCount -= safeLength;
+    }
+
+    private void Append(ReadOnlySpan<char> text, bool stdout)
+    {
+        if (text.IsEmpty)
             return;
         lock (_sync)
         {
-            var bytes = Encoding.UTF8.GetBytes(text);
-            OutputBytes += bytes.Length;
+            var byteCount = Encoding.UTF8.GetByteCount(text);
+            OutputBytes += byteCount;
             var target = stdout ? _stdout : _stderr;
-            var remaining = InlineLimit - Encoding.UTF8.GetByteCount(target.ToString());
+            var remaining = InlineLimit - (stdout ? _stdoutBytes : _stderrBytes);
             var chars = 0;
             while (chars < text.Length)
             {
-                var size = char.IsSurrogatePair(text, chars) ? 2 : 1;
-                var cost = Encoding.UTF8.GetByteCount(text.AsSpan(chars, size));
+                var size = chars + 1 < text.Length && char.IsSurrogatePair(text[chars], text[chars + 1]) ? 2 : 1;
+                var cost = Encoding.UTF8.GetByteCount(text.Slice(chars, size));
                 if (cost > remaining)
                     break;
                 remaining -= cost;
                 chars += size;
             }
-            target.Append(text.AsSpan(0, chars));
+            target.Append(text[..chars]);
+            if (stdout)
+                _stdoutBytes = InlineLimit - remaining;
+            else
+                _stderrBytes = InlineLimit - remaining;
             _tail.Append(text);
-            _tailBytes += bytes.Length;
+            _tailBytes += byteCount;
             var removed = 0;
             while (_tailBytes > BashModelContent.MaxInlineOutputBytes && removed < _tail.Length)
             {
@@ -243,8 +298,20 @@ internal sealed class BashProcessSession : IDisposable
             {
                 try
                 {
-                    var writable = (int)Math.Min(bytes.Length, Math.Max(0, _persistedLimit - _persistedBytes));
-                    _outputFile.Write(bytes.AsSpan(0, writable));
+                    var writable = (int)Math.Min(byteCount, Math.Max(0, _persistedLimit - _persistedBytes));
+                    if (writable > 0)
+                    {
+                        var encoded = ArrayPool<byte>.Shared.Rent(byteCount);
+                        try
+                        {
+                            Encoding.UTF8.GetBytes(text, encoded);
+                            _outputFile.Write(encoded.AsSpan(0, writable));
+                        }
+                        finally
+                        {
+                            ArrayPool<byte>.Shared.Return(encoded);
+                        }
+                    }
                     _persistedBytes += writable;
                     _outputFile.Flush();
                 }
@@ -364,6 +431,7 @@ internal sealed class BashOutputDecoder(Encoding? legacyEncoding)
     private Encoding? _encoding = legacyEncoding is null ? Encoding.UTF8 : null;
     private Decoder? _decoder = legacyEncoding is null ? Encoding.UTF8.GetDecoder() : null;
     private byte[] _pending = [];
+    private char[] _chars = [];
 
     public string Decode(ReadOnlySpan<byte> bytes, bool flush = false)
     {
@@ -412,9 +480,11 @@ internal sealed class BashOutputDecoder(Encoding? legacyEncoding)
 
     private string Convert(ReadOnlySpan<byte> bytes, bool flush)
     {
-        var chars = new char[_encoding!.GetMaxCharCount(bytes.Length + 4)];
-        var written = _decoder!.GetChars(bytes, chars, flush);
-        return new string(chars, 0, written);
+        var required = _encoding!.GetMaxCharCount(bytes.Length + 4);
+        if (_chars.Length < required)
+            _chars = new char[required];
+        var written = _decoder!.GetChars(bytes, _chars, flush);
+        return new string(_chars, 0, written);
     }
 
     internal static Encoding? ResolveWindowsLegacyEncoding()

@@ -168,10 +168,12 @@ public partial class SettingsDialog : Window
         SkillsPanel.IsVisible = section == "skills";
         AppearancePanel.IsVisible = section == "appearance";
         RuntimePanel.IsVisible = section == "runtime";
+        SessionsPanel.IsVisible = section == "sessions";
         SectionTitle.Text = section switch
         {
             "runtime" => "Runtime",
             "appearance" => "Appearance",
+            "sessions" => "Sessions",
             "mcp" => "MCP servers",
             "skills" => "Skills",
             _ => "Model providers",

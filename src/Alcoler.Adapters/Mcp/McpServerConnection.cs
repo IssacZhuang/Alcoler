@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -159,10 +161,18 @@ internal sealed class McpServerConnection : IAsyncDisposable
         // The receive loop must only start after the entry is tracked, so an immediately failing
         // transport faults this request with the underlying cause instead of a generic closure.
         StartReceiveLoop();
-        var paramsElement = JsonSerializer.SerializeToElement(parameters, typeof(T), McpJsonContext.Default);
-        var payload = JsonSerializer.Serialize(
-            new JsonRpcRequest(McpProtocol.JsonRpcVersion, id, method, paramsElement),
-            McpJsonContext.Default.JsonRpcRequest);
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("jsonrpc", McpProtocol.JsonRpcVersion);
+            writer.WriteNumber("id", id);
+            writer.WriteString("method", method);
+            writer.WritePropertyName("params");
+            JsonSerializer.Serialize(writer, parameters, typeof(T), McpJsonContext.Default);
+            writer.WriteEndObject();
+        }
+        var payload = Encoding.UTF8.GetString(buffer.WrittenSpan);
         try
         {
             await _transport.SendAsync(payload, cancellationToken).ConfigureAwait(false);

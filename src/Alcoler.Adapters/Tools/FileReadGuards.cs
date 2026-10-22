@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using Alcoler.Contracts.Tools;
@@ -30,5 +31,18 @@ internal static class FileReadGuards
         return null;
     }
 
-    internal static string HashContent(string content) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
+    internal static string HashContent(string content)
+    {
+        var byteCount = Encoding.UTF8.GetByteCount(content);
+        var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(1, byteCount));
+        try
+        {
+            var written = Encoding.UTF8.GetBytes(content, buffer);
+            return Convert.ToHexString(SHA256.HashData(buffer.AsSpan(0, written)));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
 }

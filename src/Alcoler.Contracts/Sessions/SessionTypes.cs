@@ -13,6 +13,12 @@ public enum SessionTitleSource
     Custom,
 }
 
+public enum SessionListKind
+{
+    Active,
+    Archived,
+}
+
 public sealed record SessionOptions(
     string WorkspaceRoot,
     string? Title = null,

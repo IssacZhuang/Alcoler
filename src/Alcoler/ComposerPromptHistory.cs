@@ -14,6 +14,7 @@ public sealed class ComposerPromptHistory
     private readonly string _path;
     private readonly object _gate = new();
     private readonly Dictionary<string, List<string>> _entries = new(WorkspaceComparer);
+    private readonly Dictionary<string, string[]> _snapshots = new(WorkspaceComparer);
 
     public static string DefaultPath => Path.Combine(WorkbenchDataPaths.Root, "prompt-history.json");
 
@@ -28,7 +29,13 @@ public sealed class ComposerPromptHistory
         var key = NormalizeRoot(workspaceRoot);
         lock (_gate)
         {
-            return _entries.TryGetValue(key, out var entries) ? entries.ToArray() : [];
+            if (_snapshots.TryGetValue(key, out var snapshot))
+                return snapshot;
+            if (!_entries.TryGetValue(key, out var entries))
+                return [];
+            snapshot = entries.ToArray();
+            _snapshots[key] = snapshot;
+            return snapshot;
         }
     }
 
@@ -53,6 +60,7 @@ public sealed class ComposerPromptHistory
             {
                 return;
             }
+            _snapshots.Remove(key);
             Save();
         }
     }

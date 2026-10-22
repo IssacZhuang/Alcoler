@@ -30,7 +30,8 @@ public static class PermissionRuleMatcher
     private static bool ToolNameMatches(string ruleToolName, string toolName)
     {
         if (ruleToolName.EndsWith('*'))
-            return toolName.StartsWith(ruleToolName[..^1], StringComparison.OrdinalIgnoreCase);
+            return toolName.AsSpan().StartsWith(ruleToolName.AsSpan(0, ruleToolName.Length - 1),
+                StringComparison.OrdinalIgnoreCase);
 
         if (string.Equals(ruleToolName, toolName, StringComparison.OrdinalIgnoreCase))
             return true;
@@ -51,12 +52,12 @@ public static class PermissionRuleMatcher
             return false;
         if (ruleContent.EndsWith('*'))
         {
-            var prefix = ruleContent[..^1];
+            var prefix = ruleContent.AsSpan(0, ruleContent.Length - 1);
             // "prefix:*" is the wildcard convention: the ":" only separates the prefix from the "*".
             if (prefix.EndsWith(':'))
                 prefix = prefix[..^1];
-            return subject.StartsWith(prefix, StringComparison.Ordinal);
+            return subject.AsSpan().StartsWith(prefix, StringComparison.Ordinal);
         }
-        return string.Equals(subject, ruleContent, StringComparison.Ordinal);
+        return subject.AsSpan().SequenceEqual(ruleContent.AsSpan());
     }
 }

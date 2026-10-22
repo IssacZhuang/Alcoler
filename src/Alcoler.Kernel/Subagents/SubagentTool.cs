@@ -53,6 +53,12 @@ public sealed class SubagentTool : ITool, ISubagentTasks
         }
         """));
 
+    private static readonly (string Name, string Code)[] RequiredStringFields =
+    [
+        ("prompt", "missing_prompt"),
+        ("description", "missing_description"),
+    ];
+
     public ToolMetadata Metadata { get; } = new(
         ReadOnly: true,
         Destructive: false,
@@ -70,7 +76,7 @@ public sealed class SubagentTool : ITool, ISubagentTasks
                 "missing_prompt",
                 "'prompt' must be a non-empty string"));
 
-        foreach (var (name, code) in new[] { ("prompt", "missing_prompt"), ("description", "missing_description") })
+        foreach (var (name, code) in RequiredStringFields)
         {
             if (!input.TryGetProperty(name, out var value)
                 || value.ValueKind != JsonValueKind.String

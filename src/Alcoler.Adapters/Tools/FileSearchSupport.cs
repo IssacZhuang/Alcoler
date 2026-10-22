@@ -45,7 +45,7 @@ internal static class FileSearchSupport
     {
         var relative = Path.GetRelativePath(root, filePath);
         if (relative.Length > 0 && !relative.StartsWith("..", StringComparison.Ordinal) && !Path.IsPathRooted(relative))
-            return relative.Replace('\\', '/');
+            return relative.Contains('\\') ? relative.Replace('\\', '/') : relative;
         return filePath;
     }
 

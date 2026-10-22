@@ -160,6 +160,13 @@
             <TextBlock Text="Runtime" />
           </StackPanel>
         </RadioButton>
+        <RadioButton x:Name="SessionsTab" Classes="settingsTab" GroupName="SettingsSection"
+                     Tag="sessions" IsCheckedChanged="OnSectionChanged">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconArchive}" />
+            <TextBlock Text="Sessions" />
+          </StackPanel>
+        </RadioButton>
         <TextBlock Classes="description" Text="Agent capabilities" Margin="10,24,0,4" />
         <RadioButton x:Name="McpTab" Classes="settingsTab" GroupName="SettingsSection"
                      Tag="mcp" IsCheckedChanged="OnSectionChanged">
@@ -529,6 +536,37 @@
                     </ComboBox.ItemTemplate>
                   </ComboBox>
                 </Grid>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+
+          <ScrollViewer x:Name="SessionsPanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="24">
+              <TextBlock Classes="sectionTitle" Text="Sessions" />
+              <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
+                      CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16">
+                <StackPanel Spacing="20">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    <StackPanel Spacing="4" VerticalAlignment="Center">
+                      <TextBlock Classes="fieldLabel" Text="Auto-archive old sessions" />
+                      <TextBlock Classes="description"
+                                 Text="Hides idle sessions from the session list. Archived sessions stay available and can be restored." />
+                    </StackPanel>
+                    <ToggleSwitch Grid.Column="1" IsChecked="{Binding AutoArchiveSessions, Mode=TwoWay}"
+                                  VerticalAlignment="Center" AutomationProperties.Name="Auto-archive old sessions" />
+                  </Grid>
+                  <Grid ColumnDefinitions="*,224" ColumnSpacing="16">
+                    <StackPanel Spacing="4" VerticalAlignment="Center">
+                      <TextBlock Classes="fieldLabel" Text="Archive after (days)" />
+                      <TextBlock Classes="description"
+                                 Text="Sessions without activity for this many days become eligible for automatic archiving." />
+                    </StackPanel>
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding AutoArchiveDayOptions}"
+                              SelectedItem="{Binding AutoArchiveOlderThanDays, Mode=TwoWay}"
+                              IsEnabled="{Binding AutoArchiveSessions}" HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center" AutomationProperties.Name="Archive after days" />
+                  </Grid>
+                </StackPanel>
               </Border>
             </StackPanel>
           </ScrollViewer>

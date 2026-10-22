@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -12,7 +13,15 @@ public sealed class BrowserTool : ITool
     private const int MaxOutputLength = 24_000;
     private const int MaxScreenshotBytes = 20 * 1024 * 1024;
     private const int MaxMediaBytes = 32 * 1024 * 1024;
+    private static ReadOnlySpan<byte> PngSignature => [137, 80, 78, 71, 13, 10, 26, 10];
     private static readonly string[] TargetFields = ["selector", "ref", "locator", "x", "y"];
+    private static readonly string[] NavigateLegacyFields = ["url"];
+    private static readonly string[] ClickLegacyFields = ["selector"];
+    private static readonly string[] TypeLegacyFields = ["selector", "text", "submit"];
+    private static readonly string[] PressLegacyFields = ["key"];
+    private static readonly string[] ScrollLegacyFields = ["deltaX", "deltaY"];
+    private static readonly string[] WaitLegacyFields = ["milliseconds"];
+    private static readonly string[] NoLegacyFields = [];
     private static readonly IReadOnlyDictionary<string, ActionSpec> Actions = CreateActions();
     private static readonly IReadOnlyDictionary<string, JsonObject> Fields = CreateFields();
     private readonly IBrowserController _controller;
@@ -46,7 +55,7 @@ public sealed class BrowserTool : ITool
 
     public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken)
     {
-        ParseAction(input, out _, out var issue);
+        ParseAction(input, out _, out var issue, materialize: false);
         return ValueTask.FromResult(issue);
     }
 
@@ -73,7 +82,7 @@ public sealed class BrowserTool : ITool
             var fileName = screenshot ? "browser-screenshot.png" : result.MediaFileName;
             var maxBytes = screenshot ? MaxScreenshotBytes : MaxMediaBytes;
             if (bytes.Length == 0 || bytes.Length > maxBytes || !ValidMimeType(mime)
-                || (screenshot && !bytes.AsSpan().StartsWith(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+                || (screenshot && !bytes.AsSpan().StartsWith(PngSignature))
                 || (fileName is not null && !ValidFileName(fileName)))
             {
                 isError = true;
@@ -106,7 +115,7 @@ public sealed class BrowserTool : ITool
     internal static string Summarize(BrowserAction action, BrowserActionResult result)
     {
         var where = result.Title is null ? result.Url : $"{result.Url} — \"{Truncate(result.Title, 200)}\"";
-        var summary = result.Ok
+        var summary = new StringBuilder(Truncate(result.Ok
             ? action.Verb switch
             {
                 "screenshot" => $"Screenshot captured of {where}; PNG attached as an artifact.",
@@ -114,28 +123,28 @@ public sealed class BrowserTool : ITool
                 "navigate" => $"Navigated to {where}.",
                 _ => $"Browser {action.Verb} completed{(string.IsNullOrEmpty(where) ? "" : $" on {where}")}.",
             }
-            : $"Browser {action.Verb} failed: {Truncate(result.Error ?? "Unknown browser error.", 4000)}";
-        summary = Truncate(summary, 5000);
+            : $"Browser {action.Verb} failed: {Truncate(result.Error ?? "Unknown browser error.", 4000)}", 5000));
         if (result.TabId is not null)
         {
-            summary += $"\nTab: {Truncate(result.TabId, 128)}";
+            summary.Append("\nTab: ").Append(Truncate(result.TabId, 128));
         }
         if (result.SideEffectUncertain)
         {
-            summary += "\nSideEffectUncertain: true. The action may already have taken effect; inspect the current state before retrying.";
+            summary.Append("\nSideEffectUncertain: true. The action may already have taken effect; inspect the current state before retrying.");
         }
         if (!string.IsNullOrEmpty(result.Text))
         {
-            summary += "\n" + Truncate(result.Text, MaxOutputLength - summary.Length - 1);
+            summary.Append('\n').Append(Truncate(result.Text, MaxOutputLength - summary.Length - 1));
         }
         if (!string.IsNullOrEmpty(result.StructuredOutput) && summary.Length < MaxOutputLength - 20)
         {
-            summary += "\nStructured output:\n" + Truncate(result.StructuredOutput, MaxOutputLength - summary.Length - 20);
+            var limit = MaxOutputLength - summary.Length - 20;
+            summary.Append("\nStructured output:\n").Append(Truncate(result.StructuredOutput, limit));
         }
-        return Truncate(summary, MaxOutputLength);
+        return Truncate(summary.ToString(), MaxOutputLength);
     }
 
-    private static bool ParseAction(JsonElement input, out BrowserAction? action, out ToolInputIssue? issue)
+    private static bool ParseAction(JsonElement input, out BrowserAction? action, out ToolInputIssue? issue, bool materialize = true)
     {
         action = null;
         issue = null;
@@ -157,14 +166,15 @@ public sealed class BrowserTool : ITool
             issue = new("input_too_large", "Browser input must not exceed 256000 serialized characters.");
             return false;
         }
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var propertyIndex = 0;
         foreach (var property in input.EnumerateObject())
         {
-            if (!seen.Add(property.Name))
+            if (IsDuplicateProperty(input, propertyIndex, property.Name))
             {
                 issue = new("duplicate_property", $"Duplicate property '{Truncate(property.Name, 128)}'.");
                 return false;
             }
+            propertyIndex++;
             if (!spec.Allowed.Contains(property.Name))
             {
                 issue = new("unexpected_property", $"'{Truncate(property.Name, 128)}' is not allowed for '{verb}'.");
@@ -198,40 +208,60 @@ public sealed class BrowserTool : ITool
             return false;
         }
 
-        var legacyKeys = verb switch
+        var legacyFields = verb switch
         {
-            "navigate" => new[] { "url" },
-            "click" => ["selector"],
-            "type" => ["selector", "text", "submit"],
-            "screenshot" => [],
-            "press" => ["key"],
-            "scroll" => ["deltaX", "deltaY"],
-            "wait" => ["milliseconds"],
-            "read_text" => [],
+            "navigate" => NavigateLegacyFields,
+            "click" => ClickLegacyFields,
+            "type" => TypeLegacyFields,
+            "screenshot" => NoLegacyFields,
+            "press" => PressLegacyFields,
+            "scroll" => ScrollLegacyFields,
+            "wait" => WaitLegacyFields,
+            "read_text" => NoLegacyFields,
             _ => null,
         };
-        var legacy = legacyKeys is not null && input.EnumerateObject().All(p =>
-            p.Name is "action" or "tabId" || legacyKeys.Contains(p.Name));
+        var legacy = legacyFields is not null;
+        if (legacy)
+        {
+            foreach (var property in input.EnumerateObject())
+            {
+                if (property.Name is "action" or "tabId") continue;
+                if (System.Array.IndexOf(legacyFields!, property.Name) < 0) { legacy = false; break; }
+            }
+        }
+        if (!materialize) return true;
+        var tabId = input.TryGetProperty("tabId", out var tab) ? tab.GetString() : null;
         action = legacy ? verb switch
         {
-            "navigate" => new BrowserNavigateAction(String(input, "url")),
-            "click" => new BrowserClickAction(String(input, "selector")),
-            "type" => new BrowserTypeAction(String(input, "selector"), String(input, "text"), Boolean(input, "submit")),
-            "screenshot" => new BrowserScreenshotAction(),
-            "press" => new BrowserPressAction(String(input, "key")),
-            "scroll" => new BrowserScrollAction(Integer(input, "deltaX"), Integer(input, "deltaY")),
-            "wait" => new BrowserWaitAction(Integer(input, "milliseconds")),
-            "read_text" => new BrowserReadTextAction(),
+            "navigate" => new BrowserNavigateAction(String(input, "url")) { TabId = tabId },
+            "click" => new BrowserClickAction(String(input, "selector")) { TabId = tabId },
+            "type" => new BrowserTypeAction(String(input, "selector"), String(input, "text"), Boolean(input, "submit")) { TabId = tabId },
+            "screenshot" => new BrowserScreenshotAction { TabId = tabId },
+            "press" => new BrowserPressAction(String(input, "key")) { TabId = tabId },
+            "scroll" => new BrowserScrollAction(Integer(input, "deltaX"), Integer(input, "deltaY")) { TabId = tabId },
+            "wait" => new BrowserWaitAction(Integer(input, "milliseconds")) { TabId = tabId },
+            "read_text" => new BrowserReadTextAction { TabId = tabId },
             _ => throw new InvalidOperationException(),
-        } : new BrowserCommandAction(verb, input.Clone());
-        action = action with { TabId = input.TryGetProperty("tabId", out var tab) ? tab.GetString() : null };
+        } : new BrowserCommandAction(verb, input.Clone()) { TabId = tabId };
         return true;
+    }
+
+    private static bool IsDuplicateProperty(JsonElement input, int index, string name)
+    {
+        var current = 0;
+        foreach (var property in input.EnumerateObject())
+        {
+            if (current++ == index) return false;
+            if (string.Equals(property.Name, name, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     private static bool ValidateCombination(string verb, JsonElement input, out string? error)
     {
         error = null;
-        var hasTarget = TargetFields.Any(p => input.TryGetProperty(p, out _));
+        var hasTarget = false;
+        foreach (var field in TargetFields) if (input.TryGetProperty(field, out _)) { hasTarget = true; break; }
         if (verb == "drag")
         {
             var path = input.TryGetProperty("path", out _);
@@ -308,7 +338,9 @@ public sealed class BrowserTool : ITool
 
     private static bool ValidateTarget(JsonElement value, bool coordinates, bool required, out string? error)
     {
-        var count = new[] { "selector", "ref", "locator" }.Count(p => value.TryGetProperty(p, out _));
+        var count = (value.TryGetProperty("selector", out _) ? 1 : 0)
+            + (value.TryGetProperty("ref", out _) ? 1 : 0)
+            + (value.TryGetProperty("locator", out _) ? 1 : 0);
         var x = value.TryGetProperty("x", out _);
         var y = value.TryGetProperty("y", out _);
         var valid = (!x && !y || coordinates && x && y) && count + (x || y ? 1 : 0) <= 1
@@ -366,21 +398,33 @@ public sealed class BrowserTool : ITool
     {
         if (!BoundedString(value, 1, 128)) return false;
         var shortcut = value.GetString()!;
-        var parts = shortcut.Split('+');
-        var key = parts[^1];
-        var modifiers = parts[..^1];
-        if (key.Length == 0 && shortcut.EndsWith('+'))
+        var key = shortcut;
+        var start = 0;
+        for (var i = 0; i <= shortcut.Length; i++)
         {
-            key = "+";
+            if (i < shortcut.Length && shortcut[i] != '+') continue;
+            var segment = shortcut.AsSpan(start, i - start);
+            if (i == shortcut.Length)
+            {
+                key = segment.ToString();
+                if (key.Length == 0 && shortcut.Length > 0 && shortcut[^1] == '+') key = "+";
+                break;
+            }
+            if (!IsModifier(segment)) return false;
+            start = i + 1;
         }
-        if (modifiers.Any(m => m.ToLowerInvariant() is not ("control" or "ctrl" or "controlorcommand" or "shift" or "alt" or "meta" or "cmd" or "command")))
-            return false;
         return key.Length == 1 && !char.IsControl(key[0]) && !char.IsSurrogate(key[0])
             || key is "Enter" or "Return" or "Tab" or "Backspace" or "Delete" or "Del" or "Escape" or "Esc"
                 or "ArrowLeft" or "ArrowRight" or "ArrowUp" or "ArrowDown" or "Left" or "Right" or "Up" or "Down"
                 or "Home" or "End" or "PageUp" or "PageDown" or "Insert" or "Control" or "Alt" or "Shift" or "Meta" or "Space"
             || key.Length > 1 && key[0] == 'F' && int.TryParse(key.AsSpan(1), out var number) && number is >= 1 and <= 24;
     }
+
+    private static bool IsModifier(ReadOnlySpan<char> modifier) =>
+        modifier.Equals("control", StringComparison.OrdinalIgnoreCase) || modifier.Equals("ctrl", StringComparison.OrdinalIgnoreCase)
+        || modifier.Equals("controlorcommand", StringComparison.OrdinalIgnoreCase) || modifier.Equals("shift", StringComparison.OrdinalIgnoreCase)
+        || modifier.Equals("alt", StringComparison.OrdinalIgnoreCase) || modifier.Equals("meta", StringComparison.OrdinalIgnoreCase)
+        || modifier.Equals("cmd", StringComparison.OrdinalIgnoreCase) || modifier.Equals("command", StringComparison.OrdinalIgnoreCase);
 
     private static bool ValidId(JsonElement value) => BoundedString(value, 1, 128)
         && value.GetString()!.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.' or ':');
@@ -393,8 +437,16 @@ public sealed class BrowserTool : ITool
     private static bool ValidMimeType(string? value) => value is { Length: > 0 and <= 128 }
         && Regex.IsMatch(value, @"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+\-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+\-]*$", RegexOptions.CultureInvariant);
 
-    private static bool UniqueProperties(JsonElement value) => value.EnumerateObject().Select(p => p.Name).Distinct(StringComparer.Ordinal).Count()
-        == value.EnumerateObject().Count();
+    private static bool UniqueProperties(JsonElement value)
+    {
+        var index = 0;
+        foreach (var property in value.EnumerateObject())
+        {
+            if (IsDuplicateProperty(value, index, property.Name)) return false;
+            index++;
+        }
+        return true;
+    }
 
     private static bool BoundedString(JsonElement value, int min, int max) => value.ValueKind == JsonValueKind.String
         && value.GetString() is { } text && text.Length >= min && text.Length <= max
@@ -408,17 +460,55 @@ public sealed class BrowserTool : ITool
 
     private static bool OneOf(JsonElement value, params string[] values) => value.ValueKind == JsonValueKind.String && values.Contains(value.GetString());
 
-    private static bool ValidArray(JsonElement value, int min, int max, Func<JsonElement, bool> predicate, bool distinct = false) =>
-        value.ValueKind == JsonValueKind.Array && value.GetArrayLength() >= min && value.GetArrayLength() <= max
-        && value.EnumerateArray().All(predicate)
-        && (!distinct || value.EnumerateArray().Select(v => v.GetString()).Distinct(StringComparer.Ordinal).Count() == value.GetArrayLength());
+    private static bool ValidArray(JsonElement value, int min, int max, Func<JsonElement, bool> predicate, bool distinct = false)
+    {
+        if (value.ValueKind != JsonValueKind.Array) return false;
+        var length = value.GetArrayLength();
+        if (length < min || length > max) return false;
+        foreach (var item in value.EnumerateArray()) if (!predicate(item)) return false;
+        if (!distinct) return true;
+        var index = 0;
+        foreach (var item in value.EnumerateArray())
+        {
+            var current = 0;
+            foreach (var earlier in value.EnumerateArray())
+            {
+                if (current++ == index) break;
+                if (string.Equals(item.GetString(), earlier.GetString(), StringComparison.Ordinal)) return false;
+            }
+            index++;
+        }
+        return true;
+    }
 
     private static int JsonDepth(JsonElement value) => value.ValueKind switch
     {
-        JsonValueKind.Array => 1 + value.EnumerateArray().Select(JsonDepth).DefaultIfEmpty(0).Max(),
-        JsonValueKind.Object => 1 + value.EnumerateObject().Select(p => JsonDepth(p.Value)).DefaultIfEmpty(0).Max(),
+        JsonValueKind.Array => ArrayDepth(value),
+        JsonValueKind.Object => ObjectDepth(value),
         _ => 0,
     };
+
+    private static int ArrayDepth(JsonElement value)
+    {
+        var max = 0;
+        foreach (var item in value.EnumerateArray())
+        {
+            var depth = JsonDepth(item);
+            if (depth > max) max = depth;
+        }
+        return 1 + max;
+    }
+
+    private static int ObjectDepth(JsonElement value)
+    {
+        var max = 0;
+        foreach (var property in value.EnumerateObject())
+        {
+            var depth = JsonDepth(property.Value);
+            if (depth > max) max = depth;
+        }
+        return 1 + max;
+    }
 
     private static string? BoundStructuredOutput(string? value)
     {

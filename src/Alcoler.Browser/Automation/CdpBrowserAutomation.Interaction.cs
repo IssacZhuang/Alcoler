@@ -26,7 +26,7 @@ public sealed partial class CdpBrowserAutomation
             "get_attribute" => "function(name){return this.getAttribute(name);}",
             _ => "function(){return globalThis.__alcolerAutomation.inspect.call(this);}"
         };
-        object[] args = command == "get_attribute" ? [D(("value", RequiredString(input, "name")))] : [];
+        object[] args = command == "get_attribute" ? [D("value", RequiredString(input, "name"))] : [];
         return Structured(RemoteValue(await WithElementAsync(input, function, args, ct, true)));
     }
 
@@ -58,16 +58,16 @@ public sealed partial class CdpBrowserAutomation
             {
                 await PressAsync("Control+A", ct);
                 if (text.Length == 0) await PressAsync("Backspace", ct);
-                else { _sideEffect = true; await SendAsync("Input.insertText", D(("text", text)), ct); }
+                else { _sideEffect = true; await SendAsync("Input.insertText", D("text", text), ct); }
             }
             else
             {
                 var delay = Integer(input, "delayMs", 0, 0, 1000);
-                if (delay == 0) { _sideEffect = true; await SendAsync("Input.insertText", D(("text", text)), ct); }
+                if (delay == 0) { _sideEffect = true; await SendAsync("Input.insertText", D("text", text), ct); }
                 else foreach (var rune in text.EnumerateRunes())
                 {
                     _sideEffect = true;
-                    await SendAsync("Input.insertText", D(("text", rune.ToString())), ct);
+                    await SendAsync("Input.insertText", D("text", rune.ToString()), ct);
                     await Task.Delay(delay, ct);
                 }
             }
@@ -80,7 +80,7 @@ public sealed partial class CdpBrowserAutomation
             var values = input.TryGetProperty("values", out var v) && v.ValueKind == JsonValueKind.Array ? v : throw new ArgumentException("'values' must be an array of option values.");
             foreach (var value in values.EnumerateArray()) if (value.ValueKind != JsonValueKind.String) throw new ArgumentException("Option values must be strings.");
             _sideEffect = true;
-            var result = await WithElementAsync(input, "function(values){if(!(this instanceof HTMLSelectElement))throw Error('Element is not a select');if(!this.multiple && values.length>1)throw Error('Select does not allow multiple values');for(const value of values)if(!Array.from(this.options).some(o=>o.value===value&&!o.disabled))throw Error('Option missing or disabled: '+value);for(const o of this.options)o.selected=values.includes(o.value);this.dispatchEvent(new Event('input',{bubbles:true}));this.dispatchEvent(new Event('change',{bubbles:true}));return Array.from(this.selectedOptions).map(o=>o.value);}", [D(("value", values))], ct, true);
+            var result = await WithElementAsync(input, "function(values){if(!(this instanceof HTMLSelectElement))throw Error('Element is not a select');if(!this.multiple && values.length>1)throw Error('Select does not allow multiple values');for(const value of values)if(!Array.from(this.options).some(o=>o.value===value&&!o.disabled))throw Error('Option missing or disabled: '+value);for(const o of this.options)o.selected=values.includes(o.value);this.dispatchEvent(new Event('input',{bubbles:true}));this.dispatchEvent(new Event('change',{bubbles:true}));return Array.from(this.selectedOptions).map(o=>o.value);}", [D("value", values)], ct, true);
             return Structured(RemoteValue(result));
         }
         var force = Boolean(input, "force");
@@ -192,8 +192,8 @@ public sealed partial class CdpBrowserAutomation
         foreach (var (frame, owner) in ancestors.AsEnumerable().Reverse())
         {
             var context = await ContextAsync(owner.ParentId, ct);
-            var backendId = owner.BackendId ?? (await SendAsync("DOM.getFrameOwner", D(("frameId", frame)), ct, context.Session)).GetProperty("backendNodeId").GetInt32();
-            var resolved = await SendAsync("DOM.resolveNode", D(("backendNodeId", backendId), ("executionContextId", context.Id)), ct, context.Session);
+            var backendId = owner.BackendId ?? (await SendAsync("DOM.getFrameOwner", D("frameId", frame), ct, context.Session)).GetProperty("backendNodeId").GetInt32();
+            var resolved = await SendAsync("DOM.resolveNode", D("backendNodeId", backendId, "executionContextId", context.Id), ct, context.Session);
             var objectId = RequiredString(resolved.GetProperty("object"), "objectId");
             try
             {
@@ -213,12 +213,12 @@ public sealed partial class CdpBrowserAutomation
         {
             var context = await ContextAsync(owner.ParentId, ct);
             var offset = await FrameOffsetAsync(owner.ParentId, ct);
-            var backendId = owner.BackendId ?? (await SendAsync("DOM.getFrameOwner", D(("frameId", frame)), ct, context.Session)).GetProperty("backendNodeId").GetInt32();
-            var resolved = await SendAsync("DOM.resolveNode", D(("backendNodeId", backendId), ("executionContextId", context.Id)), ct, context.Session);
+            var backendId = owner.BackendId ?? (await SendAsync("DOM.getFrameOwner", D("frameId", frame), ct, context.Session)).GetProperty("backendNodeId").GetInt32();
+            var resolved = await SendAsync("DOM.resolveNode", D("backendNodeId", backendId, "executionContextId", context.Id), ct, context.Session);
             var objectId = RequiredString(resolved.GetProperty("object"), "objectId");
             try
             {
-                var hit = RemoteValue(await CallObjectAsync(context, objectId, "function(x,y){let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const next=hit.shadowRoot.elementFromPoint(x,y);if(!next||next===hit)break;hit=next;}return hit===this;}", [D(("value", point.X - offset.X)), D(("value", point.Y - offset.Y))], ct, true));
+                var hit = RemoteValue(await CallObjectAsync(context, objectId, "function(x,y){let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const next=hit.shadowRoot.elementFromPoint(x,y);if(!next||next===hit)break;hit=next;}return hit===this;}", [D("value", point.X - offset.X), D("value", point.Y - offset.Y)], ct, true));
                 if (!hit.GetBoolean()) return false;
             }
             finally { await ReleaseAsync(objectId, context.Session, ct); }
@@ -300,34 +300,49 @@ public sealed partial class CdpBrowserAutomation
 
     private async Task PressAsync(string shortcut, CancellationToken ct)
     {
-        var parts = shortcut.Split('+');
-        var key = parts[^1];
-        if (key.Length == 0 && shortcut.EndsWith('+')) key = "+";
+        var key = shortcut;
         var modifiers = 0;
         var held = new List<(string Key, string Code, int Vk, int Flag)>();
-        foreach (var modifier in parts[..^1])
+        var start = 0;
+        for (var i = 0; i <= shortcut.Length; i++)
         {
-            var m = modifier.ToLowerInvariant() switch
+            if (i < shortcut.Length && shortcut[i] != '+') continue;
+            var segment = shortcut.AsSpan(start, i - start);
+            if (i == shortcut.Length)
             {
-                "control" or "ctrl" or "controlorcommand" => ("Control", "ControlLeft", 17, 2),
-                "shift" => ("Shift", "ShiftLeft", 16, 8),
-                "alt" => ("Alt", "AltLeft", 18, 1),
-                "meta" or "cmd" or "command" => ("Meta", "MetaLeft", 91, 4),
-                _ => throw new ArgumentException($"Unknown keyboard modifier '{modifier}'.")
-            };
-            modifiers |= m.Item4;
-            held.Add(m);
+                key = segment.ToString();
+                if (key.Length == 0 && shortcut.Length > 0 && shortcut[^1] == '+') key = "+";
+                break;
+            }
+            var modifier = Modifier(segment);
+            modifiers |= modifier.Flag;
+            held.Add(modifier);
+            start = i + 1;
         }
         var (normalized, code, vk, text) = Key(key, modifiers);
         _sideEffect = true;
         foreach (var m in held) await KeyEventAsync("rawKeyDown", m.Key, m.Code, m.Vk, modifiers, null, ct);
         await KeyEventAsync(text is null ? "rawKeyDown" : "keyDown", normalized, code, vk, modifiers, text, ct);
         await KeyEventAsync("keyUp", normalized, code, vk, modifiers, null, ct);
-        foreach (var m in held.AsEnumerable().Reverse())
+        for (var i = held.Count - 1; i >= 0; i--)
         {
+            var m = held[i];
             modifiers &= ~m.Flag;
             await KeyEventAsync("keyUp", m.Key, m.Code, m.Vk, modifiers, null, ct);
         }
+    }
+
+    private static (string Key, string Code, int Vk, int Flag) Modifier(ReadOnlySpan<char> modifier)
+    {
+        if (modifier.Equals("control", StringComparison.OrdinalIgnoreCase) || modifier.Equals("ctrl", StringComparison.OrdinalIgnoreCase)
+            || modifier.Equals("controlorcommand", StringComparison.OrdinalIgnoreCase))
+            return ("Control", "ControlLeft", 17, 2);
+        if (modifier.Equals("shift", StringComparison.OrdinalIgnoreCase)) return ("Shift", "ShiftLeft", 16, 8);
+        if (modifier.Equals("alt", StringComparison.OrdinalIgnoreCase)) return ("Alt", "AltLeft", 18, 1);
+        if (modifier.Equals("meta", StringComparison.OrdinalIgnoreCase) || modifier.Equals("cmd", StringComparison.OrdinalIgnoreCase)
+            || modifier.Equals("command", StringComparison.OrdinalIgnoreCase))
+            return ("Meta", "MetaLeft", 91, 4);
+        throw new ArgumentException($"Unknown keyboard modifier '{modifier.ToString()}'.");
     }
 
     private Task<JsonElement> KeyEventAsync(string type, string key, string code, int vk, int modifiers, string? text, CancellationToken ct)

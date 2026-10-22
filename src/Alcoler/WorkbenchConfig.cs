@@ -68,7 +68,9 @@ public sealed record WorkbenchConfig(
     string? BraveApiKey = null,
     WorkbenchComposerConfig? Composer = null,
     ShellEnvironment? IntegratedTerminalShell = null,
-    IReadOnlyList<string>? DisabledSkillPaths = null)
+    IReadOnlyList<string>? DisabledSkillPaths = null,
+    bool AutoArchiveSessions = false,
+    int AutoArchiveOlderThanDays = 7)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -89,7 +91,11 @@ public sealed record WorkbenchConfig(
         {
             return new WorkbenchConfig([]);
         }
-        return string.IsNullOrWhiteSpace(parsed.Theme) ? parsed with { Theme = "dark" } : parsed;
+        return parsed with
+        {
+            Theme = string.IsNullOrWhiteSpace(parsed.Theme) ? "dark" : parsed.Theme,
+            AutoArchiveOlderThanDays = Math.Clamp(parsed.AutoArchiveOlderThanDays, 1, 365),
+        };
     }
 
     public void Save(string? path = null)

@@ -33,20 +33,19 @@ public sealed class ProviderUsageService : IProviderUsageService
     {
         var adapterId = ProviderUsageDetection.DetectAdapter(baseUrl);
         var kind = adapterId is { } adapter ? ProviderUsageDetection.GetKind(adapter) : (ProviderUsageKind?)null;
-        ProviderUsageSnapshot Failure(ProviderUsageErrorCode code, string message, bool credentialValid = false) =>
-            new(providerId, adapterId, kind, credentialValid, [], DateTimeOffset.UtcNow, new(code, message));
 
         if (adapterId is not { } id)
         {
-            return Failure(ProviderUsageErrorCode.Unsupported, "Usage is not supported for this provider.");
+            return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.Unsupported, "Usage is not supported for this provider.");
         }
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            return Failure(ProviderUsageErrorCode.MissingApiKey, "An API key is required.");
+            return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.MissingApiKey, "An API key is required.");
         }
-        if (apiKey.Any(character => char.IsControl(character)))
+        for (var i = 0; i < apiKey.Length; i++)
         {
-            return Failure(ProviderUsageErrorCode.AuthFailed, "The API key is not valid.");
+            if (char.IsControl(apiKey[i]))
+                return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.AuthFailed, "The API key is not valid.");
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -69,17 +68,17 @@ public sealed class ProviderUsageService : IProviderUsageService
                 .ConfigureAwait(false);
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
-                return Failure(ProviderUsageErrorCode.AuthFailed,
+                return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.AuthFailed,
                     $"Authentication failed (HTTP {(int)response.StatusCode}).");
             }
             if (!response.IsSuccessStatusCode)
             {
-                return Failure(ProviderUsageErrorCode.BadResponse,
+                return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.BadResponse,
                     $"Usage query failed (HTTP {(int)response.StatusCode}).", credentialValid: true);
             }
             if (response.Content.Headers.ContentLength > MaximumResponseBytes)
             {
-                return Failure(ProviderUsageErrorCode.BadResponse, "The usage response is too large.", credentialValid: true);
+                return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.BadResponse, "The usage response is too large.", credentialValid: true);
             }
 
             await response.Content.LoadIntoBufferAsync(MaximumResponseBytes, token).ConfigureAwait(false);
@@ -94,19 +93,23 @@ public sealed class ProviderUsageService : IProviderUsageService
         }
         catch (OperationCanceledException)
         {
-            return Failure(ProviderUsageErrorCode.Network, "The usage query timed out. Try again.", credentialValid: true);
+            return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.Network, "The usage query timed out. Try again.", credentialValid: true);
         }
         catch (HttpRequestException exception) when (exception.HttpRequestError == HttpRequestError.ConfigurationLimitExceeded)
         {
-            return Failure(ProviderUsageErrorCode.BadResponse, "The usage response is too large.", credentialValid: true);
+            return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.BadResponse, "The usage response is too large.", credentialValid: true);
         }
         catch (Exception exception) when (exception is HttpRequestException or IOException)
         {
-            return Failure(ProviderUsageErrorCode.Network, "Could not reach the usage service. Try again.", credentialValid: true);
+            return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.Network, "Could not reach the usage service. Try again.", credentialValid: true);
         }
         catch (Exception exception) when (exception is JsonException or FormatException or InvalidOperationException)
         {
-            return Failure(ProviderUsageErrorCode.BadResponse, "The provider returned an invalid usage response.", credentialValid: true);
+            return Failure(providerId, adapterId, kind, ProviderUsageErrorCode.BadResponse, "The provider returned an invalid usage response.", credentialValid: true);
         }
     }
+
+    private static ProviderUsageSnapshot Failure(string providerId, ProviderUsageAdapterId? adapterId,
+        ProviderUsageKind? kind, ProviderUsageErrorCode code, string message, bool credentialValid = false) =>
+        new(providerId, adapterId, kind, credentialValid, [], DateTimeOffset.UtcNow, new(code, message));
 }

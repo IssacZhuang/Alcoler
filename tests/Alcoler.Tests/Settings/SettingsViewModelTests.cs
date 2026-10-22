@@ -55,10 +55,14 @@ public class SettingsViewModelTests
             server.EnvText = "MCP_MODE=strict";
 
             viewModel.Theme = "light";
+            viewModel.AutoArchiveSessions = true;
+            viewModel.AutoArchiveOlderThanDays = 14;
 
             var saved = await viewModel.SaveAsync(path);
             Assert.NotNull(saved);
             Assert.Equal("light", saved!.Theme);
+            Assert.True(saved.AutoArchiveSessions);
+            Assert.Equal(14, saved.AutoArchiveOlderThanDays);
             Assert.Null(saved.Providers[0].Models[1].DisplayName);
             Assert.Equal("claude-sonnet-4-5", saved.DefaultModel!.ModelId);
 
@@ -85,6 +89,8 @@ public class SettingsViewModelTests
             Assert.Equal("strict", filesystem.Env!["MCP_MODE"]);
 
             Assert.Equal("light", loaded.Theme);
+            Assert.True(loaded.AutoArchiveSessions);
+            Assert.Equal(14, loaded.AutoArchiveOlderThanDays);
         }
         finally
         {

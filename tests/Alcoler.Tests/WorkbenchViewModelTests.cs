@@ -9,6 +9,7 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
+using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Terminal;
@@ -191,6 +192,56 @@ public sealed class WorkbenchViewModelTests : IDisposable
         await workbench.Sidebar.RefreshAsync();
         Assert.Equal(parent.Id, Assert.Single(Assert.Single(workbench.Sidebar.Groups).Sessions).Id);
         await WaitUntilAsync(() => workbench.GitPane is null or { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
+    public async Task AutoArchive_HidesStaleSessionsAndArchivedViewCanRestoreThem()
+    {
+        SessionHandle stale;
+        await using (var store = new SqliteSessionStore(DatabasePath))
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            await using var runtime = CreateRuntime(store);
+            stale = await runtime.CreateSessionAsync(new SessionOptions(_root, "Stale"), CancellationToken.None);
+            await runtime.CreateSessionAsync(new SessionOptions(_root, "Recent"), CancellationToken.None);
+            var record = Assert.IsType<SessionRecord>(
+                await store.GetSessionAsync(stale.Id, CancellationToken.None));
+            await store.UpsertSessionAsync(
+                record with { UpdatedAt = DateTimeOffset.UtcNow - TimeSpan.FromDays(30) },
+                CancellationToken.None);
+        }
+
+        await using var reopenedStore = new SqliteSessionStore(DatabasePath);
+        await reopenedStore.InitializeAsync(CancellationToken.None);
+        await using var reopenedRuntime = CreateRuntime(reopenedStore);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(
+            reopenedRuntime, scheduler, new WorkbenchConfig([], AutoArchiveSessions: true, AutoArchiveOlderThanDays: 7));
+
+        await workbench.Sidebar.RefreshAsync();
+
+        Assert.Equal(
+            new[] { "Recent" },
+            workbench.Sidebar.Groups.SelectMany(group => group.Sessions)
+                .Select(session => session.Title).ToArray());
+        Assert.Single(await reopenedStore.ListSessionsAsync(
+            null, 10, SessionListKind.Archived, CancellationToken.None));
+
+        await workbench.ToggleArchivedViewAsync();
+
+        var archived = Assert.Single(workbench.Sidebar.Groups.SelectMany(group => group.Sessions));
+        Assert.Equal("Stale", archived.Title);
+        Assert.True(archived.IsArchived);
+        Assert.Equal("Archived", workbench.Sidebar.HeaderTitle);
+
+        await workbench.SetSessionArchivedAsync(stale.Id, archived: false);
+
+        Assert.Empty(workbench.Sidebar.Groups.SelectMany(group => group.Sessions));
+        await workbench.ToggleArchivedViewAsync();
+        Assert.Equal(
+            new[] { "Recent", "Stale" },
+            workbench.Sidebar.Groups.SelectMany(group => group.Sessions)
+                .Select(session => session.Title).ToArray());
     }
 
     [Fact]

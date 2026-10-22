@@ -14,9 +14,14 @@ namespace Alcoler.Views;
 
 public partial class DocumentWorkspaceView : UserControl
 {
+    private static readonly Cursor ResizeCursor = new(StandardCursorType.SizeWestEast);
+
     private DocumentWorkspaceViewModel? _workspace;
     private DocumentViewModel? _dragDocument;
     private Point _dragStart;
+    private readonly List<DocumentViewModel> _searchMatchesA = [];
+    private readonly List<DocumentViewModel> _searchMatchesB = [];
+    private bool _useSearchMatchesB;
 
     public DocumentWorkspaceView()
     {
@@ -77,9 +82,20 @@ public partial class DocumentWorkspaceView : UserControl
         if (_workspace is null)
             return;
         var query = DocumentSearch.Text?.Trim();
-        DocumentOverviewItems.ItemsSource = string.IsNullOrEmpty(query)
-            ? _workspace.VisibleItems
-            : _workspace.VisibleItems.Where(document => document.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)).ToArray();
+        if (string.IsNullOrEmpty(query))
+        {
+            DocumentOverviewItems.ItemsSource = _workspace.VisibleItems;
+            return;
+        }
+        var matches = _useSearchMatchesB ? _searchMatchesB : _searchMatchesA;
+        _useSearchMatchesB = !_useSearchMatchesB;
+        matches.Clear();
+        foreach (var document in _workspace.VisibleItems)
+        {
+            if (document.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase))
+                matches.Add(document);
+        }
+        DocumentOverviewItems.ItemsSource = matches;
     }
 
     private void OnOverviewDocumentClick(object? sender, RoutedEventArgs e)
@@ -116,7 +132,7 @@ public partial class DocumentWorkspaceView : UserControl
         if (_dragDocument is null || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
             return;
         if (Math.Abs(e.GetPosition(DocumentTabs).X - _dragStart.X) >= 4)
-            Cursor = new Cursor(StandardCursorType.SizeWestEast);
+            Cursor = ResizeCursor;
     }
 
     private void OnTabPointerReleased(object? sender, PointerReleasedEventArgs e)

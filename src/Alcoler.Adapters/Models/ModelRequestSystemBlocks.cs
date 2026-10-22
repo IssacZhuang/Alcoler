@@ -46,16 +46,14 @@ public static class ModelRequestSystemBlocks
         var leading = true;
         foreach (var message in messages)
         {
-            if (message.Role == MessageRole.System || IsSystemBlockMessage(message, out _))
+            if (message.Role == MessageRole.System)
             {
-                var blocks = message.Role == MessageRole.System
-                    ? message.Content.OfType<InputTextBlock>().Select(b => b.Text)
-                    : message.Content.OfType<InputTextBlock>().Select(b => b.Text[BlockPrefix.Length..]);
-                result.Add(message with
-                {
-                    Role = leading || preserveMidSystem ? MessageRole.System : MessageRole.User,
-                    Content = blocks.Select(b => (ModelContentBlock)new InputTextBlock(b)).ToArray(),
-                });
+                var blocks = message.Content.OfType<InputTextBlock>().Select(b => b.Text);
+                result.Add(Normalized(message, blocks, leading, preserveMidSystem));
+            }
+            else if (IsSystemBlockMessage(message, out var blocks))
+            {
+                result.Add(Normalized(message, blocks, leading, preserveMidSystem));
             }
             else
             {
@@ -69,26 +67,68 @@ public static class ModelRequestSystemBlocks
     internal static (IReadOnlyList<ModelInputMessage> Conversation, IReadOnlyList<string> SystemBlocks) ExtractLeading(
         IReadOnlyList<ModelInputMessage> messages, bool preserveMidSystem = false)
     {
-        var normalized = Normalize(messages, preserveMidSystem);
-        var count = normalized.TakeWhile(m => m.Role == MessageRole.System).Count();
-        return (normalized.Skip(count).ToArray(), normalized.Take(count).SelectMany(m => m.Content.OfType<InputTextBlock>().Select(b => b.Text)).ToArray());
+        var conversation = new List<ModelInputMessage>(messages.Count);
+        List<string>? systemBlocks = null;
+        var leading = true;
+        foreach (var message in messages)
+        {
+            if (message.Role == MessageRole.System)
+            {
+                AddLeadingOrConversation(message, message.Content.OfType<InputTextBlock>().Select(b => b.Text),
+                    leading, preserveMidSystem, conversation, ref systemBlocks);
+            }
+            else if (IsSystemBlockMessage(message, out var blocks))
+            {
+                AddLeadingOrConversation(message, blocks, leading, preserveMidSystem, conversation, ref systemBlocks);
+            }
+            else
+            {
+                leading = false;
+                conversation.Add(message);
+            }
+        }
+        return (conversation, systemBlocks ?? []);
+    }
+
+    private static ModelInputMessage Normalized(ModelInputMessage message, IEnumerable<string> blocks, bool leading, bool preserveMidSystem) =>
+        message with
+        {
+            Role = leading || preserveMidSystem ? MessageRole.System : MessageRole.User,
+            Content = blocks.Select(b => (ModelContentBlock)new InputTextBlock(b)).ToArray(),
+        };
+
+    private static void AddLeadingOrConversation(ModelInputMessage message, IEnumerable<string> blocks, bool leading,
+        bool preserveMidSystem, List<ModelInputMessage> conversation, ref List<string>? systemBlocks)
+    {
+        if (leading)
+        {
+            foreach (var block in blocks)
+                (systemBlocks ??= []).Add(block);
+            return;
+        }
+        conversation.Add(Normalized(message, blocks, leading: false, preserveMidSystem));
     }
 
     private static bool IsSystemBlockMessage(ModelInputMessage message, out IReadOnlyList<string> blocks)
     {
         blocks = [];
-        if (message.Content.Count == 0)
+        if (message.Content.Count == 0 || !IsPrefixedTextBlock(message.Content[0]))
             return false;
 
         var extracted = new List<string>(message.Content.Count);
         foreach (var block in message.Content)
         {
-            if (block is not InputTextBlock text ||
-                !text.Text.StartsWith(BlockPrefix, StringComparison.Ordinal))
+            if (block is not InputTextBlock text || !IsPrefixed(text.Text))
                 return false;
             extracted.Add(text.Text[BlockPrefix.Length..]);
         }
         blocks = extracted;
         return true;
     }
+
+    private static bool IsPrefixedTextBlock(ModelContentBlock block) =>
+        block is InputTextBlock text && IsPrefixed(text.Text);
+
+    private static bool IsPrefixed(string text) =>
+        text.AsSpan().StartsWith(BlockPrefix.AsSpan(), StringComparison.Ordinal);
 }

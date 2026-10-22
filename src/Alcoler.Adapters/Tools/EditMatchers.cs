@@ -58,9 +58,9 @@ internal static class EditMatchers
 
     public static EditMatch FindEditMatch(string content, string search, bool replaceAll)
     {
-        var exact = CollectSubstringCandidates(content, search);
-        if (exact.Count > 0)
-            return ToMatchResult(EditMatchStrategy.Exact, exact);
+        var exactCount = CountSubstringOccurrences(content, search);
+        if (exactCount > 0)
+            return new EditMatch.Matched(search, EditMatchStrategy.Exact, exactCount);
 
         foreach (var strategy in FallbackStrategies)
         {
@@ -96,12 +96,12 @@ internal static class EditMatchers
     internal static int LevenshteinDistance(string left, string right)
     {
         var previous = new int[right.Length + 1];
+        var current = new int[right.Length + 1];
         for (var index = 0; index <= right.Length; index++)
             previous[index] = index;
 
         for (var leftIndex = 1; leftIndex <= left.Length; leftIndex++)
         {
-            var current = new int[right.Length + 1];
             current[0] = leftIndex;
             for (var rightIndex = 1; rightIndex <= right.Length; rightIndex++)
             {
@@ -110,7 +110,7 @@ internal static class EditMatchers
                     Math.Min(current[rightIndex - 1] + 1, previous[rightIndex] + 1),
                     previous[rightIndex - 1] + cost);
             }
-            previous = current;
+            (previous, current) = (current, previous);
         }
         return previous[right.Length];
     }
@@ -137,10 +137,30 @@ internal static class EditMatchers
 
     private static EditMatch ToMatchResult(EditMatchStrategy strategy, List<string> candidates)
     {
-        var uniqueValues = candidates.Distinct().ToArray();
-        if (uniqueValues.Length != 1)
-            return new EditMatch.Ambiguous(strategy, candidates.Count);
-        return new EditMatch.Matched(uniqueValues[0], strategy, candidates.Count);
+        var first = candidates[0];
+        for (var index = 1; index < candidates.Count; index++)
+        {
+            if (!string.Equals(candidates[index], first, StringComparison.Ordinal))
+                return new EditMatch.Ambiguous(strategy, candidates.Count);
+        }
+        return new EditMatch.Matched(first, strategy, candidates.Count);
+    }
+
+    private static int CountSubstringOccurrences(string content, string search)
+    {
+        if (search.Length == 0)
+            return 0;
+        var count = 0;
+        var position = 0;
+        while (position <= content.Length)
+        {
+            var index = content.IndexOf(search, position, StringComparison.Ordinal);
+            if (index < 0)
+                break;
+            count++;
+            position = index + Math.Max(search.Length, 1);
+        }
+        return count;
     }
 
     private static List<string> CollectSubstringCandidates(string content, string search)
@@ -213,10 +233,17 @@ internal static class EditMatchers
         var candidates = new List<string>();
         for (var index = 0; index <= contentLines.Length - searchLines.Length; index++)
         {
-            var block = contentLines[index..(index + searchLines.Length)];
-            if (!block.Zip(searchLines, (line, expected) => line.Trim() == expected.Trim()).All(matched => matched))
-                continue;
-            candidates.Add(string.Join("\n", block));
+            var matched = true;
+            for (var offset = 0; offset < searchLines.Length; offset++)
+            {
+                if (!contentLines[index + offset].AsSpan().Trim().SequenceEqual(searchLines[offset].AsSpan().Trim()))
+                {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched)
+                candidates.Add(string.Join("\n", contentLines, index, searchLines.Length));
         }
         return candidates;
     }
@@ -229,13 +256,32 @@ internal static class EditMatchers
             return [];
 
         var normalizedSearch = RemoveCommonIndent(searchLines);
+        var expectedLines = normalizedSearch.Split('\n');
         var candidates = new List<string>();
         for (var index = 0; index <= contentLines.Length - searchLines.Length; index++)
         {
-            var block = contentLines[index..(index + searchLines.Length)];
-            if (RemoveCommonIndent(block) != normalizedSearch)
-                continue;
-            candidates.Add(string.Join("\n", block));
+            var minIndent = int.MaxValue;
+            for (var offset = 0; offset < searchLines.Length; offset++)
+            {
+                var line = contentLines[index + offset];
+                if (line.AsSpan().Trim().Length > 0)
+                    minIndent = Math.Min(minIndent, LeadingIndentLength(line));
+            }
+            var matched = true;
+            for (var offset = 0; offset < searchLines.Length; offset++)
+            {
+                var line = contentLines[index + offset];
+                var comparable = line.AsSpan();
+                if (minIndent != int.MaxValue && comparable.Trim().Length > 0)
+                    comparable = comparable[minIndent..];
+                if (!comparable.SequenceEqual(expectedLines[offset]))
+                {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched)
+                candidates.Add(string.Join("\n", contentLines, index, searchLines.Length));
         }
         return candidates;
     }

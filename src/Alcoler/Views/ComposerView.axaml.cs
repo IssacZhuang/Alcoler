@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Alcoler.Contracts.Events;
+using Alcoler.Contracts.Models;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Avalonia;
@@ -24,6 +25,21 @@ public partial class ComposerView : UserControl
     private bool _recallingHistory;
     private string? _historyRecallText;
     private bool _pasting;
+    private IReadOnlyList<ModelChoice>? _modelMenuSource;
+    private MenuFlyout? _builtModelMenu;
+    private readonly List<ModelMenuGroup> _modelMenuGroups = [];
+    private readonly List<string> _thoughtMenuLevels = [];
+    private readonly List<MenuItem> _thoughtMenuItems = [];
+    private TextPresenter? _inputPresenter;
+
+    private sealed class ModelMenuGroup
+    {
+        public required string ProviderId { get; init; }
+        public required MenuItem ProviderItem { get; init; }
+        public required List<ModelMenuItem> Models { get; init; }
+    }
+
+    private sealed record ModelMenuItem(ModelChoice Choice, MenuItem Item, TextBlock Name, TextBlock? Vision);
 
     public ComposerView()
     {
@@ -35,6 +51,7 @@ public partial class ComposerView : UserControl
         // Tunneling is required to observe plain Enter before the TextBox consumes it as a newline.
         InputBox.AddHandler(KeyDownEvent, OnInputKeyDown, RoutingStrategies.Tunnel);
         InputBox.PastingFromClipboard += OnPastingFromClipboard;
+        InputBox.TemplateApplied += (_, _) => _inputPresenter = FindInputPresenter();
         InputBox.TextChanged += (_, _) => UpdateSkillSuggestions();
         InputBox.PropertyChanged += (_, e) =>
         {
@@ -212,35 +229,53 @@ public partial class ComposerView : UserControl
     {
         if (ModelSelector.Flyout is not MenuFlyout menu)
             return;
+        var choices = _workbench?.ModelChoices ?? Array.Empty<ModelChoice>();
+        if (ReferenceEquals(_modelMenuSource, choices) && ReferenceEquals(_builtModelMenu, menu))
+        {
+            UpdateModelMenuSelection();
+            return;
+        }
+
         menu.Items.Clear();
-        foreach (var group in (_workbench?.ModelChoices ?? []).GroupBy(choice => choice.ProviderId))
+        _modelMenuGroups.Clear();
+        foreach (var group in choices.GroupBy(choice => choice.ProviderId))
         {
             var provider = new MenuItem
             {
                 Header = _workbench?.FindProvider(group.Key)?.Label ?? group.Key,
                 ToggleType = MenuItemToggleType.CheckBox,
-                IsChecked = ViewModel?.CurrentSelection?.ProviderId == group.Key,
                 MinWidth = 190,
             };
+            var modelItems = new List<ModelMenuItem>();
             foreach (var choice in group)
             {
                 var header = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8 };
-                header.Children.Add(new TextBlock { Text = choice.ModelId });
+                var name = new TextBlock { Text = choice.ModelId };
+                header.Children.Add(name);
+                TextBlock? vision = null;
                 if (choice.Properties?.SupportsImage == true)
-                    header.Children.Add(new TextBlock { Text = "Vision", FontSize = 11, Opacity = .6 });
+                {
+                    vision = new TextBlock { Text = "Vision", FontSize = 11, Opacity = .6 };
+                    header.Children.Add(vision);
+                }
                 var item = new MenuItem
                 {
                     Header = header,
                     Tag = choice,
                     ToggleType = MenuItemToggleType.Radio,
-                    IsChecked = ViewModel?.CurrentSelection is { } selected
-                        && selected.ProviderId == choice.ProviderId && selected.ModelId == choice.ModelId,
                     MinWidth = 190,
                 };
                 item.Click += OnModelSelected;
                 provider.Items.Add(item);
+                modelItems.Add(new ModelMenuItem(choice, item, name, vision));
             }
             menu.Items.Add(provider);
+            _modelMenuGroups.Add(new ModelMenuGroup
+            {
+                ProviderId = group.Key,
+                ProviderItem = provider,
+                Models = modelItems,
+            });
         }
         if (menu.Items.Count > 0)
             menu.Items.Add(new Separator());
@@ -252,6 +287,27 @@ public partial class ComposerView : UserControl
                 await sidebar.ShowSettingsAsync();
         };
         menu.Items.Add(manage);
+        _modelMenuSource = choices;
+        _builtModelMenu = menu;
+        UpdateModelMenuSelection();
+    }
+
+    private void UpdateModelMenuSelection()
+    {
+        var selection = ViewModel?.CurrentSelection;
+        foreach (var group in _modelMenuGroups)
+        {
+            group.ProviderItem.Header = _workbench?.FindProvider(group.ProviderId)?.Label ?? group.ProviderId;
+            group.ProviderItem.IsChecked = selection?.ProviderId == group.ProviderId;
+            foreach (var model in group.Models)
+            {
+                model.Name.Text = model.Choice.ModelId;
+                if (model.Vision is not null)
+                    model.Vision.IsVisible = model.Choice.Properties?.SupportsImage == true;
+                model.Item.IsChecked = selection is { } selected
+                    && selected.ProviderId == model.Choice.ProviderId && selected.ModelId == model.Choice.ModelId;
+            }
+        }
     }
 
     private void BuildThoughtMenu()
@@ -262,32 +318,64 @@ public partial class ComposerView : UserControl
         {
             ThoughtLevelSelector.Flyout?.Hide();
             ThoughtLevelSelector.Flyout = null;
+            _thoughtMenuLevels.Clear();
+            _thoughtMenuItems.Clear();
             return;
         }
+
+        var rebuild = false;
         if (ThoughtLevelSelector.Flyout is not MenuFlyout menu)
         {
             menu = new MenuFlyout { Placement = PlacementMode.TopEdgeAlignedLeft };
             ThoughtLevelSelector.Flyout = menu;
+            _thoughtMenuLevels.Clear();
+            _thoughtMenuItems.Clear();
+            rebuild = true;
         }
-        menu.Items.Clear();
-        foreach (var level in levels)
+        if (!rebuild && _thoughtMenuLevels.Count == levels.Count)
         {
-            var item = new MenuItem
+            for (var index = 0; index < levels.Count; index++)
             {
-                Header = level,
-                ToggleType = MenuItemToggleType.Radio,
-                IsChecked = level == ViewModel?.ThoughtLevel,
-                MinWidth = 130,
-            };
-            item.Click += (_, _) =>
-            {
-                if (ViewModel is { } host)
-                    host.ThoughtLevel = level;
-                menu.Hide();
-                InputBox.Focus();
-            };
-            menu.Items.Add(item);
+                if (!string.Equals(_thoughtMenuLevels[index], levels[index], StringComparison.Ordinal))
+                {
+                    rebuild = true;
+                    break;
+                }
+            }
         }
+        else if (!rebuild)
+        {
+            rebuild = true;
+        }
+
+        if (rebuild)
+        {
+            menu.Items.Clear();
+            _thoughtMenuLevels.Clear();
+            _thoughtMenuItems.Clear();
+            foreach (var level in levels)
+            {
+                var item = new MenuItem
+                {
+                    Header = level,
+                    ToggleType = MenuItemToggleType.Radio,
+                    MinWidth = 130,
+                };
+                item.Click += (_, _) =>
+                {
+                    if (ViewModel is { } host)
+                        host.ThoughtLevel = level;
+                    menu.Hide();
+                    InputBox.Focus();
+                };
+                menu.Items.Add(item);
+                _thoughtMenuLevels.Add(level);
+                _thoughtMenuItems.Add(item);
+            }
+        }
+
+        for (var index = 0; index < _thoughtMenuItems.Count; index++)
+            _thoughtMenuItems[index].IsChecked = _thoughtMenuLevels[index] == ViewModel?.ThoughtLevel;
     }
 
     private void OnThoughtPickerClick(object? sender, RoutedEventArgs e)
@@ -297,8 +385,17 @@ public partial class ComposerView : UserControl
             ThoughtLevelSelector.Flyout?.Hide();
     }
 
-    private bool IsComposing => InputBox.GetVisualDescendants().OfType<TextPresenter>()
-        .Any(presenter => !string.IsNullOrEmpty(presenter.PreeditText));
+    private bool IsComposing
+    {
+        get
+        {
+            _inputPresenter ??= FindInputPresenter();
+            return _inputPresenter is { } presenter && !string.IsNullOrEmpty(presenter.PreeditText);
+        }
+    }
+
+    private TextPresenter? FindInputPresenter() =>
+        InputBox.GetVisualDescendants().OfType<TextPresenter>().FirstOrDefault();
 
     private void OnInputKeyDown(object? sender, KeyEventArgs e)
     {
@@ -370,17 +467,23 @@ public partial class ComposerView : UserControl
         var text = InputBox.Text ?? string.Empty;
         if (InputBox.SelectionStart != InputBox.SelectionEnd)
             return null;
-        var caret = Math.Clamp(InputBox.CaretIndex, 0, text.Length);
+        var span = text.AsSpan();
+        var caret = Math.Clamp(InputBox.CaretIndex, 0, span.Length);
         var start = caret;
-        while (start > 0 && !char.IsWhiteSpace(text[start - 1]))
+        while (start > 0 && !char.IsWhiteSpace(span[start - 1]))
             start--;
         var end = caret;
-        while (end < text.Length && !char.IsWhiteSpace(text[end]))
+        while (end < span.Length && !char.IsWhiteSpace(span[end]))
             end++;
-        if (start == end || text[start] != '/' || caret <= start)
+        if (start == end || span[start] != '/' || caret <= start)
             return null;
-        var token = text[start..end];
-        return token[1..].IndexOfAny(['/', '@', '$', '#']) >= 0 ? null : (start, end, token);
+        var token = span[start..end];
+        for (var index = 1; index < token.Length; index++)
+        {
+            if (token[index] is '/' or '@' or '$' or '#')
+                return null;
+        }
+        return (start, end, token.ToString());
     }
 
     private void UpdateSkillSuggestions()

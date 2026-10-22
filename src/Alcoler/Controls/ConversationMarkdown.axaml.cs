@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Automation;
@@ -23,6 +24,11 @@ public partial class ConversationMarkdown : UserControl
 
     public static readonly StyledProperty<bool> SelectionEnabledProperty =
         AvaloniaProperty.Register<ConversationMarkdown, bool>(nameof(SelectionEnabled), true);
+
+    private static readonly ConcurrentDictionary<(char Delimiter, int Length), Regex> ClosingFences = new();
+
+    private string? _renderedMarkdown;
+    private bool _hasRenderedMarkdown;
 
     public ConversationMarkdown()
     {
@@ -50,7 +56,15 @@ public partial class ConversationMarkdown : UserControl
     {
         base.OnPropertyChanged(change);
         if (change.Property == MarkdownProperty)
-            Viewer.Markdown = Markdown;
+        {
+            var markdown = Markdown;
+            if (!_hasRenderedMarkdown || !string.Equals(_renderedMarkdown, markdown, StringComparison.Ordinal))
+            {
+                _hasRenderedMarkdown = true;
+                _renderedMarkdown = markdown;
+                Viewer.Markdown = markdown;
+            }
+        }
         else if (change.Property == SelectionEnabledProperty)
             Viewer.SelectionEnabled = SelectionEnabled;
     }
@@ -178,8 +192,10 @@ public partial class ConversationMarkdown : UserControl
     {
         var delimiter = match.Groups[1].Value;
         var contentStart = match.Index + match.Length;
-        var closing = new Regex(@"^[ ]{0,3}" + Regex.Escape(delimiter[0].ToString()) + "{" + delimiter.Length + @",}[ \t]*(?:\n|$)",
-            RegexOptions.Multiline).Match(text, contentStart);
+        var closingRegex = ClosingFences.GetOrAdd((delimiter[0], delimiter.Length),
+            key => new Regex(@"^[ ]{0,3}" + Regex.Escape(key.Delimiter.ToString()) + "{" + key.Length + @",}[ \t]*(?:\n|$)",
+                RegexOptions.Multiline));
+        var closing = closingRegex.Match(text, contentStart);
         begin = match.Index;
         end = closing.Success ? closing.Index + closing.Length : text.Length;
         var code = text[contentStart..(closing.Success ? closing.Index : text.Length)];

@@ -319,6 +319,93 @@ public sealed class SqliteSessionStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ListSessions_FiltersArchivedByKind()
+    {
+        await using var store = await NewInitializedStoreAsync();
+        var active = NewRecord(title: "active", updated: Iso("2026-10-03T00:00:00Z"));
+        var archived = NewRecord(title: "archived", updated: Iso("2026-10-02T00:00:00Z"), isArchived: true);
+        var otherArchived = NewRecord(
+            title: "other", workspaceRoot: @"C:\ws\beta", updated: Iso("2026-10-01T00:00:00Z"), isArchived: true);
+        foreach (var record in new[] { active, archived, otherArchived })
+        {
+            await store.UpsertSessionAsync(record, CancellationToken.None);
+        }
+
+        var activePage = await store.ListSessionsAsync(
+            null, 10, SessionListKind.Active, CancellationToken.None);
+        Assert.Equal(new[] { active.Id }, activePage.Select(summary => summary.Id).ToArray());
+        Assert.All(activePage, summary => Assert.False(summary.IsArchived));
+
+        var archivedPage = await store.ListSessionsAsync(
+            null, 10, SessionListKind.Archived, CancellationToken.None);
+        Assert.Equal(
+            new[] { archived.Id, otherArchived.Id },
+            archivedPage.Select(summary => summary.Id).ToArray());
+        Assert.All(archivedPage, summary => Assert.True(summary.IsArchived));
+
+        var archivedInBeta = await store.ListSessionsAsync(
+            @"C:\ws\beta", 10, SessionListKind.Archived, CancellationToken.None);
+        Assert.Equal(new[] { otherArchived.Id }, archivedInBeta.Select(summary => summary.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task SetSessionArchived_RoundTripsWithoutChangingUpdatedAt()
+    {
+        await using var store = await NewInitializedStoreAsync();
+        var record = NewRecord(updated: Iso("2026-10-02T10:00:00Z"));
+        await store.UpsertSessionAsync(record, CancellationToken.None);
+
+        await store.SetSessionArchivedAsync(record.Id, true, CancellationToken.None);
+
+        var archived = Assert.IsType<SessionRecord>(await store.GetSessionAsync(record.Id, CancellationToken.None));
+        Assert.True(archived.IsArchived);
+        Assert.Equal(record.UpdatedAt, archived.UpdatedAt);
+        Assert.Empty(await store.ListSessionsAsync(null, 10, CancellationToken.None));
+        Assert.Single(await store.ListSessionsAsync(
+            null, 10, SessionListKind.Archived, CancellationToken.None));
+
+        await store.SetSessionArchivedAsync(record.Id, false, CancellationToken.None);
+
+        var restored = Assert.IsType<SessionRecord>(await store.GetSessionAsync(record.Id, CancellationToken.None));
+        Assert.False(restored.IsArchived);
+        Assert.Single(await store.ListSessionsAsync(null, 10, CancellationToken.None));
+        Assert.Empty(await store.ListSessionsAsync(
+            null, 10, SessionListKind.Archived, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ArchiveSessionsUpdatedBefore_ArchivesOnlyStaleTopLevelSessions()
+    {
+        await using var store = await NewInitializedStoreAsync();
+        var stale = NewRecord(title: "stale", updated: Iso("2026-10-01T00:00:00Z"));
+        var recent = NewRecord(title: "recent", updated: Iso("2026-10-05T00:00:00Z"));
+        var excluded = NewRecord(title: "excluded", updated: Iso("2026-10-01T00:00:00Z"));
+        var alreadyArchived = NewRecord(
+            title: "already", updated: Iso("2026-10-01T00:00:00Z"), isArchived: true);
+        var child = NewRecord(title: "child", updated: Iso("2026-10-01T00:00:00Z"))
+            with { ParentSessionId = stale.Id };
+        foreach (var record in new[] { stale, recent, excluded, alreadyArchived, child })
+        {
+            await store.UpsertSessionAsync(record, CancellationToken.None);
+        }
+
+        var count = await store.ArchiveSessionsUpdatedBeforeAsync(
+            Iso("2026-10-03T00:00:00Z"), [excluded.Id], CancellationToken.None);
+
+        Assert.Equal(1, count);
+        Assert.True(Assert.IsType<SessionRecord>(
+            await store.GetSessionAsync(stale.Id, CancellationToken.None)).IsArchived);
+        Assert.False(Assert.IsType<SessionRecord>(
+            await store.GetSessionAsync(recent.Id, CancellationToken.None)).IsArchived);
+        Assert.False(Assert.IsType<SessionRecord>(
+            await store.GetSessionAsync(excluded.Id, CancellationToken.None)).IsArchived);
+        Assert.False(Assert.IsType<SessionRecord>(
+            await store.GetSessionAsync(child.Id, CancellationToken.None)).IsArchived);
+        Assert.Equal(stale.UpdatedAt, Assert.IsType<SessionRecord>(
+            await store.GetSessionAsync(stale.Id, CancellationToken.None)).UpdatedAt);
+    }
+
+    [Fact]
     public async Task ListSessions_ExcludesChildrenBeforeLimitAndWorkspaceFilter_AfterRestart()
     {
         var older = NewRecord(title: "older", updated: Iso("2026-10-01T00:00:00Z"));
@@ -427,9 +514,14 @@ public sealed class SqliteSessionStoreTests : IDisposable
             foreach (var record in expected)
                 Assert.Equal(record, await migrated.GetSessionAsync(record.Id, CancellationToken.None));
             var summaries = await migrated.ListSessionsAsync(null, 20, CancellationToken.None);
-            Assert.Equal(records.Length - 2, summaries.Count);
-            Assert.Equal("Fix the sidebar naming", summaries.Single(summary => summary.Id == root.Id).Title);
-            Assert.Equal(root.UpdatedAt, summaries.Single(summary => summary.Id == root.Id).UpdatedAt);
+            Assert.Equal(
+                records.Count(record => record.ParentSessionId is null && !record.IsArchived),
+                summaries.Count);
+            var archivedRoot = Assert.Single(await migrated.ListSessionsAsync(
+                null, 20, SessionListKind.Archived, CancellationToken.None));
+            Assert.Equal(root.Id, archivedRoot.Id);
+            Assert.Equal("Fix the sidebar naming", archivedRoot.Title);
+            Assert.Equal(root.UpdatedAt, archivedRoot.UpdatedAt);
             Assert.Equal(2, (await migrated.LoadMessagesAsync(root.Id, CancellationToken.None)).Count);
             Assert.IsType<SessionTitleChangedEvent>(Assert.Single(await migrated.LoadDurableEventsAsync(renamed.Id, CancellationToken.None)).Event);
         }

@@ -23,6 +23,8 @@ public sealed class ModelStepAccumulator
 
     public IReadOnlyList<ToolCall> ToolCalls => _toolCalls;
 
+    public ToolCall? LastReadyToolCall { get; private set; }
+
     public TokenUsage? Usage { get; private set; }
 
     public ModelFailure? Failure { get; private set; }
@@ -73,8 +75,10 @@ public sealed class ModelStepAccumulator
 
             case ModelToolCallReady toolCall:
                 HasBoundaryContent = true;
-                if (_toolCallIds.Add(toolCall.ToolCall.Id))
-                    _toolCalls.Add(toolCall.ToolCall with { Name = toolCall.ToolCall.Name.Trim() });
+                var trimmed = toolCall.ToolCall with { Name = toolCall.ToolCall.Name.Trim() };
+                LastReadyToolCall = trimmed;
+                if (_toolCallIds.Add(trimmed.Id))
+                    _toolCalls.Add(trimmed);
                 break;
 
             case ModelStreamFinished finished:
@@ -92,21 +96,20 @@ public sealed class ModelStepAccumulator
 
     public ConversationMessage BuildAssistantMessage(DateTimeOffset createdAt)
     {
-        var parts = BuildCommonParts();
-        parts.AddRange(_toolCalls.Select(call => new ToolCallPart(
-            StrongId.NewPartId(),
-            call.Id,
-            call.Name,
-            call.Input)));
+        var parts = BuildCommonParts(_toolCalls.Count);
+        foreach (var call in _toolCalls)
+        {
+            parts.Add(new ToolCallPart(StrongId.NewPartId(), call.Id, call.Name, call.Input));
+        }
         return new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant, parts, createdAt);
     }
 
     public ConversationMessage BuildPartialAssistantMessage(DateTimeOffset createdAt) =>
-        new(StrongId.NewMessageId(), MessageRole.Assistant, BuildCommonParts(), createdAt);
+        new(StrongId.NewMessageId(), MessageRole.Assistant, BuildCommonParts(0), createdAt);
 
-    private List<MessagePart> BuildCommonParts()
+    private List<MessagePart> BuildCommonParts(int extraCapacity)
     {
-        var parts = new List<MessagePart>();
+        var parts = new List<MessagePart>(_reasoningBlocks.Count + 1 + extraCapacity);
         foreach (var block in _reasoningBlocks)
         {
             if (block.Text.Length > 0 || block.Signature is not null

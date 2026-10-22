@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using Alcoler.Contracts.Projections;
 
@@ -14,6 +15,11 @@ public sealed class ContextUsageViewModel
         ContextUsageSources.McpToolSchemas,
     ];
     private static readonly double[] Tones = [1, .78, .58, .42, .28];
+    private static readonly (double Scale, string Suffix)[] ChineseUnits = [(1e12, "兆"), (1e8, "亿"), (1e4, "万")];
+    private static readonly (double Scale, string Suffix)[] JapaneseUnits = [(1e12, "兆"), (1e8, "億"), (1e4, "万")];
+    private static readonly (double Scale, string Suffix)[] KoreanUnits = [(1e12, "조"), (1e8, "억"), (1e4, "만")];
+    private static readonly (double Scale, string Suffix)[] WesternUnits = [(1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")];
+    private static readonly ConcurrentDictionary<(CultureInfo Culture, int Digits), NumberFormatInfo> PercentFormats = new();
 
     public ContextUsageViewModel(ContextUsageState usage, CultureInfo? culture = null)
     {
@@ -63,21 +69,26 @@ public sealed class ContextUsageViewModel
     private static string Percent(double value, CultureInfo culture)
     {
         var rounded = Math.Round(value * 100, 1, MidpointRounding.AwayFromZero);
-        var format = (NumberFormatInfo)culture.NumberFormat.Clone();
-        format.PercentDecimalDigits = rounded % 1 == 0 ? 0 : 1;
+        var digits = rounded % 1 == 0 ? 0 : 1;
+        var format = PercentFormats.GetOrAdd((culture, digits), key =>
+        {
+            var numberFormat = (NumberFormatInfo)key.Culture.NumberFormat.Clone();
+            numberFormat.PercentDecimalDigits = key.Digits;
+            return numberFormat;
+        });
         return (rounded / 100).ToString("P", format);
     }
 
     internal static string Compact(int value, CultureInfo culture, int maximumFractionDigits = 1)
     {
         var language = culture.TwoLetterISOLanguageName;
-        var units = language is "zh" or "ja"
-            ? new (double Scale, string Suffix)[] { (1e12, "兆"), (1e8, "亿"), (1e4, "万") }
-            : language == "ko"
-                ? [(1e12, "조"), (1e8, "억"), (1e4, "만")]
-                : [(1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")];
-        if (language == "ja")
-            units = [(1e12, "兆"), (1e8, "億"), (1e4, "万")];
+        var units = language switch
+        {
+            "zh" => ChineseUnits,
+            "ja" => JapaneseUnits,
+            "ko" => KoreanUnits,
+            _ => WesternUnits,
+        };
         var format = maximumFractionDigits == 0 ? "0" : "0.#";
         foreach (var (scale, suffix) in units)
         {
