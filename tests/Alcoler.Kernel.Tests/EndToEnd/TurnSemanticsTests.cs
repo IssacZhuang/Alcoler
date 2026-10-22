@@ -193,12 +193,16 @@ public class TurnSemanticsTests
         int expectedReplies = 1,
         bool expectFailure = false)
     {
+        // A fresh submit can still observe the previous turn's Idle before this turn starts;
+        // the committed user row is the monotonic proof the turn actually ran.
+        var baselineUsers = projection.Snapshot().Rows.OfType<UserMessageRow>().Count();
         var ack = await runtime.SubmitAsync(
             new SendTextCommand(StrongId.NewCommandId(), id, 0, text, Mode: mode), CancellationToken.None);
         Assert.True(ack.Accepted);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (projection.Snapshot() is var snapshot
                && (snapshot.State.Phase != TurnPhase.Idle
+                   || snapshot.Rows.OfType<UserMessageRow>().Count() <= baselineUsers
                    || (!expectFailure && expectedReplies > 0
                        && snapshot.Rows.OfType<AssistantMessageRow>().Count() < expectedReplies)))
         {

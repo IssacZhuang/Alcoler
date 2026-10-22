@@ -60,6 +60,9 @@ internal sealed class BashProcessSession : IDisposable
         {
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
+            // An inherited stdin lets cmd treat batch lines as interactive input (exit 255)
+            // and lets commands steal the host console; EOF keeps execution non-interactive.
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
@@ -95,6 +98,7 @@ internal sealed class BashProcessSession : IDisposable
             if (outputFilePath is not null)
                 session.OpenOutputFile(outputFilePath);
             session._process.Start();
+            session._process.StandardInput.Close();
             session._stdoutPump = session.PumpAsync(session._process.StandardOutput.BaseStream, stdout: true, legacyEncoding);
             session._stderrPump = session.PumpAsync(session._process.StandardError.BaseStream, stdout: false, legacyEncoding);
             return session;

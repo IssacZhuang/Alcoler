@@ -223,12 +223,16 @@ public class ForkEndToEndTests
         string text,
         int expectedReplies)
     {
+        // A fresh submit can still observe the previous turn's Idle before this turn starts;
+        // the committed user row is the monotonic proof the turn actually ran.
+        var baselineUsers = projection.Snapshot().Rows.OfType<UserMessageRow>().Count();
         var ack = await runtime.SubmitAsync(
             new SendTextCommand(StrongId.NewCommandId(), id, 0, text), CancellationToken.None);
         Assert.True(ack.Accepted);
         await WaitForAsync(
             () => projection.Snapshot() is var snapshot
                 && snapshot.State.Phase == TurnPhase.Idle
+                && snapshot.Rows.OfType<UserMessageRow>().Count() > baselineUsers
                 && snapshot.Rows.OfType<AssistantMessageRow>().Count() >= expectedReplies,
             $"turn for '{text}' did not become idle");
     }

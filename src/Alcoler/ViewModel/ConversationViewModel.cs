@@ -40,6 +40,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private readonly HashSet<string> _pairedAgentRows = new(StringComparer.Ordinal);
     private readonly Dictionary<AgentCallItemViewModel, SubagentState> _agentStates = [];
     private readonly HashSet<CommandId> _queueOperations = [];
+    private readonly object _applyGate = new();
     private readonly IArtifactStore _artifacts;
     private IReadOnlyList<ModelChoice>? _modelChoices;
     private ModelSelection? _defaultSelection;
@@ -149,6 +150,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private string? _banner;
 
     internal void ApplyUpdate(ProjectionUpdate update)
+    {
+        // Updates enter both from the projection pump and from synchronous construction
+        // paths; schedulers that run posted callbacks on the pump thread would otherwise
+        // mutate the status row collections concurrently.
+        lock (_applyGate)
+        {
+            ApplyUpdateCore(update);
+        }
+    }
+
+    private void ApplyUpdateCore(ProjectionUpdate update)
     {
         Status.ApplyUpdate(update);
         if (update.Reset)

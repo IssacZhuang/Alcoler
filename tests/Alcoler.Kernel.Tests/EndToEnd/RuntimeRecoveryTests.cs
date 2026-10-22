@@ -679,11 +679,15 @@ public class RuntimeRecoveryTests
         string text,
         int expectedReplies = 1)
     {
+        // A fresh submit can still observe the previous turn's Idle before this turn starts;
+        // the committed user row is the monotonic proof the turn actually ran.
+        var baselineUsers = projection.Snapshot().Rows.OfType<UserMessageRow>().Count();
         var ack = await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), id, 0, text), CancellationToken.None);
         Assert.True(ack.Accepted);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (projection.Snapshot() is var snapshot
                && (snapshot.State.Phase != TurnPhase.Idle
+                   || snapshot.Rows.OfType<UserMessageRow>().Count() <= baselineUsers
                    || (expectedReplies > 0 && snapshot.Rows.OfType<AssistantMessageRow>().Count() < expectedReplies)))
         {
             await Task.Delay(10, timeout.Token);
