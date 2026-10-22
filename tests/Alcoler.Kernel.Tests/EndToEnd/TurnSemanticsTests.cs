@@ -1349,6 +1349,9 @@ public class TurnSemanticsTests
         using var projection = runtime.Subscribe(session.Id);
 
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "continue across tools", expectedReplies: 0);
+        using var outcomeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (runtime.GetSessionActivity(session.Id)!.LastOutcome is null)
+            await Task.Delay(10, outcomeTimeout.Token);
 
         Assert.Equal(6, harness.Model.Requests.Count);
         Assert.Equal(TurnOutcome.Completed, runtime.GetSessionActivity(session.Id)!.LastOutcome);

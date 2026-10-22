@@ -175,6 +175,35 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task PermissionCard_PlanDenialWithFeedback_SubmitsFeedbackFromFocusedTextBox()
+    {
+        using var harness = Show<InteractionAreaView>();
+        await PumpAsync();
+        var request = new PermissionRequest(
+            StrongId.NewInteractionId(),
+            new SessionId(Guid.NewGuid().ToString("N")),
+            "ExitPlanMode",
+            JsonSerializer.SerializeToElement(new { plan = "1. Add the parser." }),
+            RiskLevel.Medium,
+            "tool requires user interaction",
+            AllowsFeedback: true);
+        var state = StateWith(permission: request);
+        harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+        await PumpAsync();
+
+        var feedback = FindNamed<TextBox>(harness.View, "PlanFeedbackBox");
+        Assert.True(feedback.IsVisible);
+        feedback.Focus();
+        feedback.Text = "Use the existing parser.";
+        await PumpAsync();
+        await PressAsync(harness, PhysicalKey.Escape);
+
+        var command = Assert.IsType<Contracts.Commands.ResolveInteractionCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal(PermissionOutcome.Denied, command.PermissionDecision!.Outcome);
+        Assert.Equal("Use the existing parser.", command.PermissionDecision.Feedback);
+    }
+
+    [AvaloniaFact]
     public async Task QuestionCard_PointerSelectSingleOption_SubmitsImmediately()
     {
         var question = new InteractionQuestion("Destination", "Where should the branch land?",

@@ -52,7 +52,15 @@ public partial class InteractionAreaView : UserControl
         _ = ViewModel?.ResolvePermissionAsync(PermissionDecision.Allow);
 
     private void OnDenyClick(object? sender, RoutedEventArgs e) =>
-        _ = ViewModel?.ResolvePermissionAsync(PermissionDecision.Deny);
+        _ = ViewModel?.ResolvePermissionAsync(DenyDecision());
+
+    private PermissionDecision DenyDecision()
+    {
+        var feedback = ViewModel?.PendingInteraction?.Feedback;
+        return string.IsNullOrWhiteSpace(feedback)
+            ? PermissionDecision.Deny
+            : new PermissionDecision(PermissionOutcome.Denied, Feedback: feedback.Trim());
+    }
 
     private void OnSubmitAnswersClick(object? sender, EventArgs e) =>
         _ = ViewModel?.SubmitInteractionAnswersAsync();
@@ -68,8 +76,8 @@ public partial class InteractionAreaView : UserControl
         }
         var decision = e.Key switch
         {
-            Key.Enter => PermissionDecision.Allow,
-            Key.Escape => PermissionDecision.Deny,
+            Key.Enter when e.Source is not TextBox => PermissionDecision.Allow,
+            Key.Escape => DenyDecision(),
             _ => null,
         };
         if (decision is { } resolved && ViewModel is { } viewModel)

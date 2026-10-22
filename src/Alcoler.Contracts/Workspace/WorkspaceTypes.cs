@@ -38,4 +38,6 @@ public interface ITodoStore
 public interface ISessionCommands
 {
     ValueTask SetModeAsync(Permissions.PermissionMode mode, CancellationToken cancellationToken);
+
+    ValueTask ExitPlanModeAsync(string plan, CancellationToken cancellationToken);
 }

@@ -10,9 +10,17 @@ internal sealed class FakeSessionCommands : ISessionCommands
 {
     public List<PermissionMode> SetModes { get; } = [];
 
+    public List<string> ApprovedPlans { get; } = [];
+
     public ValueTask SetModeAsync(PermissionMode mode, CancellationToken cancellationToken)
     {
         SetModes.Add(mode);
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask ExitPlanModeAsync(string plan, CancellationToken cancellationToken)
+    {
+        ApprovedPlans.Add(plan);
         return ValueTask.CompletedTask;
     }
 }

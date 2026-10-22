@@ -108,7 +108,7 @@ public sealed class ExitPlanModeTool : ITool
 
         var plan = context.Input.GetProperty("plan").GetString()!;
         var allowedPrompts = ParseAllowedPrompts(context.Input);
-        await context.Commands.SetModeAsync(PermissionMode.Edit, cancellationToken).ConfigureAwait(false);
+        await context.Commands.ExitPlanModeAsync(plan, cancellationToken).ConfigureAwait(false);
 
         var trimmed = plan.Trim();
         var message = trimmed.Length == 0

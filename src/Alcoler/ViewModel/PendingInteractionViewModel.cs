@@ -24,8 +24,20 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
 
     public InteractionId InteractionId { get; }
     public bool IsPermission { get; private init; }
+    public bool AllowsFeedback { get; private init; }
     public string ToolName { get; private init; } = string.Empty;
     public RiskLevel RiskLevel { get; private init; }
+    public string? PlanMarkdown { get; private init; }
+    public bool HasPlanPreview => !string.IsNullOrWhiteSpace(PlanMarkdown);
+    public string AllowActionText => AllowsFeedback ? "Approve" : "Allow";
+    public string DenyActionText => AllowsFeedback ? "Request changes" : "Deny";
+    public string PermissionTitle => AllowsFeedback ? "Plan ready for approval" : "Permission required";
+    public string PermissionHint => AllowsFeedback
+        ? "Enter to approve / Esc to request changes"
+        : "Enter to allow / Esc to deny";
+
+    [ObservableProperty]
+    private string _feedback = string.Empty;
 
     [ObservableProperty]
     private string _inputJson = string.Empty;
@@ -73,13 +85,22 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
         var vm = new PendingInteractionViewModel(request.InteractionId)
         {
             IsPermission = true,
+            AllowsFeedback = request.AllowsFeedback,
             ToolName = request.ToolName,
             RiskLevel = request.RiskLevel,
+            PlanMarkdown = request.AllowsFeedback ? ReadPlan(request.Input) : null,
         };
         vm.InputJson = JsonSerializer.Serialize(request.Input, IndentedJson);
         vm.Reason = request.Reason;
         return vm;
     }
+
+    private static string? ReadPlan(JsonElement input) =>
+        input.ValueKind == JsonValueKind.Object
+        && input.TryGetProperty("plan", out var plan)
+        && plan.ValueKind == JsonValueKind.String
+            ? plan.GetString()
+            : null;
 
     public static PendingInteractionViewModel FromInteraction(InteractionRequest request)
     {

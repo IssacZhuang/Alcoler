@@ -108,7 +108,7 @@ public sealed class McpTool : ITool
             SideEffectScope: SideEffectScope.System,
             RiskLevel: destructive ? RiskLevel.High : RiskLevel.Medium,
             NeedsApproval: true,
-            AllowedInPlanMode: false,
+            AllowedInPlanMode: !destructive,
             DefaultTimeoutMs: defaultTimeoutMs);
     }
 }

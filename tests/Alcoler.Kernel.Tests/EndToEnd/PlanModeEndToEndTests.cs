@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Alcoler.Adapters.Models;
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
@@ -66,6 +68,175 @@ public class PlanModeEndToEndTests
     }
 
     [Fact]
+    public async Task PlanMode_RunsReadOnlyBashWithoutAsking()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("Bash", new { command = "ls -la" }),
+            FinalText("Inspected the directory."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "inspect the directory"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted);
+
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        var call = Assert.Single(projection.Snapshot().Rows.OfType<ToolCallRow>());
+        Assert.Equal(ToolCallStatus.Succeeded, call.Status);
+        Assert.False(call.IsError);
+    }
+
+    [Fact]
+    public async Task PlanMode_DeniesSideEffectingBashWithoutAsking()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("Bash", new { command = "mkdir build" }),
+            FinalText("The write was denied."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "create a directory"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted);
+
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        var call = Assert.Single(projection.Snapshot().Rows.OfType<ToolCallRow>());
+        Assert.Equal(ToolCallStatus.Failed, call.Status);
+        Assert.True(call.IsError);
+    }
+
+    [Fact]
+    public async Task PlanApproval_RestoresPreviousModeAndWritesPlanFile()
+    {
+        const string plan = "1. Write notes.txt.\n2. Verify the contents.";
+        await using var harness = TestHarness.Create(
+            ToolCall("ExitPlanMode", new { plan }),
+            FinalText("Implementing now."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        Assert.True((await runtime.SubmitAsync(new SetModeCommand(
+            StrongId.NewCommandId(), session.Id, 0, PermissionMode.Plan), CancellationToken.None)).Accepted);
+        await WaitForModeAsync(projection, PermissionMode.Plan);
+
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Plan the work"), CancellationToken.None);
+        Assert.True(ack.Accepted);
+
+        var permission = await WaitForPermissionAsync(projection);
+        await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        Assert.Equal(PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        var planPath = Path.Combine(harness.Root, "plans", $"plan-{session.Id.Value}.md");
+        Assert.True(File.Exists(planPath));
+        Assert.Equal(plan, await File.ReadAllTextAsync(planPath));
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var resumedProjection = resumed.Subscribe(session.Id);
+        Assert.Equal(PermissionMode.Yolo, resumedProjection.Snapshot().State.Mode);
+    }
+
+    [Fact]
+    public async Task PlanDenialWithFeedback_KeepsPlanningAndSteersFeedbackIntoSameTurn()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("ExitPlanMode", new { plan = "1. Write the file." }),
+            FinalText("I will revise the plan."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "plan something"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted);
+
+        var permission = await WaitForPermissionAsync(projection);
+        await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: new PermissionDecision(PermissionOutcome.Denied, Feedback: "Use the existing parser instead.")),
+            CancellationToken.None);
+
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        var snapshot = projection.Snapshot();
+        Assert.Equal(PermissionMode.Plan, snapshot.State.Mode);
+        Assert.Equal(
+            ["plan something", "Use the existing parser instead."],
+            snapshot.Rows.OfType<UserMessageRow>().Select(row => row.Text).ToArray());
+        Assert.Contains(snapshot.Rows, r => r is AssistantMessageRow a
+            && a.Parts.OfType<Contracts.Conversation.TextPart>().Any(p => p.Text.Contains("I will revise the plan.")));
+    }
+
+    [Fact]
+    public async Task PlanApproval_ReinjectsThePlanFileAfterCompaction()
+    {
+        const string plan = "1. Add the parser.\n2. Verify the tests.";
+        await using var harness = TestHarness.Create(
+            ToolCall("ExitPlanMode", new { plan }),
+            FinalText("Implementing now."),
+            FinalText("Follow-up complete."),
+            new ScriptStep.Events(
+                new Alcoler.Contracts.Models.ModelTextDelta("summary"),
+                new Alcoler.Contracts.Models.ModelTextEnded(),
+                new Alcoler.Contracts.Models.ModelStreamFinished(Alcoler.Contracts.Models.ModelFinishReason.Stop)));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Plan the parser"), CancellationToken.None);
+        Assert.True(ack.Accepted);
+        var permission = await WaitForPermissionAsync(projection);
+        await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, 0, "implement it"), CancellationToken.None)).Accepted);
+        await WaitForAssistantTextAsync(projection, "Follow-up complete.");
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        var compactAck = await runtime.SubmitAsync(
+            new CompactCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+        Assert.True(compactAck.Accepted, compactAck.RejectionReason);
+
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        var planReference = Assert.Single(
+            messages.SelectMany(message => message.Message.Parts).OfType<AttachmentPart>(),
+            part => part.Kind == AttachmentKind.ResumeReferencedContext);
+        Assert.Contains(plan, planReference.Content);
+        Assert.Contains($"plan-{session.Id.Value}.md", planReference.Content);
+    }
+
+    [Fact]
     public async Task PlanDenial_KeepsPlanMode_ToolNeverRuns()
     {
         await using var harness = TestHarness.Create(
@@ -108,6 +279,33 @@ public class PlanModeEndToEndTests
             await Task.Delay(20);
         }
         return projection.Snapshot().State.PendingPermission!;
+    }
+
+    private static async Task WaitForAssistantTextAsync(IConversationProjection projection, string text)
+    {
+        var deadline = Task.Delay(TimeSpan.FromSeconds(30));
+        while (!projection.Snapshot().Rows.OfType<AssistantMessageRow>().Any(row =>
+                   row.Parts.OfType<Contracts.Conversation.TextPart>().Any(part => part.Text.Contains(text))))
+        {
+            if (deadline.IsCompleted)
+            {
+                throw new TimeoutException($"Assistant text was never committed: {text}");
+            }
+            await Task.Delay(20);
+        }
+    }
+
+    private static async Task WaitForModeAsync(IConversationProjection projection, PermissionMode mode)
+    {
+        var deadline = Task.Delay(TimeSpan.FromSeconds(30));
+        while (projection.Snapshot().State.Mode != mode)
+        {
+            if (deadline.IsCompleted)
+            {
+                throw new TimeoutException($"Mode never reached {mode} (current: {projection.Snapshot().State.Mode}).");
+            }
+            await Task.Delay(20);
+        }
     }
 
     private static async Task WaitForPhaseAsync(IConversationProjection projection, TurnPhase phase)

@@ -17,10 +17,12 @@ namespace Alcoler.Kernel.Subagents;
 /// Bridges SubagentService to real runtimes: each request gets a child AgentRuntime sharing
 /// the parent's store/workspace/providers with the subagent dispatch tools removed and the
 /// tool set filtered to the agent type's scope. The child's system prompt is composed from
-/// SubagentPrompts and installed via the per-session CustomSystemPrompt channel. Child
-/// sessions run in Yolo mode because no UI answers a child broker; the parent already
-/// approved the Agent call and the tool scope constrains the child. Completion mirroring
-/// rides on the child's terminal turn signal for both foreground and background runs.
+/// SubagentPrompts and installed via the per-session CustomSystemPrompt channel. Children
+/// inherit plan mode when the parent is planning; otherwise they run in Yolo because no UI
+/// answers a child broker and the parent already approved the Agent call. Interactive
+/// tools are removed from plan-mode children so they cannot stall on a missing broker.
+/// Completion mirroring rides on the child's terminal turn signal for both foreground and
+/// background runs.
 /// </summary>
 public static class SubagentWiring
 {
@@ -79,17 +81,26 @@ public static class SubagentWiring
     private static string ResolveArtifactsRoot(AgentRuntime runtime) =>
         runtime.Options.SubagentOutputRoot ?? Path.Combine(Path.GetTempPath(), "alcoler-agents");
 
+    public static PermissionMode ResolveChildMode(PermissionMode parentMode) =>
+        parentMode == PermissionMode.Plan ? PermissionMode.Plan : PermissionMode.Yolo;
+
     /// <summary>
-    /// ZCode removes ExitPlanMode from every child (no plan-approval surface below the parent);
+    /// ExitPlanMode is removed from every child because plan approval exists only at the parent;
     /// Agent/Task recursion and parent-side SendMessage are removed on top of the type scope.
     /// </summary>
     public static IReadOnlyList<ITool> SelectChildTools(
         IReadOnlyList<ITool> tools,
         SubagentRequest request,
-        RespondToCoordinatorTool? coordinatorResponse = null)
+        RespondToCoordinatorTool? coordinatorResponse = null,
+        PermissionMode childMode = PermissionMode.Yolo)
     {
         var hidden = new HashSet<string>(ChildHiddenTools, StringComparer.OrdinalIgnoreCase);
         IEnumerable<ITool> scope = tools.Where(tool => !hidden.Contains(tool.Contract.Name));
+        if (childMode == PermissionMode.Plan)
+        {
+            // No UI answers a child broker; interactive tools would stall until the broker timeout.
+            scope = scope.Where(tool => !tool.Metadata.RequiresUserInteraction);
+        }
         if (string.Equals(request.AgentType, SubagentPrompts.ExploreAgentType, StringComparison.Ordinal))
             scope = scope.Where(tool => SubagentPrompts.ExploreToolScope.Contains(tool.Contract.Name, StringComparer.OrdinalIgnoreCase));
         if (request.AllowedTools is { Count: > 0 })
@@ -121,6 +132,8 @@ public static class SubagentWiring
             ?? throw new InvalidOperationException(
                 $"parent session {request.ParentSessionId} was not found; subagents need a WorkspaceRoot");
         var inheritedShell = parentRuntime?.Shell ?? parentRecord?.Shell;
+        var parentMode = parentRuntime?.Mode ?? parentRecord?.PermissionMode ?? PermissionMode.Yolo;
+        var childMode = ResolveChildMode(parentMode);
 
         var selection = request.ModelSelection ?? runtime.CurrentDefaultModel;
         string BuildChildPrompt(ShellEnvironment? shell) => SubagentPrompts.BuildChildSystemPrompt(
@@ -149,7 +162,7 @@ public static class SubagentWiring
             Store = options.Store,
             Artifacts = options.Artifacts,
             Providers = runtime.CurrentProviders,
-            Tools = SelectChildTools(parentRuntime?.ToolRegistry.Tools ?? options.Tools, request, responseTool),
+            Tools = SelectChildTools(parentRuntime?.ToolRegistry.Tools ?? options.Tools, request, responseTool, childMode),
             WorkspaceFactory = options.WorkspaceFactory,
             PermissionRules = options.PermissionRules,
             Clock = options.Clock,
@@ -162,10 +175,11 @@ public static class SubagentWiring
             GitSnapshotProvider = options.GitSnapshotProvider,
             UserSkillsBase = options.UserSkillsBase,
             DisabledSkillPathsProvider = options.DisabledSkillPathsProvider,
+            PlanFileStore = options.PlanFileStore,
         });
 
         var handle = await childRuntime.CreateSessionAsync(
-            new SessionOptions(root, request.Description, PermissionMode.Yolo, request.ModelSelection,
+            new SessionOptions(root, request.Description, childMode, request.ModelSelection,
                 ParentSessionId: request.ParentSessionId, Shell: inheritedShell),
             ct);
 

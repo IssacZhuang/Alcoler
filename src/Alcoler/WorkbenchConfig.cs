@@ -149,4 +149,6 @@ public static class WorkbenchDataPaths
     public static string ArtifactsPath => Path.Combine(Root, "artifacts");
 
     public static string ExecPath => Path.Combine(Root, "exec");
+
+    public static string PlansPath => Path.Combine(Root, "plans");
 }

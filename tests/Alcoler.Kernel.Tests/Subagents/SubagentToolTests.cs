@@ -43,7 +43,7 @@ public class SubagentToolTests
         Assert.Equal(SideEffectScope.Session, metadata.SideEffectScope);
         Assert.Equal(RiskLevel.Low, metadata.RiskLevel);
         Assert.False(metadata.NeedsApproval);
-        Assert.False(metadata.AllowedInPlanMode);
+        Assert.True(metadata.AllowedInPlanMode);
     }
 
     [Theory]

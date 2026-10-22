@@ -65,7 +65,8 @@ public sealed record SessionRuntimeDeps(
     ILogger<SessionRuntime> Logger,
     SessionRuntimeOptions Options,
     IArtifactStore Artifacts,
-    ITodoStore? TodoStore = null);
+    ITodoStore? TodoStore = null,
+    IPlanFileStore? PlanFileStore = null);
 
 public sealed class SessionRuntime : IAsyncDisposable
 {
@@ -87,6 +88,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly ToolBatchRunner _toolRunner;
     private readonly ToolCallExecutor _toolExecutor;
     private readonly RuntimeSessionCommands _sessionCommands;
+    private readonly IPlanFileStore _planFiles;
     private readonly FileReadState _fileReads = new();
     private readonly ShellSessionState _shell;
     private readonly BackgroundJobService _backgroundJobs;
@@ -138,6 +140,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _toolExecutor = new ToolCallExecutor(deps.Tools, _permissions, _ => _permissions.Mode);
         _toolRunner = new ToolBatchRunner(scheduler, _toolExecutor);
         _sessionCommands = new RuntimeSessionCommands(this);
+        _planFiles = deps.PlanFileStore ?? NullPlanFileStore.Instance;
         _shell = new ShellSessionState(record.WorkspaceRoot, record.Shell);
         _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync);
         _subagentTasks = deps.Tools.Tools.OfType<ISubagentTasks>().FirstOrDefault();
@@ -183,6 +186,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     internal string? LastTurnError { get; private set; }
 
     internal TurnPhase Phase => _turnMachine.Phase;
+
+    public PermissionMode Mode => _permissions.Mode;
 
     internal SessionActivitySnapshot ActivitySnapshot()
     {
@@ -253,10 +258,13 @@ public sealed class SessionRuntime : IAsyncDisposable
                 case SetModeCommand setMode:
                     SetPermissionMode(setMode.Mode);
                     await PersistRecordAsync(ct,
-                        record => record with { PermissionMode = setMode.Mode, UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
+                        record => ApplyModeTransition(record, setMode.Mode) with { UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
                     await EmitAsync(new SessionModeChangedEvent(setMode.Mode), persist: true).ConfigureAwait(false);
                     BumpRevision();
                     return CommandAck.AcceptedAt(setMode.CommandId, Revision);
+
+                case ExitPlanModeCommand exitPlan:
+                    return await HandleExitPlanModeAsync(exitPlan, ct).ConfigureAwait(false);
 
                 case SwitchModelCommand switchModel:
                     try
@@ -350,6 +358,41 @@ public sealed class SessionRuntime : IAsyncDisposable
         _contextUsage = null;
         await EmitAsync(new ConversationRewoundEvent(
             command.TargetMessageId, cutAfterMessageId, keptIds, cutEventSequence), persist: true).ConfigureAwait(false);
+        BumpRevision();
+        return CommandAck.AcceptedAt(command.CommandId, Revision);
+    }
+
+    private async Task<CommandAck> HandleExitPlanModeAsync(ExitPlanModeCommand command, CancellationToken ct)
+    {
+        if (_permissions.Mode != PermissionMode.Plan)
+            return CommandAck.Rejected(command.CommandId, Revision, "session is not in plan mode");
+        if (string.IsNullOrWhiteSpace(command.Plan))
+            return CommandAck.Rejected(command.CommandId, Revision, "plan must not be empty");
+
+        try
+        {
+            await _planFiles.WriteAsync(_record.Id, command.Plan, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _deps.Logger.LogWarning(ex, "Writing the approved plan file failed for session {SessionId}", _record.Id);
+        }
+
+        var target = _record.PreviousPermissionMode is { } previous && previous != PermissionMode.Plan
+            ? previous
+            : PermissionMode.Edit;
+        SetPermissionMode(target);
+        await PersistRecordAsync(ct, record => record with
+        {
+            PermissionMode = target,
+            PreviousPermissionMode = null,
+            UpdatedAt = _deps.Clock.GetUtcNow(),
+        }).ConfigureAwait(false);
+        await EmitAsync(new SessionModeChangedEvent(target), persist: true).ConfigureAwait(false);
         BumpRevision();
         return CommandAck.AcceptedAt(command.CommandId, Revision);
     }
@@ -815,12 +858,23 @@ public sealed class SessionRuntime : IAsyncDisposable
         _permissions.SetMode(mode);
     }
 
+    private static SessionRecord ApplyModeTransition(SessionRecord record, PermissionMode mode)
+    {
+        var previous = mode == PermissionMode.Plan
+            ? record.PermissionMode == PermissionMode.Plan
+                ? record.PreviousPermissionMode
+                : record.PermissionMode
+            : null;
+        return record with { PermissionMode = mode, PreviousPermissionMode = previous };
+    }
+
     private async Task ApplyInputIntentAsync(SendTextCommand command)
     {
         if (command.Mode is { } mode)
         {
             SetPermissionMode(mode);
-            await PersistRecordAsync(_sessionCts.Token, record => record with { PermissionMode = mode }).ConfigureAwait(false);
+            await PersistRecordAsync(_sessionCts.Token,
+                record => ApplyModeTransition(record, mode)).ConfigureAwait(false);
             await EmitAsync(new SessionModeChangedEvent(mode), persist: true).ConfigureAwait(false);
         }
         if (command.ModelSelection is { } selection)
@@ -1361,6 +1415,20 @@ public sealed class SessionRuntime : IAsyncDisposable
             StrongId.NewPartId(), outcome.Call.Id, outcome.Result.Content, outcome.Result.IsError, outcome.Result.StructuredOutput));
         await CommitMessageAsync(new ConversationMessage(
             StrongId.NewMessageId(), MessageRole.User, [.. results], _deps.Clock.GetUtcNow())).ConfigureAwait(false);
+
+        // Follow-up feedback is committed after the tool results as a real user message.
+        foreach (var outcome in batch.Outcomes)
+        {
+            if (outcome.Result.FollowUpUserInput is not { } input || string.IsNullOrWhiteSpace(input))
+                continue;
+            await CommitMessageAsync(new ConversationMessage(
+                StrongId.NewMessageId(),
+                MessageRole.User,
+                [new TextPart(StrongId.NewPartId(), input.Trim())],
+                _deps.Clock.GetUtcNow(),
+                Source: MessageSource.RealUser,
+                Presentation: MessagePresentation.UserSteer)).ConfigureAwait(false);
+        }
     }
 
     private Task<bool> ExecuteCompactionAsync(CompactTrigger trigger, string? instructions, CancellationToken ct,
@@ -1507,7 +1575,11 @@ public sealed class SessionRuntime : IAsyncDisposable
         var recentlyRead = _history.RecentReads()
             .OrderByDescending(read => read.ReadAt)
             .ToList();
-        var attachments = CompactionPlanner.BuildRecentlyReadFilesAttachments(recentlyRead, plan.Selection.PreservedTail);
+        var attachments = new List<ConversationMessage>();
+        var approvedPlan = await _planFiles.ReadAsync(_record.Id, ct).ConfigureAwait(false);
+        if (CompactionPlanner.BuildApprovedPlanAttachment(approvedPlan) is { } planAttachment)
+            attachments.Add(planAttachment);
+        attachments.AddRange(CompactionPlanner.BuildRecentlyReadFilesAttachments(recentlyRead, plan.Selection.PreservedTail));
         var postCompact = CompactionPlanner.BuildPostCompactHistory(
             plan,
             formattedSummary,
@@ -2130,6 +2202,13 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             await runtime.SubmitAsync(
                 new SetModeCommand(StrongId.NewCommandId(), runtime.SessionId, 0, mode),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        public async ValueTask ExitPlanModeAsync(string plan, CancellationToken cancellationToken)
+        {
+            await runtime.SubmitAsync(
+                new ExitPlanModeCommand(StrongId.NewCommandId(), runtime.SessionId, 0, plan),
                 cancellationToken).ConfigureAwait(false);
         }
     }

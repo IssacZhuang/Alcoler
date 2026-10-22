@@ -27,7 +27,8 @@ public sealed record SessionRecord(
     SessionTitleSource TitleSource = SessionTitleSource.Custom,
     ShellEnvironment? Shell = null,
     SessionId? ForkedFromSessionId = null,
-    MessageId? ForkedFromMessageId = null);
+    MessageId? ForkedFromMessageId = null,
+    PermissionMode? PreviousPermissionMode = null);
 
 public sealed record StoredMessage(long Sequence, ConversationMessage Message);
 

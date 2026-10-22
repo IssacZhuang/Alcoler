@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.History;
 using Alcoler.Kernel.Prompts;
@@ -123,6 +124,35 @@ public static class CompactionPlanner
                 DateTimeOffset.UtcNow, Source: MessageSource.ResumeReferencedContext));
         }
         return messages;
+    }
+
+    public static ConversationMessage? BuildApprovedPlanAttachment(PlanFileReference? planFile)
+    {
+        if (planFile is null || string.IsNullOrWhiteSpace(planFile.Content))
+            return null;
+        var content = $"""
+            A plan file exists from plan mode at: {planFile.Path}
+
+            Plan contents:
+
+            {planFile.Content.Trim()}
+
+            If this plan is relevant to the current work and not already complete, continue working on it.
+            """;
+        return new ConversationMessage(
+            StrongId.NewMessageId(),
+            MessageRole.User,
+            [new AttachmentPart(
+                StrongId.NewPartId(),
+                AttachmentKind.ResumeReferencedContext,
+                SystemReminder.Wrap(System.Text.RegularExpressions.Regex.Replace(
+                    content,
+                    @"</?system-reminder\b",
+                    match => "&lt;" + match.Value[1..],
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)),
+                ProviderVisible: true)],
+            DateTimeOffset.UtcNow,
+            Source: MessageSource.ResumeReferencedContext);
     }
 
     public const string SuppressFollowupInstruction =

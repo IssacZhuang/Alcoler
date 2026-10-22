@@ -74,6 +74,40 @@ public class SubagentWiringTests
         Assert.True(response.Metadata.AllowedInPlanMode);
     }
 
+    [Theory]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Plan, Alcoler.Contracts.Permissions.PermissionMode.Plan)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Yolo, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Edit, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Build, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
+    public void ResolveChildMode_InheritsOnlyPlan(
+        Alcoler.Contracts.Permissions.PermissionMode parent,
+        Alcoler.Contracts.Permissions.PermissionMode expected)
+    {
+        Assert.Equal(expected, SubagentWiring.ResolveChildMode(parent));
+    }
+
+    [Fact]
+    public void SelectChildTools_PlanMode_RemovesInteractiveToolsThatWouldStallOnTheBroker()
+    {
+        var interactive = new FakeTool("AskUserQuestion", new ToolMetadata(
+            ReadOnly: true,
+            Destructive: false,
+            ConcurrentSafe: false,
+            RequiresUserInteraction: true,
+            SideEffectScope: SideEffectScope.UserInteraction,
+            RiskLevel: RiskLevel.Low,
+            NeedsApproval: false,
+            AllowedInPlanMode: true));
+        var tools = new ITool[] { new FakeTool("Read"), interactive };
+
+        var selected = SubagentWiring.SelectChildTools(
+            tools,
+            Request(),
+            childMode: Alcoler.Contracts.Permissions.PermissionMode.Plan);
+
+        Assert.Equal(["Read"], selected.Select(tool => tool.Contract.Name));
+    }
+
     [Fact]
     public void SelectChildTools_UnknownAgentType_FallsBackToGeneralPurposeScope()
     {

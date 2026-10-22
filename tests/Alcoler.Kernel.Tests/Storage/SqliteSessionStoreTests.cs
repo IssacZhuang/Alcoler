@@ -30,8 +30,8 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         await using var connection = OpenRawConnection();
         Assert.Equal("wal", ExecuteScalar(connection, "PRAGMA journal_mode;"));
-        Assert.Equal(5L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
-        Assert.Equal(5L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
+        Assert.Equal(6L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
+        Assert.Equal(6L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         using var column = connection.CreateCommand();
         column.CommandText = "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('session') WHERE name = 'title_source'";
         using var reader = column.ExecuteReader();
@@ -112,7 +112,10 @@ public sealed class SqliteSessionStoreTests : IDisposable
         await using var reopened = await NewInitializedStoreAsync();
         AssertMetadata(Assert.IsType<SessionRecord>(await reopened.GetSessionAsync(record.Id, CancellationToken.None)));
         await using var raw = OpenRawConnection();
-        Assert.Equal(5L, ExecuteScalar(raw, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(6L, ExecuteScalar(raw, "SELECT MAX(version) FROM schema_version"));
+        using var previousModeColumn = raw.CreateCommand();
+        previousModeColumn.CommandText = "SELECT type FROM pragma_table_info('session') WHERE name = 'previous_permission_mode'";
+        Assert.Equal("TEXT", previousModeColumn.ExecuteScalar());
         using var column = raw.CreateCommand();
         column.CommandText = "SELECT type, \"notnull\" FROM pragma_table_info('session') WHERE name = 'shell_json'";
         using var reader = column.ExecuteReader();
@@ -588,7 +591,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         foreach (var record in expected)
             Assert.Equal(record, await reopened.GetSessionAsync(record.Id, CancellationToken.None));
         await using var connection = OpenRawConnection();
-        Assert.Equal(5L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(6L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
         Assert.Equal(0L, ExecuteScalar(connection, "SELECT COUNT(*) FROM session WHERE title_source = 'legacy'"));
     }
 

@@ -67,7 +67,7 @@ public sealed class SubagentTool : ITool, ISubagentTasks
         SideEffectScope: SideEffectScope.Session,
         RiskLevel: RiskLevel.Low,
         NeedsApproval: false,
-        AllowedInPlanMode: false);
+        AllowedInPlanMode: true);
 
     public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken)
     {

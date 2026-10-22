@@ -16,6 +16,7 @@ namespace Alcoler.Contracts.Commands;
 [JsonDerivedType(typeof(ResolveInteractionCommand), "resolve_interaction")]
 [JsonDerivedType(typeof(SwitchModelCommand), "switch_model")]
 [JsonDerivedType(typeof(SetModeCommand), "set_mode")]
+[JsonDerivedType(typeof(ExitPlanModeCommand), "exit_plan_mode")]
 [JsonDerivedType(typeof(RenameSessionCommand), "rename_session")]
 [JsonDerivedType(typeof(DeleteSessionCommand), "delete_session")]
 public abstract record ConversationCommand(
@@ -78,6 +79,12 @@ public sealed record SetModeCommand(
     SessionId SessionId,
     long BaseRevision,
     PermissionMode Mode) : ConversationCommand(CommandId, SessionId, BaseRevision);
+
+public sealed record ExitPlanModeCommand(
+    CommandId CommandId,
+    SessionId SessionId,
+    long BaseRevision,
+    string Plan) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record RenameSessionCommand(
     CommandId CommandId,

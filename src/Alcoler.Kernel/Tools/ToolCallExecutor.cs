@@ -100,7 +100,7 @@ public sealed class ToolCallExecutor
                 cancellationToken).ConfigureAwait(false);
 
             if (decision.Outcome == PermissionOutcome.Denied)
-                return DeniedResult(tool, context);
+                return DeniedResult(tool, context, decision);
 
             if (decision.Outcome == PermissionOutcome.Modified && decision.ModifiedInput is { } modified)
             {
@@ -188,11 +188,21 @@ public sealed class ToolCallExecutor
 
     private static ToolExecutionResult CancelledResult() => ToolExecutionResult.Text("Tool execution cancelled", isError: true);
 
-    private ToolExecutionResult DeniedResult(ITool tool, ToolExecutionContext context)
+    private ToolExecutionResult DeniedResult(ITool tool, ToolExecutionContext context, PermissionDecision decision)
     {
-        if (string.Equals(tool.Contract.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal)
-            && _modeResolver(context) == PermissionMode.Plan)
+        if (string.Equals(tool.Contract.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal))
+        {
+            if (_modeResolver(context) != PermissionMode.Plan)
+                return ToolExecutionResult.Text(ExitPlanModeTool.NotInPlanModeMessage, isError: true);
+            if (!string.IsNullOrWhiteSpace(decision.Feedback))
+            {
+                return ToolExecutionResult.Text(
+                    ExitPlanModeTool.PlanDeniedMessage,
+                    isError: true,
+                    followUpUserInput: decision.Feedback.Trim());
+            }
             return ToolExecutionResult.Text(ExitPlanModeTool.PlanDeniedMessage, isError: true, stopTurnAfterResult: true);
+        }
         return ToolExecutionResult.Text($"Permission denied for {tool.Contract.Name}", isError: true);
     }
 

@@ -17,7 +17,7 @@ namespace Alcoler.Adapters.Storage;
 
 public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDisposable
 {
-    private const int SchemaVersion = 5;
+    private const int SchemaVersion = 6;
 
     private static readonly (int Version, string Sql)[] Migrations =
     [
@@ -66,6 +66,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             ALTER TABLE session ADD COLUMN forked_from_message_id TEXT NULL;
             """
         ),
+        (6, "ALTER TABLE session ADD COLUMN previous_permission_mode TEXT NULL;"),
     ];
 
     private readonly string _databasePath;
@@ -133,10 +134,10 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 INSERT OR REPLACE INTO session
                     (id, workspace_root, title, permission_mode, model_selection_json,
                      created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
-                     forked_from_session_id, forked_from_message_id)
+                     forked_from_session_id, forked_from_message_id, previous_permission_mode)
                 VALUES ($id, $workspace_root, $title, $permission_mode, $model_selection_json,
                         $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source, $shell_json,
-                        $forked_from_session_id, $forked_from_message_id)
+                        $forked_from_session_id, $forked_from_message_id, $previous_permission_mode)
                 """;
             command.Parameters.AddWithValue("$id", record.Id.Value);
             command.Parameters.AddWithValue("$workspace_root", record.WorkspaceRoot);
@@ -156,6 +157,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 (object?)record.ForkedFromSessionId?.Value ?? DBNull.Value);
             command.Parameters.AddWithValue("$forked_from_message_id",
                 (object?)record.ForkedFromMessageId?.Value ?? DBNull.Value);
+            command.Parameters.AddWithValue("$previous_permission_mode",
+                record.PreviousPermissionMode?.ToString() ?? (object)DBNull.Value);
             command.ExecuteNonQuery();
         }, cancellationToken);
     }
@@ -182,7 +185,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.CommandText = """
                 SELECT workspace_root, title, permission_mode, model_selection_json,
                        created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
-                       forked_from_session_id, forked_from_message_id
+                       forked_from_session_id, forked_from_message_id, previous_permission_mode
                 FROM session
                 WHERE id = $id
                 """;
@@ -856,7 +859,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         ReadTitleSource(reader),
         DeserializeOptional<ShellEnvironment>(reader, "shell_json"),
         ReadForkedFromSessionId(reader),
-        ReadForkedFromMessageId(reader));
+        ReadForkedFromMessageId(reader),
+        ReadPreviousPermissionMode(reader));
 
     private static SessionSummary ReadSummary(SqliteDataReader reader) => new(
         new SessionId(reader.GetString(reader.GetOrdinal("id"))),
@@ -889,6 +893,14 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
     {
         var ordinal = reader.GetOrdinal("forked_from_message_id");
         return reader.IsDBNull(ordinal) ? null : new MessageId(reader.GetString(ordinal));
+    }
+
+    private static PermissionMode? ReadPreviousPermissionMode(SqliteDataReader reader)
+    {
+        var ordinal = reader.GetOrdinal("previous_permission_mode");
+        return reader.IsDBNull(ordinal)
+            ? null
+            : Enum.TryParse<PermissionMode>(reader.GetString(ordinal), out var mode) ? mode : null;
     }
 
     private static T? DeserializeOptional<T>(SqliteDataReader reader, string column)

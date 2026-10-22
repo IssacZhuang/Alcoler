@@ -9,6 +9,7 @@ public sealed class PermissionService : IPermissionGate
 {
     public const string PlanModeDenyReason = "Plan mode only allows read-only, non-destructive tools";
     public const string BrokerTimeoutReason = "permission request timed out";
+    private const string ExitPlanModeToolName = "ExitPlanMode";
     public static readonly TimeSpan DefaultBrokerTimeout = TimeSpan.FromMinutes(10);
 
     private readonly IPermissionBroker _broker;
@@ -55,7 +56,9 @@ public sealed class PermissionService : IPermissionGate
     {
         var tool = request.Tool;
 
-        if (_mode == PermissionMode.Plan && !tool.AllowedInPlanMode && !request.TreatAsReadOnly)
+        // ExitPlanMode must never reach the broker outside plan mode.
+        if (string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase)
+            && _mode != PermissionMode.Plan)
             return PermissionDecision.Deny;
 
         if (tool.RequiresUserInteraction)
@@ -65,20 +68,23 @@ public sealed class PermissionService : IPermissionGate
         var gate = EvaluateAlwaysAskGate(request);
         if (gate.Verdict == PermissionVerdict.Deny)
             return PermissionDecision.Deny;
-        if (gate.Verdict == PermissionVerdict.Allow)
-            return PermissionDecision.Allow;
-        if (gate.Verdict == PermissionVerdict.Ask)
-            return await AskBrokerAsync(request, gate.Reason!, cancellationToken).ConfigureAwait(false);
 
         // Config-disallowed tools must deny even in yolo, so this check precedes the yolo bypass.
         if (IsDisallowed(request.ToolName))
             return PermissionDecision.Deny;
 
-        if (_mode == PermissionMode.Yolo)
+        // Plan mode overrides project allow and ask rules so they cannot escalate non-plan-safe tools.
+        if (_mode == PermissionMode.Plan)
+            return DecidePlanMode(request);
+
+        if (gate.Verdict == PermissionVerdict.Ask)
+            return await AskBrokerAsync(request, gate.Reason!, cancellationToken).ConfigureAwait(false);
+
+        if (gate.Verdict == PermissionVerdict.Allow)
             return PermissionDecision.Allow;
 
-        if (_mode == PermissionMode.Plan)
-            return DecidePlanReadOnly(tool);
+        if (_mode == PermissionMode.Yolo)
+            return PermissionDecision.Allow;
 
         return await DecideByModeDefaultsAsync(request, tool, cancellationToken).ConfigureAwait(false);
     }
@@ -125,12 +131,16 @@ public sealed class PermissionService : IPermissionGate
         return (null, null);
     }
 
-    private static PermissionDecision DecidePlanReadOnly(ToolMetadata tool)
+    private static PermissionDecision DecidePlanMode(PermissionCheckRequest request)
     {
-        // AllowedInPlanMode is guaranteed by the plan transition check in CheckAsync.
-        if (tool.ReadOnly)
+        var tool = request.Tool;
+        if (tool.Destructive)
+            return PermissionDecision.Deny;
+        if (tool.ReadOnly || request.TreatAsReadOnly)
             return PermissionDecision.Allow;
-        if (tool.SideEffectScope == SideEffectScope.None && !tool.Destructive)
+        if (tool.AllowedInPlanMode)
+            return PermissionDecision.Allow;
+        if (tool.SideEffectScope == SideEffectScope.None)
             return PermissionDecision.Allow;
         return PermissionDecision.Deny;
     }
@@ -176,7 +186,8 @@ public sealed class PermissionService : IPermissionGate
             request.ToolName,
             request.Input,
             request.Tool.RiskLevel,
-            reason);
+            reason,
+            AllowsFeedback: string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase));
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var timer = _timeProvider.CreateTimer(

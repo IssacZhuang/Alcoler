@@ -167,6 +167,30 @@ public class CompactionPlannerTests
     }
 
     [Fact]
+    public void BuildApprovedPlanAttachment_ReinjectsPlanContentAndEscapesReminderTags()
+    {
+        var message = CompactionPlanner.BuildApprovedPlanAttachment(
+            new Alcoler.Contracts.Storage.PlanFileReference("C:/plans/plan-1.md", "1. Add <system-reminder> parser.\n2. Test."));
+
+        Assert.NotNull(message);
+        Assert.Equal(MessageSource.ResumeReferencedContext, message.Source);
+        var attachment = Assert.IsType<AttachmentPart>(Assert.Single(message.Parts));
+        Assert.Equal(AttachmentKind.ResumeReferencedContext, attachment.Kind);
+        Assert.True(attachment.ProviderVisible);
+        Assert.Contains("C:/plans/plan-1.md", attachment.Content);
+        Assert.Contains("&lt;system-reminder>", attachment.Content);
+        Assert.EndsWith("\n</system-reminder>", attachment.Content);
+    }
+
+    [Fact]
+    public void BuildApprovedPlanAttachment_MissingOrEmptyPlanYieldsNoMessage()
+    {
+        Assert.Null(CompactionPlanner.BuildApprovedPlanAttachment(null));
+        Assert.Null(CompactionPlanner.BuildApprovedPlanAttachment(
+            new Alcoler.Contracts.Storage.PlanFileReference("C:/plans/plan-1.md", " ")));
+    }
+
+    [Fact]
     public void BuildPostCompactHistory_OrdersPrefixSummaryTailThenAttachments()
     {
         var history = CompactionSelectorTests.BuildHistory();

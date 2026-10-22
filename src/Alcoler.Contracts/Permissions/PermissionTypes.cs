@@ -35,7 +35,8 @@ public sealed record PermissionRequest(
     string ToolName,
     JsonElement Input,
     RiskLevel RiskLevel,
-    string Reason);
+    string Reason,
+    bool AllowsFeedback = false);
 
 public enum PermissionOutcome
 {
@@ -46,7 +47,8 @@ public enum PermissionOutcome
 
 public sealed record PermissionDecision(
     PermissionOutcome Outcome,
-    JsonElement? ModifiedInput = null)
+    JsonElement? ModifiedInput = null,
+    string? Feedback = null)
 {
     public static PermissionDecision Allow { get; } = new(PermissionOutcome.Allowed);
     public static PermissionDecision Deny { get; } = new(PermissionOutcome.Denied);

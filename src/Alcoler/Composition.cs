@@ -94,6 +94,7 @@ public static class Composition
         Directory.CreateDirectory(Path.GetDirectoryName(WorkbenchDataPaths.DatabasePath)!);
         Directory.CreateDirectory(WorkbenchDataPaths.ArtifactsPath);
         Directory.CreateDirectory(WorkbenchDataPaths.ExecPath);
+        Directory.CreateDirectory(WorkbenchDataPaths.PlansPath);
 
         var store = new SqliteSessionStore(WorkbenchDataPaths.DatabasePath);
         await store.InitializeAsync(ct);
@@ -133,6 +134,7 @@ public static class Composition
             DefaultModel = WorkbenchModelCatalog.DefaultSelection(config),
             SessionTitleGenerationEnabled = true,
             TodoStore = todoStore,
+            PlanFileStore = new FilePlanFileStore(WorkbenchDataPaths.PlansPath),
             GitSnapshotProvider = GitSnapshotCollector.Collect,
             SubagentOutputRoot = WorkbenchDataPaths.ExecPath,
             ToolOutputRoot = WorkbenchDataPaths.ExecPath,

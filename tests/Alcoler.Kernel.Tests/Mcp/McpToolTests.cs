@@ -29,7 +29,7 @@ public class McpToolTests
     }
 
     [Fact]
-    public void Metadata_WithoutAnnotations_IsConservative()
+    public void Metadata_WithoutAnnotations_IsPlanSafeWhenNotDestructive()
     {
         var metadata = NewTool().Metadata;
 
@@ -39,7 +39,7 @@ public class McpToolTests
         Assert.Equal(SideEffectScope.System, metadata.SideEffectScope);
         Assert.Equal(RiskLevel.Medium, metadata.RiskLevel);
         Assert.True(metadata.NeedsApproval);
-        Assert.False(metadata.AllowedInPlanMode);
+        Assert.True(metadata.AllowedInPlanMode);
     }
 
     [Fact]

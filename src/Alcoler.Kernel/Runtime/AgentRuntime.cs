@@ -63,6 +63,8 @@ public sealed record AgentRuntimeOptions
 
     public ITodoStore? TodoStore { get; init; }
 
+    public IPlanFileStore PlanFileStore { get; init; } = NullPlanFileStore.Instance;
+
     public TimeProvider Clock { get; init; } = TimeProvider.System;
 
     public ILoggerFactory? Logging { get; init; }
@@ -181,7 +183,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             TitleSource: SessionTitleSource.Custom,
             Shell: parent.Shell,
             ForkedFromSessionId: parent.Id,
-            ForkedFromMessageId: boundaryMessageId);
+            ForkedFromMessageId: boundaryMessageId,
+            PreviousPermissionMode: parent.PreviousPermissionMode);
         var copied = active.Take(copyEnd).Select(storedMessage => storedMessage.Message).ToList();
         var events = new List<SequencedEvent>(copied.Count + completedTails.Count);
         long sequence = 1;
@@ -451,7 +454,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 SessionTitleGenerationTimeout = _options.SessionTitleGenerationTimeout,
             },
             _options.Artifacts,
-            _options.TodoStore),
+            _options.TodoStore,
+            _options.PlanFileStore),
             CancellationToken.None,
             persistStartEvents: isNewSession).ConfigureAwait(false);
         runtime.TurnStarted += OnSessionTurnStarted;

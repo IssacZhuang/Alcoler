@@ -753,6 +753,31 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public void Permission_PlanApproval_ExposesPlanPreviewAndFeedback()
+    {
+        var input = JsonSerializer.SerializeToElement(new
+        {
+            plan = "# Plan\n\n1. Add the parser.\n2. Verify.",
+            allowedPrompts = new[] { new { tool = "Bash", prompt = "dotnet test" } },
+        });
+        var pending = PendingInteractionViewModel.FromPermission(new PermissionRequest(
+            StrongId.NewInteractionId(),
+            new SessionId("sess_test"),
+            "ExitPlanMode",
+            input,
+            RiskLevel.Medium,
+            "tool requires user interaction",
+            AllowsFeedback: true));
+
+        Assert.True(pending.AllowsFeedback);
+        Assert.True(pending.HasPlanPreview);
+        Assert.Equal("# Plan\n\n1. Add the parser.\n2. Verify.", pending.PlanMarkdown);
+        Assert.Equal("Plan ready for approval", pending.PermissionTitle);
+        Assert.Equal("Approve", pending.AllowActionText);
+        Assert.Equal("Request changes", pending.DenyActionText);
+    }
+
+    [Fact]
     public void InteractionDrafts_OnlyExplicitSingleKeyboardFocusIsAutoSelectedOnContinue()
     {
         var single = new Alcoler.Contracts.Events.InteractionQuestion("Target", "Where?",

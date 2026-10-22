@@ -56,7 +56,7 @@
                             Stroke="{DynamicResource AlcolerTextSecondary}" />
                     </Border>
                     <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
-                      <TextBlock Text="Permission required" FontSize="{DynamicResource AlcolerFontBase}" FontWeight="Medium" />
+                      <TextBlock Text="{Binding PermissionTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontWeight="Medium" />
                       <TextBlock Text="{Binding ToolName}" FontSize="12"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
                     </StackPanel>
@@ -75,15 +75,25 @@
                   <StackPanel Grid.Row="1" Spacing="8">
                     <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" FontSize="12"
                                Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <Border IsVisible="{Binding HasPlanPreview}" MaxHeight="340" Padding="12" CornerRadius="8"
+                            Background="{DynamicResource AlcolerSurface}" BorderThickness="0">
+                      <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                        <controls:ConversationMarkdown Markdown="{Binding PlanMarkdown}" />
+                      </ScrollViewer>
+                    </Border>
                     <Expander Header="Details" FontSize="12">
                       <TextBlock Classes="mono" Text="{Binding InputJson}" TextWrapping="Wrap"
                                  Margin="0,4,0,0" />
                     </Expander>
+                    <TextBox x:Name="PlanFeedbackBox" IsVisible="{Binding AllowsFeedback}"
+                             Text="{Binding Feedback, Mode=TwoWay}"
+                             Watermark="Tell the agent what to change in the plan..."
+                             AcceptsReturn="True" TextWrapping="Wrap" MinHeight="56" MaxHeight="120" FontSize="12" />
                     <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                      <TextBlock Text="Enter to allow / Esc to deny" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
+                      <TextBlock Text="{Binding PermissionHint}" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
-                      <Button x:Name="DenyButton" Content="Deny" Classes="secondary" MinWidth="72" Height="28" Padding="12,0" Click="OnDenyClick" />
-                      <Button x:Name="AllowButton" Content="Allow" Classes="primary" MinWidth="72" Height="28" Padding="12,0" Click="OnAllowClick" />
+                      <Button x:Name="DenyButton" Content="{Binding DenyActionText}" Classes="secondary" MinWidth="72" Height="28" Padding="12,0" Click="OnDenyClick" />
+                      <Button x:Name="AllowButton" Content="{Binding AllowActionText}" Classes="primary" MinWidth="72" Height="28" Padding="12,0" Click="OnAllowClick" />
                     </StackPanel>
                   </StackPanel>
                 </Grid>

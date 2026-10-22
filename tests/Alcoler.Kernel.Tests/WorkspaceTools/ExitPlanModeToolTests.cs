@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
-using Alcoler.Contracts.Permissions;
 using Alcoler.Kernel.Tests.Tools;
 using Alcoler.Kernel.Tools;
 using Xunit;
@@ -44,7 +43,7 @@ public class ExitPlanModeToolTests
 
         Assert.True(result.IsError);
         Assert.Contains("session commands are not available", result.SingleText());
-        Assert.Empty(commands.SetModes);
+        Assert.Empty(commands.ApprovedPlans);
     }
 
     [Fact]
@@ -61,7 +60,8 @@ public class ExitPlanModeToolTests
         Assert.Equal(
             "User has approved your plan. You can now start coding. Start with updating your todo list if applicable.\n\n## Approved Plan:\n1. Add tests\n2. Implement the parser",
             result.SingleText());
-        Assert.Equal([PermissionMode.Edit], commands.SetModes);
+        Assert.Equal(["1. Add tests\n2. Implement the parser"], commands.ApprovedPlans);
+        Assert.Empty(commands.SetModes);
         Assert.NotNull(result.DisplaySummary);
         Assert.Contains("1. Add tests", result.DisplaySummary);
         Assert.Contains("Allowed prompts:", result.DisplaySummary);

@@ -48,7 +48,8 @@ public sealed record ToolExecutionResult(
     string? DisplaySummary = null,
     bool StopTurnAfterResult = false,
     string? StructuredOutput = null,
-    FileChangeStats? FileChange = null)
+    FileChangeStats? FileChange = null,
+    string? FollowUpUserInput = null)
 {
     public static ToolExecutionResult Text(
         string text,
@@ -56,8 +57,10 @@ public sealed record ToolExecutionResult(
         string? displaySummary = null,
         bool stopTurnAfterResult = false,
         string? structuredOutput = null,
-        FileChangeStats? fileChange = null) =>
-        new([new ToolResultText(text)], isError, displaySummary, stopTurnAfterResult, structuredOutput, fileChange);
+        FileChangeStats? fileChange = null,
+        string? followUpUserInput = null) =>
+        new([new ToolResultText(text)], isError, displaySummary, stopTurnAfterResult, structuredOutput, fileChange,
+            followUpUserInput);
 }
 
 public interface ITool
