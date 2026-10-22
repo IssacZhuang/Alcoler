@@ -496,6 +496,7 @@ public sealed class DocumentAdapterViewTests : IDisposable
 
     private static async Task ClickAsync(Window window, Button button)
     {
+        await WaitForPaneAnimationsAsync(window);
         Pump(window);
         var visual = ElementComposition.GetElementVisual(window);
         Assert.NotNull(visual);
@@ -533,9 +534,28 @@ public sealed class DocumentAdapterViewTests : IDisposable
             Pump(window);
             if (condition())
             {
+                Pump(window);
+                await WaitForPaneAnimationsAsync(window);
+                Pump(window);
                 return;
             }
             Assert.True(DateTime.UtcNow < deadline, "Document view update did not arrive within 10 seconds.");
+            await Task.Delay(10);
+        }
+    }
+
+    private static async Task WaitForPaneAnimationsAsync(Window window)
+    {
+        if (window is not MainWindow mainWindow)
+        {
+            return;
+        }
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (mainWindow.IsPaneAnimationActive)
+        {
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+            Assert.True(DateTime.UtcNow < deadline, "Pane animation did not settle within 5 seconds.");
             await Task.Delay(10);
         }
     }

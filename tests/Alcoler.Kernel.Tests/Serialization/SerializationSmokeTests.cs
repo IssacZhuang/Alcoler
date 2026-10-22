@@ -95,6 +95,13 @@ public class SerializationSmokeTests
         var sendText = Assert.IsType<SendTextCommand>(roundTripped);
         Assert.Equal(42, sendText.BaseRevision);
         Assert.Equal("do it", sendText.Text);
+
+        var target = StrongId.NewCommandId();
+        ConversationCommand remove = new RemoveQueuedInputCommand(StrongId.NewCommandId(), StrongId.NewSessionId(), 7, target);
+        var removeRoundTrip = Assert.IsType<RemoveQueuedInputCommand>(AlcolerJson.Deserialize<ConversationCommand>(
+            AlcolerJson.Serialize(remove)));
+        Assert.Equal(7, removeRoundTrip.BaseRevision);
+        Assert.Equal(target, removeRoundTrip.TargetCommandId);
     }
 
     [Fact]

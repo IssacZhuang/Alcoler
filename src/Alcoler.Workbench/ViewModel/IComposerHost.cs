@@ -28,6 +28,10 @@ public interface IComposerHost : INotifyPropertyChanged
 
     Task SendAsync();
 
+    Task WithdrawQueuedInputAsync(QueuedInput input);
+
+    Task DeleteQueuedInputAsync(QueuedInput input);
+
     Task StopAsync();
 
     Task CompactAsync();

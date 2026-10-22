@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Alcoler.Contracts.Events;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Avalonia;
@@ -461,6 +462,18 @@ public partial class ComposerView : UserControl
     }
 
     private void OnSendClick(object? sender, RoutedEventArgs e) => _ = ViewModel?.SendAsync();
+
+    private void OnWithdrawQueuedClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: QueuedInput input })
+            _ = ViewModel?.WithdrawQueuedInputAsync(input);
+    }
+
+    private void OnDeleteQueuedClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: QueuedInput input })
+            _ = ViewModel?.DeleteQueuedInputAsync(input);
+    }
 
     private void OnStopClick(object? sender, RoutedEventArgs e) => _ = ViewModel?.StopAsync();
 

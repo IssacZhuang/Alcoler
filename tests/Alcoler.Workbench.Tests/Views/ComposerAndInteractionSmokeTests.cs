@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Tools;
@@ -9,6 +10,7 @@ using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.ViewModel;
 using Alcoler.Workbench.Views;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Presenters;
@@ -265,6 +267,72 @@ public class ComposerAndInteractionSmokeTests
         Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
         Assert.True(stop.IsVisible);
         Assert.False(send.IsVisible);
+    }
+
+    private static Button QueueAction(Harness harness, string name) =>
+        harness.View.GetVisualDescendants().OfType<Button>()
+            .Single(button => AutomationProperties.GetName(button) == name);
+
+    [AvaloniaFact]
+    public async Task QueueStrip_WithdrawRestoresTextModeAndModelAndRemovesItem()
+    {
+        var commandId = StrongId.NewCommandId();
+        var selection = new ModelSelection("provider", "model");
+        var state = TestSnapshots.State() with
+        {
+            Queue = [new QueuedInput(commandId, "queued text", DateTimeOffset.UtcNow,
+                Mode: PermissionMode.Plan, ModelSelection: selection)],
+        };
+        using var harness = Show<ComposerView>(state);
+        await PumpAsync();
+
+        QueueAction(harness, "Withdraw queued message").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await PumpAsync();
+
+        var command = Assert.IsType<Contracts.Commands.RemoveQueuedInputCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal(commandId, command.TargetCommandId);
+        Assert.Equal("queued text", harness.ViewModel.Composer.Draft);
+        Assert.Equal(PermissionMode.Plan, harness.ViewModel.Composer.Mode);
+        Assert.Equal(selection, harness.ViewModel.CurrentSelection);
+    }
+
+    [AvaloniaFact]
+    public async Task QueueStrip_DeleteRemovesItemWithoutChangingTheDraft()
+    {
+        var commandId = StrongId.NewCommandId();
+        var state = TestSnapshots.State() with
+        {
+            Queue = [new QueuedInput(commandId, "queued text", DateTimeOffset.UtcNow)],
+        };
+        using var harness = Show<ComposerView>(state);
+        await PumpAsync();
+
+        QueueAction(harness, "Delete queued message").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await PumpAsync();
+
+        var command = Assert.IsType<Contracts.Commands.RemoveQueuedInputCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal(commandId, command.TargetCommandId);
+        Assert.Empty(harness.ViewModel.Composer.Draft);
+        Assert.False(harness.ViewModel.Composer.HasAttachments);
+    }
+
+    [AvaloniaFact]
+    public async Task QueueStrip_WithdrawRefusesToOverwriteAnExistingDraft()
+    {
+        var state = TestSnapshots.State() with
+        {
+            Queue = [new QueuedInput(StrongId.NewCommandId(), "queued text", DateTimeOffset.UtcNow)],
+        };
+        using var harness = Show<ComposerView>(state);
+        await PumpAsync();
+        harness.ViewModel.Composer.Draft = "existing draft";
+
+        QueueAction(harness, "Withdraw queued message").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await PumpAsync();
+
+        Assert.Empty(harness.Runtime.Submitted);
+        Assert.Equal("existing draft", harness.ViewModel.Composer.Draft);
+        Assert.Contains("Send or clear the current draft", harness.ViewModel.Banner);
     }
 
     [AvaloniaFact]
@@ -708,6 +776,7 @@ public class ComposerAndInteractionSmokeTests
             .Single(candidate => candidate.DataContext is ComposerSkillEntry { Name: "alcoler-pointer-b" });
         Assert.True(item.IsVisible);
         Assert.True(item.Bounds.Width > 0 && item.Bounds.Height > 0);
+        Assert.Equal(32, item.Bounds.Height);
 
         await ClickAsync(harness, item);
 

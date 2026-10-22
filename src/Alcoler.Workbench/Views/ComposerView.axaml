@@ -51,6 +51,14 @@
     <Style Selector="UserControl.compact TextBlock.modeLabel">
       <Setter Property="IsVisible" Value="False" />
     </Style>
+    <Style Selector="ListBox.skillList ListBoxItem">
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="Padding" Value="8,0" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
   </UserControl.Styles>
 
   <controls:ConversationLayout Padding="16,8,16,16">
@@ -68,8 +76,18 @@
               </ItemsControl.Template>
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="events:QueuedInput">
-                  <TextBlock Text="{Binding Text}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" TextWrapping="Wrap"
-                             Foreground="{DynamicResource AlcolerTextPrimary}" />
+                  <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="2">
+                    <TextBlock Text="{Binding Text}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" TextWrapping="Wrap"
+                               VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextPrimary}" />
+                    <Button Grid.Column="1" Classes="icon tiny" VerticalAlignment="Center" Click="OnWithdrawQueuedClick"
+                            ToolTip.Tip="Withdraw to composer" AutomationProperties.Name="Withdraw queued message">
+                      <controls:Icon Classes="icon small" Data="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L9 17l-4 1 1-4ZM15 5l3 3" />
+                    </Button>
+                    <Button Grid.Column="2" Classes="icon tiny" VerticalAlignment="Center" Click="OnDeleteQueuedClick"
+                            ToolTip.Tip="Delete queued message" AutomationProperties.Name="Delete queued message">
+                      <controls:Icon Classes="icon small" Data="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
+                    </Button>
+                  </Grid>
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
@@ -83,14 +101,16 @@
         <StackPanel Spacing="12">
           <Border x:Name="SkillPanel" IsVisible="False" MaxHeight="220"
                   Background="{DynamicResource AlcolerSurface}" CornerRadius="8" Padding="4">
-            <ListBox x:Name="SkillSuggestions" SelectionMode="Single" MaxHeight="212">
+            <ListBox x:Name="SkillSuggestions" Classes="skillList" SelectionMode="Single" MaxHeight="212">
               <ListBox.ItemTemplate>
                 <DataTemplate x:DataType="local:ComposerSkillEntry">
-                  <StackPanel Spacing="2" Margin="4">
-                    <TextBlock Text="{Binding Name}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" />
-                    <TextBlock Text="{Binding Description}" FontSize="{DynamicResource AlcolerFontSmall}" MaxWidth="560"
-                               TextTrimming="CharacterEllipsis" Foreground="{DynamicResource AlcolerTextSecondary}" />
-                  </StackPanel>
+                  <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+                    <TextBlock Text="{Binding Name}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                               FontWeight="Medium" MaxWidth="180" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Description}" FontSize="{DynamicResource AlcolerFontSmall}"
+                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                               Foreground="{DynamicResource AlcolerTextSecondary}" />
+                  </Grid>
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>

@@ -9,6 +9,7 @@ namespace Alcoler.Contracts.Commands;
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
 [JsonDerivedType(typeof(SendTextCommand), "send_text")]
+[JsonDerivedType(typeof(RemoveQueuedInputCommand), "remove_queued_input")]
 [JsonDerivedType(typeof(StopCommand), "stop")]
 [JsonDerivedType(typeof(CompactCommand), "compact")]
 [JsonDerivedType(typeof(ResolveInteractionCommand), "resolve_interaction")]
@@ -32,6 +33,12 @@ public sealed record SendTextCommand(
     ModelSelection? ModelSelection = null,
     SendTextDelivery Delivery = SendTextDelivery.Queue,
     IReadOnlyList<InputImageBlock>? Images = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
+
+public sealed record RemoveQueuedInputCommand(
+    CommandId CommandId,
+    SessionId SessionId,
+    long BaseRevision,
+    CommandId TargetCommandId) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record StopCommand(
     CommandId CommandId,

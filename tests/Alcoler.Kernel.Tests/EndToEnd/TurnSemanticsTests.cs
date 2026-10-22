@@ -307,6 +307,50 @@ public class TurnSemanticsTests
         Assert.Contains("The user sent a new message while you were working:", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RemoveQueuedInput_DeletesOnlyTargetAndSurvivesReplay()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            ToolCall("Gate", new { }), Text("active answer"), Text("kept answer"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var kept = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "kept queue");
+        var removed = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "removed queue");
+        Assert.True((await runtime.SubmitAsync(kept, CancellationToken.None)).Accepted);
+        Assert.True((await runtime.SubmitAsync(removed, CancellationToken.None)).Accepted);
+        await WaitForProjectionAsync(projection, snapshot => snapshot.State.Queue.Count == 2);
+
+        var ack = await runtime.SubmitAsync(new RemoveQueuedInputCommand(
+            StrongId.NewCommandId(), session.Id, 0, removed.CommandId), CancellationToken.None);
+        Assert.True(ack.Accepted);
+        var afterRemove = await WaitForProjectionAsync(projection, snapshot => snapshot.State.Queue.Count == 1);
+        Assert.Equal(kept.CommandId, Assert.Single(afterRemove.State.Queue).CommandId);
+        var duplicate = await runtime.SubmitAsync(new RemoveQueuedInputCommand(
+            StrongId.NewCommandId(), session.Id, 0, removed.CommandId), CancellationToken.None);
+        Assert.False(duplicate.Accepted);
+
+        release.TrySetResult();
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 3);
+
+        Assert.False(RequestsContain(harness.Model.Requests, "removed queue"));
+        Assert.Contains("kept queue", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        var discarded = Assert.Single(events.Select(entry => entry.Event).OfType<InputDiscardedEvent>());
+        Assert.Equal(removed.CommandId, discarded.CommandId);
+
+        await runtime.DisposeAsync();
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var replay = resumed.Subscribe(session.Id);
+        Assert.Empty(replay.Snapshot().State.Queue);
+    }
+
     [Theory]
     [InlineData(SendTextDelivery.Queue)]
     [InlineData(SendTextDelivery.Guide)]
@@ -805,6 +849,44 @@ public class TurnSemanticsTests
     }
 
     [Theory]
+    [InlineData(TurnOutcome.Cancelled, ToolCallStatus.Cancelled)]
+    [InlineData(TurnOutcome.Failed, ToolCallStatus.Failed)]
+    public void TurnCompleted_ClosesOpenToolRows(TurnOutcome outcome, ToolCallStatus expected)
+    {
+        var builder = new ProjectionBuilder();
+        var sessionId = StrongId.NewSessionId();
+        var turnId = StrongId.NewTurnId();
+        var startedAt = DateTimeOffset.UtcNow;
+        builder.Apply(new SequencedEvent(1, sessionId, startedAt,
+            new ToolCallStartedEvent(turnId, ToolCallId, "Bash", JsonSerializer.SerializeToElement(new { }))));
+        builder.Apply(new SequencedEvent(2, sessionId, startedAt.AddSeconds(1),
+            new TurnCompletedEvent(turnId, outcome)));
+
+        var row = Assert.Single(builder.Rows().OfType<ToolCallRow>());
+        Assert.Equal(expected, row.Status);
+        Assert.Equal(outcome == TurnOutcome.Failed, row.IsError);
+        Assert.Equal(TurnPhase.Idle, builder.State.Phase);
+    }
+
+    [Fact]
+    public void TurnFailed_ClosesOpenToolRows()
+    {
+        var builder = new ProjectionBuilder();
+        var sessionId = StrongId.NewSessionId();
+        var turnId = StrongId.NewTurnId();
+        var startedAt = DateTimeOffset.UtcNow;
+        builder.Apply(new SequencedEvent(1, sessionId, startedAt,
+            new ToolCallStartedEvent(turnId, ToolCallId, "Bash", JsonSerializer.SerializeToElement(new { }))));
+        builder.Apply(new SequencedEvent(2, sessionId, startedAt.AddSeconds(1),
+            new TurnFailedEvent(turnId, "runtime crashed")));
+
+        var row = Assert.Single(builder.Rows().OfType<ToolCallRow>());
+        Assert.Equal(ToolCallStatus.Failed, row.Status);
+        Assert.True(row.IsError);
+        Assert.Equal(TurnPhase.Error, builder.State.Phase);
+    }
+
+    [Theory]
     [InlineData(ToolCallStatus.Running)]
     [InlineData(ToolCallStatus.Succeeded)]
     [InlineData(ToolCallStatus.Failed)]
@@ -1021,6 +1103,46 @@ public class TurnSemanticsTests
         Assert.NotNull(repair);
         Assert.Equal("[Tool execution was interrupted before resume]", Assert.Single(repair.Content.OfType<ToolResultText>()).Text);
         Assert.False(repair.IsError);
+    }
+
+    [Fact]
+    public async Task Resume_AfterCrashDuringToolCall_ClosesInterruptedTurn()
+    {
+        await using var harness = ScriptedCallHarness.Create(Text("unused"));
+        var sessionId = StrongId.NewSessionId();
+        var now = DateTimeOffset.UtcNow;
+        var turnId = StrongId.NewTurnId();
+        var callId = new ToolCallId("call_crashed");
+        var input = JsonSerializer.SerializeToElement(new { command = "sleep 30" });
+        var assistant = new ConversationMessage(
+            StrongId.NewMessageId(),
+            MessageRole.Assistant,
+            [new ToolCallPart(StrongId.NewPartId(), callId, "Bash", input)],
+            now);
+
+        await using (var store = harness.OpenStore())
+        {
+            await store.UpsertSessionAsync(new SessionRecord(
+                sessionId, harness.Root, "Interrupted", PermissionMode.Yolo, null, now, now), CancellationToken.None);
+            await store.AppendMessagesAsync(sessionId, [assistant], 0, CancellationToken.None);
+            await store.AppendDurableEventsAsync(
+            [
+                new SequencedEvent(10, sessionId, now, new TurnStartedEvent(turnId, StrongId.NewCommandId())),
+                new SequencedEvent(11, sessionId, now.AddSeconds(1),
+                    new ToolCallStartedEvent(turnId, callId, "Bash", input)),
+            ], CancellationToken.None);
+        }
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(sessionId, CancellationToken.None);
+        using var projection = resumed.Subscribe(sessionId);
+        var snapshot = projection.Snapshot();
+
+        Assert.Equal(TurnPhase.Idle, snapshot.State.Phase);
+        Assert.Null(snapshot.State.ActiveTurn);
+        var row = Assert.Single(snapshot.Rows.OfType<ToolCallRow>());
+        Assert.NotEqual(ToolCallStatus.Running, row.Status);
+        Assert.NotEqual(ToolCallStatus.Pending, row.Status);
     }
 
     [Fact]

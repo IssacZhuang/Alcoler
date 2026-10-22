@@ -222,6 +222,9 @@ public sealed class SessionRuntime : IAsyncDisposable
                 case SendTextCommand sendText:
                     return await HandleSendTextAsync(sendText, ct).ConfigureAwait(false);
 
+                case RemoveQueuedInputCommand remove:
+                    return await HandleRemoveQueuedInputAsync(remove).ConfigureAwait(false);
+
                 case StopCommand stop:
                     _turnCts?.Cancel();
                     BumpRevision();
@@ -363,6 +366,30 @@ public sealed class SessionRuntime : IAsyncDisposable
             BumpRevision();
         }
         _pendingInputs.Enqueue(input);
+    }
+
+    private async Task<CommandAck> HandleRemoveQueuedInputAsync(RemoveQueuedInputCommand remove)
+    {
+        if (!TryRemovePendingInput(remove.TargetCommandId))
+        {
+            return CommandAck.Rejected(remove.CommandId, Revision,
+                "queued input was already consumed or does not exist");
+        }
+        await EmitAsync(new InputDiscardedEvent(remove.TargetCommandId, "removed by user"), persist: true)
+            .ConfigureAwait(false);
+        BumpRevision();
+        return CommandAck.AcceptedAt(remove.CommandId, Revision);
+    }
+
+    private bool TryRemovePendingInput(CommandId commandId)
+    {
+        if (!_pendingInputs.Any(input => input.Command?.CommandId == commandId))
+            return false;
+        var retained = _pendingInputs.Where(input => input.Command?.CommandId != commandId).ToArray();
+        _pendingInputs.Clear();
+        foreach (var input in retained)
+            _pendingInputs.Enqueue(input);
+        return true;
     }
 
     private PendingTurnInput? DequeueOldestInput()
@@ -1707,6 +1734,12 @@ public sealed class SessionRuntime : IAsyncDisposable
         _history.AppendRange(messages.Select(m => m.Message).ToList());
         _titleAttempted = messages.Any(message => IsRealUserTurn(message.Message));
         await RepairDanglingToolCallsAsync(messages).ConfigureAwait(false);
+        // ZCode cold resume: a crash leaves TurnStarted without a terminal event; closing it
+        // in the replay stream keeps the projection idle and hides stop/running controls.
+        if (FindInterruptedTurn(durable) is { } interruptedTurn)
+        {
+            EmitForReplay(new TurnCompletedEvent(interruptedTurn, TurnOutcome.Cancelled));
+        }
         _usageAnchorIndex = -1;
         if (messages.Count > 0)
         {
@@ -1726,6 +1759,25 @@ public sealed class SessionRuntime : IAsyncDisposable
                 EmitForReplay(new ContextUsageUpdatedEvent(_contextUsage));
             }
         }
+    }
+
+    private static TurnId? FindInterruptedTurn(IReadOnlyList<SequencedEvent> durable)
+    {
+        TurnId? activeTurn = null;
+        foreach (var entry in durable)
+        {
+            switch (entry.Event)
+            {
+                case TurnStartedEvent started:
+                    activeTurn = started.TurnId;
+                    break;
+                case TurnCompletedEvent:
+                case TurnFailedEvent:
+                    activeTurn = null;
+                    break;
+            }
+        }
+        return activeTurn;
     }
 
     private static IEnumerable<(SessionEvent Event, DateTimeOffset OccurredAt)> ReconstructTimeline(

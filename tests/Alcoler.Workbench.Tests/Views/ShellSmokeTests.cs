@@ -421,25 +421,78 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
-    public void Shell_UsesCompactChromeAndPreservesSidebarToggleWidth()
+    public async Task Shell_UsesCompactChromeAndPreservesSidebarToggleWidth()
     {
         using var viewModel = CreateWorkbench();
         var window = new MainWindow(viewModel);
         window.Show();
-        Dispatcher.UIThread.RunJobs();
-        var shell = window.FindControl<Grid>("ShellGrid")!;
-        var sidebar = window.FindControl<Workbench.Views.SidebarView>("Sidebar")!;
-        var width = shell.ColumnDefinitions[0].Width.Value;
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            var shell = window.FindControl<Grid>("ShellGrid")!;
+            var sidebar = window.FindControl<Workbench.Views.SidebarView>("Sidebar")!;
+            var width = shell.ColumnDefinitions[0].Width.Value;
 
-        Assert.Equal(SystemDecorations.None, window.SystemDecorations);
-        Assert.Equal(48, window.FindControl<Grid>("MainCard")!.RowDefinitions[1].Height.Value);
-        viewModel.ToggleSidebarCommand.Execute(null);
-        Assert.False(sidebar.IsVisible);
-        Assert.Equal(0, shell.ColumnDefinitions[0].Width.Value);
-        viewModel.ToggleSidebarCommand.Execute(null);
-        Assert.True(sidebar.IsVisible);
-        Assert.Equal(width, shell.ColumnDefinitions[0].Width.Value);
-        window.Close();
+            Assert.Equal(SystemDecorations.None, window.SystemDecorations);
+            Assert.Equal(48, window.FindControl<Grid>("MainCard")!.RowDefinitions[1].Height.Value);
+            viewModel.ToggleSidebarCommand.Execute(null);
+            Assert.True(sidebar.IsVisible);
+            Assert.Equal(width, shell.ColumnDefinitions[0].Width.Value);
+            await WaitUntilAsync(() => shell.ColumnDefinitions[0].Width.Value == 0);
+            Assert.False(sidebar.IsVisible);
+            viewModel.ToggleSidebarCommand.Execute(null);
+            Assert.True(sidebar.IsVisible);
+            Assert.Equal(0, shell.ColumnDefinitions[0].Width.Value);
+            await WaitUntilAsync(() => shell.ColumnDefinitions[0].Width.Value == width);
+            Assert.True(sidebar.IsVisible);
+            Assert.Equal(width, shell.ColumnDefinitions[0].Width.Value);
+        }
+        finally { window.Close(); }
+    }
+
+    [AvaloniaFact]
+    public async Task SidePane_AnimatesOpenAndClosed()
+    {
+        using var viewModel = CreateWorkbench();
+        var window = new MainWindow(viewModel) { Width = 1400, Height = 900 };
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            var shell = window.FindControl<Grid>("ShellGrid")!;
+            var host = window.FindControl<Border>("DocumentsHost")!;
+            var column = shell.ColumnDefinitions[4];
+            Assert.False(host.IsVisible);
+            Assert.Equal(0, column.Width.Value);
+
+            viewModel.ToggleSidePaneCommand.Execute(null);
+            Assert.True(host.IsVisible);
+            Assert.Equal(0, column.Width.Value);
+            await WaitUntilAsync(() => !window.IsPaneAnimationActive);
+            var openWidth = column.Width.Value;
+            Assert.True(openWidth >= 240);
+            Assert.True(host.IsVisible);
+
+            viewModel.ToggleSidePaneCommand.Execute(null);
+            Assert.True(host.IsVisible);
+            Assert.Equal(openWidth, column.Width.Value);
+            await WaitUntilAsync(() => !window.IsPaneAnimationActive);
+            Assert.Equal(0, column.Width.Value);
+            Assert.False(host.IsVisible);
+        }
+        finally { window.Close(); }
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition())
+        {
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(DateTime.UtcNow < deadline, "Pane animation did not settle within 5 seconds.");
+            await Task.Delay(10);
+        }
+        Dispatcher.UIThread.RunJobs();
     }
 
     [AvaloniaFact]

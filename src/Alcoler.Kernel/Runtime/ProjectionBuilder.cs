@@ -85,6 +85,9 @@ public sealed class ProjectionBuilder
                         ContextUsageTokens = _state.ContextUsageTokens ?? turnCompleted.FinalUsage?.ContextUsageTokens ?? turnCompleted.FinalUsage?.InputTokens,
                     };
                     _streamingText.Clear();
+                    CloseOpenToolRows(
+                        turnCompleted.Outcome == TurnOutcome.Failed ? ToolCallStatus.Failed : ToolCallStatus.Cancelled,
+                        ops);
                     stateChanged = true;
                     break;
 
@@ -97,6 +100,7 @@ public sealed class ProjectionBuilder
                         PendingInteraction = null,
                     };
                     _streamingText.Clear();
+                    CloseOpenToolRows(ToolCallStatus.Failed, ops);
                     Append(new SystemNoticeRow(
                         $"error:{sequenced.Sequence}",
                         "turn_error",
@@ -344,6 +348,21 @@ public sealed class ProjectionBuilder
                 IsError: false,
                 Duration: null,
                 StartedAt: message.CreatedAt), ops);
+        }
+    }
+
+    private void CloseOpenToolRows(ToolCallStatus status, List<RowOp> ops)
+    {
+        for (var i = 0; i < _rows.Count; i++)
+        {
+            if (_rows[i] is not ToolCallRow row
+                || row.Status is not (ToolCallStatus.Pending or ToolCallStatus.Running or ToolCallStatus.AwaitingPermission))
+            {
+                continue;
+            }
+            var closed = row with { Status = status, IsError = status == ToolCallStatus.Failed };
+            _rows[i] = closed;
+            ops.Add(new RowUpserted(closed));
         }
     }
 

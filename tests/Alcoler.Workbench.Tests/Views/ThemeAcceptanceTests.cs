@@ -449,6 +449,7 @@ public sealed class ThemeAcceptanceTests
 
     private static async Task RenderAsync(TopLevel root)
     {
+        await SettlePaneAnimationsAsync(root);
         Dispatcher.UIThread.RunJobs();
         root.UpdateLayout();
         var visual = ElementComposition.GetElementVisual(root)!;
@@ -458,5 +459,22 @@ public sealed class ThemeAcceptanceTests
         await rendered.WaitAsync(TimeSpan.FromSeconds(5));
         Dispatcher.UIThread.RunJobs();
         root.UpdateLayout();
+        await SettlePaneAnimationsAsync(root);
+    }
+
+    private static async Task SettlePaneAnimationsAsync(TopLevel root)
+    {
+        if (root is not MainWindow window)
+        {
+            return;
+        }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (window.IsPaneAnimationActive)
+        {
+            Dispatcher.UIThread.RunJobs();
+            root.UpdateLayout();
+            Assert.True(DateTime.UtcNow < deadline, "Pane animation did not settle within 5 seconds.");
+            await Task.Delay(10);
+        }
     }
 }

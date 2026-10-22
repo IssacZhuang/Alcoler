@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using Alcoler.Workbench.Ui;
 using Alcoler.Workbench.Controls;
 using Alcoler.Workbench.ViewModel;
@@ -9,14 +10,20 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using LayoutHorizontalAlignment = Avalonia.Layout.HorizontalAlignment;
 
 namespace Alcoler.Workbench;
 
 public partial class MainWindow : Window
 {
+    private static readonly TimeSpan PaneAnimationDuration = TimeSpan.FromMilliseconds(180);
+    private readonly Dictionary<ColumnDefinition, PaneAnimation> _columnAnimations = [];
     private double _sidebarWidth = 264;
     private double _sidePaneWidth;
     private double _terminalHeight;
+    private bool? _sidebarOpenState;
+    private bool? _sidePaneOpenState;
+    private bool _paneStateInitialized;
     private WorkbenchViewModel? _viewModel;
     private ConversationViewModel? _conversation;
 
@@ -69,6 +76,8 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        CancelColumnAnimation(ShellGrid.ColumnDefinitions[0]);
+        CancelColumnAnimation(SidePaneColumn);
         if (_viewModel is not null)
         {
             _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
@@ -163,24 +172,43 @@ public partial class MainWindow : Window
 
     internal void FocusComposer() => MainComposer.FocusInput();
 
+    internal bool IsPaneAnimationActive => _columnAnimations.Count > 0;
+
     private void ApplyPaneVisibility()
     {
         var sidebarOpen = _viewModel?.IsSidebarVisible != false;
-        var sidebarColumn = ShellGrid.ColumnDefinitions[0];
-        Sidebar.IsVisible = sidebarOpen;
-        SidebarSplitter.IsVisible = sidebarOpen;
-        sidebarColumn.MinWidth = sidebarOpen ? 264 : 0;
-        sidebarColumn.Width = new GridLength(sidebarOpen ? Math.Clamp(_sidebarWidth, 264, Math.Max(264, Bounds.Width / 2)) : 0);
-        ShellGrid.ColumnDefinitions[1].Width = new GridLength(sidebarOpen ? 4 : 0);
-
         var sidePaneOpen = _viewModel?.IsSidePaneVisible == true;
-        var availableWidth = Math.Max(620, Bounds.Width - (sidebarOpen ? _sidebarWidth + 4 : 0) - 12);
-        var maxPaneWidth = Math.Max(240, Math.Min(availableWidth * 0.65, availableWidth - 340));
-        SidePaneColumn.MinWidth = sidePaneOpen ? 240 : 0;
-        SidePaneColumn.MaxWidth = sidePaneOpen ? maxPaneWidth : double.PositiveInfinity;
-        SidePaneColumn.Width = new GridLength(sidePaneOpen
-            ? Math.Clamp(_sidePaneWidth > 0 ? _sidePaneWidth : availableWidth * 0.45, 240, maxPaneWidth)
-            : 0);
+
+        if (!_paneStateInitialized)
+        {
+            _paneStateInitialized = true;
+            _sidebarOpenState = sidebarOpen;
+            _sidePaneOpenState = sidePaneOpen;
+            ApplySidebarLayout(sidebarOpen);
+            ApplySidePaneLayout(sidePaneOpen);
+        }
+        else
+        {
+            if (_sidebarOpenState != sidebarOpen)
+            {
+                _sidebarOpenState = sidebarOpen;
+                AnimateSidebar(sidebarOpen);
+            }
+            else if (!_columnAnimations.ContainsKey(ShellGrid.ColumnDefinitions[0]))
+            {
+                ApplySidebarLayout(sidebarOpen);
+            }
+
+            if (_sidePaneOpenState != sidePaneOpen)
+            {
+                _sidePaneOpenState = sidePaneOpen;
+                AnimateSidePane(sidePaneOpen);
+            }
+            else if (!_columnAnimations.ContainsKey(SidePaneColumn))
+            {
+                ApplySidePaneLayout(sidePaneOpen);
+            }
+        }
 
         var terminalOpen = _viewModel?.IsTerminalVisible == true;
         var maxTerminalHeight = Math.Max(120, Bounds.Height - 320);
@@ -188,6 +216,121 @@ public partial class MainWindow : Window
         TerminalRow.Height = new GridLength(terminalOpen
             ? Math.Clamp(_terminalHeight > 0 ? _terminalHeight : Bounds.Height * 0.3, 120, maxTerminalHeight)
             : 0);
+    }
+
+    private void ApplySidebarLayout(bool open)
+    {
+        var sidebarColumn = ShellGrid.ColumnDefinitions[0];
+        sidebarColumn.MinWidth = open ? 264 : 0;
+        sidebarColumn.Width = new GridLength(open ? SidebarTargetWidth() : 0);
+        ShellGrid.ColumnDefinitions[1].Width = new GridLength(open ? 4 : 0);
+        SidebarHost.IsVisible = open;
+        Sidebar.IsVisible = open;
+        Sidebar.Width = double.NaN;
+        Sidebar.HorizontalAlignment = LayoutHorizontalAlignment.Stretch;
+        SidebarSplitter.IsVisible = open;
+        SidebarSplitter.IsHitTestVisible = open;
+    }
+
+    private void AnimateSidebar(bool open)
+    {
+        var sidebarColumn = ShellGrid.ColumnDefinitions[0];
+        var current = sidebarColumn.Width.IsAbsolute ? sidebarColumn.Width.Value : SidebarHost.Bounds.Width;
+        var target = open ? SidebarTargetWidth() : 0;
+        SidebarHost.IsVisible = true;
+        Sidebar.IsVisible = true;
+        SidebarSplitter.IsVisible = true;
+        SidebarSplitter.IsHitTestVisible = false;
+        sidebarColumn.MinWidth = 0;
+        ShellGrid.ColumnDefinitions[1].Width = new GridLength(4);
+        if (open || double.IsNaN(Sidebar.Width))
+        {
+            Sidebar.Width = open ? target : Math.Max(0, current);
+            Sidebar.HorizontalAlignment = LayoutHorizontalAlignment.Left;
+        }
+        AnimateColumn(sidebarColumn, Math.Max(0, current), target, ApplyPaneVisibility);
+    }
+
+    private double SidebarTargetWidth() =>
+        Math.Clamp(_sidebarWidth, 264, Math.Max(264, Bounds.Width / 2));
+
+    private (double Target, double Max) SidePaneMetrics()
+    {
+        var sidebarOpen = _viewModel?.IsSidebarVisible != false;
+        var availableWidth = Math.Max(620, Bounds.Width - (sidebarOpen ? _sidebarWidth + 4 : 0) - 12);
+        var maxPaneWidth = Math.Max(240, Math.Min(availableWidth * 0.65, availableWidth - 340));
+        var target = Math.Clamp(_sidePaneWidth > 0 ? _sidePaneWidth : availableWidth * 0.45, 240, maxPaneWidth);
+        return (target, maxPaneWidth);
+    }
+
+    private void ApplySidePaneLayout(bool open)
+    {
+        var (target, maxPaneWidth) = SidePaneMetrics();
+        SidePaneColumn.MinWidth = open ? 240 : 0;
+        SidePaneColumn.MaxWidth = open ? maxPaneWidth : double.PositiveInfinity;
+        SidePaneColumn.Width = new GridLength(open ? target : 0);
+        SidePaneDivider.IsVisible = open;
+        SidePaneSplitter.IsVisible = open;
+        SidePaneSplitter.IsHitTestVisible = open;
+        DocumentsHost.IsVisible = open;
+        DocumentsView.Width = double.NaN;
+        DocumentsView.HorizontalAlignment = LayoutHorizontalAlignment.Stretch;
+    }
+
+    private void AnimateSidePane(bool open)
+    {
+        var current = SidePaneColumn.Width.IsAbsolute ? SidePaneColumn.Width.Value : DocumentsHost.Bounds.Width;
+        var (target, maxPaneWidth) = SidePaneMetrics();
+        if (!open)
+        {
+            target = 0;
+        }
+        DocumentsHost.IsVisible = true;
+        SidePaneDivider.IsVisible = true;
+        SidePaneSplitter.IsVisible = true;
+        SidePaneSplitter.IsHitTestVisible = false;
+        SidePaneColumn.MinWidth = 0;
+        if (open)
+        {
+            SidePaneColumn.MaxWidth = maxPaneWidth;
+        }
+        AnimateColumn(SidePaneColumn, Math.Max(0, current), target, ApplyPaneVisibility);
+    }
+
+    private void AnimateColumn(ColumnDefinition column, double from, double to, Action completed)
+    {
+        CancelColumnAnimation(column);
+        if (Math.Abs(to - from) < 0.5)
+        {
+            column.Width = new GridLength(Math.Max(0, to));
+            completed();
+            return;
+        }
+        var clock = Stopwatch.StartNew();
+        var timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
+        void Step(object? sender, EventArgs e)
+        {
+            var progress = Math.Clamp(clock.Elapsed.TotalMilliseconds / PaneAnimationDuration.TotalMilliseconds, 0, 1);
+            var eased = 1 - Math.Pow(1 - progress, 3);
+            column.Width = new GridLength(Math.Max(0, from + (to - from) * eased));
+            if (progress < 1)
+            {
+                return;
+            }
+            CancelColumnAnimation(column);
+            completed();
+        }
+        timer.Tick += Step;
+        _columnAnimations[column] = new PaneAnimation(timer);
+        timer.Start();
+    }
+
+    private void CancelColumnAnimation(ColumnDefinition column)
+    {
+        if (_columnAnimations.Remove(column, out var animation))
+        {
+            animation.Timer.Stop();
+        }
     }
 
     private void OnSidebarSplitterDragCompleted(object? sender, VectorEventArgs e)
@@ -331,4 +474,6 @@ public partial class MainWindow : Window
     }
 
     private void OnDismissWorkbenchBannerClick(object? sender, RoutedEventArgs e) => _viewModel?.ClearBanner();
+
+    private sealed record PaneAnimation(DispatcherTimer Timer);
 }

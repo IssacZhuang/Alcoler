@@ -1,10 +1,13 @@
 using System.Collections.ObjectModel;
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Storage;
 using Alcoler.Workbench.Stores;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -28,15 +31,19 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
     private readonly Dictionary<string, SystemNoticeRow> _agentRows = [];
     private readonly List<string> _rowOrder = [];
+    private readonly HashSet<CommandId> _queueOperations = [];
+    private readonly IArtifactStore _artifacts;
     private IReadOnlyList<ModelChoice>? _modelChoices;
     private ModelSelection? _defaultSelection;
     private bool _hasLocalSelection;
 
     public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store, ComposerViewModel? composer = null,
-        IReadOnlyList<ModelChoice>? modelChoices = null, ModelSelection? defaultSelection = null)
+        IReadOnlyList<ModelChoice>? modelChoices = null, ModelSelection? defaultSelection = null,
+        IArtifactStore? artifacts = null)
     {
         _runtime = runtime;
         _store = store;
+        _artifacts = artifacts ?? new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath);
         _modelChoices = modelChoices;
         _defaultSelection = defaultSelection;
         Composer = composer ?? new ComposerViewModel();
@@ -436,6 +443,113 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         finally
         {
             Composer.IsSending = false;
+        }
+    }
+
+    public async Task WithdrawQueuedInputAsync(QueuedInput input)
+    {
+        if (!_queueOperations.Add(input.CommandId))
+        {
+            return;
+        }
+        try
+        {
+            if (Queue.FirstOrDefault(item => item.CommandId == input.CommandId) is not { } queued)
+            {
+                Banner = "That queued message is no longer available.";
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(Composer.Draft) || Composer.HasAttachments)
+            {
+                Banner = "Send or clear the current draft before withdrawing a queued message.";
+                return;
+            }
+            var ack = await SubmitAsync(new RemoveQueuedInputCommand(
+                StrongId.NewCommandId(), SessionId, _store.Revision, queued.CommandId));
+            if (!ack.Accepted)
+            {
+                Banner = ack.RejectionReason ?? "The queued message could not be withdrawn.";
+                return;
+            }
+            Composer.Draft = queued.Text;
+            if (queued.Mode is { } mode)
+            {
+                Composer.RestoreMode(mode);
+            }
+            if (queued.ModelSelection is { } selection)
+            {
+                RestoreModelSelection(selection);
+            }
+            await RestoreQueuedImagesAsync(queued.Images);
+        }
+        catch (Exception exception)
+        {
+            Banner = $"The queued message could not be withdrawn. {exception.Message}";
+        }
+        finally
+        {
+            _queueOperations.Remove(input.CommandId);
+        }
+    }
+
+    public async Task DeleteQueuedInputAsync(QueuedInput input)
+    {
+        if (!_queueOperations.Add(input.CommandId))
+        {
+            return;
+        }
+        try
+        {
+            if (Queue.All(item => item.CommandId != input.CommandId))
+            {
+                return;
+            }
+            var ack = await SubmitAsync(new RemoveQueuedInputCommand(
+                StrongId.NewCommandId(), SessionId, _store.Revision, input.CommandId));
+            if (!ack.Accepted)
+            {
+                Banner = ack.RejectionReason ?? "The queued message could not be deleted.";
+            }
+        }
+        catch (Exception exception)
+        {
+            Banner = $"The queued message could not be deleted. {exception.Message}";
+        }
+        finally
+        {
+            _queueOperations.Remove(input.CommandId);
+        }
+    }
+
+    private async Task RestoreQueuedImagesAsync(IReadOnlyList<FilePart>? images)
+    {
+        if (images is not { Count: > 0 })
+        {
+            return;
+        }
+        var restored = new List<ComposerImageAttachment>(images.Count);
+        try
+        {
+            foreach (var image in images)
+            {
+                var data = await _artifacts.TryLoadAsync(image.ArtifactUri, CancellationToken.None);
+                if (data is null)
+                {
+                    Banner = "The queued message was withdrawn, but some of its images are no longer available.";
+                    continue;
+                }
+                restored.Add(ComposerImageAttachment.FromBytes(
+                    data.Value.ToArray(), image.MimeType, image.FileName ?? "Image"));
+            }
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException
+            or ArgumentException or NotSupportedException)
+        {
+            Banner = $"The queued message was withdrawn, but its images could not be restored. {exception.Message}";
+        }
+        if (restored.Count > 0)
+        {
+            Composer.AddAttachments(restored);
         }
     }
 
