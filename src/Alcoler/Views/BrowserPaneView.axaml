@@ -1,0 +1,139 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Alcoler.ViewModel"
+             xmlns:browser="using:Alcoler.Contracts.Browser"
+             xmlns:controls="using:Alcoler.Controls"
+             x:Class="Alcoler.Views.BrowserPaneView"
+             x:DataType="vm:BrowserPaneViewModel">
+  <UserControl.Styles>
+    <Style Selector="Border.browserTab">
+      <Setter Property="Background" Value="{DynamicResource AlcolerTransparent}" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadius}" />
+    </Style>
+    <Style Selector="Border.browserTab:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+    </Style>
+    <Style Selector="Border.browserTab.active">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
+  </UserControl.Styles>
+  <DockPanel Background="{DynamicResource AlcolerBackground}">
+    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" ColumnSpacing="4" Margin="12,4,12,0" Height="32">
+      <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+        <ItemsControl x:Name="PART_BrowserTabs" ItemsSource="{Binding Tabs}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="4" /></ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="browser:BrowserTabStatus">
+              <Border Classes="browserTab" Classes.active="{Binding IsActive}" Height="28" Width="156">
+                <Grid ColumnDefinitions="*,24">
+                  <Button Classes="ghost" Click="OnSelectTabClick" ToolTip.Tip="{Binding Url}"
+                          AutomationProperties.Name="{Binding Title}" AutomationProperties.AutomationId="{Binding Id}"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Padding="6,0">
+                    <Grid ColumnDefinitions="14,*" ColumnSpacing="6">
+                      <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconGlobe}"
+                                     Opacity="0.7" IsVisible="{Binding !IsLoading}" />
+                      <ProgressBar IsIndeterminate="True" Height="2" VerticalAlignment="Center"
+                                   IsVisible="{Binding IsLoading}" />
+                      <TextBlock Grid.Column="1" Text="{Binding Title}" FontSize="{DynamicResource AlcolerFontSmall}"
+                                 TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    </Grid>
+                  </Button>
+                  <Button Grid.Column="1" Classes="icon tiny" Click="OnCloseTabClick"
+                          ToolTip.Tip="Close browser tab" AutomationProperties.Name="Close browser tab">
+                    <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+                  </Button>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+      <Button Grid.Column="1" x:Name="PART_BrowserNewTab" Classes="icon" Command="{Binding NewTabCommand}"
+              ToolTip.Tip="New browser tab" AutomationProperties.Name="New browser tab" VerticalAlignment="Top">
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
+      </Button>
+    </Grid>
+
+    <Grid x:Name="PART_BrowserToolbar" DockPanel.Dock="Top" Height="48" Margin="12,0"
+          ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="4">
+      <Button x:Name="PART_BrowserBack" Classes="icon" Command="{Binding BackCommand}"
+              ToolTip.Tip="Back" AutomationProperties.Name="Back" VerticalAlignment="Center">
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" RenderTransformOrigin="50%,50%">
+          <controls:Icon.RenderTransform><RotateTransform Angle="180" /></controls:Icon.RenderTransform>
+        </controls:Icon>
+      </Button>
+      <Button Grid.Column="1" x:Name="PART_BrowserForward" Classes="icon" Command="{Binding ForwardCommand}"
+              ToolTip.Tip="Forward" AutomationProperties.Name="Forward" VerticalAlignment="Center">
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" />
+      </Button>
+      <Button Grid.Column="2" x:Name="PART_BrowserRefresh" Classes="icon" Command="{Binding ReloadCommand}"
+              ToolTip.Tip="Reload page" AutomationProperties.Name="Reload page" VerticalAlignment="Center">
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
+      </Button>
+      <TextBox Grid.Column="3" x:Name="PART_BrowserAddress" Text="{Binding Address, Mode=TwoWay}"
+               Watermark="Enter a URL" IsEnabled="{Binding CanInteract}" KeyDown="OnAddressKeyDown"
+               ToolTip.Tip="{Binding Url}" AutomationProperties.Name="Browser address" Height="28" MinHeight="28" Padding="8,3"
+               FontSize="{DynamicResource AlcolerFontSmall}" VerticalContentAlignment="Center"
+               VerticalAlignment="Center" CornerRadius="{DynamicResource AlcolerRadiusLarge}" />
+    </Grid>
+
+    <Border DockPanel.Dock="Top" Margin="12,0,12,8" Padding="8"
+            Background="{DynamicResource AlcolerSurface}" CornerRadius="{DynamicResource AlcolerRadius}">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+        <TextBlock x:Name="PART_BrowserOwnership" Text="{Binding OwnershipText}" TextWrapping="Wrap"
+                   FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
+                   Foreground="{DynamicResource AlcolerTextSecondary}" />
+        <Button Grid.Column="1" x:Name="PART_BrowserTakeOver" Classes="ghost" Command="{Binding TakeOverCommand}"
+                Content="Take over" ToolTip.Tip="Pause agent browser actions and take control"
+                IsVisible="{Binding !IsUserControlled}" Height="28" Padding="8,0"
+                FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" />
+        <Button Grid.Column="1" x:Name="PART_BrowserResume" Classes="secondary" Command="{Binding ResumeCommand}"
+                Content="Resume agent" ToolTip.Tip="Return browser control to the agent"
+                IsVisible="{Binding IsUserControlled}" Height="28" Padding="8,0"
+                FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+
+    <Border DockPanel.Dock="Top" Margin="12,0,12,8" Padding="8"
+            Background="{DynamicResource AlcolerSurface}" CornerRadius="{DynamicResource AlcolerRadius}"
+            IsVisible="{Binding Banner, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+      <TextBlock Text="{Binding Banner}" FontSize="{DynamicResource AlcolerFontSmall}"
+                 TextWrapping="Wrap" Foreground="{DynamicResource AlcolerError}" />
+    </Border>
+
+    <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="12,6,12,8">
+      <TextBlock Text="{Binding Title}" FontSize="{DynamicResource AlcolerFontSmall}"
+                 TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Title}"
+                 Foreground="{DynamicResource AlcolerTextTertiary}" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+        <TextBlock Text="{Binding StateText}" FontSize="{DynamicResource AlcolerFontSmall}"
+                   Foreground="{DynamicResource AlcolerTextSecondary}" />
+        <TextBlock Text="{Binding UpdatedText}" FontSize="{DynamicResource AlcolerFontSmall}"
+                   Foreground="{DynamicResource AlcolerTextTertiary}" />
+      </StackPanel>
+    </Grid>
+
+    <Border x:Name="PART_BrowserViewport" Margin="12,0" CornerRadius="{DynamicResource AlcolerRadius}"
+            Background="{DynamicResource AlcolerPanel}" ClipToBounds="True">
+      <Grid>
+        <ContentControl x:Name="PART_BrowserPage" Content="{Binding PagePresenter}"
+                        HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"
+                        IsVisible="{Binding HasPagePresenter}" />
+        <Image x:Name="PART_BrowserScreenshot" Source="{Binding Screenshot}" Stretch="Uniform"
+               IsVisible="{Binding ShowScreenshot}" />
+        <StackPanel Spacing="10" Margin="24" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    IsVisible="{Binding ShowEmptyState}">
+          <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconGlobe}" Width="48" Height="48"
+                         HorizontalAlignment="Center" Stroke="{DynamicResource AlcolerTextTertiary}" />
+          <TextBlock Text="Browser" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
+                     HorizontalAlignment="Center" Foreground="{DynamicResource AlcolerTextPrimary}" />
+          <TextBlock Text="{Binding EmptyStateText}" FontSize="{DynamicResource AlcolerFontSmall}"
+                     TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center"
+                     Foreground="{DynamicResource AlcolerTextSecondary}" />
+        </StackPanel>
+      </Grid>
+    </Border>
+  </DockPanel>
+</UserControl>

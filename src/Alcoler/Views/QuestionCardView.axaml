@@ -1,0 +1,191 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Alcoler.ViewModel"
+             xmlns:controls="using:Alcoler.Controls"
+             xmlns:ct="using:ColorTextBlock.Avalonia"
+             x:Class="Alcoler.Views.QuestionCardView"
+             x:DataType="vm:PendingInteractionViewModel">
+  <UserControl.Styles>
+    <Style Selector="Button.questionOption">
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border x:Name="OptionSurface" Background="{TemplateBinding Background}"
+                  CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+            <ContentPresenter Content="{TemplateBinding Content}" HorizontalContentAlignment="Stretch" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="Button.questionOption:pointerover /template/ Border#OptionSurface">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="Button.questionOption.active /template/ Border#OptionSurface">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="Button.questionOption.selected /template/ Border#OptionSurface">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
+    <Style Selector="Button.questionOption:focus-visible /template/ Border#OptionSurface">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="Border.choiceCheck">
+      <Setter Property="Width" Value="16" />
+      <Setter Property="Height" Value="16" />
+      <Setter Property="CornerRadius" Value="2" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerInput}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.choiceCheck.selected">
+      <Setter Property="Background" Value="{DynamicResource AlcolerBrand}" />
+    </Style>
+    <Style Selector="Border.customAnswer">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="Border.customAnswer:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="Border.customAnswer.active">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="Border.customAnswer.selected">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
+    <Style Selector="Border.customAnswer:focus-within">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="TextBox.questionInput /template/ Border#PART_BorderElement">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="TextBox.questionInput:pointerover /template/ Border#PART_BorderElement">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="TextBox.questionInput:focus /template/ Border#PART_BorderElement">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+  </UserControl.Styles>
+
+  <Border x:Name="QuestionCard" Background="{DynamicResource AlcolerPopover}"
+          BorderThickness="0"
+          CornerRadius="16" Padding="12" Focusable="True" ClipToBounds="True" BoxShadow="0 4 12 0 #26000000">
+    <Grid RowDefinitions="*,Auto" RowSpacing="12">
+      <ScrollViewer x:Name="QuestionBody" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="12" Margin="0,0,4,0">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock x:Name="QuestionHeading" FontSize="14" FontWeight="Medium" LineHeight="24" TextWrapping="Wrap">
+              <InlineUIContainer>
+                <Border BorderThickness="0" CornerRadius="6"
+                        Padding="7,1" Margin="0,0,8,0" MaxWidth="160" IsVisible="{Binding HasQuestions}">
+                  <TextBlock Text="{Binding CurrentQuestion.Header}" FontSize="14" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
+                </Border>
+              </InlineUIContainer>
+              <Run Text="{Binding CurrentQuestion.Text}" />
+            </TextBlock>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top">
+              <Button x:Name="PreviousQuestionButton" Classes="icon tiny ghost" Width="20" Height="20" CornerRadius="2" IsEnabled="{Binding CanMovePrevious}"
+                      ToolTip.Tip="Previous question" AutomationProperties.Name="Previous question" Click="OnPreviousClick">
+                <controls:Icon Classes="icon small" Data="m15 18-6-6 6-6" Width="12" Height="12" />
+              </Button>
+              <TextBlock x:Name="QuestionPage" Text="{Binding PageText}" MinWidth="40" FontSize="14" FontWeight="Medium"
+                         TextAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+              <Button x:Name="NextQuestionButton" Classes="icon tiny ghost" Width="20" Height="20" CornerRadius="2" IsEnabled="{Binding CanMoveNext}"
+                      ToolTip.Tip="Next question" AutomationProperties.Name="Next question" Click="OnNextClick">
+                <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" Width="12" Height="12" />
+              </Button>
+            </StackPanel>
+          </Grid>
+
+          <Grid x:Name="QuestionChoices" ColumnDefinitions="*,0" ColumnSpacing="12" IsVisible="{Binding HasQuestions}">
+            <StackPanel Spacing="4">
+            <ItemsControl x:Name="QuestionOptions" ItemsSource="{Binding CurrentQuestion.Options}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate><StackPanel Spacing="4" /></ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:QuestionOptionViewModel">
+                  <Button Classes="questionOption" Classes.selected="{Binding IsSelected}" Classes.active="{Binding IsActive}"
+                          Tag="{Binding}" Click="OnOptionClick" GotFocus="OnOptionGotFocus"
+                          AutomationProperties.Name="{Binding Label}">
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+                      <Grid VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Number}" Width="20" FontSize="14" FontWeight="Medium"
+                                   Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding !MultiSelect}" />
+                        <Border Classes="choiceCheck" Classes.selected="{Binding IsSelected}" IsVisible="{Binding MultiSelect}">
+                          <controls:Icon Width="12" Height="12" StrokeThickness="1.5" Data="{StaticResource AlcolerIconCheck}"
+                                         Stroke="{DynamicResource AlcolerBrandText}" IsVisible="{Binding IsSelected}" />
+                        </Border>
+                      </Grid>
+                      <TextBlock Grid.Column="1" TextWrapping="Wrap" FontSize="14" LineHeight="20">
+                        <Run Text="{Binding Label}" FontWeight="Medium" />
+                        <Run Text="{Binding InlineDescription}" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                      </TextBlock>
+                    </Grid>
+                  </Button>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Border x:Name="CustomAnswerRow" Classes="customAnswer" Classes.selected="{Binding CurrentQuestion.IsCustomSelected}"
+                    Classes.active="{Binding CurrentQuestion.IsCustomActive}" CornerRadius="12" Padding="12,8"
+                    Cursor="Ibeam" PointerPressed="OnCustomPointerPressed">
+              <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+                <Grid VerticalAlignment="Center">
+                  <TextBlock Text="{Binding CurrentQuestion.CustomNumber}" Width="20" FontSize="14" FontWeight="Medium"
+                             Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding !CurrentQuestion.MultiSelect}" />
+                  <Border Classes="choiceCheck" Classes.selected="{Binding CurrentQuestion.IsCustomSelected}" IsVisible="{Binding CurrentQuestion.MultiSelect}">
+                    <controls:Icon Width="12" Height="12" StrokeThickness="1.5" Data="{StaticResource AlcolerIconCheck}"
+                                   Stroke="{DynamicResource AlcolerBrandText}" IsVisible="{Binding CurrentQuestion.IsCustomSelected}" />
+                  </Border>
+                </Grid>
+                <TextBox x:Name="CustomAnswerInput" Grid.Column="1" Classes="bare questionInput" Watermark="Enter your answer..."
+                         Text="{Binding CurrentQuestion.CustomAnswer, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
+                         MinHeight="20" MaxHeight="100" MinLines="1" MaxLines="5" LineHeight="20"
+                         FontSize="14" FontWeight="Medium" Padding="0" BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         GotFocus="OnCustomGotFocus" />
+              </Grid>
+            </Border>
+            </StackPanel>
+            <Border x:Name="QuestionPreviewPanel" Grid.Column="1" IsVisible="{Binding HasPreviews}"
+                    MaxHeight="360" Padding="12" CornerRadius="8"
+                    Background="{DynamicResource AlcolerSurface}" BorderThickness="0">
+              <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                <controls:ConversationMarkdown x:Name="QuestionPreview" Markdown="{Binding ActivePreview}">
+                  <controls:ConversationMarkdown.Styles>
+                    <Style Selector="ct|CTextBlock">
+                      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+                    </Style>
+                  </controls:ConversationMarkdown.Styles>
+                </controls:ConversationMarkdown>
+              </ScrollViewer>
+            </Border>
+          </Grid>
+          <TextBox x:Name="PreviewNotesInput" IsVisible="{Binding HasPreviews}" Watermark="Add notes about your selection..."
+                   Text="{Binding CurrentQuestion.PreviewNotes, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
+                   MinHeight="32" MaxHeight="100" />
+          <TextBlock Text="No questions available." FontSize="14" IsVisible="{Binding !HasQuestions}"
+                     Foreground="{DynamicResource AlcolerTextSecondary}" />
+        </StackPanel>
+      </ScrollViewer>
+
+      <Grid x:Name="QuestionFooter" Grid.Row="1" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto"
+            ColumnSpacing="8" Margin="4,0">
+        <Grid x:Name="KeyboardHint" ColumnDefinitions="Auto,*" ColumnSpacing="8" VerticalAlignment="Center">
+          <controls:Icon Width="16" Height="16" StrokeThickness="1.5" Stroke="{DynamicResource AlcolerTextPrimary}"
+                         Data="M12 16v-4M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="1" Text="Use Tab / arrow keys to choose, then Enter or Space to select"
+                     FontSize="14" TextWrapping="Wrap" Foreground="{DynamicResource AlcolerTextSecondary}" />
+        </Grid>
+        <StackPanel x:Name="QuestionActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+          <Button x:Name="DismissQuestionButton" Content="Dismiss" Classes="secondary" Height="32" CornerRadius="8" Padding="10,0" Click="OnDismissClick" />
+          <Button x:Name="SubmitAnswersButton" Content="{Binding PrimaryActionText}" Classes="primary" Height="32" CornerRadius="8" Padding="10,0" Click="OnContinueClick" />
+        </StackPanel>
+      </Grid>
+    </Grid>
+  </Border>
+</UserControl>

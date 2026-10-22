@@ -1,0 +1,101 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="using:Alcoler.Converters"
+             xmlns:views="using:Alcoler.Views"
+             xmlns:vm="using:Alcoler.ViewModel"
+             xmlns:controls="using:Alcoler.Controls"
+             x:Class="Alcoler.Views.InteractionAreaView"
+             x:DataType="vm:ConversationViewModel"
+             Background="{DynamicResource AlcolerBackground}">
+  <UserControl.Styles>
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="{DynamicResource AlcolerCard}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="16" />
+      <Setter Property="Padding" Value="12" />
+    </Style>
+    <Style Selector="Border.badge">
+      <Setter Property="Padding" Value="7,1" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusFull}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.mono">
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+  </UserControl.Styles>
+
+  <controls:ConversationLayout Padding="16,0">
+    <Grid RowDefinitions="Auto,*" RowSpacing="8">
+      <Border x:Name="BannerStrip"
+              IsVisible="False"
+              Background="{DynamicResource AlcolerCard}"
+              BorderThickness="0"
+              CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+              Padding="12,8">
+        <DockPanel>
+          <Button DockPanel.Dock="Right" Classes="icon tiny" Click="OnDismissBanner" ToolTip.Tip="Dismiss">
+            <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+          </Button>
+          <TextBlock Text="{Binding Banner}" TextWrapping="Wrap" FontSize="12"
+                     Foreground="{DynamicResource AlcolerError}" VerticalAlignment="Center" />
+        </DockPanel>
+      </Border>
+
+      <ContentControl x:Name="InteractionHost" Grid.Row="1" Content="{Binding PendingInteraction}" IsVisible="{Binding HasPendingInteraction}"
+                      HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+        <ContentControl.ContentTemplate>
+          <DataTemplate x:DataType="vm:PendingInteractionViewModel">
+            <Grid>
+              <Border x:Name="PermissionCard" Classes="card" IsVisible="{Binding IsPermission}" KeyDown="OnPermissionCardKeyDown">
+                <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
+                  <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                    <Border Grid.Column="0" Width="20" Height="20" VerticalAlignment="Center">
+                      <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconWrench}" HorizontalAlignment="Center"
+                            Stroke="{DynamicResource AlcolerTextSecondary}" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                      <TextBlock Text="Permission required" FontSize="{DynamicResource AlcolerFontBase}" FontWeight="Medium" />
+                      <TextBlock Text="{Binding ToolName}" FontSize="12"
+                                 Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    </StackPanel>
+                    <Border Grid.Column="2" Classes="badge">
+                      <Border.Background>
+                        <MultiBinding Converter="{x:Static converters:ComposerConverters.RiskLevelBrush}">
+                          <Binding Path="RiskLevel" />
+                          <Binding Path="ActualThemeVariant" RelativeSource="{RelativeSource Self}" />
+                        </MultiBinding>
+                      </Border.Background>
+                      <TextBlock Text="{Binding RiskLevel}" FontSize="{DynamicResource AlcolerFontXs}" FontWeight="Medium"
+                                 Foreground="{DynamicResource AlcolerBrandText}" />
+                    </Border>
+                  </Grid>
+
+                  <StackPanel Grid.Row="1" Spacing="8">
+                    <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <Expander Header="Details" FontSize="12">
+                      <TextBlock Classes="mono" Text="{Binding InputJson}" TextWrapping="Wrap"
+                                 Margin="0,4,0,0" />
+                    </Expander>
+                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                      <TextBlock Text="Enter to allow / Esc to deny" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource AlcolerTextSecondary}" />
+                      <Button x:Name="DenyButton" Content="Deny" Classes="secondary" MinWidth="72" Height="28" Padding="12,0" Click="OnDenyClick" />
+                      <Button x:Name="AllowButton" Content="Allow" Classes="primary" MinWidth="72" Height="28" Padding="12,0" Click="OnAllowClick" />
+                    </StackPanel>
+                  </StackPanel>
+                </Grid>
+              </Border>
+
+              <views:QuestionCardView IsVisible="{Binding !IsPermission}"
+                                      IsEnabled="{Binding !$parent[UserControl].((vm:ConversationViewModel)DataContext).IsInteractionSubmitting}"
+                                      SubmitRequested="OnSubmitAnswersClick" DismissRequested="OnDismissQuestion" />
+            </Grid>
+          </DataTemplate>
+        </ContentControl.ContentTemplate>
+      </ContentControl>
+    </Grid>
+  </controls:ConversationLayout>
+</UserControl>

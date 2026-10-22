@@ -12,11 +12,11 @@ using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tools;
-using Alcoler.Workbench;
-using Alcoler.Workbench.Browser;
-using Alcoler.Workbench.Ui;
-using Alcoler.Workbench.ViewModel;
-using Alcoler.Workbench.Views;
+using Alcoler;
+using Alcoler.Browser;
+using Alcoler.Ui;
+using Alcoler.ViewModel;
+using Alcoler.Views;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data;
@@ -471,7 +471,7 @@ internal sealed class NativeBrowserSuite
 
     private async Task WorkbenchDocumentAsync()
     {
-        var application = new Alcoler.Workbench.App();
+        var application = new Alcoler.App();
         application.Initialize();
         var resources = application.Resources;
         application.Resources = new ResourceDictionary();

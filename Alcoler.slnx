@@ -4,12 +4,12 @@
     <Project Path="src/Alcoler.Browser/Alcoler.Browser.csproj" />
     <Project Path="src/Alcoler.Contracts/Alcoler.Contracts.csproj" />
     <Project Path="src/Alcoler.Kernel/Alcoler.Kernel.csproj" />
-    <Project Path="src/Alcoler.Workbench/Alcoler.Workbench.csproj" />
+    <Project Path="src/Alcoler/Alcoler.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Alcoler.Browser.Tests/Alcoler.Browser.Tests.csproj" />
     <Project Path="tests/Alcoler.Browser.IntegrationTests/Alcoler.Browser.IntegrationTests.csproj" />
     <Project Path="tests/Alcoler.Kernel.Tests/Alcoler.Kernel.Tests.csproj" />
-    <Project Path="tests/Alcoler.Workbench.Tests/Alcoler.Workbench.Tests.csproj" />
+    <Project Path="tests/Alcoler.Tests/Alcoler.Tests.csproj" />
   </Folder>
 </Solution>

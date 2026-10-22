@@ -1,0 +1,118 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:md="https://github.com/whistyun/Markdown.Avalonia.Tight"
+             xmlns:mdc="using:Markdown.Avalonia.Controls"
+             xmlns:ct="using:ColorTextBlock.Avalonia"
+             x:Class="Alcoler.Controls.ConversationMarkdown">
+  <UserControl.Styles>
+    <Style Selector="ct|CTextBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontPrimary}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="LineHeight" Value="24.5" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="SelectionBrush" Value="{DynamicResource AlcolerSelected}" />
+    </Style>
+    <Style Selector="ct|CTextBlock.Heading1, ct|CTextBlock.Heading2, ct|CTextBlock.Heading3, ct|CTextBlock.Heading4">
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="ct|CTextBlock.Heading1">
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontXLarge}" />
+      <Setter Property="LineHeight" Value="28" />
+    </Style>
+    <Style Selector="ct|CTextBlock.Heading2">
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontLarge}" />
+      <Setter Property="LineHeight" Value="26" />
+    </Style>
+    <Style Selector="ct|CTextBlock.Heading5">
+      <Setter Property="FontWeight" Value="Medium" />
+    </Style>
+    <Style Selector="ct|CTextBlock.Heading6">
+      <Setter Property="FontWeight" Value="Normal" />
+    </Style>
+    <Style Selector=".Markdown_Avalonia_MarkdownViewer ct|CCode">
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurface}" />
+      <Setter Property="MonospaceFontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="6,2" />
+      <Setter Property="Margin" Value="2,0" />
+    </Style>
+    <Style Selector=".Markdown_Avalonia_MarkdownViewer ct|CHyperlink">
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerAccent}" />
+      <Setter Property="HoverForeground" Value="{DynamicResource AlcolerAccent}" />
+      <Setter Property="IsUnderline" Value="True" />
+    </Style>
+    <Style Selector="Grid.List">
+      <Setter Property="Margin" Value="20,12,0,12" />
+      <Setter Property="RowSpacing" Value="6" />
+    </Style>
+    <Style Selector="ct|CTextBlock.ListMarker">
+      <Setter Property="Margin" Value="0,0,8,0" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextTertiary}" />
+    </Style>
+    <Style Selector="Border.Blockquote">
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="12,0,0,0" />
+    </Style>
+    <Style Selector="Border.Blockquote ct|CTextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+    </Style>
+    <Style Selector="Border.Table">
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="ClipToBounds" Value="True" />
+    </Style>
+    <Style Selector="Grid.Table > Border">
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="12,8" />
+    </Style>
+    <Style Selector="Border.TableHeader ct|CTextBlock">
+      <Setter Property="FontWeight" Value="Normal" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextTertiary}" />
+    </Style>
+    <Style Selector="mdc|Rule">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
+    <Style Selector="Border.CodeBlock">
+      <Setter Property="Background" Value="{DynamicResource AlcolerCard}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="ClipToBounds" Value="True" />
+    </Style>
+    <Style Selector="Grid.codeHeader">
+      <Setter Property="Margin" Value="12,8" />
+    </Style>
+    <Style Selector="TextBlock.codeLanguage">
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+    </Style>
+    <Style Selector="Button.copyCode">
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextSecondary}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="6,2" />
+      <Setter Property="MinHeight" Value="24" />
+    </Style>
+    <Style Selector="ScrollViewer.CodeBlock">
+      <Setter Property="Margin" Value="8,0,8,12" />
+    </Style>
+    <Style Selector="ct|CTextBlock.CodeBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+      <Setter Property="LineHeight" Value="20" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+    <Style Selector="TextBlock.CodeBlock">
+      <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+      <Setter Property="LineHeight" Value="20" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+    </Style>
+  </UserControl.Styles>
+  <md:MarkdownScrollViewer x:Name="Viewer" MarkdownStyleName="Empty"
+                           SelectionEnabled="True" SelectionBrush="{DynamicResource AlcolerSelected}" />
+</UserControl>
