@@ -61,7 +61,7 @@
       <Setter Property="Width" Value="5" />
       <Setter Property="Height" Value="5" />
       <Setter Property="CornerRadius" Value="3" />
-      <Setter Property="Background" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="Background" Value="{DynamicResource AlcolerAccent}" />
       <Setter Property="Opacity" Value="0.4" />
     </Style>
     <Style Selector="Border.workingBar.running Border.workingDot.first">
