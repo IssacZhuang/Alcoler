@@ -241,6 +241,9 @@ public sealed class SessionRuntime : IAsyncDisposable
                 case CompactCommand compact:
                     return await HandleCompactAsync(compact, ct).ConfigureAwait(false);
 
+                case RewindConversationCommand rewind:
+                    return await HandleRewindConversationAsync(rewind, ct).ConfigureAwait(false);
+
                 case SetModeCommand setMode:
                     SetPermissionMode(setMode.Mode);
                     await PersistRecordAsync(ct,
@@ -276,6 +279,73 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             _commandLock.Release();
         }
+    }
+
+    private async Task<CommandAck> HandleRewindConversationAsync(RewindConversationCommand command, CancellationToken ct)
+    {
+        if (_turnMachine.IsBusy || !_turnTask.IsCompleted)
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "wait for the current turn to finish before rewinding");
+        }
+        if (_pendingInputs.Count > 0)
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "queued input must be sent or removed before rewinding");
+        }
+        if (_backgroundJobs.List().Any(job => job.Status == BackgroundJobStatus.Running))
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "stop running background jobs before rewinding");
+        }
+        if (_subagentTasks?.List().Any(task => task.Status == SubagentStatus.Running) == true)
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "stop running subagents before rewinding");
+        }
+
+        var history = _history.Snapshot();
+        var targetIndex = -1;
+        for (var index = 0; index < history.Count; index++)
+        {
+            if (history[index].Id == command.TargetMessageId)
+            {
+                targetIndex = index;
+                break;
+            }
+        }
+        if (targetIndex < 0)
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "message is no longer in the active conversation");
+        }
+        if (!IsRealUserTurn(history[targetIndex]))
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "only user messages can be rewound");
+        }
+
+        var stored = await _deps.Store.LoadMessagesAsync(_record.Id, ct).ConfigureAwait(false);
+        if (stored.Count == 0)
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "conversation has no persisted messages");
+        }
+
+        var kept = history.Take(targetIndex).ToList();
+        var keptIds = kept.Select(message => message.Id).ToList();
+        var cutAfterMessageId = stored[^1].Message.Id;
+        var cutEventSequence = _events.LastSequence;
+
+        await PersistRecordAsync(ct, record => record with
+        {
+            Branch = new SessionBranch(cutAfterMessageId, keptIds, cutEventSequence),
+            UpdatedAt = _deps.Clock.GetUtcNow(),
+        }).ConfigureAwait(false);
+
+        _history.ReplaceAll(kept);
+        _history.ClearRecentReads();
+        _fileReads.Clear();
+        _lastProviderUsage = null;
+        _usageAnchorIndex = -1;
+        _contextUsage = null;
+        await EmitAsync(new ConversationRewoundEvent(
+            command.TargetMessageId, cutAfterMessageId, keptIds, cutEventSequence), persist: true).ConfigureAwait(false);
+        BumpRevision();
+        return CommandAck.AcceptedAt(command.CommandId, Revision);
     }
 
     private async Task<CommandAck> HandleSendTextAsync(SendTextCommand sendText, CancellationToken ct)
@@ -1203,7 +1273,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private static int CountPlanReminders(IReadOnlyList<ConversationMessage> history) =>
         history.Count(m => m.Parts.OfType<AttachmentPart>().Any(a => RuntimeReminders.IsPlanModeReminder(a.Content)));
 
-    private static bool IsRealUserTurn(ConversationMessage message) =>
+    internal static bool IsRealUserTurn(ConversationMessage message) =>
         message.Role == MessageRole.User
         && (message.Source == MessageSource.RealUser
             || message.Source is null
@@ -1395,6 +1465,11 @@ public sealed class SessionRuntime : IAsyncDisposable
             attachments);
         await _deps.Store.ReplaceMessagesAsync(_record.Id, postCompact.Messages, ct).ConfigureAwait(false);
         markPersisted();
+        await PersistRecordAsync(ct, record => record with
+        {
+            Branch = null,
+            UpdatedAt = _deps.Clock.GetUtcNow(),
+        }).ConfigureAwait(false);
         _history.ReplaceAll(postCompact.Messages);
         _history.ClearRecentReads();
         _consecutiveCompactFailures = 0;
@@ -1712,12 +1787,14 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
 
         var messages = await _deps.Store.LoadMessagesAsync(_record.Id, CancellationToken.None).ConfigureAwait(false);
-        foreach (var (sessionEvent, occurredAt) in ReconstructTimeline(messages, durable))
+        var activeMessages = ApplyBranch(messages);
+        var replayDurable = FilterDurableForBranch(durable);
+        foreach (var (sessionEvent, occurredAt) in ReconstructTimeline(activeMessages, replayDurable))
         {
             _events.Append(sessionEvent, occurredAt);
         }
         var queuedInputs = new Dictionary<CommandId, (long Sequence, QueuedInput Input)>();
-        foreach (var entry in durable)
+        foreach (var entry in replayDurable)
         {
             switch (entry.Event)
             {
@@ -1739,19 +1816,19 @@ public sealed class SessionRuntime : IAsyncDisposable
             _pendingInputs.Enqueue(new PendingTurnInput(command, null, queued.Images));
             EmitForReplay(new InputQueuedEvent(queued));
         }
-        _history.AppendRange(messages.Select(m => m.Message).ToList());
-        _titleAttempted = messages.Any(message => IsRealUserTurn(message.Message));
-        await RepairDanglingToolCallsAsync(messages).ConfigureAwait(false);
+        _history.AppendRange(activeMessages.Select(m => m.Message).ToList());
+        _titleAttempted = activeMessages.Any(message => IsRealUserTurn(message.Message));
+        await RepairDanglingToolCallsAsync(activeMessages).ConfigureAwait(false);
         // ZCode cold resume: a crash leaves TurnStarted without a terminal event; closing it
         // in the replay stream keeps the projection idle and hides stop/running controls.
-        if (FindInterruptedTurn(durable) is { } interruptedTurn)
+        if (FindInterruptedTurn(replayDurable) is { } interruptedTurn)
         {
             EmitForReplay(new TurnCompletedEvent(interruptedTurn, TurnOutcome.Cancelled));
         }
         _usageAnchorIndex = -1;
-        if (messages.Count > 0)
+        if (activeMessages.Count > 0)
         {
-            _contextUsage = durable.Select(evt => evt.Event).OfType<ContextUsageUpdatedEvent>().LastOrDefault()?.Usage;
+            _contextUsage = replayDurable.Select(evt => evt.Event).OfType<ContextUsageUpdatedEvent>().LastOrDefault()?.Usage;
             var resumedSelection = _record.ModelSelection ?? _deps.Options.DefaultModel;
             if (resumedSelection is not null)
             {
@@ -1767,6 +1844,65 @@ public sealed class SessionRuntime : IAsyncDisposable
                 EmitForReplay(new ContextUsageUpdatedEvent(_contextUsage));
             }
         }
+    }
+
+    // A branch is the kept prefix plus every message appended after its cut; messages
+    // between that prefix and the cut belong to a discarded branch.
+    private IReadOnlyList<StoredMessage> ApplyBranch(IReadOnlyList<StoredMessage> messages)
+    {
+        if (_record.Branch is not { } branch)
+        {
+            return messages;
+        }
+
+        var byId = messages.ToDictionary(stored => stored.Message.Id);
+        var kept = new List<StoredMessage>(branch.KeptMessageIds.Count);
+        foreach (var messageId in branch.KeptMessageIds)
+        {
+            if (byId.TryGetValue(messageId, out var stored))
+            {
+                kept.Add(stored);
+            }
+        }
+
+        var cutIndex = -1;
+        for (var index = 0; index < messages.Count; index++)
+        {
+            if (messages[index].Message.Id == branch.CutAfterMessageId)
+            {
+                cutIndex = index;
+                break;
+            }
+        }
+        if (cutIndex < 0)
+        {
+            return messages;
+        }
+
+        var seen = kept.Select(stored => stored.Message.Id).ToHashSet();
+        foreach (var stored in messages.Skip(cutIndex + 1))
+        {
+            if (seen.Add(stored.Message.Id))
+            {
+                kept.Add(stored);
+            }
+        }
+        return kept;
+    }
+
+    // Committed messages survive the cut as anchors for the kept prefix; every other
+    // pre-cut event belongs to the discarded branch and would resurrect rejected state.
+    private IReadOnlyList<SequencedEvent> FilterDurableForBranch(IReadOnlyList<SequencedEvent> durable)
+    {
+        if (_record.Branch?.CutEventSequence is not { } cutEventSequence)
+        {
+            return durable;
+        }
+
+        return durable
+            .Where(entry => entry.Sequence > cutEventSequence
+                || entry.Event is UserMessageCommittedEvent or AssistantMessageCommittedEvent)
+            .ToList();
     }
 
     private static TurnId? FindInterruptedTurn(IReadOnlyList<SequencedEvent> durable)

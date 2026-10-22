@@ -16,13 +16,20 @@ public abstract partial class TimelineItemViewModel : ObservableObject
 
 public sealed partial class UserMessageItemViewModel : TimelineItemViewModel
 {
-    public UserMessageItemViewModel(string rowId, string text, IReadOnlyList<FilePart>? images = null) : base(rowId)
+    public UserMessageItemViewModel(string rowId, string text, IReadOnlyList<FilePart>? images = null,
+        MessageId id = default, bool canRewind = false) : base(rowId)
     {
+        Id = id;
         Text = text;
         Images = images ?? [];
+        CanRewind = canRewind;
     }
 
+    public MessageId Id { get; }
+
     public string Text { get; }
+
+    public bool CanRewind { get; }
 
     public IReadOnlyList<FilePart> Images { get; }
 
@@ -243,7 +250,8 @@ public static class TimelineItemFactory
 {
     public static TimelineItemViewModel? Create(ConversationRow row) => row switch
     {
-        UserMessageRow user => new UserMessageItemViewModel(user.RowId, user.Text, user.Images),
+        UserMessageRow user => new UserMessageItemViewModel(
+            user.RowId, user.Text, user.Images, new MessageId(user.RowId), user.CanRewind),
         AssistantMessageRow assistant => CreateAssistant(assistant),
         ToolCallRow tool when AgentCallItemViewModel.IsAgentTool(tool.ToolName) => new AgentCallItemViewModel(tool),
         ToolCallRow tool => CreateTool(tool),

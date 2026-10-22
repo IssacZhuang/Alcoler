@@ -126,6 +126,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
             Assert.NotNull(loaded.Branch);
             Assert.Equal(branch.CutAfterMessageId, loaded.Branch.CutAfterMessageId);
             Assert.Equal(branch.KeptMessageIds, loaded.Branch.KeptMessageIds);
+            Assert.Null(loaded.Branch.CutEventSequence);
             Assert.Null(loaded.Shell);
         }
     }
@@ -138,7 +139,8 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         var branch = new SessionBranch(
             new MessageId("msg_cut"),
-            [new MessageId("msg_a"), new MessageId("msg_b")]);
+            [new MessageId("msg_a"), new MessageId("msg_b")],
+            CutEventSequence: 42);
         var record = NewRecord(branch: branch, isArchived: true);
 
         await store.UpsertSessionAsync(record, CancellationToken.None);
@@ -157,6 +159,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         Assert.Equal(branch.CutAfterMessageId, loaded.Branch.CutAfterMessageId);
         Assert.True(
             new HashSet<MessageId>(loaded.Branch.KeptMessageIds).SetEquals(branch.KeptMessageIds));
+        Assert.Equal(branch.CutEventSequence, loaded.Branch.CutEventSequence);
 
         await store.UpsertSessionAsync(
             record with { Title = "renamed", PermissionMode = PermissionMode.Yolo, IsArchived = false },

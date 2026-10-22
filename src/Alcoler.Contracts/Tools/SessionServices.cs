@@ -114,6 +114,8 @@ public sealed record SubagentTaskInfo(
 /// </summary>
 public interface ISubagentTasks
 {
+    IReadOnlyList<SubagentTaskInfo> List();
+
     SubagentTaskInfo? Find(string taskId);
 
     bool TryMarkNotified(string taskId);

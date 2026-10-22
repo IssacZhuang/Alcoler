@@ -27,6 +27,9 @@ public sealed class SubagentTaskRegistry : ISubagentTasks
             entry.Restore(info);
     }
 
+    public IReadOnlyList<SubagentTaskInfo> List() =>
+        [.. _entries.Values.Select(static entry => entry.Snapshot())];
+
     public SubagentTaskInfo? Find(string taskId) =>
         _entries.TryGetValue(new SubagentId(taskId), out var entry) ? entry.Snapshot() : null;
 

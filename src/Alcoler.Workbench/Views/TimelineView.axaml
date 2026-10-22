@@ -111,6 +111,39 @@
     <Style Selector="ItemsControl.wideUserMessages Border.userRow">
       <Setter Property="MaxWidth" Value="576" />
     </Style>
+    <Style Selector="StackPanel.userMessage">
+      <Setter Property="HorizontalAlignment" Value="Right" />
+      <Setter Property="Margin" Value="0,0,0,20" />
+      <Setter Property="Spacing" Value="2" />
+    </Style>
+    <Style Selector="StackPanel.userMessage Button.messageAction">
+      <Setter Property="Opacity" Value="0" />
+    </Style>
+    <Style Selector="StackPanel.userMessage:pointerover Button.messageAction">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+    <Style Selector="Button.messageAction">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="4" />
+      <Setter Property="Width" Value="26" />
+      <Setter Property="Height" Value="26" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.messageAction controls|Icon">
+      <Setter Property="Width" Value="15" />
+      <Setter Property="Height" Value="15" />
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerTextTertiary}" />
+    </Style>
+    <Style Selector="Button.messageAction:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="Button.messageAction:focus-visible">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
     <Style Selector="SelectableTextBlock.mono">
       <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
       <Setter Property="FontSize" Value="{DynamicResource AlcolerFontBase}" />
@@ -264,26 +297,37 @@
             </ItemsControl.ItemsPanel>
             <ItemsControl.DataTemplates>
               <DataTemplate x:DataType="vm:UserMessageItemViewModel">
-                <Border Classes="userRow" Margin="0,0,0,20" CornerRadius="12,2,12,12"
-                        HorizontalAlignment="Right" Padding="16,12" BorderThickness="0"
-                        Background="{DynamicResource AlcolerSurface}">
-                  <StackPanel Spacing="8">
-                    <ItemsControl ItemsSource="{Binding Images}" IsVisible="{Binding HasImages}">
-                      <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
-                      </ItemsControl.ItemsPanel>
-                      <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="parts:FilePart">
-                          <controls:ConversationImage ArtifactUri="{Binding ArtifactUri}" MimeType="{Binding MimeType}" FileName="{Binding FileName}"
-                                                      ToolTip.Tip="{Binding FileName}" Margin="0,0,6,0" />
-                        </DataTemplate>
-                      </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
-                                         FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
-                                         IsVisible="{Binding !!Text}" Foreground="{DynamicResource AlcolerTextPrimary}" />
+                <StackPanel Classes="userMessage">
+                  <Border Classes="userRow" CornerRadius="12,2,12,12" Padding="16,12" BorderThickness="0"
+                          HorizontalAlignment="Right" Background="{DynamicResource AlcolerSurface}">
+                    <StackPanel Spacing="8">
+                      <ItemsControl ItemsSource="{Binding Images}" IsVisible="{Binding HasImages}">
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="parts:FilePart">
+                            <controls:ConversationImage ArtifactUri="{Binding ArtifactUri}" MimeType="{Binding MimeType}" FileName="{Binding FileName}"
+                                                        ToolTip.Tip="{Binding FileName}" Margin="0,0,6,0" />
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                      <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                                           FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
+                                           IsVisible="{Binding !!Text}" Foreground="{DynamicResource AlcolerTextPrimary}" />
+                    </StackPanel>
+                  </Border>
+                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="2">
+                    <Button Classes="messageAction" IsVisible="{Binding CanRewind}" Click="OnRewindUserMessageClick"
+                            ToolTip.Tip="Edit from here" AutomationProperties.Name="Rewind to this message">
+                      <controls:Icon Data="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+                    </Button>
+                    <Button Classes="messageAction" Click="OnCopyUserMessageClick"
+                            ToolTip.Tip="Copy message" AutomationProperties.Name="Copy message">
+                      <controls:Icon Data="M8 8V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
+                    </Button>
                   </StackPanel>
-                </Border>
+                </StackPanel>
               </DataTemplate>
 
               <DataTemplate x:DataType="vm:AssistantMessageItemViewModel">

@@ -375,6 +375,75 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public void UserMessageItem_CarriesRewindAffordance()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(new UserMessageRow("m1", "hello", DateTimeOffset.UtcNow, CanRewind: true))],
+                Reset: false));
+
+            var item = Assert.IsType<UserMessageItemViewModel>(Assert.Single(viewModel.Items));
+            Assert.Equal(new MessageId("m1"), item.Id);
+            Assert.True(item.CanRewind);
+        }
+    }
+
+    [Fact]
+    public async Task RewindToMessageAsync_SubmitsRewindAndRestoresDraft()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            await viewModel.RewindToMessageAsync(new UserMessageItemViewModel(
+                "m1", "older text", id: new MessageId("m1"), canRewind: true));
+
+            var command = Assert.IsType<RewindConversationCommand>(Assert.Single(runtime.Submitted));
+            Assert.Equal(new MessageId("m1"), command.TargetMessageId);
+            Assert.Equal("older text", viewModel.Composer.Draft);
+            Assert.Null(viewModel.Banner);
+        }
+    }
+
+    [Fact]
+    public async Task RewindToMessageAsync_RejectionKeepsComposerAndSetsBanner()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            runtime.RejectNextCommand = true;
+
+            await viewModel.RewindToMessageAsync(new UserMessageItemViewModel(
+                "m1", "older text", id: new MessageId("m1"), canRewind: true));
+
+            Assert.Equal(string.Empty, viewModel.Composer.Draft);
+            Assert.NotNull(viewModel.Banner);
+        }
+    }
+
+    [Fact]
+    public async Task RewindToMessageAsync_DoesNotOverwriteAnExistingDraft()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            viewModel.Composer.Draft = "current draft";
+
+            await viewModel.RewindToMessageAsync(new UserMessageItemViewModel(
+                "m1", "older text", id: new MessageId("m1"), canRewind: true));
+
+            Assert.Empty(runtime.Submitted);
+            Assert.Equal("current draft", viewModel.Composer.Draft);
+            Assert.NotNull(viewModel.Banner);
+        }
+    }
+
+    [Fact]
     public async Task SendAsync_RejectionKeepsDraftAndSetsBanner()
     {
         var (viewModel, runtime, store) = Create();

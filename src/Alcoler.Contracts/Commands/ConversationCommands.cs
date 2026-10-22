@@ -12,6 +12,7 @@ namespace Alcoler.Contracts.Commands;
 [JsonDerivedType(typeof(RemoveQueuedInputCommand), "remove_queued_input")]
 [JsonDerivedType(typeof(StopCommand), "stop")]
 [JsonDerivedType(typeof(CompactCommand), "compact")]
+[JsonDerivedType(typeof(RewindConversationCommand), "rewind_conversation")]
 [JsonDerivedType(typeof(ResolveInteractionCommand), "resolve_interaction")]
 [JsonDerivedType(typeof(SwitchModelCommand), "switch_model")]
 [JsonDerivedType(typeof(SetModeCommand), "set_mode")]
@@ -51,6 +52,12 @@ public sealed record CompactCommand(
     SessionId SessionId,
     long BaseRevision,
     string? Instructions = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
+
+public sealed record RewindConversationCommand(
+    CommandId CommandId,
+    SessionId SessionId,
+    long BaseRevision,
+    MessageId TargetMessageId) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record ResolveInteractionCommand(
     CommandId CommandId,

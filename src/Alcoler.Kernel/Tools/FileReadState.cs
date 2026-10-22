@@ -71,6 +71,15 @@ public sealed class FileReadState : IFileReadState
         }
     }
 
+    public void Clear()
+    {
+        lock (_sync)
+        {
+            _reads.Clear();
+            _views.Clear();
+        }
+    }
+
     private static string Normalize(string path) => Path.GetFullPath(path);
 
     private static long Length(string path)

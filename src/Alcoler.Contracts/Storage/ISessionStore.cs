@@ -10,7 +10,8 @@ namespace Alcoler.Contracts.Storage;
 
 public sealed record SessionBranch(
     MessageId CutAfterMessageId,
-    IReadOnlyList<MessageId> KeptMessageIds);
+    IReadOnlyList<MessageId> KeptMessageIds,
+    long? CutEventSequence = null);
 
 public sealed record SessionRecord(
     SessionId Id,

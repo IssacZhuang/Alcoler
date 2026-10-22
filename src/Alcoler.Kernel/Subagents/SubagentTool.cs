@@ -26,6 +26,8 @@ public sealed class SubagentTool : ITool, ISubagentTasks
 
     public ISubagentTasks? Tasks { get; }
 
+    public IReadOnlyList<SubagentTaskInfo> List() => Tasks?.List() ?? [];
+
     public SubagentTaskInfo? Find(string taskId) => Tasks?.Find(taskId);
 
     public bool TryMarkNotified(string taskId) => Tasks?.TryMarkNotified(taskId) ?? false;

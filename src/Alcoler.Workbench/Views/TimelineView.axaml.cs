@@ -260,6 +260,44 @@ public partial class TimelineView : UserControl
             e.Handled = true;
         }
     }
+
+    private async void OnCopyUserMessageClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: UserMessageItemViewModel item })
+        {
+            return;
+        }
+        e.Handled = true;
+        if (TopLevel.GetTopLevel(this)?.Clipboard is not { } clipboard)
+        {
+            return;
+        }
+        try
+        {
+            await clipboard.SetTextAsync(item.Text);
+        }
+        catch (Exception exception)
+        {
+            if (_conversation is not null)
+            {
+                _conversation.Banner = $"The message could not be copied. {exception.Message}";
+            }
+        }
+    }
+
+    private async void OnRewindUserMessageClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: UserMessageItemViewModel item } || _conversation is null)
+        {
+            return;
+        }
+        e.Handled = true;
+        await _conversation.RewindToMessageAsync(item);
+        if (TopLevel.GetTopLevel(this) is MainWindow window)
+        {
+            window.FocusComposer();
+        }
+    }
 }
 
 public sealed class ConversationIconConverter : IValueConverter

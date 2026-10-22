@@ -27,6 +27,7 @@ namespace Alcoler.Contracts.Events;
 [JsonDerivedType(typeof(InteractionRequestedEvent), "interaction_requested")]
 [JsonDerivedType(typeof(InteractionResolvedEvent), "interaction_resolved")]
 [JsonDerivedType(typeof(CompactBoundaryAppliedEvent), "compact_boundary_applied")]
+[JsonDerivedType(typeof(ConversationRewoundEvent), "conversation_rewound")]
 [JsonDerivedType(typeof(MicrocompactAppliedEvent), "microcompact_applied")]
 [JsonDerivedType(typeof(InputQueuedEvent), "input_queued")]
 [JsonDerivedType(typeof(InputDequeuedEvent), "input_dequeued")]
@@ -115,6 +116,12 @@ public sealed record InteractionRequestedEvent(InteractionRequest Request) : Ses
 public sealed record InteractionResolvedEvent(InteractionId InteractionId, InteractionAnswer Answer) : SessionEvent;
 
 public sealed record CompactBoundaryAppliedEvent(CompactBoundary Boundary) : SessionEvent;
+
+public sealed record ConversationRewoundEvent(
+    MessageId TargetMessageId,
+    MessageId CutAfterMessageId,
+    IReadOnlyList<MessageId> KeptMessageIds,
+    long CutEventSequence) : SessionEvent;
 
 public sealed record MicrocompactAppliedEvent(IReadOnlyList<PartId> ClearedParts, int EstimatedTokensSaved) : SessionEvent;
 

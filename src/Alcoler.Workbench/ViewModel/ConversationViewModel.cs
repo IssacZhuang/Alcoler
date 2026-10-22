@@ -276,7 +276,8 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             TimelineItemFactory.Update(item, row),
         (ToolCallItemViewModel tool, ToolCallRow toolRow) when tool.Id == toolRow.Id && tool.ToolName == toolRow.ToolName =>
             TimelineItemFactory.Update(item, row),
-        (UserMessageItemViewModel user, UserMessageRow userRow) => user.Text == userRow.Text,
+        (UserMessageItemViewModel user, UserMessageRow userRow) =>
+            user.Text == userRow.Text && user.CanRewind == userRow.CanRewind,
         (SystemNoticeItemViewModel notice, SystemNoticeRow noticeRow) => notice.Kind == noticeRow.Kind && notice.Text == noticeRow.Text,
         _ => false,
     };
@@ -480,7 +481,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             {
                 RestoreModelSelection(selection);
             }
-            await RestoreQueuedImagesAsync(queued.Images);
+            await RestoreImagesAsync(queued.Images, "queued message", "withdrawn");
         }
         catch (Exception exception)
         {
@@ -489,6 +490,36 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         finally
         {
             _queueOperations.Remove(input.CommandId);
+        }
+    }
+
+    public async Task RewindToMessageAsync(UserMessageItemViewModel item)
+    {
+        if (!item.CanRewind)
+        {
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(Composer.Draft) || Composer.HasAttachments)
+        {
+            Banner = "Send or clear the current draft before rewinding a message.";
+            return;
+        }
+        try
+        {
+            var ack = await SubmitAsync(new RewindConversationCommand(
+                StrongId.NewCommandId(), SessionId, _store.Revision, item.Id));
+            if (!ack.Accepted)
+            {
+                Banner = ack.RejectionReason ?? "The message could not be rewound.";
+                return;
+            }
+            Banner = null;
+            Composer.Draft = item.Text;
+            await RestoreImagesAsync(item.Images, "message", "rewound");
+        }
+        catch (Exception exception)
+        {
+            Banner = $"The message could not be rewound. {exception.Message}";
         }
     }
 
@@ -521,7 +552,8 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
     }
 
-    private async Task RestoreQueuedImagesAsync(IReadOnlyList<FilePart>? images)
+    private async Task RestoreImagesAsync(
+        IReadOnlyList<FilePart>? images, string subject, string action)
     {
         if (images is not { Count: > 0 })
         {
@@ -535,7 +567,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 var data = await _artifacts.TryLoadAsync(image.ArtifactUri, CancellationToken.None);
                 if (data is null)
                 {
-                    Banner = "The queued message was withdrawn, but some of its images are no longer available.";
+                    Banner = $"The {subject} was {action}, but some of its images are no longer available.";
                     continue;
                 }
                 restored.Add(ComposerImageAttachment.FromBytes(
@@ -545,7 +577,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException
             or ArgumentException or NotSupportedException)
         {
-            Banner = $"The queued message was withdrawn, but its images could not be restored. {exception.Message}";
+            Banner = $"The {subject} was {action}, but its images could not be restored. {exception.Message}";
         }
         if (restored.Count > 0)
         {

@@ -117,6 +117,24 @@ public sealed class ProjectionBuilder
                     stateChanged = false;
                     break;
 
+                case ConversationRewoundEvent rewound:
+                    ApplyRewind(rewound.TargetMessageId.Value, ops);
+                    _streamingText.Clear();
+                    _queue.Clear();
+                    _state = _state with
+                    {
+                        Phase = TurnPhase.Idle,
+                        ActiveTurn = null,
+                        PendingPermission = null,
+                        PendingInteraction = null,
+                        Queue = [],
+                        ContextUsageTokens = null,
+                        ContextUsage = null,
+                        TokenSource = "estimate",
+                    };
+                    stateChanged = true;
+                    break;
+
                 case ToolCallStartedEvent toolStarted:
                     Upsert(new ToolCallRow(
                         toolStarted.ToolCallId.Value,
@@ -294,7 +312,12 @@ public sealed class ProjectionBuilder
             .Where(part => part.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)).ToArray();
         if (text.Length > 0 || images.Length > 0)
         {
-            Append(new UserMessageRow(message.Id.Value, text, message.CreatedAt, images.Length > 0 ? images : null), ops);
+            Append(new UserMessageRow(
+                message.Id.Value,
+                text,
+                message.CreatedAt,
+                images.Length > 0 ? images : null,
+                SessionRuntime.IsRealUserTurn(message)), ops);
         }
 
         foreach (var toolResult in message.Parts.OfType<ToolResultPart>())
@@ -313,6 +336,22 @@ public sealed class ProjectionBuilder
                 existing?.Duration,
                 existing?.StartedAt ?? message.CreatedAt,
                 existing?.FileChange), ops);
+        }
+    }
+
+    private void ApplyRewind(string targetRowId, List<RowOp> ops)
+    {
+        if (!_rowIndex.TryGetValue(targetRowId, out var targetIndex))
+        {
+            return;
+        }
+
+        for (var index = _rows.Count - 1; index >= targetIndex; index--)
+        {
+            var rowId = _rows[index].RowId;
+            _rows.RemoveAt(index);
+            _rowIndex.Remove(rowId);
+            ops.Add(new RowRemoved(rowId));
         }
     }
 

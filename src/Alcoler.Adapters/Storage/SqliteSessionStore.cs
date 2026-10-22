@@ -714,6 +714,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         {
             ["cutAfterMessageId"] = branch.CutAfterMessageId.Value,
             ["keptMessageIds"] = kept,
+            ["cutEventSequence"] = branch.CutEventSequence,
         }.ToJsonString();
     }
 
@@ -735,7 +736,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             new MessageId(cutAfter),
             kept.Select(node => new MessageId(
                 node?.GetValue<string>() ?? throw new InvalidOperationException("Corrupt session branch payload.")))
-                .ToList());
+                .ToList(),
+            root["cutEventSequence"] is JsonValue sequence ? sequence.GetValue<long>() : null);
     }
 
     // Timestamps must round-trip as fixed-width UTC strings so ORDER BY is chronological.
