@@ -6,6 +6,7 @@ namespace Alcoler.Kernel.Runtime;
 /// Plan-mode runtime reminder texts, ported verbatim from ZCode runtime-reminders.ts: the
 /// full Plan Workflow on the 1st, 6th, ... attachment and the sparse form otherwise, with at
 /// most one attachment per 5 human turns; plus the one-shot body after ExitPlanMode approval.
+/// The exit reminder diverges from ZCode: approved plans execute via subagents.
 /// </summary>
 public static class RuntimeReminders
 {
@@ -65,7 +66,7 @@ public static class RuntimeReminders
         $"Plan mode still active (see full instructions earlier in conversation). Read-only. Follow 4-phase workflow. End turns with {AskUserQuestionToolName} (for clarifications) or {ExitPlanModeToolName} (for plan approval). Never ask for plan approval via text or AskUserQuestion.";
 
     public const string PlanModeExitReminder =
-        "## Exited Plan Mode\n\nYou have exited plan mode. You can now make edits, run tools, and take actions.";
+        "## Exited Plan Mode\n\nYou have exited plan mode. Dispatch the approved plan's implementation to subagents and accept each result yourself before reporting done.";
 
     public static bool IsPlanModeReminder(string text) =>
         text.Contains("Plan mode is active.", StringComparison.Ordinal)

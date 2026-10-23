@@ -58,7 +58,7 @@ public class ExitPlanModeToolTests
 
         Assert.False(result.IsError);
         Assert.Equal(
-            "User has approved your plan. You can now start coding. Start with updating your todo list if applicable.\n\n## Approved Plan:\n1. Add tests\n2. Implement the parser",
+            "User has approved your plan. Execute it by dispatching the implementation to subagents; accept each result yourself before reporting done. Start with updating your todo list if applicable.\n\n## Approved Plan:\n1. Add tests\n2. Implement the parser",
             result.SingleText());
         Assert.Equal(["1. Add tests\n2. Implement the parser"], commands.ApprovedPlans);
         Assert.Empty(commands.SetModes);

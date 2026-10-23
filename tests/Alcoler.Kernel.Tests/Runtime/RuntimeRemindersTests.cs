@@ -43,7 +43,7 @@ public class RuntimeRemindersTests
     public void ExitReminder_IsVerbatim()
     {
         Assert.Equal(
-            "## Exited Plan Mode\n\nYou have exited plan mode. You can now make edits, run tools, and take actions.",
+            "## Exited Plan Mode\n\nYou have exited plan mode. Dispatch the approved plan's implementation to subagents and accept each result yourself before reporting done.",
             RuntimeReminders.PlanModeExitReminder);
     }
 

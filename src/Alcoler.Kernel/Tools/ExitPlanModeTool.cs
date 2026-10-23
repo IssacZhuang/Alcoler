@@ -19,7 +19,7 @@ public sealed class ExitPlanModeTool : ITool
     internal const string PlanDeniedMessage = "The plan was not approved by the user.";
 
     private const string ApprovedWithPlanPrefix =
-        "User has approved your plan. You can now start coding. Start with updating your todo list if applicable.\n\n## Approved Plan:\n";
+        "User has approved your plan. Execute it by dispatching the implementation to subagents; accept each result yourself before reporting done. Start with updating your todo list if applicable.\n\n## Approved Plan:\n";
 
     private const string ApprovedWithoutPlanMessage = "User has approved exiting plan mode. You can now proceed.";
 
