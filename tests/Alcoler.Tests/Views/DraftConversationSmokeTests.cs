@@ -131,14 +131,60 @@ public sealed class DraftConversationSmokeTests
                     Dispatcher.UIThread.RunJobs();
                     var flyout = Assert.IsType<Flyout>(picker.Flyout);
                     var panel = Assert.IsType<StackPanel>(flyout.Content);
-                    var plan = Assert.Single(panel.Children.OfType<RadioButton>(), button => Equals(button.Content, "Plan"));
-                    var topLevel = TopLevel.GetTopLevel(plan)!;
-                    var point = plan.TranslatePoint(new Avalonia.Point(plan.Bounds.Width / 2, plan.Bounds.Height / 2), topLevel)!.Value;
+                    Assert.DoesNotContain(panel.Children.OfType<RadioButton>(), button => Equals(button.Content, "Plan"));
+                    var edit = Assert.Single(panel.Children.OfType<RadioButton>(), button => Equals(button.Content, "Edit"));
+                    var topLevel = TopLevel.GetTopLevel(edit)!;
+                    var point = edit.TranslatePoint(new Avalonia.Point(edit.Bounds.Width / 2, edit.Bounds.Height / 2), topLevel)!.Value;
                     topLevel.MouseDown(point, MouseButton.Left);
                     topLevel.MouseUp(point, MouseButton.Left);
                     Dispatcher.UIThread.RunJobs();
 
-                    Assert.Equal(PermissionMode.Plan, workbench.Draft!.Composer.Mode);
+                    Assert.Equal(PermissionMode.Edit, workbench.Draft!.Composer.Mode);
+                    Assert.Equal(PermissionMode.Edit, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
+                    Assert.Empty(runtime.Submitted);
+                }
+                finally { window.Close(); }
+            }
+            using var restarted = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, WorkbenchConfig.LoadOrDefault(path));
+            var reopened = new MainWindow(restarted);
+            reopened.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                var composer = Assert.Single(reopened.GetVisualDescendants().OfType<ComposerView>());
+                Assert.Contains(composer.FindControl<Button>("ModeSelector")!.GetVisualDescendants().OfType<TextBlock>(),
+                    text => text.Text == "Edit");
+                Assert.False(composer.FindControl<Border>("PlanModeBadge")!.IsVisible);
+                Assert.Equal(PermissionMode.Edit, restarted.Draft!.Composer.Mode);
+            }
+            finally { reopened.Close(); }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [AvaloniaFact]
+    public void PlanCommand_SavesImmediately_AndNewWindowRestoresPlanMode()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-plan-command-{Guid.NewGuid():N}.json");
+        try
+        {
+            var config = new WorkbenchConfig([]);
+            config.Save(path);
+            var runtime = new FakeAgentRuntime();
+            using (var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, config,
+                saveComposer: composer => (WorkbenchConfig.LoadOrDefault(path) with { Composer = composer }).Save(path)))
+            {
+                var window = new MainWindow(workbench);
+                window.Show();
+                try
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    var draft = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
+                    draft.Composer.Draft = "/plan";
+                    draft.SendAsync().GetAwaiter().GetResult();
+                    Dispatcher.UIThread.RunJobs();
+
+                    Assert.Equal(PermissionMode.Plan, draft.Composer.Mode);
                     Assert.Equal(PermissionMode.Plan, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
                     Assert.Empty(runtime.Submitted);
                 }
@@ -152,7 +198,7 @@ public sealed class DraftConversationSmokeTests
                 Dispatcher.UIThread.RunJobs();
                 var composer = Assert.Single(reopened.GetVisualDescendants().OfType<ComposerView>());
                 Assert.Contains(composer.FindControl<Button>("ModeSelector")!.GetVisualDescendants().OfType<TextBlock>(),
-                    text => text.Text == "Plan");
+                    text => text.Text == "Full access");
                 Assert.True(composer.FindControl<Border>("PlanModeBadge")!.IsVisible);
                 Assert.Equal(PermissionMode.Plan, restarted.Draft!.Composer.Mode);
             }

@@ -735,15 +735,32 @@ public class ComposerAndInteractionSmokeTests
         var badge = FindNamed<Border>(harness.View, "PlanModeBadge");
         Assert.False(badge.IsVisible);
 
+        harness.ViewModel.Composer.Mode = PermissionMode.Yolo;
         harness.ViewModel.Composer.Mode = PermissionMode.Plan;
         await PumpAsync();
         Assert.True(badge.IsVisible);
-        Assert.Contains(badge.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Plan mode");
+        Assert.Contains(badge.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Plan");
+        Assert.Contains(FindNamed<Button>(harness.View, "ModeSelector").GetVisualDescendants().OfType<TextBlock>(),
+            text => text.Text == "Full access");
 
         harness.ViewModel.Composer.Mode = PermissionMode.Edit;
         await PumpAsync();
         Assert.False(badge.IsVisible);
+        Assert.Contains(FindNamed<Button>(harness.View, "ModeSelector").GetVisualDescendants().OfType<TextBlock>(),
+            text => text.Text == "Edit");
         Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_PermissionPicker_OmitsPlanMode()
+    {
+        using var harness = Show<ComposerView>();
+        await PumpAsync();
+        var picker = FindNamed<Button>(harness.View, "ModeSelector");
+        var flyout = Assert.IsType<Flyout>(picker.Flyout);
+        var panel = Assert.IsType<StackPanel>(flyout.Content);
+        Assert.DoesNotContain(panel.Children.OfType<RadioButton>(),
+            button => Equals(button.Content, "Plan"));
     }
 
     [AvaloniaFact]

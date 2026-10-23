@@ -40,12 +40,6 @@
     <Style Selector="Button.modePicker.fullAccess controls|Icon.icon">
       <Setter Property="Stroke" Value="{DynamicResource AlcolerWarning}" />
     </Style>
-    <Style Selector="Border.modeBadge">
-      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
-      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusFull}" />
-      <Setter Property="Padding" Value="7,1" />
-      <Setter Property="VerticalAlignment" Value="Center" />
-    </Style>
     <Style Selector="Button.toolbarPicker">
       <Setter Property="Height" Value="28" />
       <Setter Property="MinHeight" Value="0" />
@@ -167,21 +161,24 @@
                     <StackPanel Spacing="8" MinWidth="220" MaxWidth="256">
                       <TextBlock Text="Permissions" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
                       <RadioButton GroupName="ComposerMode" Content="Build" ToolTip.Tip="Ask before making changes"
-                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Build}" />
+                                   IsChecked="{Binding Composer.DisplayMode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Build}" />
                       <RadioButton GroupName="ComposerMode" Content="Edit" ToolTip.Tip="Allow file edits"
-                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Edit}" />
-                      <RadioButton GroupName="ComposerMode" Content="Plan" ToolTip.Tip="Plan without making changes"
-                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Plan}" />
+                                   IsChecked="{Binding Composer.DisplayMode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Edit}" />
                       <RadioButton GroupName="ComposerMode" Content="Full access" ToolTip.Tip="Allow tools without approval"
-                                   IsChecked="{Binding Composer.Mode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Yolo}" />
+                                   IsChecked="{Binding Composer.DisplayMode, Mode=TwoWay, Converter={x:Static converters:ComposerConverters.EnumEquals}, ConverterParameter=Yolo}" />
                     </StackPanel>
                   </Flyout>
                 </Button.Flyout>
               </Button>
-              <Border x:Name="PlanModeBadge" Classes="modeBadge" IsVisible="{Binding Composer.IsPlanMode}"
+              <Border x:Name="PlanModeBadge" Background="Transparent" Padding="0" VerticalAlignment="Center"
+                      IsVisible="{Binding Composer.IsPlanMode}"
                       ToolTip.Tip="Plan mode: read-only until you approve a plan">
-                <TextBlock Text="Plan mode" FontSize="{DynamicResource AlcolerFontXs}"
-                           FontWeight="Medium" Foreground="{DynamicResource AlcolerBrand}" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Border Width="1" Height="12" Background="{DynamicResource AlcolerSurfaceHigh}" />
+                  <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPlan}" />
+                  <TextBlock Text="Plan" FontSize="{DynamicResource AlcolerFontBase}"
+                             Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
+                </StackPanel>
               </Border>
               <Button x:Name="StatusTrigger" Classes="modePicker" Click="OnStatusClick" IsVisible="False" VerticalAlignment="Center"
                       ToolTip.Tip="Show running activities" AutomationProperties.Name="Show running activities">

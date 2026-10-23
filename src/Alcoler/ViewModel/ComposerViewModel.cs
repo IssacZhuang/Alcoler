@@ -14,6 +14,7 @@ public sealed partial class ComposerViewModel : ObservableObject
     private string? _workspaceRoot;
     private int? _historyIndex;
     private bool _recalling;
+    private PermissionMode _lastNonPlanMode = PermissionMode.Yolo;
 
     public ComposerViewModel(ComposerPromptHistory? history = null)
     {
@@ -151,9 +152,20 @@ public sealed partial class ComposerViewModel : ObservableObject
     [ObservableProperty]
     private PermissionMode _sessionMode = PermissionMode.Yolo;
 
-    public string ModeLabel => Mode == PermissionMode.Yolo ? "Full access" : Mode.ToString();
+    public PermissionMode DisplayMode
+    {
+        get => Mode == PermissionMode.Plan ? _lastNonPlanMode : Mode;
+        set
+        {
+            if (value == PermissionMode.Plan || value == Mode)
+                return;
+            Mode = value;
+        }
+    }
 
-    public bool IsFullAccess => Mode == PermissionMode.Yolo;
+    public string ModeLabel => DisplayMode == PermissionMode.Yolo ? "Full access" : DisplayMode.ToString();
+
+    public bool IsFullAccess => DisplayMode == PermissionMode.Yolo;
 
     public bool IsPlanMode => Mode == PermissionMode.Plan;
 
@@ -197,6 +209,9 @@ public sealed partial class ComposerViewModel : ObservableObject
 
     partial void OnModeChanged(PermissionMode value)
     {
+        if (value != PermissionMode.Plan)
+            _lastNonPlanMode = value;
+        OnPropertyChanged(nameof(DisplayMode));
         OnPropertyChanged(nameof(ModeLabel));
         OnPropertyChanged(nameof(IsFullAccess));
         OnPropertyChanged(nameof(IsPlanMode));
