@@ -64,11 +64,9 @@
     </Style>
   </UserControl.Styles>
   <DockPanel Background="{DynamicResource AlcolerSidebar}">
-    <Grid DockPanel.Dock="Top" Height="40" Margin="12,0,8,0" ColumnDefinitions="Auto,*,Auto"
+    <Grid DockPanel.Dock="Top" Height="40" Margin="12,0,8,0" ColumnDefinitions="*,Auto"
           PointerPressed="OnTitleBarPointerPressed">
-      <Image Grid.Column="0" Source="avares://Alcoler/Assets/Icons/Alcoler-mark.png" Width="18" Height="18"
-             VerticalAlignment="Center" ToolTip.Tip="Alcoler" AutomationProperties.Name="Alcoler" />
-      <Button Grid.Column="2" Classes="icon tiny" Command="{Binding ToggleSidebarCommand}"
+      <Button Grid.Column="1" Classes="icon tiny" Command="{Binding ToggleSidebarCommand}"
               ToolTip.Tip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPanel}" />
       </Button>
