@@ -14,9 +14,9 @@ public class WorkflowRegistryTests
         var orchestrator = WorkflowRegistry.BuiltIn.Find(OrchestratorWorkflow.Id);
         Assert.NotNull(orchestrator);
         Assert.NotNull(orchestrator.SystemSection);
-        Assert.NotNull(orchestrator.FullReminder);
-        Assert.NotNull(orchestrator.SparseReminder);
-        Assert.NotNull(orchestrator.ExitReminder);
+        Assert.Null(orchestrator.FullReminder);
+        Assert.Null(orchestrator.SparseReminder);
+        Assert.Null(orchestrator.ExitReminder);
         Assert.Contains(OrchestratorWorkflow.Id, WorkflowRegistry.BuiltIn.Definitions.Select(d => d.Id));
     }
 

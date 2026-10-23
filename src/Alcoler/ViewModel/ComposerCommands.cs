@@ -13,7 +13,7 @@ public static class ComposerCommands
     public const string PlanCommandName = "plan";
     public const string PlanDescription = "Plan without making changes";
     public const string OrchestratorCommandName = "orchestrator";
-    public const string OrchestratorDescription = "Orchestrate via subagents: decompose, delegate, verify";
+    public const string OrchestratorDescription = "Orchestrate via subagents: plan, dispatch, accept";
 
     private static readonly (string Name, string Description, ComposerCommandKind Kind)[] BuiltIns =
     [

@@ -18,7 +18,7 @@ public class WorkflowEndToEndTests
         string.Join("\n", request.Messages.SelectMany(m => m.Content.OfType<InputTextBlock>().Select(b => b.Text)));
 
     [Fact]
-    public async Task ActivateOrchestratorViaCommand_InjectsSystemSectionAndFullReminder()
+    public async Task ActivateOrchestratorViaCommand_InjectsSystemSectionWithoutReminders()
     {
         await using var harness = TestHarness.Create(
             FinalText("Orchestrating."),
@@ -48,11 +48,11 @@ public class WorkflowEndToEndTests
         var requestText = RequestText(Assert.Single(capturing.Requests));
         Assert.Contains("# Orchestrator mode", requestText);
         Assert.Contains("Orchestrator mode is active.", requestText);
-        Assert.Contains(WorkflowRegistry.ReminderMarker(OrchestratorWorkflow.Id), requestText);
+        Assert.DoesNotContain(WorkflowRegistry.ReminderMarker(OrchestratorWorkflow.Id), requestText);
     }
 
     [Fact]
-    public async Task DeactivateOrchestrator_AttachesExitReminderAndDropsSection()
+    public async Task DeactivateOrchestrator_DropsSectionWithoutExitReminder()
     {
         await using var harness = TestHarness.Create(
             FinalText("Orchestrating."),
@@ -87,11 +87,10 @@ public class WorkflowEndToEndTests
 
         Assert.Equal(2, capturing.Requests.Count);
         var requestText = RequestText(capturing.Requests[1]);
-        Assert.Contains("Exited Orchestrator Mode", requestText);
         Assert.DoesNotContain("# Orchestrator mode", requestText);
         Assert.DoesNotContain("Orchestrator mode still active", requestText);
-        // The first turn's reminder stays in history; deactivation must not re-attach one.
-        Assert.Equal(1, CountOccurrences(requestText, WorkflowRegistry.ReminderMarker(OrchestratorWorkflow.Id)));
+        // One-shot injection: the section drops on deactivation and no reminder was ever attached.
+        Assert.Equal(0, CountOccurrences(requestText, WorkflowRegistry.ReminderMarker(OrchestratorWorkflow.Id)));
     }
 
     private static int CountOccurrences(string text, string token)
