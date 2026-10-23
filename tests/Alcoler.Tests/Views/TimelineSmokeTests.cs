@@ -1101,6 +1101,49 @@ public class TimelineSmokeTests
         return chunks + (tail?.Text ?? string.Empty);
     }
 
+    [AvaloniaFact]
+    public async Task StreamingMarkdownSelection_CopiesSelectedTextWithControlC()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 1000);
+        try
+        {
+            const string text = "The quick brown fox jumps over the lazy dog.";
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowAppended(new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), text + "\n\nTail")], IsStreaming: true, At: DateTimeOffset.UtcNow))],
+                Reset: false));
+            Pump();
+            await RenderAsync(window);
+
+            var body = Assert.Single(view.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>(),
+                block => block.Text == text);
+            var start = body.TranslatePoint(new Point(1, body.Bounds.Height / 2), window)!.Value;
+            var end = body.TranslatePoint(new Point(body.Bounds.Width - 1, body.Bounds.Height / 2), window)!.Value;
+            window.MouseMove(start);
+            window.MouseDown(start, MouseButton.Left);
+            window.MouseMove(end);
+            window.MouseUp(end, MouseButton.Left);
+            Pump();
+
+            var selection = Assert.IsAssignableFrom<ColorTextBlock.Avalonia.Selection>(body.Selection);
+            Assert.Equal(0, selection.From);
+            Assert.Equal(text.Length, selection.To);
+            await window.Clipboard!.SetTextAsync("not the selection");
+            window.KeyPressQwerty(PhysicalKey.C, RawInputModifiers.Control);
+            window.KeyReleaseQwerty(PhysicalKey.C, RawInputModifiers.Control);
+            Pump();
+            Assert.Equal(text, (await window.Clipboard.GetTextAsync())?.TrimEnd('\n'));
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
     private async Task<ColorTextBlock.Avalonia.CTextBlock> WaitForParagraphAsync(Window window, TimelineView view, string text)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);

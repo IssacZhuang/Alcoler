@@ -509,7 +509,7 @@
                   <WrapPanel Orientation="Horizontal">
                     <TextBlock Classes="caption" Text="{Binding DisplayKind}" FontWeight="Medium" ToolTip.Tip="{Binding Kind}" />
                     <TextBlock Classes="caption" Text=": " />
-                    <TextBlock Classes="caption" Text="{Binding Text}" TextWrapping="Wrap" LineHeight="20" />
+                    <SelectableTextBlock Classes="caption" Text="{Binding Text}" TextWrapping="Wrap" LineHeight="20" />
                   </WrapPanel>
                 </Border>
               </DataTemplate>

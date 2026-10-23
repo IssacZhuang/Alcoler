@@ -84,7 +84,13 @@ public sealed class RestoreTask : FrostingTask<BuildContext>
     public override void Run(BuildContext context)
     {
         context.Log.Information($"Restore {context.Solution}");
-        context.DotNetRestore(context.Solution, new DotNetRestoreSettings());
+        // Restore for the target runtime. A RID-less restore would be rewritten by
+        // the publish restore, recompiling every project while the shared compiler
+        // server still holds the build outputs, failing with CS2012.
+        context.DotNetRestore(context.Solution, new DotNetRestoreSettings
+        {
+            Runtime = context.TargetRuntime
+        });
     }
 }
 
@@ -98,7 +104,12 @@ public sealed class BuildTask : FrostingTask<BuildContext>
         context.DotNetBuild(context.Solution, new DotNetBuildSettings
         {
             Configuration = context.BuildConfiguration,
-            NoRestore = true
+            NoRestore = true,
+            ArgumentCustomization = args => args
+                .Append("-p:UseSharedCompilation=false")
+                // Parallel nodes duplicate-build the same RID-less reference
+                // and race on its obj output (CS2012); serialize instead.
+                .Append("-m:1")
         });
     }
 }
@@ -136,6 +147,12 @@ public sealed class PublishTask : FrostingTask<BuildContext>
                 .Append("/p:SelfContained=true")
                 .Append("/p:PublishSingleFile=true")
                 .Append("/p:DebugType=embedded")
+                // Publish recompiles the projects the Build task just wrote; the
+                // shared compiler server still holds those outputs and fails with CS2012.
+                .Append("/p:UseSharedCompilation=false")
+                // Parallel nodes duplicate-build the same RID-less reference
+                // and race on its obj output (CS2012); serialize instead.
+                .Append("/m:1")
         });
     }
 }
@@ -168,8 +185,35 @@ public sealed class PackageTask : FrostingTask<BuildContext>
         }
 
         context.Log.Information($"Packaging output -> {packagePath}");
-        ZipFile.CreateFromDirectory(
-            context.OutputDir, packagePath, CompressionLevel.Optimal, includeBaseDirectory: false);
+        CreatePackageZip(context, context.OutputDir, packagePath);
+    }
+
+    private static void CreatePackageZip(BuildContext context, string outputDir, string packagePath)
+    {
+        const int modeExecutable = unchecked((int)0x81ED0000); // 0755
+        const int modeRegular = unchecked((int)0x81A40000);    // 0644
+
+        // Windows-created zip entries carry no unix mode; without it the app
+        // binary and ripgrep are not executable after extraction on unix.
+        var unixModes = context.TargetRuntime.StartsWith("osx") || context.TargetRuntime.StartsWith("linux");
+        using var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create);
+        foreach (var filePath in Directory.GetFiles(outputDir, "*", SearchOption.AllDirectories))
+        {
+            var entryName = IOPath.GetRelativePath(outputDir, filePath).Replace('\\', '/');
+            var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+            if (unixModes)
+            {
+                var fileName = IOPath.GetFileNameWithoutExtension(filePath);
+                var inRootDirectory = IOPath.GetDirectoryName(IOPath.GetFullPath(filePath))
+                    == IOPath.GetFullPath(outputDir);
+                var executable = fileName == "rg" ||
+                    (inRootDirectory && IOPath.GetExtension(filePath).Length == 0);
+                entry.ExternalAttributes = executable ? modeExecutable : modeRegular;
+            }
+            using var source = File.OpenRead(filePath);
+            using var target = entry.Open();
+            source.CopyTo(target);
+        }
     }
 }
 

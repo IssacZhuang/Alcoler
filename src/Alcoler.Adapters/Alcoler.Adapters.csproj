@@ -2,8 +2,11 @@
 
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Evaluated before the tools/ripgrep content items below. -->
-    <_AlcoGrepRid>$(RuntimeIdentifier)</_AlcoGrepRid>
+    <!-- Evaluated before the tools/ripgrep content items below. AlcoGrepTargetRid
+         overrides the RID because the SDK builds project references RID-less, so
+         RuntimeIdentifier is absent there during cross-RID publishes. -->
+    <_AlcoGrepRid>$(AlcoGrepTargetRid)</_AlcoGrepRid>
+    <_AlcoGrepRid Condition="'$(_AlcoGrepRid)' == ''">$(RuntimeIdentifier)</_AlcoGrepRid>
     <_AlcoGrepRid Condition="'$(_AlcoGrepRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_AlcoGrepRid>
     <_AlcoGrepRgName Condition="$(_AlcoGrepRid.StartsWith('win'))">rg.exe</_AlcoGrepRgName>
     <_AlcoGrepRgName Condition="'$(_AlcoGrepRgName)' == ''">rg</_AlcoGrepRgName>

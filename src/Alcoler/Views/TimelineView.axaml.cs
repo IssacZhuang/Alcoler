@@ -1,4 +1,5 @@
 using System.Globalization;
+using Alcoler.Controls;
 using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
@@ -135,6 +136,7 @@ public partial class TimelineView : UserControl
 
     private void OnTimelinePointerPressed(object? sender, PointerPressedEventArgs e)
     {
+        ConversationMarkdownFragment.ClearActiveSelection();
         if (e.Source is Visual source && source.GetVisualAncestors().OfType<ScrollBar>()
                 .Any(bar => ReferenceEquals(bar.TemplatedParent, TimelineScroll)) &&
             e.GetCurrentPoint(TimelineScroll).Properties.IsLeftButtonPressed)

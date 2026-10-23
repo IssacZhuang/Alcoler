@@ -34,7 +34,10 @@
   <ItemGroup>
     <ProjectReference Include="..\Alcoler.Contracts\Alcoler.Contracts.csproj" />
     <ProjectReference Include="..\Alcoler.Kernel\Alcoler.Kernel.csproj" />
-    <ProjectReference Include="..\Alcoler.Adapters\Alcoler.Adapters.csproj" />
+    <!-- The SDK builds references RID-less, so the publish RID reaches Adapters
+         only through AlcoGrepTargetRid (RuntimeIdentifier is stripped there). -->
+    <ProjectReference Include="..\Alcoler.Adapters\Alcoler.Adapters.csproj"
+                      AdditionalProperties="AlcoGrepTargetRid=$(RuntimeIdentifier)" />
     <ProjectReference Include="..\Alcoler.Browser\Alcoler.Browser.csproj" />
   </ItemGroup>
 </Project>
