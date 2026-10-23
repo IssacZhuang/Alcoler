@@ -57,7 +57,8 @@ public sealed record ConversationState(
     IReadOnlyList<QueuedInput> Queue,
     PermissionRequest? PendingPermission,
     InteractionRequest? PendingInteraction,
-    ContextUsageState? ContextUsage = null)
+    ContextUsageState? ContextUsage = null,
+    IReadOnlyList<string>? ActiveWorkflows = null)
 {
     public static ConversationState Initial(string title, PermissionMode mode, ModelSelection? modelSelection, int contextWindowTokens) =>
         new(title, mode, modelSelection, contextWindowTokens, TurnPhase.Idle, null, null, "estimate", [], null, null);

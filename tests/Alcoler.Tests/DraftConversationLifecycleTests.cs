@@ -441,6 +441,47 @@ public sealed class DraftConversationLifecycleTests
     }
 
     [Fact]
+    public async Task OrchestratorDraftCommand_CreatesSessionWithWorkflowAndSendsPrompt()
+    {
+        var runtime = new DraftRuntime();
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, new WorkbenchConfig([]),
+            saveComposer: _ => { });
+        var draft = workbench.Draft!;
+        draft.Composer.Draft = "/orchestrator refactor the storage layer";
+
+        await draft.SendAsync();
+        await ApplyInitialProjectionAsync();
+
+        Assert.Equal([Alcoler.Kernel.Workflows.OrchestratorWorkflow.Id], Assert.Single(runtime.Created).ActiveWorkflows);
+        var command = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
+        Assert.Equal("refactor the storage layer", command.Text);
+        Assert.Null(command.Workflows);
+    }
+
+    [Fact]
+    public async Task BareOrchestratorDraftCommand_TogglesArmedWorkflowWithoutCreatingASession()
+    {
+        var runtime = new DraftRuntime();
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler, new WorkbenchConfig([]),
+            saveComposer: _ => { });
+        var draft = workbench.Draft!;
+
+        draft.Composer.Draft = "/orchestrator";
+        await draft.SendAsync();
+
+        Assert.Empty(runtime.Created);
+        Assert.Empty(runtime.Submitted);
+        Assert.True(draft.Composer.IsOrchestratorActive);
+
+        draft.Composer.Draft = "/orchestrator";
+        await draft.SendAsync();
+
+        Assert.Empty(runtime.Created);
+        Assert.Empty(runtime.Submitted);
+        Assert.False(draft.Composer.IsOrchestratorActive);
+    }
+
+    [Fact]
     public void InvalidSavedModes_DefaultSafelyToFullAccess()
     {
         using var workbench = new WorkbenchViewModel(new DraftRuntime(), _scheduler,

@@ -9,6 +9,7 @@ using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Subagents;
+using Alcoler.Kernel.Workflows;
 using Alcoler.Stores;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -29,6 +30,8 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     private readonly IAgentRuntime _runtime;
     private readonly ProjectionStore _store;
+    // Workflows requested by a parsed "/orchestrator <prompt>" command, consumed by the send below.
+    private IReadOnlyList<string>? _pendingWorkflows;
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
     private readonly Dictionary<string, SystemNoticeRow> _agentRows = [];
     private readonly List<string> _rowOrder = [];
@@ -431,6 +434,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
         Mode = state.Mode;
         Composer.SessionMode = state.Mode;
+        Composer.SessionWorkflows = state.ActiveWorkflows ?? [];
         PhaseText = state.Phase.ToString();
         ActivityText = state.Phase switch
         {
@@ -490,7 +494,37 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 Composer.InputError = "Stop the active turn before changing permissions.";
                 return;
             }
-            Composer.Mode = PermissionMode.Plan;
+            IReadOnlyList<string>? workflows = null;
+            switch (command.Kind)
+            {
+                case ComposerCommandKind.Plan:
+                    Composer.Mode = PermissionMode.Plan;
+                    break;
+                case ComposerCommandKind.Orchestrator:
+                    if (command.Prompt.Length == 0)
+                    {
+                        Composer.InputError = null;
+                        Composer.Draft = string.Empty;
+                        var toggled = ComposerViewModel.ToggleWorkflow(Composer.SessionWorkflows, OrchestratorWorkflow.Id);
+                        var toggleAck = await SubmitAsync(new SetWorkflowsCommand(
+                            StrongId.NewCommandId(), SessionId, _store.Revision, toggled));
+                        if (toggleAck.Accepted)
+                        {
+                            // Optimistic; the authoritative state round-trip overwrites this.
+                            Composer.SessionWorkflows = toggled;
+                        }
+                        else
+                        {
+                            Banner = toggleAck.RejectionReason ?? "Input was rejected";
+                        }
+                        return;
+                    }
+                    if (!ComposerViewModel.ContainsWorkflow(Composer.SessionWorkflows, OrchestratorWorkflow.Id))
+                    {
+                        workflows = [.. Composer.SessionWorkflows, OrchestratorWorkflow.Id];
+                    }
+                    break;
+            }
             if (command.Prompt.Length == 0)
             {
                 Composer.InputError = null;
@@ -499,11 +533,14 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             }
             Composer.InputError = null;
             Composer.Draft = command.Prompt;
+            _pendingWorkflows = workflows;
         }
         var text = Composer.Draft;
         var selection = CurrentSelection;
         var submissionSequence = NextSubmissionSequence?.Invoke() ?? 0;
         var mode = Composer.IsTurnActive ? (PermissionMode?)null : Composer.Mode;
+        var commandWorkflows = _pendingWorkflows;
+        _pendingWorkflows = null;
         Composer.IsSending = true;
         try
         {
@@ -511,13 +548,19 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             // Queued input must not mutate the active turn's permission policy.
             _restoredComposer = false;
             var ack = await SubmitAsync(new SendTextCommand(
-                StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: selection, Mode: mode, Images: images));
+                StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: selection, Mode: mode,
+                Images: images, Workflows: commandWorkflows));
             if (ack.Accepted)
             {
                 if (mode is { } submittedMode)
                 {
                     AcknowledgeMode(submittedMode);
                     ModeSubmitted?.Invoke(submittedMode);
+                }
+                if (commandWorkflows is { } submittedWorkflows)
+                {
+                    // Optimistic; the authoritative state round-trip overwrites this.
+                    Composer.SessionWorkflows = submittedWorkflows;
                 }
                 if (selection is not null)
                     ModelSelectionSubmitted?.Invoke(selection, submissionSequence);

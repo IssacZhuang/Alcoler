@@ -502,9 +502,9 @@ public partial class ComposerView : UserControl
         }
         _dismissedSkillToken = null;
         List<ComposerSkillEntry> entries = [];
-        if (ComposerCommands.MatchesSuggestion(token.Token))
+        foreach (var (name, description) in ComposerCommands.SuggestionsFor(token.Token))
         {
-            entries.Add(new ComposerSkillEntry(ComposerCommands.PlanCommandName, ComposerCommands.PlanDescription, string.Empty)
+            entries.Add(new ComposerSkillEntry(name, description, string.Empty)
             {
                 IsCommand = true,
             });

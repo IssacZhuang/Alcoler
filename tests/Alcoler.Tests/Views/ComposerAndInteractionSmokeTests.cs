@@ -787,6 +787,85 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task Composer_OrchestratorSuggestionCompletesToCommandWithoutSending()
+    {
+        using var harness = Show<ComposerView>();
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        harness.Window.KeyTextInput("/or");
+        await PumpAsync();
+        var panel = FindNamed<Border>(harness.View, "SkillPanel");
+        var suggestions = FindNamed<ListBox>(harness.View, "SkillSuggestions");
+        Assert.True(panel.IsVisible);
+        var orchestrator = Assert.IsType<ComposerSkillEntry>(suggestions.SelectedItem);
+        Assert.True(orchestrator.IsCommand);
+        Assert.Equal("orchestrator", orchestrator.Name);
+
+        await PressAsync(harness, PhysicalKey.Tab);
+
+        Assert.Equal("/orchestrator ", input.Text);
+        Assert.Equal("/orchestrator ", harness.ViewModel.Composer.Draft);
+        Assert.False(panel.IsVisible);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_OrchestratorCommandWithPrompt_SendsPromptWithWorkflow()
+    {
+        using var harness = Show<ComposerView>();
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        input.Focus();
+        input.Text = "/orchestrator refactor the storage layer";
+        input.CaretIndex = input.Text.Length;
+        input.SelectionStart = input.CaretIndex;
+        input.SelectionEnd = input.CaretIndex;
+        await PumpAsync();
+
+        await PressAsync(harness, PhysicalKey.Enter);
+
+        var command = Assert.IsType<Contracts.Commands.SendTextCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal("refactor the storage layer", command.Text);
+        Assert.NotNull(command.Workflows);
+        Assert.Contains("orchestrator", command.Workflows);
+        Assert.True(FindNamed<Border>(harness.View, "OrchestratorModeBadge").IsVisible);
+        Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
+    }
+
+    [AvaloniaFact]
+    public async Task Composer_OrchestratorCommandWithoutPrompt_TogglesWorkflowAndBadge()
+    {
+        using var harness = Show<ComposerView>();
+        await PrepareQuestionAsync(harness);
+        var input = FindNamed<TextBox>(harness.View, "InputBox");
+        var badge = FindNamed<Border>(harness.View, "OrchestratorModeBadge");
+        input.Focus();
+        // The bare command opens the completion panel; the first Enter completes, the second sends.
+        harness.Window.KeyTextInput("/orchestrator");
+        await PumpAsync();
+        await PressAsync(harness, PhysicalKey.Enter);
+        await PressAsync(harness, PhysicalKey.Enter);
+
+        var on = Assert.IsType<Contracts.Commands.SetWorkflowsCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal(["orchestrator"], on.Active);
+        await PumpAsync();
+        Assert.True(badge.IsVisible);
+        Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
+
+        harness.Runtime.Submitted.Clear();
+        harness.Window.KeyTextInput("/orchestrator");
+        await PumpAsync();
+        await PressAsync(harness, PhysicalKey.Enter);
+        await PressAsync(harness, PhysicalKey.Enter);
+
+        var off = Assert.IsType<Contracts.Commands.SetWorkflowsCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Empty(off.Active);
+        await PumpAsync();
+        Assert.False(badge.IsVisible);
+    }
+
+    [AvaloniaFact]
     public async Task Composer_SlashSuggestionPointerClickPreservesInputAndDoesNotSubmit()
     {
         using var harness = Show<ComposerView>();

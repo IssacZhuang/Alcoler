@@ -12,6 +12,7 @@ using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Tools;
 using Alcoler.Adapters.Tools;
+using Alcoler.Kernel.Workflows;
 
 namespace Alcoler.ViewModel;
 
@@ -669,7 +670,22 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
         if (ComposerCommands.TryParse(draft.Composer.Draft, out var command))
         {
-            draft.Composer.Mode = PermissionMode.Plan;
+            switch (command.Kind)
+            {
+                case ComposerCommandKind.Plan:
+                    draft.Composer.Mode = PermissionMode.Plan;
+                    break;
+                case ComposerCommandKind.Orchestrator:
+                    if (command.Prompt.Length == 0)
+                    {
+                        draft.Composer.ToggleArmedWorkflow(OrchestratorWorkflow.Id);
+                    }
+                    else
+                    {
+                        draft.Composer.ArmWorkflow(OrchestratorWorkflow.Id);
+                    }
+                    break;
+            }
             if (command.Prompt.Length == 0)
             {
                 draft.Composer.InputError = null;
@@ -693,7 +709,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         {
             var images = draft.Composer.SnapshotImages();
             var handle = await _runtime.CreateSessionAsync(
-                new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection), CancellationToken.None);
+                new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection,
+                    ActiveWorkflows: draft.Composer.ArmedWorkflows is { Count: > 0 } armed ? armed : null),
+                CancellationToken.None);
             createdId = handle.Id;
             draft.CreatedSessionId = handle.Id;
             TransferDraftSelection(draft, handle.Id);

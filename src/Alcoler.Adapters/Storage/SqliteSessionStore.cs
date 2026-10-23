@@ -17,7 +17,7 @@ namespace Alcoler.Adapters.Storage;
 
 public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDisposable
 {
-    private const int SchemaVersion = 6;
+    private const int SchemaVersion = 7;
 
     private static readonly (int Version, string Sql)[] Migrations =
     [
@@ -67,6 +67,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             """
         ),
         (6, "ALTER TABLE session ADD COLUMN previous_permission_mode TEXT NULL;"),
+        (7, "ALTER TABLE session ADD COLUMN active_workflows_json TEXT NULL;"),
     ];
 
     private readonly string _databasePath;
@@ -134,10 +135,10 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 INSERT OR REPLACE INTO session
                     (id, workspace_root, title, permission_mode, model_selection_json,
                      created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
-                     forked_from_session_id, forked_from_message_id, previous_permission_mode)
+                     forked_from_session_id, forked_from_message_id, previous_permission_mode, active_workflows_json)
                 VALUES ($id, $workspace_root, $title, $permission_mode, $model_selection_json,
                         $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source, $shell_json,
-                        $forked_from_session_id, $forked_from_message_id, $previous_permission_mode)
+                        $forked_from_session_id, $forked_from_message_id, $previous_permission_mode, $active_workflows_json)
                 """;
             command.Parameters.AddWithValue("$id", record.Id.Value);
             command.Parameters.AddWithValue("$workspace_root", record.WorkspaceRoot);
@@ -159,6 +160,10 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 (object?)record.ForkedFromMessageId?.Value ?? DBNull.Value);
             command.Parameters.AddWithValue("$previous_permission_mode",
                 record.PreviousPermissionMode?.ToString() ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("$active_workflows_json",
+                record.ActiveWorkflows is { Count: > 0 } workflows
+                    ? SerializeWorkflows(workflows)
+                    : DBNull.Value);
             command.ExecuteNonQuery();
         }, cancellationToken);
     }
@@ -185,7 +190,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.CommandText = """
                 SELECT workspace_root, title, permission_mode, model_selection_json,
                        created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
-                       forked_from_session_id, forked_from_message_id, previous_permission_mode
+                       forked_from_session_id, forked_from_message_id, previous_permission_mode, active_workflows_json
                 FROM session
                 WHERE id = $id
                 """;
@@ -860,7 +865,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         DeserializeOptional<ShellEnvironment>(reader, "shell_json"),
         ReadForkedFromSessionId(reader),
         ReadForkedFromMessageId(reader),
-        ReadPreviousPermissionMode(reader));
+        ReadPreviousPermissionMode(reader),
+        ReadActiveWorkflows(reader));
 
     private static SessionSummary ReadSummary(SqliteDataReader reader) => new(
         new SessionId(reader.GetString(reader.GetOrdinal("id"))),
@@ -901,6 +907,41 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         return reader.IsDBNull(ordinal)
             ? null
             : Enum.TryParse<PermissionMode>(reader.GetString(ordinal), out var mode) ? mode : null;
+    }
+
+    // Kept as hand-built JSON like branch_json: IReadOnlyList<string> has no source-gen metadata.
+    private static string SerializeWorkflows(IReadOnlyList<string> workflows)
+    {
+        var array = new JsonArray();
+        foreach (var workflow in workflows)
+        {
+            array.Add(workflow);
+        }
+        return array.ToJsonString();
+    }
+
+    private static IReadOnlyList<string>? ReadActiveWorkflows(SqliteDataReader reader)
+    {
+        var ordinal = reader.GetOrdinal("active_workflows_json");
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+        if (JsonNode.Parse(reader.GetString(ordinal)) is not JsonArray array)
+        {
+            return null;
+        }
+        List<string>? workflows = null;
+        foreach (var node in array)
+        {
+            var id = node?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+            (workflows ??= []).Add(id);
+        }
+        return workflows is { Count: > 0 } active ? active : null;
     }
 
     private static T? DeserializeOptional<T>(SqliteDataReader reader, string column)

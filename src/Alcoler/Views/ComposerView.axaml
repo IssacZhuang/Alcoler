@@ -180,6 +180,15 @@
                              Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
                 </StackPanel>
               </Border>
+              <Border x:Name="OrchestratorModeBadge" Background="Transparent" Padding="0" VerticalAlignment="Center"
+                      IsVisible="{Binding Composer.IsOrchestratorActive}"
+                      ToolTip.Tip="Orchestrator mode: the lead agent orchestrates subagents (/orchestrator toggles)">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Border Width="1" Height="12" Background="{DynamicResource AlcolerSurfaceHigh}" />
+                  <TextBlock Text="Orchestrator" FontSize="{DynamicResource AlcolerFontBase}"
+                             Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
+                </StackPanel>
+              </Border>
               <Button x:Name="StatusTrigger" Classes="modePicker" Click="OnStatusClick" IsVisible="False" VerticalAlignment="Center"
                       ToolTip.Tip="Show running activities" AutomationProperties.Name="Show running activities">
                 <StackPanel Orientation="Horizontal" Spacing="4">

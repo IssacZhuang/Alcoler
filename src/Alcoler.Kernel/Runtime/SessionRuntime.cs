@@ -20,6 +20,7 @@ using Alcoler.Kernel.Permissions;
 using Alcoler.Kernel.Prompts;
 using Alcoler.Kernel.Skills;
 using Alcoler.Kernel.Tools;
+using Alcoler.Kernel.Workflows;
 using Microsoft.Extensions.Logging;
 
 namespace Alcoler.Kernel.Runtime;
@@ -53,6 +54,8 @@ public sealed class SessionRuntimeOptions
     public bool SessionTitleGenerationEnabled { get; init; }
 
     public TimeSpan SessionTitleGenerationTimeout { get; init; } = TimeSpan.FromSeconds(60);
+
+    public WorkflowRegistry Workflows { get; init; } = WorkflowRegistry.BuiltIn;
 }
 
 public sealed record SessionRuntimeDeps(
@@ -125,6 +128,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private int? _overflowTokenGap;
     private ModelSelection? _consumedGuideSelection;
     private bool _planModeExitReminderPending;
+    private readonly List<string> _workflowExitRemindersPending = [];
     private int _streamRecoveriesThisTurn;
     private ToolCallAnomalyTracker _toolAnomalyThisTurn = new();
     private readonly TurnRequestEntries _turnLocalRequestMessages = new();
@@ -277,6 +281,9 @@ public sealed class SessionRuntime : IAsyncDisposable
                     BumpRevision();
                     return CommandAck.AcceptedAt(setMode.CommandId, Revision);
 
+                case SetWorkflowsCommand setWorkflows:
+                    return await HandleSetWorkflowsAsync(setWorkflows, ct).ConfigureAwait(false);
+
                 case ExitPlanModeCommand exitPlan:
                     return await HandleExitPlanModeAsync(exitPlan, ct).ConfigureAwait(false);
 
@@ -410,6 +417,34 @@ public sealed class SessionRuntime : IAsyncDisposable
         await EmitAsync(new SessionModeChangedEvent(target), persist: true).ConfigureAwait(false);
         BumpRevision();
         return CommandAck.AcceptedAt(command.CommandId, Revision);
+    }
+
+    private async Task<CommandAck> HandleSetWorkflowsAsync(SetWorkflowsCommand command, CancellationToken ct)
+    {
+        if (!_deps.Options.Workflows.TryNormalize(command.Active, out var normalized, out var error))
+            return CommandAck.Rejected(command.CommandId, Revision, error ?? "invalid workflow set");
+        await ApplyWorkflowsAsync(normalized, ct).ConfigureAwait(false);
+        BumpRevision();
+        return CommandAck.AcceptedAt(command.CommandId, Revision);
+    }
+
+    private async Task ApplyWorkflowsAsync(IReadOnlyList<string> active, CancellationToken ct)
+    {
+        var current = _record.ActiveWorkflows ?? [];
+        foreach (var removed in current)
+        {
+            if (!active.Contains(removed, StringComparer.OrdinalIgnoreCase)
+                && _deps.Options.Workflows.Find(removed)?.ExitReminder is not null)
+            {
+                _workflowExitRemindersPending.Add(removed);
+            }
+        }
+        await PersistRecordAsync(ct, record => record with
+        {
+            ActiveWorkflows = active.Count == 0 ? null : active,
+            UpdatedAt = _deps.Clock.GetUtcNow(),
+        }).ConfigureAwait(false);
+        await EmitAsync(new SessionWorkflowsChangedEvent(active), persist: true).ConfigureAwait(false);
     }
 
     private async Task<CommandAck> HandleSendTextAsync(SendTextCommand sendText, CancellationToken ct)
@@ -892,6 +927,12 @@ public sealed class SessionRuntime : IAsyncDisposable
                 record => ApplyModeTransition(record, mode)).ConfigureAwait(false);
             await EmitAsync(new SessionModeChangedEvent(mode), persist: true).ConfigureAwait(false);
         }
+        if (command.Workflows is { } workflows)
+        {
+            if (!_deps.Options.Workflows.TryNormalize(workflows, out var normalized, out var error))
+                throw new InvalidOperationException(error ?? "invalid workflow set");
+            await ApplyWorkflowsAsync(normalized, _sessionCts.Token).ConfigureAwait(false);
+        }
         if (command.ModelSelection is { } selection)
         {
             _deps.ResolveModel(selection).ValidateOptions(selection.Options ?? new ModelCallOptions());
@@ -1269,11 +1310,43 @@ public sealed class SessionRuntime : IAsyncDisposable
     // Mode reminders live in canonical memory; only todo reminders are durable.
     private async Task CommitRuntimeRemindersAsync(List<ConversationMessage> history)
     {
-        var counts = ScanHistoryReminders(history);
+        var counts = ScanHistoryReminders(history, ActiveWorkflowIds());
         if (_planModeExitReminderPending)
         {
             _planModeExitReminderPending = false;
             history.Add(AppendInMemoryReminder(RuntimeReminders.PlanModeExitReminder));
+        }
+
+        while (_workflowExitRemindersPending.Count > 0)
+        {
+            var removed = _workflowExitRemindersPending[0];
+            _workflowExitRemindersPending.RemoveAt(0);
+            if (_deps.Options.Workflows.Find(removed)?.ExitReminder is { } exitReminder)
+            {
+                history.Add(AppendInMemoryReminder(exitReminder));
+            }
+        }
+
+        foreach (var definition in ActiveWorkflowDefinitions())
+        {
+            if (definition.FullReminder is null && definition.SparseReminder is null)
+            {
+                continue;
+            }
+            var workflowCounts = counts.Workflows.GetValueOrDefault(definition.Id);
+            if (!workflowCounts.ReminderFound
+                || workflowCounts.HumanTurnsSinceReminder >= RuntimeReminders.TurnsBetweenAttachments)
+            {
+                var attachmentIndex = workflowCounts.ReminderCount + 1;
+                var body = attachmentIndex % RuntimeReminders.FullReminderEveryNAttachments == 1
+                    ? definition.FullReminder ?? definition.SparseReminder
+                    : definition.SparseReminder ?? definition.FullReminder;
+                if (body is not null)
+                {
+                    history.Add(AppendInMemoryReminder(
+                        WorkflowRegistry.ReminderMarker(definition.Id) + "\n" + body));
+                }
+            }
         }
 
         if (_permissions.Mode == PermissionMode.Plan)
@@ -1295,7 +1368,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     // ZCode derives both counters from persisted history (committed assistant entries
     // after the last TodoWrite call / after the last committed reminder), so the cadence
     // survives restarts; the fallback is the total assistant count.
-    private static HistoryReminderCounts ScanHistoryReminders(IReadOnlyList<ConversationMessage> history)
+    private static HistoryReminderCounts ScanHistoryReminders(
+        IReadOnlyList<ConversationMessage> history, IReadOnlyList<string> activeWorkflows)
     {
         var assistants = 0;
         var planReminderCount = 0;
@@ -1303,12 +1377,18 @@ public sealed class SessionRuntime : IAsyncDisposable
         var planReminderFound = false;
         int? sinceWrite = null;
         int? sinceReminder = null;
+        var workflowCounts = new Dictionary<string, WorkflowReminderCounts>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in activeWorkflows)
+        {
+            workflowCounts[id] = default;
+        }
         for (var i = history.Count - 1; i >= 0; i--)
         {
             var message = history[i];
             var hasPlanReminder = false;
             var hasTodoReminder = false;
             var hasTodoWrite = false;
+            List<string>? messageWorkflowReminders = null;
             foreach (var part in message.Parts)
             {
                 switch (part)
@@ -1318,6 +1398,11 @@ public sealed class SessionRuntime : IAsyncDisposable
                             hasPlanReminder = true;
                         if (TodoReminderPolicy.IsTodoReminder(attachment.Content))
                             hasTodoReminder = true;
+                        foreach (var id in activeWorkflows)
+                        {
+                            if (WorkflowRegistry.IsReminderFor(attachment.Content, id))
+                                (messageWorkflowReminders ??= []).Add(id);
+                        }
                         break;
                     case ToolCallPart call when message.Role == MessageRole.Assistant
                         && string.Equals(call.ToolName, TodoReminderPolicy.TodoWriteToolName, StringComparison.OrdinalIgnoreCase):
@@ -1335,6 +1420,23 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 humanTurnsSincePlanReminder++;
             }
+            if (messageWorkflowReminders is not null)
+            {
+                foreach (var id in messageWorkflowReminders)
+                {
+                    var counts = workflowCounts[id];
+                    workflowCounts[id] = counts with { ReminderCount = counts.ReminderCount + 1, ReminderFound = true };
+                }
+            }
+            else
+            {
+                foreach (var id in activeWorkflows)
+                {
+                    var counts = workflowCounts[id];
+                    if (!counts.ReminderFound && IsRealUserTurn(message))
+                        workflowCounts[id] = counts with { HumanTurnsSinceReminder = counts.HumanTurnsSinceReminder + 1 };
+                }
+            }
             if (sinceReminder is null && hasTodoReminder)
                 sinceReminder = assistants;
             if (message.Role == MessageRole.Assistant)
@@ -1349,15 +1451,58 @@ public sealed class SessionRuntime : IAsyncDisposable
             planReminderCount,
             humanTurnsSincePlanReminder,
             sinceWrite ?? assistants,
-            sinceReminder ?? assistants);
+            sinceReminder ?? assistants,
+            workflowCounts);
     }
+
+    // Cadence tracking is scoped to registry-known, currently active workflows; stale markers
+    // of deactivated workflows must not influence attachment timing.
+    private IReadOnlyList<string> ActiveWorkflowIds()
+    {
+        if (_record.ActiveWorkflows is not { Count: > 0 } active)
+        {
+            return [];
+        }
+        List<string> ids = [];
+        foreach (var id in active)
+        {
+            if (_deps.Options.Workflows.Find(id) is not null)
+            {
+                ids.Add(id);
+            }
+        }
+        return ids;
+    }
+
+    private IReadOnlyList<WorkflowDefinition> ActiveWorkflowDefinitions()
+    {
+        if (_record.ActiveWorkflows is not { Count: > 0 } active)
+        {
+            return [];
+        }
+        List<WorkflowDefinition> definitions = [];
+        foreach (var id in active)
+        {
+            if (_deps.Options.Workflows.Find(id) is { } definition)
+            {
+                definitions.Add(definition);
+            }
+        }
+        return definitions;
+    }
+
+    private readonly record struct WorkflowReminderCounts(
+        int ReminderCount,
+        int HumanTurnsSinceReminder,
+        bool ReminderFound);
 
     private readonly record struct HistoryReminderCounts(
         bool PlanReminderFound,
         int PlanReminderCount,
         int HumanTurnsSincePlanReminder,
         int SinceTodoWrite,
-        int SinceTodoReminder);
+        int SinceTodoReminder,
+        IReadOnlyDictionary<string, WorkflowReminderCounts> Workflows);
 
     private async Task<ConversationMessage> CommitSyntheticReminderAsync(string body)
     {
@@ -1799,6 +1944,10 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             PromptTexts.DynamicBehavior,
         };
+        if (_deps.Options.Workflows.BuildSystemSection(_record.ActiveWorkflows) is { } workflowSection)
+        {
+            sections.Add(workflowSection);
+        }
         if (PromptTexts.SessionSpecificGuidance(
                 skillToolAvailable: skillToolAvailable,
                 hasSkills: !string.IsNullOrEmpty(skillsListing)) is { } guidance)
@@ -1959,7 +2108,9 @@ public sealed class SessionRuntime : IAsyncDisposable
     {
         var durable = await _deps.Store.LoadDurableEventsAsync(_record.Id, CancellationToken.None).ConfigureAwait(false);
         _events.AdvanceSequenceTo(durable.Count > 0 ? durable.Max(evt => evt.Sequence) : 0);
-        var started = new SessionStartedEvent(_record.WorkspaceRoot, _record.Title, _record.PermissionMode, _record.ModelSelection);
+        var started = new SessionStartedEvent(
+            _record.WorkspaceRoot, _record.Title, _record.PermissionMode, _record.ModelSelection,
+            _record.ActiveWorkflows);
         if (persistStartEvents)
         {
             await EmitAsync(started, persist: true).ConfigureAwait(false);

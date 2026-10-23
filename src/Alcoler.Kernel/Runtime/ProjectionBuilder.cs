@@ -48,7 +48,13 @@ public sealed class ProjectionBuilder
             switch (sequenced.Event)
             {
                 case SessionStartedEvent started:
-                    _state = _state with { Title = started.Title, Mode = started.Mode, ModelSelection = started.ModelSelection };
+                    _state = _state with
+                    {
+                        Title = started.Title,
+                        Mode = started.Mode,
+                        ModelSelection = started.ModelSelection,
+                        ActiveWorkflows = started.ActiveWorkflows ?? [],
+                    };
                     stateChanged = true;
                     break;
 
@@ -59,6 +65,11 @@ public sealed class ProjectionBuilder
 
                 case SessionModeChangedEvent mode:
                     _state = _state with { Mode = mode.Mode };
+                    stateChanged = true;
+                    break;
+
+                case SessionWorkflowsChangedEvent workflows:
+                    _state = _state with { ActiveWorkflows = workflows.Active };
                     stateChanged = true;
                     break;
 

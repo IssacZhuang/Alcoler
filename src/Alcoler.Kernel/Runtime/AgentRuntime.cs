@@ -12,6 +12,7 @@ using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Workspace;
 using Alcoler.Kernel.Prompts;
 using Alcoler.Kernel.Tools;
+using Alcoler.Kernel.Workflows;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -65,6 +66,8 @@ public sealed record AgentRuntimeOptions
 
     public IPlanFileStore PlanFileStore { get; init; } = NullPlanFileStore.Instance;
 
+    public WorkflowRegistry Workflows { get; init; } = WorkflowRegistry.BuiltIn;
+
     public TimeProvider Clock { get; init; } = TimeProvider.System;
 
     public ILoggerFactory? Logging { get; init; }
@@ -94,6 +97,10 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 
     public async ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken)
     {
+        if (!_options.Workflows.TryNormalize(options.ActiveWorkflows, out var activeWorkflows, out var workflowError))
+        {
+            throw new InvalidOperationException(workflowError);
+        }
         var now = _options.Clock.GetUtcNow();
         var title = options.Title ?? "New session";
         var selection = options.ModelSelection ?? Volatile.Read(ref _defaultModel);
@@ -107,7 +114,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             now,
             ParentSessionId: options.ParentSessionId,
             TitleSource: options.Title is null ? SessionTitleSource.Default : SessionTitleSource.Custom,
-            Shell: options.Shell);
+            Shell: options.Shell,
+            ActiveWorkflows: activeWorkflows.Count == 0 ? null : activeWorkflows);
         await _options.Store.UpsertSessionAsync(record, cancellationToken).ConfigureAwait(false);
         await CreateRuntimeAsync(record, isNewSession: true, cancellationToken).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
@@ -184,7 +192,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             Shell: parent.Shell,
             ForkedFromSessionId: parent.Id,
             ForkedFromMessageId: boundaryMessageId,
-            PreviousPermissionMode: parent.PreviousPermissionMode);
+            PreviousPermissionMode: parent.PreviousPermissionMode,
+            ActiveWorkflows: parent.ActiveWorkflows);
         var copied = active.Take(copyEnd).Select(storedMessage => storedMessage.Message).ToList();
         var events = new List<SequencedEvent>(copied.Count + completedTails.Count);
         long sequence = 1;
@@ -452,6 +461,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 DefaultModel = Volatile.Read(ref _defaultModel),
                 SessionTitleGenerationEnabled = _options.SessionTitleGenerationEnabled,
                 SessionTitleGenerationTimeout = _options.SessionTitleGenerationTimeout,
+                Workflows = _options.Workflows,
             },
             _options.Artifacts,
             _options.TodoStore,

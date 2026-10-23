@@ -25,7 +25,8 @@ public sealed record SessionOptions(
     PermissionMode PermissionMode = PermissionMode.Yolo,
     ModelSelection? ModelSelection = null,
     SessionId? ParentSessionId = null,
-    ShellEnvironment? Shell = null);
+    ShellEnvironment? Shell = null,
+    IReadOnlyList<string>? ActiveWorkflows = null);
 
 public sealed record SessionHandle(
     SessionId Id,

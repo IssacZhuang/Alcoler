@@ -14,6 +14,7 @@ namespace Alcoler.Contracts.Events;
 [JsonDerivedType(typeof(SessionStartedEvent), "session_started")]
 [JsonDerivedType(typeof(SessionTitleChangedEvent), "session_title_changed")]
 [JsonDerivedType(typeof(SessionModeChangedEvent), "session_mode_changed")]
+[JsonDerivedType(typeof(SessionWorkflowsChangedEvent), "session_workflows_changed")]
 [JsonDerivedType(typeof(SessionModelChangedEvent), "session_model_changed")]
 [JsonDerivedType(typeof(TurnStartedEvent), "turn_started")]
 [JsonDerivedType(typeof(TurnCompletedEvent), "turn_completed")]
@@ -49,11 +50,14 @@ public sealed record SessionStartedEvent(
     string WorkspaceRoot,
     string Title,
     PermissionMode Mode,
-    ModelSelection? ModelSelection) : SessionEvent;
+    ModelSelection? ModelSelection,
+    IReadOnlyList<string>? ActiveWorkflows = null) : SessionEvent;
 
 public sealed record SessionTitleChangedEvent(string Title) : SessionEvent;
 
 public sealed record SessionModeChangedEvent(PermissionMode Mode) : SessionEvent;
+
+public sealed record SessionWorkflowsChangedEvent(IReadOnlyList<string> Active) : SessionEvent;
 
 public sealed record SessionModelChangedEvent(ModelSelection Selection, int ContextWindowTokens) : SessionEvent;
 

@@ -16,6 +16,7 @@ namespace Alcoler.Contracts.Commands;
 [JsonDerivedType(typeof(ResolveInteractionCommand), "resolve_interaction")]
 [JsonDerivedType(typeof(SwitchModelCommand), "switch_model")]
 [JsonDerivedType(typeof(SetModeCommand), "set_mode")]
+[JsonDerivedType(typeof(SetWorkflowsCommand), "set_workflows")]
 [JsonDerivedType(typeof(ExitPlanModeCommand), "exit_plan_mode")]
 [JsonDerivedType(typeof(RenameSessionCommand), "rename_session")]
 [JsonDerivedType(typeof(DeleteSessionCommand), "delete_session")]
@@ -34,7 +35,8 @@ public sealed record SendTextCommand(
     PermissionMode? Mode = null,
     ModelSelection? ModelSelection = null,
     SendTextDelivery Delivery = SendTextDelivery.Queue,
-    IReadOnlyList<InputImageBlock>? Images = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
+    IReadOnlyList<InputImageBlock>? Images = null,
+    IReadOnlyList<string>? Workflows = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record RemoveQueuedInputCommand(
     CommandId CommandId,
@@ -79,6 +81,13 @@ public sealed record SetModeCommand(
     SessionId SessionId,
     long BaseRevision,
     PermissionMode Mode) : ConversationCommand(CommandId, SessionId, BaseRevision);
+
+// Replaces the full active-workflow set; null entries and duplicates are rejected upstream.
+public sealed record SetWorkflowsCommand(
+    CommandId CommandId,
+    SessionId SessionId,
+    long BaseRevision,
+    IReadOnlyList<string> Active) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record ExitPlanModeCommand(
     CommandId CommandId,

@@ -28,7 +28,8 @@ public sealed record SessionRecord(
     ShellEnvironment? Shell = null,
     SessionId? ForkedFromSessionId = null,
     MessageId? ForkedFromMessageId = null,
-    PermissionMode? PreviousPermissionMode = null);
+    PermissionMode? PreviousPermissionMode = null,
+    IReadOnlyList<string>? ActiveWorkflows = null);
 
 public sealed record StoredMessage(long Sequence, ConversationMessage Message);
 
