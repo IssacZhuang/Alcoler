@@ -683,6 +683,9 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
 
         public ConversationSnapshot Snapshot() => projection.Snapshot();
 
+        public Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default) =>
+            projection.WaitUntilSequenceAsync(sequence, cancellationToken);
+
         public async IAsyncEnumerable<ConversationDelta> Deltas([EnumeratorCancellation] CancellationToken cancellationToken)
         {
             Subscribed.TrySetResult();

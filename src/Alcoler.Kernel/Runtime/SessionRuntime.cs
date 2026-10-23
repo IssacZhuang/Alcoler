@@ -246,73 +246,81 @@ public sealed class SessionRuntime : IAsyncDisposable
         await _commandLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (command.BaseRevision > Revision)
-            {
-                return CommandAck.Rejected(command.CommandId, Revision, "base revision is in the future");
-            }
-
-            switch (command)
-            {
-                case SendTextCommand sendText:
-                    return await HandleSendTextAsync(sendText, ct).ConfigureAwait(false);
-
-                case RemoveQueuedInputCommand remove:
-                    return await HandleRemoveQueuedInputAsync(remove).ConfigureAwait(false);
-
-                case StopCommand stop:
-                    _turnCts?.Cancel();
-                    BumpRevision();
-                    return CommandAck.AcceptedAt(stop.CommandId, Revision);
-
-                case ResolveInteractionCommand resolve:
-                    return HandleResolveInteraction(resolve);
-
-                case CompactCommand compact:
-                    return await HandleCompactAsync(compact, ct).ConfigureAwait(false);
-
-                case RewindConversationCommand rewind:
-                    return await HandleRewindConversationAsync(rewind, ct).ConfigureAwait(false);
-
-                case SetModeCommand setMode:
-                    SetPermissionMode(setMode.Mode);
-                    await PersistRecordAsync(ct,
-                        record => ApplyModeTransition(record, setMode.Mode) with { UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
-                    await EmitAsync(new SessionModeChangedEvent(setMode.Mode), persist: true).ConfigureAwait(false);
-                    BumpRevision();
-                    return CommandAck.AcceptedAt(setMode.CommandId, Revision);
-
-                case SetWorkflowsCommand setWorkflows:
-                    return await HandleSetWorkflowsAsync(setWorkflows, ct).ConfigureAwait(false);
-
-                case ExitPlanModeCommand exitPlan:
-                    return await HandleExitPlanModeAsync(exitPlan, ct).ConfigureAwait(false);
-
-                case SwitchModelCommand switchModel:
-                    try
-                    {
-                        _deps.ResolveModel(switchModel.Selection).ValidateOptions(switchModel.Selection.Options ?? new ModelCallOptions());
-                    }
-                    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-                    {
-                        return CommandAck.Rejected(switchModel.CommandId, Revision, ex.Message);
-                    }
-                    await PersistRecordAsync(ct,
-                        record => record with { ModelSelection = switchModel.Selection, UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
-                    await EmitModelChangedAsync(switchModel.Selection).ConfigureAwait(false);
-                    BumpRevision();
-                    return CommandAck.AcceptedAt(switchModel.CommandId, Revision);
-
-                case RenameSessionCommand rename:
-                    await SetTitleAsync(rename.Title, SessionTitleSource.Custom, ct).ConfigureAwait(false);
-                    return CommandAck.AcceptedAt(rename.CommandId, Revision);
-
-                default:
-                    return CommandAck.Rejected(command.CommandId, Revision, $"unsupported command {command.GetType().Name}");
-            }
+            var ack = await DispatchAsync(command, ct).ConfigureAwait(false);
+            // The store tail captured under the lock is a causality token: every event the
+            // command caused is at or below it, so a projection can await exactly it.
+            return ack with { LastEventSequence = _events.LastSequence };
         }
         finally
         {
             _commandLock.Release();
+        }
+    }
+
+    private async Task<CommandAck> DispatchAsync(ConversationCommand command, CancellationToken ct)
+    {
+        if (command.BaseRevision > Revision)
+        {
+            return CommandAck.Rejected(command.CommandId, Revision, "base revision is in the future");
+        }
+
+        switch (command)
+        {
+            case SendTextCommand sendText:
+                return await HandleSendTextAsync(sendText, ct).ConfigureAwait(false);
+
+            case RemoveQueuedInputCommand remove:
+                return await HandleRemoveQueuedInputAsync(remove).ConfigureAwait(false);
+
+            case StopCommand stop:
+                _turnCts?.Cancel();
+                BumpRevision();
+                return CommandAck.AcceptedAt(stop.CommandId, Revision);
+
+            case ResolveInteractionCommand resolve:
+                return HandleResolveInteraction(resolve);
+
+            case CompactCommand compact:
+                return await HandleCompactAsync(compact, ct).ConfigureAwait(false);
+
+            case RewindConversationCommand rewind:
+                return await HandleRewindConversationAsync(rewind, ct).ConfigureAwait(false);
+
+            case SetModeCommand setMode:
+                SetPermissionMode(setMode.Mode);
+                await PersistRecordAsync(ct,
+                    record => ApplyModeTransition(record, setMode.Mode) with { UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
+                await EmitAsync(new SessionModeChangedEvent(setMode.Mode), persist: true).ConfigureAwait(false);
+                BumpRevision();
+                return CommandAck.AcceptedAt(setMode.CommandId, Revision);
+
+            case SetWorkflowsCommand setWorkflows:
+                return await HandleSetWorkflowsAsync(setWorkflows, ct).ConfigureAwait(false);
+
+            case ExitPlanModeCommand exitPlan:
+                return await HandleExitPlanModeAsync(exitPlan, ct).ConfigureAwait(false);
+
+            case SwitchModelCommand switchModel:
+                try
+                {
+                    _deps.ResolveModel(switchModel.Selection).ValidateOptions(switchModel.Selection.Options ?? new ModelCallOptions());
+                }
+                catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+                {
+                    return CommandAck.Rejected(switchModel.CommandId, Revision, ex.Message);
+                }
+                await PersistRecordAsync(ct,
+                    record => record with { ModelSelection = switchModel.Selection, UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
+                await EmitModelChangedAsync(switchModel.Selection).ConfigureAwait(false);
+                BumpRevision();
+                return CommandAck.AcceptedAt(switchModel.CommandId, Revision);
+
+            case RenameSessionCommand rename:
+                await SetTitleAsync(rename.Title, SessionTitleSource.Custom, ct).ConfigureAwait(false);
+                return CommandAck.AcceptedAt(rename.CommandId, Revision);
+
+            default:
+                return CommandAck.Rejected(command.CommandId, Revision, $"unsupported command {command.GetType().Name}");
         }
     }
 
@@ -787,15 +795,11 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 holdQueue = true;
             }
-            if (outcome == TurnOutcome.Failed)
-                await EmitAsync(new TurnFailedEvent(turnId, LastTurnError ?? "Model request failed."), persist: true).ConfigureAwait(false);
-            await EmitAsync(new TurnCompletedEvent(turnId, outcome, _lastProviderUsage), persist: true).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             holdQueue = true;
             outcome = TurnOutcome.Cancelled;
-            await EmitAsync(new TurnCompletedEvent(turnId, outcome, _lastProviderUsage), persist: true).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -803,22 +807,40 @@ public sealed class SessionRuntime : IAsyncDisposable
             outcome = TurnOutcome.Failed;
             LastTurnError = ex.Message;
             _deps.Logger.LogError(ex, "Turn {TurnId} failed unexpectedly.", turnId);
-            await EmitAsync(new TurnFailedEvent(turnId, ex.Message), persist: true).ConfigureAwait(false);
         }
         finally
         {
+            // The completion announcement, the reported outcome, and the machine release
+            // must be one step for observers: once the announcing event is appended, no
+            // reader may still see a busy machine or the previous turn's outcome.
+            await _commandLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                try
+                {
+                    Volatile.Write(ref _lastTurnOutcome, (int)outcome);
+                    if (outcome == TurnOutcome.Failed)
+                        await EmitAsync(new TurnFailedEvent(turnId, LastTurnError ?? "Model request failed."), persist: true).ConfigureAwait(false);
+                    await EmitAsync(new TurnCompletedEvent(turnId, outcome, _lastProviderUsage), persist: true).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // A failed durable append must not strand the machine busy: the event is
+                    // already in the in-memory log the projection consumes.
+                    _deps.Logger.LogError(ex, "Turn {TurnId} completion announcement failed.", turnId);
+                }
+                ReleaseTurnMachine();
+            }
+            finally
+            {
+                _commandLock.Release();
+            }
             _turnLocalRequestMessages.Clear();
             _turnCts?.Dispose();
             _turnCts = null;
-            // Only Completing and Error may reach Idle; a cancel mid-stream or mid-tool
-            // leaves other phases, so route through Completing first or the Validate throw
-            // would strand the machine in a busy phase.
-            _turnMachine.TryTransition(TurnPhase.Completing);
-            _turnMachine.Transition(TurnPhase.Idle);
             _events.EvictTransientOlderThan(
                 _deps.Clock.GetUtcNow().AddSeconds(-SessionEventRetention.SealedTurnTransientGraceMs / 1000.0),
                 _events.LastSequence);
-            Volatile.Write(ref _lastTurnOutcome, (int)outcome);
             if (TurnFinished is { } handlers)
             {
                 foreach (Func<SessionRuntime, TurnOutcome, ValueTask> handler in handlers.GetInvocationList())
@@ -833,6 +855,15 @@ public sealed class SessionRuntime : IAsyncDisposable
                 await DrainQueueAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    // Only Completing and Error may reach Idle; a cancel mid-stream or mid-tool leaves
+    // other phases, so route through Completing first or the Validate throw would strand
+    // the machine in a busy phase.
+    private void ReleaseTurnMachine()
+    {
+        _turnMachine.TryTransition(TurnPhase.Completing);
+        _turnMachine.Transition(TurnPhase.Idle);
     }
 
     // Consumes at most one queued user input (one guide per model-step boundary) and, when

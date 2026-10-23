@@ -112,6 +112,10 @@ public sealed record CommandAck(
     long Revision,
     string? RejectionReason = null)
 {
+    // Store tail captured when the ack was produced; every event the command caused is at
+    // or below this sequence, so a projection can await it before reading state.
+    public long LastEventSequence { get; init; }
+
     public static CommandAck AcceptedAt(CommandId commandId, long revision) =>
         new(commandId, true, revision);
 

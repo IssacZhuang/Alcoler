@@ -51,6 +51,16 @@ public sealed class FakeConversationProjection : IConversationProjection
         }
     }
 
+    public Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default)
+    {
+        lock (_sync)
+        {
+            return _snapshot.Sequence >= sequence
+                ? Task.CompletedTask
+                : Task.FromException(new NotSupportedException("The fake projection does not pump sequences."));
+        }
+    }
+
     public void Dispose()
     {
     }

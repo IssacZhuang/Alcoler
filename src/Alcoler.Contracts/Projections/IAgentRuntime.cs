@@ -15,6 +15,10 @@ public interface IConversationProjection : IDisposable
     ConversationSnapshot Snapshot();
 
     IAsyncEnumerable<ConversationDelta> Deltas(CancellationToken cancellationToken);
+
+    // Completes once the projection has applied every event up to the sequence; a
+    // completed wait guarantees the next Snapshot reflects those events.
+    Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default);
 }
 
 public sealed record SessionActivitySnapshot(TurnPhase Phase, TurnOutcome? LastOutcome);

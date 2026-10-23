@@ -158,6 +158,30 @@ public class ContextUsageTests
         Assert.Equal(TurnPhase.Streaming, snapshot.State.Phase);
     }
 
+    [Fact]
+    public async Task CompactImmediatelyAfterProjectedIdle_IsAccepted()
+    {
+        // Regression: the projection can report Idle while the runtime is still releasing
+        // the turn; a compact submitted in that window must not be rejected.
+        const int rounds = 8;
+        var summary = new ScriptStep.Events(
+            new ModelTextDelta("summary"), new ModelTextEnded(), new ModelStreamFinished(ModelFinishReason.Stop));
+        var script = Enumerable.Range(0, rounds)
+            .SelectMany(_ => new ScriptStep[] { Reply("answer"), summary })
+            .ToArray();
+        await using var harness = TestHarness.Create(script);
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        for (var round = 0; round < rounds; round++)
+        {
+            await SendAndWaitAsync(runtime, projection, session.Id, $"question {round}", round + 1);
+            var ack = await runtime.SubmitAsync(new CompactCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+            Assert.True(ack.Accepted);
+        }
+    }
+
     private static async Task SendAndWaitAsync(AgentRuntime runtime, IConversationProjection projection, SessionId id, string text, int expectedReplies)
     {
         var ack = await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), id, 0, text), CancellationToken.None);

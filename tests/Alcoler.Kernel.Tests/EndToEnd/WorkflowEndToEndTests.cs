@@ -34,7 +34,10 @@ public class WorkflowEndToEndTests
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, [OrchestratorWorkflow.Id]),
             CancellationToken.None);
         Assert.True(ack.Accepted);
-        await WaitForStateAsync(projection, state => state.ActiveWorkflows?.Contains(OrchestratorWorkflow.Id) == true);
+        await WaitForSequenceAsync(projection, ack.LastEventSequence);
+        var workflows = projection.Snapshot().State.ActiveWorkflows;
+        Assert.NotNull(workflows);
+        Assert.Contains(OrchestratorWorkflow.Id, workflows);
 
         var sendAck = await runtime.SubmitAsync(new SendTextCommand(
             StrongId.NewCommandId(), session.Id, ack.Revision, "refactor the storage layer"),
@@ -73,7 +76,8 @@ public class WorkflowEndToEndTests
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, []),
             CancellationToken.None);
         Assert.True(clearAck.Accepted);
-        await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
+        await WaitForSequenceAsync(projection, clearAck.LastEventSequence);
+        Assert.Empty(projection.Snapshot().State.ActiveWorkflows ?? []);
 
         var secondAck = await runtime.SubmitAsync(new SendTextCommand(
             StrongId.NewCommandId(), session.Id, clearAck.Revision, "continue"),
@@ -194,6 +198,14 @@ public class WorkflowEndToEndTests
             }
             await Task.Delay(20);
         }
+    }
+
+    // The ack carries the store tail its effects were appended under; awaiting that
+    // sequence in the projection is exact synchronization, no predicate polling.
+    private static async Task WaitForSequenceAsync(IConversationProjection projection, long sequence)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await projection.WaitUntilSequenceAsync(sequence, timeout.Token);
     }
 
     // Projection state is pumped asynchronously from the event store, so it can lag the command ack.

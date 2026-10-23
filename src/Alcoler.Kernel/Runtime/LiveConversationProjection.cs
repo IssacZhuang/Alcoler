@@ -11,6 +11,9 @@ public sealed class LiveConversationProjection : IConversationProjection
     private readonly Channel<ConversationDelta> _deltas;
     private readonly Task _pump;
     private readonly Func<long> _revisionSource;
+    private readonly object _waitLock = new();
+    private readonly List<(long Sequence, TaskCompletionSource Completion)> _waiters = [];
+    private long _appliedSequence;
     private long _lastSequence;
     private bool _disposed;
 
@@ -44,6 +47,31 @@ public sealed class LiveConversationProjection : IConversationProjection
         await foreach (var delta in _deltas.Reader.ReadAllAsync(cancellationToken))
         {
             yield return delta;
+        }
+    }
+
+    public Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default)
+    {
+        lock (_waitLock)
+        {
+            if (_appliedSequence >= sequence)
+            {
+                return Task.CompletedTask;
+            }
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _waiters.Add((sequence, completion));
+            if (cancellationToken.CanBeCanceled)
+            {
+                cancellationToken.Register(() =>
+                {
+                    lock (_waitLock)
+                    {
+                        _waiters.Remove((sequence, completion));
+                    }
+                    completion.TrySetCanceled(cancellationToken);
+                });
+            }
+            return completion.Task;
         }
     }
 
@@ -86,6 +114,24 @@ public sealed class LiveConversationProjection : IConversationProjection
             return null;
         }
         Interlocked.Exchange(ref _lastSequence, sequenced.Sequence);
-        return _builder.Apply(sequenced);
+        var ops = _builder.Apply(sequenced);
+        // Advance only after the builder applied the event, so a completed wait always
+        // observes the event's effect in the next Snapshot.
+        lock (_waitLock)
+        {
+            if (sequenced.Sequence > _appliedSequence)
+            {
+                _appliedSequence = sequenced.Sequence;
+                for (var index = _waiters.Count - 1; index >= 0; index--)
+                {
+                    if (_waiters[index].Sequence <= sequenced.Sequence)
+                    {
+                        _waiters[index].Completion.TrySetResult();
+                        _waiters.RemoveAt(index);
+                    }
+                }
+            }
+        }
+        return ops;
     }
 }
