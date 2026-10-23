@@ -2,10 +2,11 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.PlanDocumentView"
              x:DataType="vm:PlanDocumentViewModel">
   <DockPanel Background="{DynamicResource AlcolerBackground}">
-    <TextBlock DockPanel.Dock="Bottom" Margin="12,4" Text="Read-only · Markdown"
+    <TextBlock DockPanel.Dock="Bottom" Margin="12,4" Text="{loc:Loc docs_read_only_markdown}"
                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
     <Border Padding="12">
       <controls:ConversationMarkdown x:Name="PlanMarkdownViewer" Markdown="{Binding Markdown}" />

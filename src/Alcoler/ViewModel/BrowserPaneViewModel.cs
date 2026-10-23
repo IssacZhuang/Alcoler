@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Text.Json;
 using Alcoler.Contracts.Browser;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Localization;
 using Alcoler.Ui;
 using Avalonia.Controls;
 using Avalonia.Media;
@@ -44,7 +45,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     private SessionId? _activeSessionId;
 
     [ObservableProperty]
-    private string _stateText = nameof(BrowserSessionState.Idle);
+    private string _stateText = Loc.Get("browser_state_idle");
 
     [ObservableProperty]
     private string? _url;
@@ -91,14 +92,14 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     public bool CanInteract => !_disposed && ActiveSessionId is not null;
 
     public string OwnershipText => IsUserControlled
-        ? "You are in control. Agent browser actions are paused."
-        : "Agent controls the browser. Take over to pause automation.";
+        ? Loc.Get("browser_user_controlled")
+        : Loc.Get("browser_agent_controlled");
 
     public string EmptyStateText => _presenterError ?? (CanInteract
         ? _pagePresenterFactory is null
-            ? "Embedded browser is unavailable in this host."
-            : "Open a new tab or enter a URL to start browsing."
-        : "Open a session to use the browser.");
+            ? Loc.Get("browser_embedded_unavailable")
+            : Loc.Get("browser_empty_hint")
+        : Loc.Get("browser_open_session_first"));
 
     public void Bind(SessionId? sessionId)
     {
@@ -219,34 +220,35 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         {
             address = "https://" + address;
         }
-        return ExecuteAsync(new BrowserNavigateAction(address) { TabId = ActiveTabId, UserInitiated = true }, "Navigation");
+        return ExecuteAsync(new BrowserNavigateAction(address) { TabId = ActiveTabId, UserInitiated = true },
+            Loc.Get("browser_op_navigation"));
     }
 
     [RelayCommand(CanExecute = nameof(CanExecute))]
-    private Task NewTabAsync() => ExecuteAsync(Command("new_tab", null), "New tab");
+    private Task NewTabAsync() => ExecuteAsync(Command("new_tab", null), Loc.Get("browser_op_new_tab"));
 
     [RelayCommand(CanExecute = nameof(CanSelectTab))]
     private Task SelectTabAsync(BrowserTabStatus? tab) => CanSelectTab(tab)
-        ? ExecuteAsync(Command("select_tab", tab!.Id), "Select tab") : Task.CompletedTask;
+        ? ExecuteAsync(Command("select_tab", tab!.Id), Loc.Get("browser_op_select_tab")) : Task.CompletedTask;
 
     [RelayCommand(CanExecute = nameof(CanCloseTab))]
     private Task CloseTabAsync(BrowserTabStatus? tab) => CanCloseTab(tab)
-        ? ExecuteAsync(Command("close_tab", tab!.Id), "Close tab") : Task.CompletedTask;
+        ? ExecuteAsync(Command("close_tab", tab!.Id), Loc.Get("browser_op_close_tab")) : Task.CompletedTask;
 
     [RelayCommand(CanExecute = nameof(CanUseTab))]
-    private Task BackAsync() => ExecuteAsync(Command("back", ActiveTabId), "Back");
+    private Task BackAsync() => ExecuteAsync(Command("back", ActiveTabId), Loc.Get("browser_back"));
 
     [RelayCommand(CanExecute = nameof(CanUseTab))]
-    private Task ForwardAsync() => ExecuteAsync(Command("forward", ActiveTabId), "Forward");
+    private Task ForwardAsync() => ExecuteAsync(Command("forward", ActiveTabId), Loc.Get("browser_forward"));
 
     [RelayCommand(CanExecute = nameof(CanUseTab))]
-    private Task ReloadAsync() => ExecuteAsync(Command("reload", ActiveTabId), "Reload");
+    private Task ReloadAsync() => ExecuteAsync(Command("reload", ActiveTabId), Loc.Get("browser_op_reload"));
 
     [RelayCommand(CanExecute = nameof(CanTakeOver))]
-    private Task TakeOverAsync() => ExecuteAsync(null, "Take over");
+    private Task TakeOverAsync() => ExecuteAsync(null, Loc.Get("browser_take_over"));
 
     [RelayCommand(CanExecute = nameof(CanResume))]
-    private Task ResumeAsync() => ExecuteAsync(Command("resume", null), "Resume agent");
+    private Task ResumeAsync() => ExecuteAsync(Command("resume", null), Loc.Get("browser_resume_agent"));
 
     private static BrowserCommandAction Command(string command, string? tabId) =>
         new(command, EmptyInput) { TabId = tabId, UserInitiated = true };
@@ -278,7 +280,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
                     Refresh();
                     if (result is { Ok: false })
                     {
-                        Banner = result.Error ?? $"{operation} failed.";
+                        Banner = result.Error ?? Loc.Get("browser_op_failed_plain", operation);
                     }
                 }
             });
@@ -289,7 +291,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
             {
                 if (!_disposed && _bindingVersion == version)
                 {
-                    Banner = $"{operation} failed: {ex.Message}";
+                    Banner = Loc.Get("browser_op_failed", operation, ex.Message);
                 }
             });
         }
@@ -352,7 +354,14 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         ActiveTabId = activeId;
         SelectedTab = Tabs.FirstOrDefault(tab => tab.Id == activeId);
         IsUserControlled = status?.IsUserControlled == true || SelectedTab?.IsUserControlled == true;
-        StateText = status?.State.ToString() ?? nameof(BrowserSessionState.Idle);
+        StateText = status?.State switch
+        {
+            null or BrowserSessionState.Idle => Loc.Get("browser_state_idle"),
+            BrowserSessionState.Launched => Loc.Get("browser_state_launched"),
+            BrowserSessionState.Busy => Loc.Get("browser_state_busy"),
+            BrowserSessionState.Failed => Loc.Get("status_failed"),
+            _ => status!.State.ToString(),
+        };
         Url = SelectedTab?.Url ?? status?.Url;
         Title = SelectedTab?.Title ?? status?.Title;
         UpdatedText = status is null ? string.Empty : RelativeTime.Format(status.UpdatedAt.ToUniversalTime());
@@ -387,7 +396,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex)
             {
-                _presenterError = $"Could not display the embedded browser. {ex.Message}";
+                _presenterError = Loc.Get("browser_presenter_failed", ex.Message);
                 Banner = _presenterError;
             }
         }

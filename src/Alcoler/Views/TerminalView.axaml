@@ -3,12 +3,13 @@
              xmlns:v="using:Alcoler.Views"
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.TerminalView"
              x:DataType="vm:TerminalPaneViewModel">
   <DockPanel Background="{DynamicResource AlcolerTerminalBackground}">
     <Grid x:Name="PART_TerminalToolbar" DockPanel.Dock="Top" ColumnDefinitions="Auto,*,Auto"
           ColumnSpacing="8" Margin="12,8" Height="28">
-      <TextBlock Text="Terminal" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
+      <TextBlock Text="{loc:Loc status_terminal}" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
                  Foreground="{DynamicResource AlcolerTextPrimary}" VerticalAlignment="Center" />
       <Border Grid.Column="1" Background="{DynamicResource AlcolerSurfaceHigh}"
               CornerRadius="{DynamicResource AlcolerRadius}" Padding="8,0"
@@ -23,15 +24,15 @@
         </Grid>
       </Border>
       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-        <Button x:Name="PART_TerminalClear" Classes="icon" Click="OnClearClick" ToolTip.Tip="Clear terminal output">
+        <Button x:Name="PART_TerminalClear" Classes="icon" Click="OnClearClick" ToolTip.Tip="{loc:Loc terminal_clear}">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconArchive}" />
         </Button>
-        <Button x:Name="PART_TerminalStart" Content="Start" Classes="ghost"
+        <Button x:Name="PART_TerminalStart" Content="{loc:Loc terminal_start}" Classes="ghost"
                 FontSize="{DynamicResource AlcolerFontSmall}" Height="28" Padding="8,0"
                 IsVisible="{Binding !IsConnected}" Click="OnStartClick"
-                ToolTip.Tip="Start a shell in the workspace" />
+                ToolTip.Tip="{loc:Loc terminal_start_tooltip}" />
         <Button x:Name="StopButton" Classes="icon" IsVisible="{Binding IsConnected}"
-                Click="OnStopClick" ToolTip.Tip="Terminate the shell">
+                Click="OnStopClick" ToolTip.Tip="{loc:Loc terminal_stop_tooltip}">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSquare}" />
         </Button>
       </StackPanel>

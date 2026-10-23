@@ -139,12 +139,13 @@ public sealed class SessionRuntime : IAsyncDisposable
     private SessionRuntime(SessionRecord record, SessionRuntimeDeps deps)
     {
         _deps = deps;
-        _record = record;
+        _record = NormalizeExecutionState(record);
         _events = new SessionEventStore(record.Id, deps.Clock);
         _broker = new SessionInteractionBroker(evt => EmitAsync(evt, persist: true), deps.Clock);
-        _permissions = new PermissionService(_broker, deps.PermissionRules, record.PermissionMode);
+        _permissions = new PermissionService(
+            _broker, deps.PermissionRules, _record.PermissionMode, planEnabled: _record.PlanEnabled);
         var scheduler = new ToolScheduler(deps.Tools);
-        _toolExecutor = new ToolCallExecutor(deps.Tools, _permissions, _ => _permissions.Mode);
+        _toolExecutor = new ToolCallExecutor(deps.Tools, _permissions, _ => _permissions.ExecutionState);
         _toolRunner = new ToolBatchRunner(scheduler, _toolExecutor);
         _sessionCommands = new RuntimeSessionCommands(this);
         _planFiles = deps.PlanFileStore ?? NullPlanFileStore.Instance;
@@ -186,6 +187,8 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     internal bool IsArchived => _record.IsArchived;
 
+    internal ModelSelection? ModelSelection => _record.ModelSelection;
+
     public long Revision => Volatile.Read(ref _revision);
 
     public bool IsTurnActive => _turnMachine.IsBusy;
@@ -197,6 +200,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     internal TurnPhase Phase => _turnMachine.Phase;
 
     public PermissionMode Mode => _permissions.Mode;
+
+    public bool PlanEnabled => _permissions.PlanEnabled;
 
     internal SessionActivitySnapshot ActivitySnapshot()
     {
@@ -287,12 +292,20 @@ public sealed class SessionRuntime : IAsyncDisposable
                 return await HandleRewindConversationAsync(rewind, ct).ConfigureAwait(false);
 
             case SetModeCommand setMode:
-                SetPermissionMode(setMode.Mode);
-                await PersistRecordAsync(ct,
-                    record => ApplyModeTransition(record, setMode.Mode) with { UpdatedAt = _deps.Clock.GetUtcNow() }).ConfigureAwait(false);
-                await EmitAsync(new SessionModeChangedEvent(setMode.Mode), persist: true).ConfigureAwait(false);
-                BumpRevision();
-                return CommandAck.AcceptedAt(setMode.CommandId, Revision);
+                {
+                    var (mode, planEnabled) = ResolveExecutionState(setMode.Mode, setMode.PlanEnabled);
+                    SetExecutionState(mode, planEnabled);
+                    await PersistRecordAsync(ct, record => record with
+                    {
+                        PermissionMode = mode,
+                        PlanEnabled = planEnabled,
+                        PreviousPermissionMode = null,
+                        UpdatedAt = _deps.Clock.GetUtcNow(),
+                    }).ConfigureAwait(false);
+                    await EmitAsync(new SessionModeChangedEvent(mode, planEnabled), persist: true).ConfigureAwait(false);
+                    BumpRevision();
+                    return CommandAck.AcceptedAt(setMode.CommandId, Revision);
+                }
 
             case SetWorkflowsCommand setWorkflows:
                 return await HandleSetWorkflowsAsync(setWorkflows, ct).ConfigureAwait(false);
@@ -394,7 +407,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private async Task<CommandAck> HandleExitPlanModeAsync(ExitPlanModeCommand command, CancellationToken ct)
     {
-        if (_permissions.Mode != PermissionMode.Plan)
+        if (!_permissions.PlanEnabled)
             return CommandAck.Rejected(command.CommandId, Revision, "session is not in plan mode");
         if (string.IsNullOrWhiteSpace(command.Plan))
             return CommandAck.Rejected(command.CommandId, Revision, "plan must not be empty");
@@ -412,17 +425,16 @@ public sealed class SessionRuntime : IAsyncDisposable
             _deps.Logger.LogWarning(ex, "Writing the approved plan file failed for session {SessionId}", _record.Id);
         }
 
-        var target = _record.PreviousPermissionMode is { } previous && previous != PermissionMode.Plan
-            ? previous
-            : PermissionMode.Edit;
-        SetPermissionMode(target);
+        var mode = _permissions.Mode;
+        SetExecutionState(mode, planEnabled: false);
         await PersistRecordAsync(ct, record => record with
         {
-            PermissionMode = target,
+            PermissionMode = mode,
+            PlanEnabled = false,
             PreviousPermissionMode = null,
             UpdatedAt = _deps.Clock.GetUtcNow(),
         }).ConfigureAwait(false);
-        await EmitAsync(new SessionModeChangedEvent(target), persist: true).ConfigureAwait(false);
+        await EmitAsync(new SessionModeChangedEvent(mode, PlanEnabled: false), persist: true).ConfigureAwait(false);
         BumpRevision();
         return CommandAck.AcceptedAt(command.CommandId, Revision);
     }
@@ -543,7 +555,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (input.Command is { } command)
         {
             await EmitAsync(new InputQueuedEvent(new QueuedInput(command.CommandId, command.Text,
-                _deps.Clock.GetUtcNow(), input.Images, command.Mode, command.ModelSelection, command.Delivery)),
+                _deps.Clock.GetUtcNow(), input.Images, command.Mode, command.ModelSelection, command.Delivery,
+                command.PlanEnabled)),
                 persist: true).ConfigureAwait(false);
             BumpRevision();
         }
@@ -930,33 +943,58 @@ public sealed class SessionRuntime : IAsyncDisposable
         return (steer is not null, notificationBodies is { Count: > 0 });
     }
 
-    private void SetPermissionMode(PermissionMode mode)
+    private void SetExecutionState(PermissionMode mode, bool planEnabled)
     {
-        if (_permissions.Mode == PermissionMode.Plan && mode != PermissionMode.Plan)
+        if (_permissions.PlanEnabled && !planEnabled)
             _planModeExitReminderPending = true;
-        else if (mode == PermissionMode.Plan)
+        else if (!_permissions.PlanEnabled && planEnabled)
             _planModeExitReminderPending = false;
-        _permissions.SetMode(mode);
+        _permissions.SetExecutionState(mode, planEnabled);
     }
 
-    private static SessionRecord ApplyModeTransition(SessionRecord record, PermissionMode mode)
+    // Concrete modes without an explicit plan flag exit plan mode; Plan (legacy) only
+    // enables the flag and keeps the underlying permission mode.
+    private (PermissionMode Mode, bool PlanEnabled) ResolveExecutionState(
+        PermissionMode? requestedMode, bool? requestedPlanEnabled)
     {
-        var previous = mode == PermissionMode.Plan
-            ? record.PermissionMode == PermissionMode.Plan
-                ? record.PreviousPermissionMode
-                : record.PermissionMode
-            : null;
-        return record with { PermissionMode = mode, PreviousPermissionMode = previous };
+        if (requestedMode == PermissionMode.Plan)
+            return (_permissions.Mode, true);
+        var mode = requestedMode ?? _permissions.Mode;
+        var planEnabled = requestedPlanEnabled
+            ?? (requestedMode is null ? _permissions.PlanEnabled : false);
+        return (mode, planEnabled);
+    }
+
+    private static SessionRecord NormalizeExecutionState(SessionRecord record)
+    {
+        if (record.PermissionMode != PermissionMode.Plan)
+            return record.PreviousPermissionMode is null
+                ? record
+                : record with { PreviousPermissionMode = null };
+        var mode = record.PreviousPermissionMode is { } previous && previous != PermissionMode.Plan
+            ? previous
+            : PermissionMode.Edit;
+        return record with
+        {
+            PermissionMode = mode,
+            PlanEnabled = true,
+            PreviousPermissionMode = null,
+        };
     }
 
     private async Task ApplyInputIntentAsync(SendTextCommand command)
     {
-        if (command.Mode is { } mode)
+        if (command.Mode is not null || command.PlanEnabled is not null)
         {
-            SetPermissionMode(mode);
-            await PersistRecordAsync(_sessionCts.Token,
-                record => ApplyModeTransition(record, mode)).ConfigureAwait(false);
-            await EmitAsync(new SessionModeChangedEvent(mode), persist: true).ConfigureAwait(false);
+            var (mode, planEnabled) = ResolveExecutionState(command.Mode, command.PlanEnabled);
+            SetExecutionState(mode, planEnabled);
+            await PersistRecordAsync(_sessionCts.Token, record => record with
+            {
+                PermissionMode = mode,
+                PlanEnabled = planEnabled,
+                PreviousPermissionMode = null,
+            }).ConfigureAwait(false);
+            await EmitAsync(new SessionModeChangedEvent(mode, planEnabled), persist: true).ConfigureAwait(false);
         }
         if (command.Workflows is { } workflows)
         {
@@ -1380,7 +1418,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             }
         }
 
-        if (_permissions.Mode == PermissionMode.Plan)
+        if (_permissions.PlanEnabled)
         {
             if (!counts.PlanReminderFound || counts.HumanTurnsSincePlanReminder >= RuntimeReminders.TurnsBetweenAttachments)
             {
@@ -2141,7 +2179,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         _events.AdvanceSequenceTo(durable.Count > 0 ? durable.Max(evt => evt.Sequence) : 0);
         var started = new SessionStartedEvent(
             _record.WorkspaceRoot, _record.Title, _record.PermissionMode, _record.ModelSelection,
-            _record.ActiveWorkflows);
+            _record.ActiveWorkflows, _record.PlanEnabled);
         if (persistStartEvents)
         {
             await EmitAsync(started, persist: true).ConfigureAwait(false);
@@ -2176,6 +2214,9 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             _events.Append(sessionEvent, occurredAt);
         }
+        // Durable mode events predate PlanEnabled; replay ends with the record's current
+        // execution state so a resumed session never displays a stale legacy Plan mode.
+        EmitForReplay(new SessionModeChangedEvent(_record.PermissionMode, _record.PlanEnabled));
         var queuedInputs = new Dictionary<CommandId, (long Sequence, QueuedInput Input)>();
         foreach (var entry in replayDurable)
         {
@@ -2195,7 +2236,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         foreach (var (_, queued) in queuedInputs.Values.OrderBy(entry => entry.Sequence))
         {
             var command = new SendTextCommand(queued.CommandId, _record.Id, 0, queued.Text,
-                queued.Mode, queued.ModelSelection, queued.Delivery);
+                queued.Mode, queued.ModelSelection, queued.Delivery, PlanEnabled: queued.PlanEnabled);
             _pendingInputs.Enqueue(new PendingTurnInput(command, null, queued.Images));
             EmitForReplay(new InputQueuedEvent(queued));
         }

@@ -1,3 +1,4 @@
+using Alcoler.Localization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -31,6 +32,7 @@ public partial class App : Application
     {
         var config = WorkbenchConfig.LoadOrDefault();
         Themes.ThemeSelector.Apply(config.Theme);
+        Loc.SetLanguage(Loc.ResolveLanguage(config.Language));
         var viewModel = await Composition.BuildWorkbenchAsync(config, CancellationToken.None);
         var window = new MainWindow(viewModel);
         window.Closing += OnMainWindowClosing;
@@ -47,9 +49,9 @@ public partial class App : Application
 
     private TrayIcon CreateTrayIcon(IClassicDesktopStyleApplicationLifetime desktop)
     {
-        var openItem = new NativeMenuItem("Open Alcoler");
+        var openItem = new NativeMenuItem(Loc.Get("tray_open"));
         openItem.Click += (_, _) => ShowMainWindow();
-        var exitItem = new NativeMenuItem("Exit");
+        var exitItem = new NativeMenuItem(Loc.Get("tray_exit"));
         exitItem.Click += (_, _) => Exit(desktop);
         var menu = new NativeMenu();
         menu.Items.Add(openItem);

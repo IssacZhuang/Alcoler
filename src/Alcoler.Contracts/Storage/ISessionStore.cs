@@ -29,7 +29,8 @@ public sealed record SessionRecord(
     SessionId? ForkedFromSessionId = null,
     MessageId? ForkedFromMessageId = null,
     PermissionMode? PreviousPermissionMode = null,
-    IReadOnlyList<string>? ActiveWorkflows = null);
+    IReadOnlyList<string>? ActiveWorkflows = null,
+    bool PlanEnabled = false);
 
 public sealed record StoredMessage(long Sequence, ConversationMessage Message);
 

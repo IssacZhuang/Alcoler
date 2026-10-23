@@ -1,4 +1,5 @@
 using Alcoler.Adapters.Storage;
+using Alcoler.Localization;
 using Alcoler.ViewModel;
 using Alcoler.Views;
 using Avalonia;
@@ -44,7 +45,7 @@ public sealed class ConversationImage : Image
         Stretch = Stretch.Uniform;
         Focusable = true;
         Cursor = HandCursor;
-        AutomationProperties.SetName(this, "Preview image");
+        AutomationProperties.SetName(this, Loc.Get("markdown_preview_image"));
     }
 
     public string? ArtifactUri
@@ -135,7 +136,9 @@ public sealed class ConversationImage : Image
     {
         base.OnPropertyChanged(change);
         if (change.Property == FileNameProperty)
-            AutomationProperties.SetName(this, string.IsNullOrWhiteSpace(FileName) ? "Preview image" : $"Preview image: {FileName}");
+            AutomationProperties.SetName(this, string.IsNullOrWhiteSpace(FileName)
+                ? Loc.Get("markdown_preview_image")
+                : Loc.Get("markdown_preview_image_named", FileName));
         if ((change.Property == ArtifactUriProperty || change.Property == MimeTypeProperty) && this.IsAttachedToVisualTree())
             LoadThumbnail();
     }

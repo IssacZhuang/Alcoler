@@ -8,9 +8,16 @@ public enum PermissionMode
 {
     Build,
     Edit,
+    // Legacy persisted value; runtime sessions carry plan mode in PlanEnabled instead.
     Plan,
     Yolo,
 }
+
+/// <summary>
+/// The permission mode and the orthogonal plan-mode flag. Entering plan mode never
+/// overwrites <see cref="Mode"/>; leaving it never needs a saved previous mode.
+/// </summary>
+public sealed record ExecutionState(PermissionMode Mode, bool PlanEnabled = false);
 
 public enum PermissionVerdict
 {
@@ -67,7 +74,8 @@ public sealed record PermissionCheckRequest(
     ToolMetadata Tool,
     PermissionMode Mode,
     bool TreatAsReadOnly = false,
-    ToolCallId? ToolCallId = null);
+    ToolCallId? ToolCallId = null,
+    bool PlanEnabled = false);
 
 public interface IPermissionGate
 {

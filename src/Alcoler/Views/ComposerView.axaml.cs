@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Models;
+using Alcoler.Localization;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Avalonia;
@@ -186,7 +187,7 @@ public partial class ComposerView : UserControl
 
     private void OnComposerPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(ComposerViewModel.Mode))
+        if (e.PropertyName is nameof(ComposerViewModel.Mode) or nameof(ComposerViewModel.PlanEnabled))
         {
             ModeSelector.Flyout?.Hide();
             InputBox.Focus();
@@ -255,7 +256,7 @@ public partial class ComposerView : UserControl
                 TextBlock? vision = null;
                 if (choice.Properties?.SupportsImage == true)
                 {
-                    vision = new TextBlock { Text = "Vision", FontSize = 11, Opacity = .6 };
+                    vision = new TextBlock { Text = Loc.Get("composer_vision"), FontSize = 11, Opacity = .6 };
                     header.Children.Add(vision);
                 }
                 var item = new MenuItem
@@ -279,7 +280,7 @@ public partial class ComposerView : UserControl
         }
         if (menu.Items.Count > 0)
             menu.Items.Add(new Separator());
-        var manage = new MenuItem { Header = "Manage models", MinWidth = 190 };
+        var manage = new MenuItem { Header = Loc.Get("composer_manage_models"), MinWidth = 190 };
         manage.Click += async (_, _) =>
         {
             menu.Hide();
@@ -558,7 +559,7 @@ public partial class ComposerView : UserControl
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            host.Composer.InputError = $"Could not paste image. {exception.Message}";
+            host.Composer.InputError = Loc.Get("composer_paste_failed", exception.Message);
         }
         finally
         {

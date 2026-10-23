@@ -361,7 +361,7 @@ public class ComposerAndInteractionSmokeTests
         var state = TestSnapshots.State() with
         {
             Queue = [new QueuedInput(commandId, "queued text", DateTimeOffset.UtcNow,
-                Mode: PermissionMode.Plan, ModelSelection: selection)],
+                Mode: PermissionMode.Plan, ModelSelection: selection, PlanEnabled: true)],
         };
         using var harness = Show<ComposerView>(state);
         await PumpAsync();
@@ -372,7 +372,8 @@ public class ComposerAndInteractionSmokeTests
         var command = Assert.IsType<Contracts.Commands.RemoveQueuedInputCommand>(Assert.Single(harness.Runtime.Submitted));
         Assert.Equal(commandId, command.TargetCommandId);
         Assert.Equal("queued text", harness.ViewModel.Composer.Draft);
-        Assert.Equal(PermissionMode.Plan, harness.ViewModel.Composer.Mode);
+        Assert.Equal(PermissionMode.Edit, harness.ViewModel.Composer.Mode);
+        Assert.True(harness.ViewModel.Composer.PlanEnabled);
         Assert.Equal(selection, harness.ViewModel.CurrentSelection);
     }
 
@@ -736,13 +737,14 @@ public class ComposerAndInteractionSmokeTests
         Assert.False(badge.IsVisible);
 
         harness.ViewModel.Composer.Mode = PermissionMode.Yolo;
-        harness.ViewModel.Composer.Mode = PermissionMode.Plan;
+        harness.ViewModel.Composer.PlanEnabled = true;
         await PumpAsync();
         Assert.True(badge.IsVisible);
         Assert.Contains(badge.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == "Plan");
         Assert.Contains(FindNamed<Button>(harness.View, "ModeSelector").GetVisualDescendants().OfType<TextBlock>(),
             text => text.Text == "Full access");
 
+        harness.ViewModel.Composer.PlanEnabled = false;
         harness.ViewModel.Composer.Mode = PermissionMode.Edit;
         await PumpAsync();
         Assert.False(badge.IsVisible);
@@ -780,8 +782,10 @@ public class ComposerAndInteractionSmokeTests
 
         var command = Assert.IsType<Contracts.Commands.SendTextCommand>(Assert.Single(harness.Runtime.Submitted));
         Assert.Equal("design the feature", command.Text);
-        Assert.Equal(PermissionMode.Plan, command.Mode);
-        Assert.Equal(PermissionMode.Plan, harness.ViewModel.Composer.Mode);
+        Assert.Equal(PermissionMode.Build, command.Mode);
+        Assert.True(command.PlanEnabled);
+        Assert.Equal(PermissionMode.Build, harness.ViewModel.Composer.Mode);
+        Assert.True(harness.ViewModel.Composer.PlanEnabled);
         Assert.True(FindNamed<Border>(harness.View, "PlanModeBadge").IsVisible);
         Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
     }

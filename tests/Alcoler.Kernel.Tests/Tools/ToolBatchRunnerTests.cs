@@ -175,7 +175,8 @@ public class ToolBatchRunnerTests
         var registry = new ToolRegistry([exit, later]);
         var runner = new ToolBatchRunner(new ToolScheduler(registry),
             new ToolCallExecutor(registry, new ScriptedPermissionGate(Contracts.Permissions.PermissionDecision.Deny),
-                static _ => Contracts.Permissions.PermissionMode.Plan));
+                static _ => new Contracts.Permissions.ExecutionState(
+                    Contracts.Permissions.PermissionMode.Edit, PlanEnabled: true)));
         using var workspace = new TempWorkspace();
 
         var result = await runner.ExecuteAsync(

@@ -18,17 +18,17 @@ public sealed class ToolCallExecutor
 
     private readonly ToolRegistry _registry;
     private readonly IPermissionGate _permissionGate;
-    private readonly Func<ToolExecutionContext, PermissionMode> _modeResolver;
+    private readonly Func<ToolExecutionContext, ExecutionState> _stateResolver;
     private readonly Dictionary<string, JsonSchema> _schemas;
 
     public ToolCallExecutor(
         ToolRegistry registry,
         IPermissionGate permissionGate,
-        Func<ToolExecutionContext, PermissionMode>? modeResolver = null)
+        Func<ToolExecutionContext, ExecutionState>? stateResolver = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _permissionGate = permissionGate ?? throw new ArgumentNullException(nameof(permissionGate));
-        _modeResolver = modeResolver ?? (static _ => PermissionMode.Build);
+        _stateResolver = stateResolver ?? (static _ => new ExecutionState(PermissionMode.Build));
 
         _schemas = new Dictionary<string, JsonSchema>(StringComparer.Ordinal);
         foreach (var tool in _registry.Tools)
@@ -90,15 +90,17 @@ public sealed class ToolCallExecutor
                 ToolCallId: call.Id);
             await notificationSink(new ToolExecutionPermissionAsked(effectiveCall, request)).ConfigureAwait(false);
 
+            var state = _stateResolver(context);
             var decision = await _permissionGate.CheckAsync(
                 new PermissionCheckRequest(
                     context.SessionId,
                     tool.Contract.Name,
                     input,
                     tool.Metadata,
-                    _modeResolver(context),
+                    state.Mode,
                     TreatAsReadOnly: tool is IToolInputPolicy policy && policy.IsReadOnlyInput(input),
-                    ToolCallId: call.Id),
+                    ToolCallId: call.Id,
+                    PlanEnabled: state.PlanEnabled),
                 cancellationToken).ConfigureAwait(false);
 
             if (decision.Outcome == PermissionOutcome.Denied)
@@ -114,9 +116,10 @@ public sealed class ToolCallExecutor
                 context = await contextFactory(effectiveCall, cancellationToken).ConfigureAwait(false);
             }
 
-            // Mirrors the reference guard: ExitPlanMode only executes while the session is in plan mode.
+            // ExitPlanMode only executes while plan mode is enabled; the permission mode
+            // underneath is deliberately ignored.
             if (string.Equals(tool.Contract.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal)
-                && _modeResolver(context) != PermissionMode.Plan)
+                && !_stateResolver(context).PlanEnabled)
                 return ToolExecutionResult.Text(ExitPlanModeTool.NotInPlanModeMessage, isError: true);
 
             var executionContext = context with { Input = input, ToolCallId = call.Id };
@@ -194,7 +197,7 @@ public sealed class ToolCallExecutor
     {
         if (string.Equals(tool.Contract.Name, ExitPlanModeTool.ToolName, StringComparison.Ordinal))
         {
-            if (_modeResolver(context) != PermissionMode.Plan)
+            if (!_stateResolver(context).PlanEnabled)
                 return ToolExecutionResult.Text(ExitPlanModeTool.NotInPlanModeMessage, isError: true);
             if (!string.IsNullOrWhiteSpace(decision.Feedback))
             {

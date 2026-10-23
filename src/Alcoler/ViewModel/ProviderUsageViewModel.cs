@@ -1,5 +1,6 @@
 using System.Globalization;
 using Alcoler.Adapters.ProviderUsage;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -63,15 +64,18 @@ public sealed class ProviderUsageViewModel : ObservableObject, IDisposable
             : "--";
     public string BalanceDetail => _snapshot?.Tiers.FirstOrDefault(tier => tier.Id == ProviderUsageTierId.Balance)
         is { Used: { } used, Total: { } total } tier
-            ? $"{used.ToString("N2", CultureInfo.CurrentCulture)} used / {total.ToString("N2", CultureInfo.CurrentCulture)} {tier.Unit}".TrimEnd()
+            ? Loc.Get("usage_balance_detail",
+                used.ToString("N2", CultureInfo.CurrentCulture),
+                total.ToString("N2", CultureInfo.CurrentCulture),
+                tier.Unit).TrimEnd()
             : string.Empty;
     public bool HasBalanceDetail => BalanceDetail.Length > 0;
     public string ErrorMessage => _snapshot?.Error?.Code switch
     {
-        ProviderUsageErrorCode.AuthFailed => "Authentication failed. Check the API key and retry.",
-        ProviderUsageErrorCode.Network => "Could not reach the usage service. Try again.",
-        ProviderUsageErrorCode.BadResponse => "The provider returned an invalid usage response.",
-        _ => "Could not load usage. Try again.",
+        ProviderUsageErrorCode.AuthFailed => Loc.Get("usage_error_auth"),
+        ProviderUsageErrorCode.Network => Loc.Get("usage_error_network"),
+        ProviderUsageErrorCode.BadResponse => Loc.Get("usage_error_bad_response"),
+        _ => Loc.Get("usage_error_default"),
     };
 
     // Configuration edits invalidate results but never trigger credential-bearing requests.
@@ -339,13 +343,13 @@ public sealed class ProviderUsageTierViewModel
         : "--";
     public string Label => Tier.Id switch
     {
-        ProviderUsageTierId.FiveHour => "5-hour usage",
-        ProviderUsageTierId.Weekly => "7-day usage",
-        ProviderUsageTierId.Monthly => "30-day usage",
-        _ => "Balance",
+        ProviderUsageTierId.FiveHour => Loc.Get("usage_tier_5h"),
+        ProviderUsageTierId.Weekly => Loc.Get("usage_tier_7d"),
+        ProviderUsageTierId.Monthly => Loc.Get("usage_tier_30d"),
+        _ => Loc.Get("usage_tier_balance"),
     };
     public string ResetText { get; }
     public bool HasReset => ResetText.Length > 0;
     public string ResetToolTip => Tier.ResetsAt is { } date
-        ? "Resets " + date.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : string.Empty;
+        ? Loc.Get("usage_resets", date.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)) : string.Empty;
 }

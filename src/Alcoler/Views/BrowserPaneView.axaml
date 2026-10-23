@@ -3,6 +3,7 @@
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:browser="using:Alcoler.Contracts.Browser"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.BrowserPaneView"
              x:DataType="vm:BrowserPaneViewModel">
   <UserControl.Styles>
@@ -41,7 +42,7 @@
                     </Grid>
                   </Button>
                   <Button Grid.Column="1" Classes="icon tiny" Click="OnCloseTabClick"
-                          ToolTip.Tip="Close browser tab" AutomationProperties.Name="Close browser tab">
+                          ToolTip.Tip="{loc:Loc browser_close_tab}" AutomationProperties.Name="{loc:Loc browser_close_tab}">
                     <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
                   </Button>
                 </Grid>
@@ -51,7 +52,7 @@
         </ItemsControl>
       </ScrollViewer>
       <Button Grid.Column="1" x:Name="PART_BrowserNewTab" Classes="icon" Command="{Binding NewTabCommand}"
-              ToolTip.Tip="New browser tab" AutomationProperties.Name="New browser tab" VerticalAlignment="Top">
+              ToolTip.Tip="{loc:Loc browser_new_tab}" AutomationProperties.Name="{loc:Loc browser_new_tab}" VerticalAlignment="Top">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
       </Button>
     </Grid>
@@ -59,22 +60,22 @@
     <Grid x:Name="PART_BrowserToolbar" DockPanel.Dock="Top" Height="48" Margin="12,0"
           ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="4">
       <Button x:Name="PART_BrowserBack" Classes="icon" Command="{Binding BackCommand}"
-              ToolTip.Tip="Back" AutomationProperties.Name="Back" VerticalAlignment="Center">
+              ToolTip.Tip="{loc:Loc browser_back}" AutomationProperties.Name="{loc:Loc browser_back}" VerticalAlignment="Center">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" RenderTransformOrigin="50%,50%">
           <controls:Icon.RenderTransform><RotateTransform Angle="180" /></controls:Icon.RenderTransform>
         </controls:Icon>
       </Button>
       <Button Grid.Column="1" x:Name="PART_BrowserForward" Classes="icon" Command="{Binding ForwardCommand}"
-              ToolTip.Tip="Forward" AutomationProperties.Name="Forward" VerticalAlignment="Center">
+              ToolTip.Tip="{loc:Loc browser_forward}" AutomationProperties.Name="{loc:Loc browser_forward}" VerticalAlignment="Center">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" />
       </Button>
       <Button Grid.Column="2" x:Name="PART_BrowserRefresh" Classes="icon" Command="{Binding ReloadCommand}"
-              ToolTip.Tip="Reload page" AutomationProperties.Name="Reload page" VerticalAlignment="Center">
+              ToolTip.Tip="{loc:Loc browser_reload}" AutomationProperties.Name="{loc:Loc browser_reload}" VerticalAlignment="Center">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
       </Button>
       <TextBox Grid.Column="3" x:Name="PART_BrowserAddress" Text="{Binding Address, Mode=TwoWay}"
-               Watermark="Enter a URL" IsEnabled="{Binding CanInteract}" KeyDown="OnAddressKeyDown"
-               ToolTip.Tip="{Binding Url}" AutomationProperties.Name="Browser address" Height="28" MinHeight="28" Padding="8,3"
+               Watermark="{loc:Loc browser_enter_url}" IsEnabled="{Binding CanInteract}" KeyDown="OnAddressKeyDown"
+               ToolTip.Tip="{Binding Url}" AutomationProperties.Name="{loc:Loc browser_address_a11y}" Height="28" MinHeight="28" Padding="8,3"
                FontSize="{DynamicResource AlcolerFontSmall}" VerticalContentAlignment="Center"
                VerticalAlignment="Center" CornerRadius="{DynamicResource AlcolerRadiusLarge}" />
     </Grid>
@@ -86,11 +87,11 @@
                    FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
                    Foreground="{DynamicResource AlcolerTextSecondary}" />
         <Button Grid.Column="1" x:Name="PART_BrowserTakeOver" Classes="ghost" Command="{Binding TakeOverCommand}"
-                Content="Take over" ToolTip.Tip="Pause agent browser actions and take control"
+                Content="{loc:Loc browser_take_over}" ToolTip.Tip="{loc:Loc browser_take_over_tooltip}"
                 IsVisible="{Binding !IsUserControlled}" Height="28" Padding="8,0"
                 FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" />
         <Button Grid.Column="1" x:Name="PART_BrowserResume" Classes="secondary" Command="{Binding ResumeCommand}"
-                Content="Resume agent" ToolTip.Tip="Return browser control to the agent"
+                Content="{loc:Loc browser_resume_agent}" ToolTip.Tip="{loc:Loc browser_resume_tooltip}"
                 IsVisible="{Binding IsUserControlled}" Height="28" Padding="8,0"
                 FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" />
       </Grid>
@@ -127,7 +128,7 @@
                     IsVisible="{Binding ShowEmptyState}">
           <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconGlobe}" Width="48" Height="48"
                          HorizontalAlignment="Center" Stroke="{DynamicResource AlcolerTextTertiary}" />
-          <TextBlock Text="Browser" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
+          <TextBlock Text="{loc:Loc browser_title}" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
                      HorizontalAlignment="Center" Foreground="{DynamicResource AlcolerTextPrimary}" />
           <TextBlock Text="{Binding EmptyStateText}" FontSize="{DynamicResource AlcolerFontSmall}"
                      TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center"

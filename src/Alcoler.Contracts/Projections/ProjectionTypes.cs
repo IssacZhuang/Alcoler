@@ -58,10 +58,12 @@ public sealed record ConversationState(
     PermissionRequest? PendingPermission,
     InteractionRequest? PendingInteraction,
     ContextUsageState? ContextUsage = null,
-    IReadOnlyList<string>? ActiveWorkflows = null)
+    IReadOnlyList<string>? ActiveWorkflows = null,
+    bool PlanEnabled = false)
 {
-    public static ConversationState Initial(string title, PermissionMode mode, ModelSelection? modelSelection, int contextWindowTokens) =>
-        new(title, mode, modelSelection, contextWindowTokens, TurnPhase.Idle, null, null, "estimate", [], null, null);
+    public static ConversationState Initial(string title, PermissionMode mode, ModelSelection? modelSelection, int contextWindowTokens, bool planEnabled = false) =>
+        new(title, mode, modelSelection, contextWindowTokens, TurnPhase.Idle, null, null, "estimate", [], null, null,
+            PlanEnabled: planEnabled);
 }
 
 public enum ToolCallStatus

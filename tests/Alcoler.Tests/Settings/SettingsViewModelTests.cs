@@ -302,7 +302,56 @@ public class SettingsViewModelTests
             var loaded = WorkbenchConfig.LoadOrDefault(path);
 
             Assert.Equal("dark", loaded.Theme);
+            Assert.Equal("auto", loaded.Language);
             Assert.Empty(loaded.Providers);
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Language_RoundTripsThroughSaveAndLoad()
+    {
+        var path = TempConfigPath();
+        try
+        {
+            using var settings = new SettingsViewModel(new WorkbenchConfig([]));
+            settings.SelectedLanguage = settings.LanguageChoices.Single(choice => choice.Value == "zh");
+
+            var saved = await settings.SaveAsync(path);
+
+            Assert.NotNull(saved);
+            Assert.Equal("zh", saved.Language);
+            Assert.Equal("zh", WorkbenchConfig.LoadOrDefault(path).Language);
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("ZH", "zh")]
+    [InlineData(" zh ", "zh")]
+    [InlineData("en", "en")]
+    [InlineData("garbage", "auto")]
+    [InlineData("", "auto")]
+    public void LoadOrDefault_NormalizesLanguage(string written, string expected)
+    {
+        var path = TempConfigPath();
+        try
+        {
+            File.WriteAllText(path, $$"""{"providers":[],"language":"{{written}}"}""");
+
+            Assert.Equal(expected, WorkbenchConfig.LoadOrDefault(path).Language);
         }
         finally
         {

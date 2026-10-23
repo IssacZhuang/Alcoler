@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Alcoler.Git;
+using Alcoler.Localization;
 using Alcoler.Ui;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -42,7 +43,14 @@ public sealed class GitFileChangeViewModel
 
     public ChangeState State { get; }
 
-    public string StateText => State.ToString().ToLowerInvariant();
+    public string StateText => State switch
+    {
+        ChangeState.Added => Loc.Get("git_state_added"),
+        ChangeState.Modified => Loc.Get("git_state_modified"),
+        ChangeState.Deleted => Loc.Get("git_state_deleted"),
+        ChangeState.Renamed => Loc.Get("git_state_renamed"),
+        _ => string.Empty,
+    };
 
     public string FileName => Path.Replace('\\', '/').Split('/')[^1];
 
@@ -111,6 +119,11 @@ public sealed partial class GitPaneViewModel : ObservableObject
         _workspaceRoot = workspaceRoot;
         _gitService = gitService;
         _scheduler = scheduler;
+        Unstaged.CollectionChanged += (_, _) => OnPropertyChanged(nameof(UnstagedText));
+        Untracked.CollectionChanged += (_, _) => OnPropertyChanged(nameof(UntrackedText));
+        Staged.CollectionChanged += (_, _) => OnPropertyChanged(nameof(StagedText));
+        Branches.CollectionChanged += (_, _) => OnPropertyChanged(nameof(BranchesText));
+        RecentCommits.CollectionChanged += (_, _) => OnPropertyChanged(nameof(RecentCommitsText));
     }
 
     public string FileRoot => _repositoryRoot ?? _workspaceRoot;
@@ -124,6 +137,16 @@ public sealed partial class GitPaneViewModel : ObservableObject
     public ObservableCollection<GitFileChangeViewModel> Untracked { get; } = [];
 
     public ObservableCollection<GitCommitViewModel> RecentCommits { get; } = [];
+
+    public string UnstagedText => Loc.Get("git_changes", Unstaged.Count);
+
+    public string UntrackedText => Loc.Get("git_untracked", Untracked.Count);
+
+    public string StagedText => Loc.Get("git_staged", Staged.Count);
+
+    public string BranchesText => Loc.Get("git_branches", Branches.Count);
+
+    public string RecentCommitsText => Loc.Get("git_recent_commits", RecentCommits.Count);
 
     [ObservableProperty]
     private bool _isRepo;
@@ -171,7 +194,7 @@ public sealed partial class GitPaneViewModel : ObservableObject
         catch (Exception ex)
         {
             var message = ex.Message;
-            _scheduler.Post(() => Banner = $"Git refresh failed: {message}");
+            _scheduler.Post(() => Banner = Loc.Get("git_refresh_failed", message));
         }
         finally
         {
@@ -197,7 +220,7 @@ public sealed partial class GitPaneViewModel : ObservableObject
         catch (Exception ex)
         {
             var message = ex.Message;
-            _scheduler.Post(() => Banner = $"Checkout of '{branchName}' failed: {message}");
+            _scheduler.Post(() => Banner = Loc.Get("git_checkout_failed", branchName, message));
         }
         finally
         {

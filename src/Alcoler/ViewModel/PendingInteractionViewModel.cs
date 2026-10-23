@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Identifiers;
@@ -24,14 +25,14 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
     public string ToolName { get; private init; } = string.Empty;
     public RiskLevel RiskLevel { get; private init; }
     public string? PlanMarkdown { get; private init; }
-    public string PlanTitle { get; private init; } = "Plan";
+    public string PlanTitle { get; private init; } = Loc.Get("workbench_plan");
     public bool HasPlanPreview => !string.IsNullOrWhiteSpace(PlanMarkdown);
-    public string AllowActionText => AllowsFeedback ? "Approve" : "Allow";
-    public string DenyActionText => AllowsFeedback ? "Request changes" : "Deny";
-    public string PermissionTitle => AllowsFeedback ? "Plan ready for approval" : "Permission required";
+    public string AllowActionText => AllowsFeedback ? Loc.Get("question_approve") : Loc.Get("question_allow");
+    public string DenyActionText => AllowsFeedback ? Loc.Get("question_request_changes") : Loc.Get("question_deny");
+    public string PermissionTitle => AllowsFeedback ? Loc.Get("question_plan_ready") : Loc.Get("question_permission_required");
     public string PermissionHint => AllowsFeedback
-        ? "Enter to approve / Esc to request changes"
-        : "Enter to allow / Esc to deny";
+        ? Loc.Get("question_hint_approve")
+        : Loc.Get("question_hint_allow");
 
     [ObservableProperty]
     private string _feedback = string.Empty;
@@ -71,7 +72,7 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
     public string PageText => $"{Math.Min(CurrentQuestionIndex + 1, Math.Max(QuestionCount, 1))} / {Math.Max(QuestionCount, 1)}";
     public bool CanMovePrevious => CurrentQuestionIndex > 0;
     public bool CanMoveNext => CurrentQuestionIndex < QuestionCount - 1;
-    public string PrimaryActionText => CanMoveNext ? "Continue" : "Submit";
+    public string PrimaryActionText => CanMoveNext ? Loc.Get("question_continue") : Loc.Get("question_submit");
     public bool CanSubmit => !IsPermission;
 
     public static PendingInteractionViewModel FromPermission(PermissionRequest request)

@@ -111,6 +111,83 @@ public class SubagentEndToEndTests
             && a.Parts.OfType<TextPart>().Any(p => p.Text.Contains(ChildAnswer)));
     }
 
+    [Fact]
+    public async Task ForegroundSubagent_InheritsParentSessionModel_NotRuntimeDefault()
+    {
+        var parentModel = new SequencedChatModel(
+            [
+                ToolCall("Agent", new { prompt = "Summarize the workspace.", description = "summarizer" }),
+                FinalText(ChildAnswer),
+                FinalText("All done."),
+            ],
+            new ModelDescriptor("parent", "parent-model", "Parent Model",
+                new ModelProperties(ContextWindowTokens: 200_000)));
+        var defaultModel = new SequencedChatModel(
+            [FinalText("default model response")],
+            new ModelDescriptor("default", "default-model", "Default Model",
+                new ModelProperties(ContextWindowTokens: 200_000)));
+        var parentCapture = new TestHarness.RequestCapturingModel(parentModel);
+        var defaultCapture = new TestHarness.RequestCapturingModel(defaultModel);
+
+        await using var harness = TestHarness.Create();
+        await using var runtime = harness.BuildRuntime(options => options with
+        {
+            Providers =
+            [
+                new ScriptedModelProvider(defaultCapture, "default"),
+                new ScriptedModelProvider(parentCapture, "parent"),
+            ],
+            DefaultModel = new ModelSelection("default", "default-model"),
+        });
+        var session = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: PermissionMode.Edit,
+                ModelSelection: new ModelSelection("parent", "parent-model")),
+            CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Delegate a summary"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        Assert.Empty(defaultCapture.Requests);
+        Assert.Equal(3, parentCapture.Requests.Count);
+        Assert.Contains(projection.Snapshot().Rows.OfType<AssistantMessageRow>(), row =>
+            row.Parts.OfType<TextPart>().Any(part => part.Text.Contains("All done.")));
+    }
+
+    [Fact]
+    public async Task ForegroundSubagent_WithoutParentModelSelection_FailsInsteadOfUsingRuntimeDefault()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("Agent", new { prompt = "Summarize the workspace.", description = "summarizer" }),
+            FinalText("Parent finished."));
+        var store = new SqliteSessionStore(Path.Combine(harness.Root, "db.sqlite"));
+        await store.InitializeAsync(CancellationToken.None);
+        var now = DateTimeOffset.UtcNow;
+        var record = new SessionRecord(
+            StrongId.NewSessionId(), harness.Root, "Legacy session", PermissionMode.Yolo, null, now, now);
+        await store.UpsertSessionAsync(record, CancellationToken.None);
+
+        await using var runtime = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, store);
+        var session = await runtime.ResumeSessionAsync(record.Id, CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Delegate a summary"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        var taskRow = Assert.Single(projection.Snapshot().Rows.OfType<ToolCallRow>());
+        Assert.Equal(ToolCallStatus.Failed, taskRow.Status);
+        Assert.Contains(taskRow.Output ?? [], block => block is ToolResultText text
+            && text.Text.Contains("No model is selected", StringComparison.Ordinal));
+        Assert.Equal(session.Id, Assert.Single(
+            await runtime.ListSessionsAsync(harness.Root, 10, CancellationToken.None)).Id);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

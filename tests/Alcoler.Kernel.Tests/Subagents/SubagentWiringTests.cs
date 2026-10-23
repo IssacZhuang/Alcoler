@@ -1,4 +1,5 @@
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Subagents;
@@ -75,15 +76,48 @@ public class SubagentWiringTests
     }
 
     [Theory]
-    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Plan, Alcoler.Contracts.Permissions.PermissionMode.Plan)]
-    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Yolo, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
-    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Edit, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
-    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Build, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
-    public void ResolveChildMode_InheritsOnlyPlan(
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Plan, false, Alcoler.Contracts.Permissions.PermissionMode.Edit)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Yolo, false, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Edit, false, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Build, false, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Yolo, true, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
+    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Edit, true, Alcoler.Contracts.Permissions.PermissionMode.Edit)]
+    public void ResolveChildMode_InheritsTheModeOnlyWhilePlanning(
         Alcoler.Contracts.Permissions.PermissionMode parent,
+        bool parentPlanEnabled,
         Alcoler.Contracts.Permissions.PermissionMode expected)
     {
-        Assert.Equal(expected, SubagentWiring.ResolveChildMode(parent));
+        Assert.Equal(expected, SubagentWiring.ResolveChildMode(parent, parentPlanEnabled));
+    }
+
+    [Fact]
+    public void ResolveChildModelSelection_ExplicitRequestWins()
+    {
+        var requested = new ModelSelection("request", "model");
+        var parent = new ModelSelection("parent", "model");
+
+        Assert.Equal(requested, SubagentWiring.ResolveChildModelSelection(
+            requested, parent, new SessionId("sess_parent")));
+    }
+
+    [Fact]
+    public void ResolveChildModelSelection_InheritsParentSelection()
+    {
+        var parent = new ModelSelection("parent", "model", new ModelCallOptions(ReasoningLevel: "high"));
+
+        Assert.Equal(parent, SubagentWiring.ResolveChildModelSelection(
+            null, parent, new SessionId("sess_parent")));
+    }
+
+    [Fact]
+    public void ResolveChildModelSelection_NoSelection_ThrowsInsteadOfFallingBack()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            SubagentWiring.ResolveChildModelSelection(null, null, new SessionId("sess_parent")));
+
+        Assert.Contains("No model is selected", error.Message, StringComparison.Ordinal);
+        Assert.Contains("sess_parent", error.Message, StringComparison.Ordinal);
+        Assert.Contains("do not fall back", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -103,7 +137,8 @@ public class SubagentWiringTests
         var selected = SubagentWiring.SelectChildTools(
             tools,
             Request(),
-            childMode: Alcoler.Contracts.Permissions.PermissionMode.Plan);
+            childMode: Alcoler.Contracts.Permissions.PermissionMode.Edit,
+            childPlanEnabled: true);
 
         Assert.Equal(["Read"], selected.Select(tool => tool.Contract.Name));
     }

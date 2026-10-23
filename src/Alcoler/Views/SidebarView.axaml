@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.SidebarView"
              x:DataType="vm:WorkbenchViewModel">
   <UserControl.Styles>
@@ -67,15 +68,15 @@
     <Grid DockPanel.Dock="Top" Height="40" Margin="12,0,8,0" ColumnDefinitions="*,Auto"
           PointerPressed="OnTitleBarPointerPressed">
       <Button Grid.Column="1" Classes="icon tiny" Command="{Binding ToggleSidebarCommand}"
-              ToolTip.Tip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar">
+              ToolTip.Tip="{loc:Loc sidebar_collapse_tooltip}" AutomationProperties.Name="{loc:Loc sidebar_collapse}">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPanel}" />
       </Button>
     </Grid>
     <StackPanel DockPanel.Dock="Top" Margin="8,8,8,12" Spacing="2">
-      <Button x:Name="PART_NewSession" Classes="sidebarAction" Click="OnNewSessionClick" AutomationProperties.Name="New task">
+      <Button x:Name="PART_NewSession" Classes="sidebarAction" Click="OnNewSessionClick" AutomationProperties.Name="{loc:Loc sidebar_new_task}">
         <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
           <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconCirclePlus}" />
-          <TextBlock Grid.Column="1" Text="New task" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="1" Text="{loc:Loc sidebar_new_task}" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
           <TextBlock Grid.Column="2" Text="Ctrl+N" FontSize="{DynamicResource AlcolerFontXs}" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
       </Button>
@@ -85,19 +86,19 @@
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
         <Button Classes="icon tiny archiveToggle" Classes.active="{Binding Sidebar.IsArchivedView}"
                 Click="OnToggleArchivedClick" ToolTip.Tip="{Binding Sidebar.ArchivedToggleToolTip}"
-                AutomationProperties.Name="Toggle archived sessions">
+                AutomationProperties.Name="{loc:Loc sidebar_toggle_archived}">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconArchive}" />
         </Button>
-        <Button Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="Refresh sessions" AutomationProperties.Name="Refresh projects">
+        <Button Classes="icon tiny" Click="OnRefreshClick" ToolTip.Tip="{loc:Loc sidebar_refresh_tooltip}" AutomationProperties.Name="{loc:Loc sidebar_refresh}">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
         </Button>
       </StackPanel>
     </Grid>
     <Border DockPanel.Dock="Bottom" Padding="8,8,8,12">
-      <Button x:Name="PART_Settings" Classes="sidebarAction" Click="OnSettingsClick" AutomationProperties.Name="Settings">
+      <Button x:Name="PART_Settings" Classes="sidebarAction" Click="OnSettingsClick" AutomationProperties.Name="{loc:Loc settings_title}">
         <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSettings}" />
-          <TextBlock Grid.Column="1" Text="Preferences" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
+          <TextBlock Grid.Column="1" Text="{loc:Loc sidebar_preferences}" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
           <TextBlock Grid.Column="2" Text="Ctrl+," FontSize="{DynamicResource AlcolerFontXs}" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
       </Button>
@@ -106,7 +107,7 @@
       <TextBlock x:Name="PART_SidebarEmpty" Text="{Binding Sidebar.EmptyText}" HorizontalAlignment="Center" VerticalAlignment="Top"
                  Margin="0,20,0,0" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}"
                  IsVisible="{Binding Sidebar.Groups.Count, Converter={StaticResource AlcolerZeroToVisible}}" />
-      <TextBlock Text="Loading sessions..." FontSize="{DynamicResource AlcolerFontSmall}" Margin="16,8" VerticalAlignment="Top"
+      <TextBlock Text="{loc:Loc sidebar_loading}" FontSize="{DynamicResource AlcolerFontSmall}" Margin="16,8" VerticalAlignment="Top"
                  Foreground="{DynamicResource AlcolerTextSecondary}" IsVisible="{Binding Sidebar.IsLoading}" />
       <ScrollViewer HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
         <ItemsControl ItemsSource="{Binding Sidebar.Groups}" Margin="8,0,8,8">
@@ -117,8 +118,8 @@
                   <Button Classes="groupHeader" Click="OnGroupClick" ToolTip.Tip="{Binding WorkspaceRoot}">
                     <Button.ContextFlyout>
                       <MenuFlyout>
-                        <MenuItem Header="Remove project" Click="OnRemoveProjectClick"
-                                  ToolTip.Tip="Hides this project from the sidebar; sessions are kept" />
+                        <MenuItem Header="{loc:Loc sidebar_remove_project_confirm}" Click="OnRemoveProjectClick"
+                                  ToolTip.Tip="{loc:Loc sidebar_remove_project_tooltip}" />
                       </MenuFlyout>
                     </Button.ContextFlyout>
                     <Grid ColumnDefinitions="14,*,12" ColumnSpacing="8">
@@ -132,7 +133,7 @@
                     </Grid>
                   </Button>
                   <Button Grid.Column="1" Classes="icon tiny projectNewTask" Click="OnProjectNewTaskClick"
-                          ToolTip.Tip="New task in this project" AutomationProperties.Name="New task in project">
+                          ToolTip.Tip="{loc:Loc sidebar_project_new_task_tooltip}" AutomationProperties.Name="{loc:Loc sidebar_project_new_task}">
                     <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconCirclePlus}" />
                   </Button>
                 </Grid>
@@ -144,8 +145,8 @@
                                 Background="{Binding IsActive, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerSelected|AlcolerTransparent}">
                           <Button.ContextFlyout>
                             <MenuFlyout>
-                              <MenuItem Header="Archive" Click="OnArchiveSessionClick" IsVisible="{Binding !IsArchived}" />
-                              <MenuItem Header="Unarchive" Click="OnUnarchiveSessionClick" IsVisible="{Binding IsArchived}" />
+                              <MenuItem Header="{loc:Loc sidebar_archive}" Click="OnArchiveSessionClick" IsVisible="{Binding !IsArchived}" />
+                              <MenuItem Header="{loc:Loc sidebar_unarchive}" Click="OnUnarchiveSessionClick" IsVisible="{Binding IsArchived}" />
                             </MenuFlyout>
                           </Button.ContextFlyout>
                           <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
@@ -155,11 +156,11 @@
                               <Border x:Name="PART_CompletedIndicator" Width="6" Height="6" CornerRadius="3"
                                       HorizontalAlignment="Center" VerticalAlignment="Center"
                                       Background="{DynamicResource AlcolerInfo}" IsVisible="{Binding IsCompleted}"
-                                      ToolTip.Tip="Completed" AutomationProperties.Name="Completed" />
+                                      ToolTip.Tip="{loc:Loc sidebar_completed}" AutomationProperties.Name="{loc:Loc sidebar_completed}" />
                               <Border x:Name="PART_FailedIndicator" Width="6" Height="6" CornerRadius="3"
                                       HorizontalAlignment="Center" VerticalAlignment="Center"
                                       Background="{DynamicResource AlcolerError}" IsVisible="{Binding IsFailed}"
-                                      ToolTip.Tip="Failed" AutomationProperties.Name="Failed" />
+                                      ToolTip.Tip="{loc:Loc sidebar_failed}" AutomationProperties.Name="{loc:Loc sidebar_failed}" />
                               <controls:Icon x:Name="PART_RunningIndicator" Classes="icon small sessionSpinner"
                                              Classes.running="{Binding IsBusy}" IsVisible="{Binding IsBusy}"
                                              RenderTransformOrigin="50%,50%" Stroke="{DynamicResource AlcolerTextSecondary}"
@@ -179,7 +180,7 @@
                                     IsVisible="{Binding IsAwaitingConfirmation}"
                                     ToolTip.Tip="{Binding ActivityLabel}"
                                     AutomationProperties.Name="{Binding ActivityLabel}">
-                              <TextBlock Text="Waiting for confirmation" FontSize="{DynamicResource AlcolerFontXs}"
+                              <TextBlock Text="{loc:Loc sidebar_waiting_for_confirmation}" FontSize="{DynamicResource AlcolerFontXs}"
                                          Foreground="{DynamicResource AlcolerSuccess}" VerticalAlignment="Center" />
                             </Border>
                           </Grid>
@@ -189,11 +190,11 @@
                   </ItemsControl>
                   <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding HasSessionOverflow}">
                     <Button Classes="showMore" Click="OnShowMoreClick" IsVisible="{Binding CanShowMore}"
-                            ToolTip.Tip="Show 5 more sessions" AutomationProperties.Name="Show more sessions">
-                      <TextBlock Text="Show more" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
+                            ToolTip.Tip="{loc:Loc sidebar_show_more_tooltip}" AutomationProperties.Name="{loc:Loc sidebar_show_more}">
+                      <TextBlock Text="{loc:Loc sidebar_show_more_text}" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
                     </Button>
                     <Button Classes="icon tiny" Click="OnCollapseSessionsClick" IsVisible="{Binding CanCollapse}"
-                            ToolTip.Tip="Show fewer sessions" AutomationProperties.Name="Show fewer sessions">
+                            ToolTip.Tip="{loc:Loc sidebar_show_fewer}" AutomationProperties.Name="{loc:Loc sidebar_show_fewer}">
                       <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronUp}" Stroke="{DynamicResource AlcolerTextSecondary}" />
                     </Button>
                   </StackPanel>

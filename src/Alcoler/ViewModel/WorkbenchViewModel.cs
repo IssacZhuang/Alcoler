@@ -3,6 +3,7 @@ using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Auth;
 using Alcoler.Git;
+using Alcoler.Localization;
 using Alcoler.Stores;
 using Alcoler.Ui;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -85,11 +86,18 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _applySettings = applySettings;
         _shellPreference = config.IntegratedTerminalShell;
         var composerConfig = config.Composer ?? new WorkbenchComposerConfig();
+        // Plan is transient and never becomes the saved default permission. Older configs
+        // stored it in DefaultMode; migrate that bit into the separate draft flag.
+        var legacyDefaultPlan = composerConfig.DefaultMode == PermissionMode.Plan;
         _composerConfig = composerConfig with
         {
-            DefaultMode = Enum.IsDefined(composerConfig.DefaultMode) ? composerConfig.DefaultMode : PermissionMode.Yolo,
+            DefaultMode = Enum.IsDefined(composerConfig.DefaultMode) && composerConfig.DefaultMode != PermissionMode.Plan
+                ? composerConfig.DefaultMode
+                : PermissionMode.Yolo,
+            DefaultPlanEnabled = composerConfig.DefaultPlanEnabled || legacyDefaultPlan,
             PendingSessionModes = composerConfig.PendingSessionModes?
-                .Where(pair => Enum.IsDefined(pair.Value)).ToDictionary(),
+                .Where(pair => Enum.IsDefined(pair.Value) && pair.Value != PermissionMode.Plan)
+                .ToDictionary(),
         };
         _ownedResource = ownedResource;
         _scheduler = scheduler;
@@ -222,7 +230,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             OpenDocument(document);
             return;
         }
-        OpenDocument(new DocumentViewModel("git", "git", "Review",
+        OpenDocument(new DocumentViewModel("git", "git", Loc.Get("workbench_review"),
             "M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6 M6 9v6 M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6 M18 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6 M18 9a9 9 0 0 1-9 9",
             GitPane!, root, ownsContent: false));
         _ = GitPane!.LoadAsync();
@@ -239,10 +247,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             Documents.Activate(existing);
             return;
         }
-        OpenDocument(new DocumentViewModel("browser", "browser", "Browser",
+        OpenDocument(new DocumentViewModel("browser", "browser", Loc.Get("workbench_browser"),
             "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M3 12h18 M12 3a17 17 0 0 1 0 18 17 17 0 0 1 0-18",
             (object?)BrowserPane?.CreateBoundView(Active?.SessionId)
-                ?? "Browser is not available in this workbench.", CurrentWorkspaceRoot, CurrentDocumentOwnerId));
+                ?? Loc.Get("workbench_browser_unavailable"), CurrentWorkspaceRoot, CurrentDocumentOwnerId));
     }
 
     [RelayCommand]
@@ -250,7 +258,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     {
         var terminal = new TerminalPaneViewModel(CurrentWorkspaceRoot, scheduler: _scheduler,
             resolveShell: TerminalShellResolver());
-        OpenDocument(new DocumentViewModel($"terminal:{Guid.NewGuid():N}", "terminal", "Terminal",
+        OpenDocument(new DocumentViewModel($"terminal:{Guid.NewGuid():N}", "terminal", Loc.Get("workbench_terminal"),
             "M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5", terminal, CurrentWorkspaceRoot, CurrentDocumentOwnerId));
         try
         {
@@ -258,7 +266,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
         catch (Exception exception)
         {
-            Banner = $"Could not start terminal. {exception.Message}";
+            Banner = Loc.Get("workbench_terminal_error", exception.Message);
         }
     }
 
@@ -398,6 +406,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _sessionDrafts.TryGetValue(sessionId, out var saved);
         var savedText = saved?.Composer.Draft;
         var savedMode = saved?.Composer.Mode;
+        var savedPlanEnabled = saved?.Composer.PlanEnabled ?? false;
         var conversation = new ConversationViewModel(_runtime, store, saved?.Composer, ModelChoices,
             WorkbenchModelCatalog.DefaultSelection(_config)) { WorkspaceRoot = workspaceRoot };
         conversation.Composer.ConfigureWorkspace(workspaceRoot);
@@ -408,7 +417,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             {
                 conversation.ConfigureModel(model);
             }
-            conversation.RestoreComposerState(savedText!, savedMode!.Value, saved.Selection);
+            conversation.RestoreComposerState(savedText!, savedMode!.Value, saved.Selection, savedPlanEnabled);
             conversation.Banner = saved.Banner;
             if (saved.UnsentText is not null)
             {
@@ -421,10 +430,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         if (GetSavedSelection(workspaceRoot, sessionId.Value) is { } persistedSelection)
             conversation.RestoreModelSelection(persistedSelection);
         if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
-            conversation.RestorePendingMode(pendingMode);
+            conversation.RestorePendingMode(pendingMode, savedPlanEnabled);
         ObserveMode(conversation.Composer, () => sessionId);
         ObserveSelection(conversation, () => sessionId.Value);
-        conversation.ModeSubmitted += mode => ClearSubmittedMode(sessionId, mode);
+        conversation.ModeSubmitted += (mode, _) => ClearSubmittedMode(sessionId, mode);
         conversation.ForkRequested = boundaryId => ForkSessionAsync(sessionId, boundaryId);
         conversation.NextSubmissionSequence = () => ++_submissionSequence;
         conversation.ModelSelectionSubmitted += (selection, sequence) => RecordAcceptedSelection(workspaceRoot, sessionId, selection, sequence);
@@ -461,7 +470,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         {
             if (Active is { } active && active.SessionId == sourceSessionId)
             {
-                active.Banner = $"The conversation could not be forked. {exception.Message}";
+                active.Banner = Loc.Get("workbench_fork_error", exception.Message);
             }
         }
     }
@@ -511,7 +520,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
         var selection = GetSavedSelection(root, WorkbenchComposerConfig.DraftSessionKey) ?? GetNewDraftSelection(root);
         draft = new DraftConversationViewModel(root, FindModel(selection), SendDraftAsync);
-        draft.Composer.RestoreMode(_composerConfig.DefaultMode);
+        draft.Composer.RestoreExecutionState(_composerConfig.DefaultMode, _composerConfig.DefaultPlanEnabled);
         if (selection is not null)
             draft.RestoreModelSelection(selection);
         var observedDraft = draft;
@@ -612,15 +621,23 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             return;
         Action<PermissionMode> observer = mode =>
         {
-            if (!Enum.IsDefined(mode))
+            if (!Enum.IsDefined(mode) || mode == PermissionMode.Plan)
                 return;
             var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes ?? new Dictionary<string, PermissionMode>());
             if (sessionId() is { } id)
                 pending[id.Value] = mode;
             SaveComposerConfig(_composerConfig with { DefaultMode = mode, PendingSessionModes = pending });
         };
+        Action<bool> planObserver = planEnabled =>
+        {
+            // Only unsent drafts carry the default plan flag; a session's plan state
+            // belongs to the kernel and must not leak into future drafts.
+            if (sessionId() is null)
+                SaveComposerConfig(_composerConfig with { DefaultPlanEnabled = planEnabled });
+        };
         _modeObservers[composer] = observer;
         composer.ModeSelected += observer;
+        composer.PlanModeSelected += planObserver;
     }
 
     private void SavePendingMode(SessionId sessionId, PermissionMode mode)
@@ -650,7 +667,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
-            Banner = $"Could not save composer settings. {exception.Message}";
+            Banner = Loc.Get("workbench_composer_save_error", exception.Message);
         }
     }
 
@@ -673,7 +690,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             switch (command.Kind)
             {
                 case ComposerCommandKind.Plan:
-                    draft.Composer.Mode = PermissionMode.Plan;
+                    draft.Composer.PlanEnabled = true;
                     break;
                 case ComposerCommandKind.Orchestrator:
                     if (command.Prompt.Length == 0)
@@ -697,6 +714,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
         var text = draft.Composer.Draft;
         var mode = draft.Composer.Mode;
+        var planEnabled = draft.Composer.PlanEnabled;
         var selection = draft.Selection;
         var submissionSequence = ++_submissionSequence;
         var navigation = _navigationVersion;
@@ -710,7 +728,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             var images = draft.Composer.SnapshotImages();
             var handle = await _runtime.CreateSessionAsync(
                 new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection,
-                    ActiveWorkflows: draft.Composer.ArmedWorkflows is { Count: > 0 } armed ? armed : null),
+                    ActiveWorkflows: draft.Composer.ArmedWorkflows is { Count: > 0 } armed ? armed : null,
+                    PlanEnabled: planEnabled),
                 CancellationToken.None);
             createdId = handle.Id;
             draft.CreatedSessionId = handle.Id;
@@ -729,6 +748,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 ((BrowserPaneViewModel)document.Content).Bind(handle.Id);
             }
             _sessionDrafts[handle.Id] = new SessionDraft(draft.Composer, draft.Selection, null);
+            // The plan flag the draft carried now lives on the session.
+            if (_composerConfig.DefaultPlanEnabled)
+                SaveComposerConfig(_composerConfig with { DefaultPlanEnabled = false });
             if (_drafts.GetValueOrDefault(draft.WorkspaceRoot) == draft)
             {
                 _drafts.Remove(draft.WorkspaceRoot);
@@ -742,12 +764,13 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             using var createdProjection = _runtime.TryObserve(handle.Id);
             var revision = createdProjection?.Snapshot().Revision ?? 0;
             var ack = await _runtime.SubmitAsync(new SendTextCommand(
-                StrongId.NewCommandId(), handle.Id, revision, text, mode, selection, Images: images), CancellationToken.None);
+                StrongId.NewCommandId(), handle.Id, revision, text, mode, selection, Images: images,
+                PlanEnabled: planEnabled), CancellationToken.None);
             if (ack.Accepted)
             {
                 ClearSubmittedMode(handle.Id, mode);
                 if (Active?.SessionId == handle.Id)
-                    Active.AcknowledgeMode(mode);
+                    Active.AcknowledgeMode(mode, planEnabled);
                 if (selection is not null)
                     RecordAcceptedSelection(draft.WorkspaceRoot, handle.Id, selection, submissionSequence);
                 draft.Composer.RecordSent(text);
@@ -755,17 +778,17 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             }
             else
             {
-                SetSendFailure(draft, handle.Id, text, ack.RejectionReason ?? "Input was rejected. Your message has been kept.");
+                SetSendFailure(draft, handle.Id, text, ack.RejectionReason ?? Loc.Get("workbench_input_rejected"));
             }
             await Sidebar.RefreshAsync();
         }
         catch (Exception exception)
         {
             var message = submitting
-                ? $"Delivery could not be confirmed. Your message has been kept; check this conversation before sending again. {exception.Message}"
+                ? Loc.Get("workbench_delivery_unconfirmed", exception.Message)
                 : createdId is not null
-                    ? $"The conversation was created, but your message was not sent. {exception.Message}"
-                    : $"Could not create the conversation. Your draft has been kept. {exception.Message}";
+                    ? Loc.Get("workbench_message_not_sent", exception.Message)
+                    : Loc.Get("workbench_create_conversation_error", exception.Message);
             SetSendFailure(draft, createdId, text, message);
         }
         finally
@@ -798,7 +821,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 workspaceRoot,
                 title,
                 _composerConfig.DefaultMode,
-                GetNewDraftSelection(workspaceRoot)),
+                GetNewDraftSelection(workspaceRoot),
+                PlanEnabled: _composerConfig.DefaultPlanEnabled),
             CancellationToken.None);
         _sessionRoots[handle.Id] = workspaceRoot;
         RevealWorkspace(workspaceRoot);

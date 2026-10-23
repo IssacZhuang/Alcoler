@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using Alcoler.Contracts.Projections;
+using Alcoler.Localization;
 
 namespace Alcoler.ViewModel;
 
@@ -26,7 +27,8 @@ public sealed class ContextUsageViewModel
         culture ??= CultureInfo.CurrentCulture;
         Usage = usage;
         Fraction = usage.MaxTokens > 0 ? Math.Clamp((double)usage.UsedTokens / usage.MaxTokens, 0, 1) : 0;
-        AccessibleText = $"Context usage: {usage.UsedTokens.ToString("N0", culture)} / {usage.MaxTokens.ToString("N0", culture)} tokens";
+        AccessibleText = Loc.Get("context_accessible",
+            usage.UsedTokens.ToString("N0", culture), usage.MaxTokens.ToString("N0", culture));
         Summary = $"{Compact(usage.UsedTokens, culture)}/{Compact(usage.MaxTokens, culture, 0)} ({Percent(Fraction, culture)})";
         var categories = usage.Breakdown.Where(item => item.Characters > 0 && SourceOrder.Contains(item.Source))
             .GroupBy(item => item.Source)
@@ -56,13 +58,13 @@ public sealed class ContextUsageViewModel
 
     private static string Label(string source) => source switch
     {
-        ContextUsageSources.Messages => "Messages",
-        ContextUsageSources.SystemPrompt => "System prompt",
-        ContextUsageSources.MetaUserContext => "Meta user context",
-        ContextUsageSources.Skills => "Skills",
-        ContextUsageSources.ToolPrompt => "Tool prompt",
-        ContextUsageSources.SystemToolSchemas => "System tools",
-        ContextUsageSources.McpToolSchemas => "MCP tools",
+        ContextUsageSources.Messages => Loc.Get("context_label_messages"),
+        ContextUsageSources.SystemPrompt => Loc.Get("context_label_system_prompt"),
+        ContextUsageSources.MetaUserContext => Loc.Get("context_label_meta_user_context"),
+        ContextUsageSources.Skills => Loc.Get("context_label_skills"),
+        ContextUsageSources.ToolPrompt => Loc.Get("context_label_tool_prompt"),
+        ContextUsageSources.SystemToolSchemas => Loc.Get("context_label_system_tools"),
+        ContextUsageSources.McpToolSchemas => Loc.Get("context_label_mcp_tools"),
         _ => source,
     };
 
@@ -81,14 +83,15 @@ public sealed class ContextUsageViewModel
 
     internal static string Compact(int value, CultureInfo culture, int maximumFractionDigits = 1)
     {
-        var language = culture.TwoLetterISOLanguageName;
-        var units = language switch
-        {
-            "zh" => ChineseUnits,
-            "ja" => JapaneseUnits,
-            "ko" => KoreanUnits,
-            _ => WesternUnits,
-        };
+        var units = Loc.IsChinese
+            ? ChineseUnits
+            : culture.TwoLetterISOLanguageName switch
+            {
+                "ja" => JapaneseUnits,
+                "ko" => KoreanUnits,
+                "zh" => ChineseUnits,
+                _ => WesternUnits,
+            };
         var format = maximumFractionDigits == 0 ? "0" : "0.#";
         foreach (var (scale, suffix) in units)
         {

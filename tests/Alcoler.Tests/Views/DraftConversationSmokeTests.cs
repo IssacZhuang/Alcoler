@@ -184,8 +184,11 @@ public sealed class DraftConversationSmokeTests
                     draft.SendAsync().GetAwaiter().GetResult();
                     Dispatcher.UIThread.RunJobs();
 
-                    Assert.Equal(PermissionMode.Plan, draft.Composer.Mode);
-                    Assert.Equal(PermissionMode.Plan, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
+                    Assert.Equal(PermissionMode.Yolo, draft.Composer.Mode);
+                    Assert.True(draft.Composer.PlanEnabled);
+                    var savedComposer = WorkbenchConfig.LoadOrDefault(path).Composer!;
+                    Assert.Equal(PermissionMode.Yolo, savedComposer.DefaultMode);
+                    Assert.True(savedComposer.DefaultPlanEnabled);
                     Assert.Empty(runtime.Submitted);
                 }
                 finally { window.Close(); }
@@ -200,7 +203,8 @@ public sealed class DraftConversationSmokeTests
                 Assert.Contains(composer.FindControl<Button>("ModeSelector")!.GetVisualDescendants().OfType<TextBlock>(),
                     text => text.Text == "Full access");
                 Assert.True(composer.FindControl<Border>("PlanModeBadge")!.IsVisible);
-                Assert.Equal(PermissionMode.Plan, restarted.Draft!.Composer.Mode);
+                Assert.Equal(PermissionMode.Yolo, restarted.Draft!.Composer.Mode);
+                Assert.True(restarted.Draft.Composer.PlanEnabled);
             }
             finally { reopened.Close(); }
         }

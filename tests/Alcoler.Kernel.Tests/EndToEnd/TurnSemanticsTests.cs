@@ -479,18 +479,24 @@ public class TurnSemanticsTests
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var queued = await runtime.SubmitAsync(new SendTextCommand(
-            StrongId.NewCommandId(), session.Id, 0, "plan next", Mode: PermissionMode.Plan), CancellationToken.None);
+            StrongId.NewCommandId(), session.Id, 0, "plan next", Mode: PermissionMode.Yolo,
+            PlanEnabled: true), CancellationToken.None);
         Assert.True(queued.Accepted);
         await using var store = harness.OpenStore();
-        Assert.Equal(PermissionMode.Yolo, (await store.GetSessionAsync(session.Id, CancellationToken.None))!.PermissionMode);
+        var beforeStart = await store.GetSessionAsync(session.Id, CancellationToken.None);
+        Assert.Equal(PermissionMode.Yolo, beforeStart!.PermissionMode);
+        Assert.False(beforeStart.PlanEnabled);
         Assert.Equal(PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        Assert.False(projection.Snapshot().State.PlanEnabled);
         release.TrySetResult();
 
         await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 3);
 
         Assert.DoesNotContain("Plan mode is active.", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
         Assert.Contains("Plan mode is active.", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
-        Assert.Equal(PermissionMode.Plan, (await store.GetSessionAsync(session.Id, CancellationToken.None))!.PermissionMode);
+        var stored = await store.GetSessionAsync(session.Id, CancellationToken.None);
+        Assert.Equal(PermissionMode.Yolo, stored!.PermissionMode);
+        Assert.True(stored.PlanEnabled);
     }
 
     [Theory]
@@ -1299,7 +1305,8 @@ public class TurnSemanticsTests
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "second", expectedReplies: 2);
 
         Assert.Equal(!reenterPlan, RequestTexts(harness.Model.Requests[1]).Contains("## Exited Plan Mode", StringComparison.Ordinal));
-        Assert.Equal(reenterPlan ? PermissionMode.Plan : PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        Assert.Equal(PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        Assert.Equal(reenterPlan, projection.Snapshot().State.PlanEnabled);
         await using var store = harness.OpenStore();
         var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
         Assert.DoesNotContain(messages.SelectMany(m => m.Message.Parts).OfType<AttachmentPart>(),

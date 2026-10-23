@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:Alcoler.ViewModel"
         xmlns:controls="using:Alcoler.Controls"
+        xmlns:loc="using:Alcoler.Localization"
         x:Class="Alcoler.Views.ModelConfigurationDialog"
         x:DataType="vm:ModelConfigurationViewModel"
         Title="{Binding Title}" Width="660" Height="720" MinWidth="560" MinHeight="480"
@@ -190,62 +191,62 @@
     <StackPanel Spacing="16" Margin="0,0,0,20">
       <Grid ColumnDefinitions="*,Auto" Background="Transparent" PointerPressed="OnHeaderPointerPressed">
         <TextBlock Text="{Binding Title}" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" />
-        <Button x:Name="CloseButton" Grid.Column="1" Classes="icon" Click="OnCancelClick" ToolTip.Tip="Close model configuration" AutomationProperties.Name="Close model configuration">
+        <Button x:Name="CloseButton" Grid.Column="1" Classes="icon" Click="OnCancelClick" ToolTip.Tip="{loc:Loc models_close}" AutomationProperties.Name="{loc:Loc models_close}">
           <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconX}" />
         </Button>
       </Grid>
       <Grid ColumnDefinitions="*,Auto">
         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="Smart configuration" FontWeight="Medium" VerticalAlignment="Center" />
-          <Button Classes="ghost helpIcon" ToolTip.Tip="{Binding SmartConfigurationHelp}" AutomationProperties.Name="About smart configuration">
+          <TextBlock Text="{loc:Loc models_smart_configuration}" FontWeight="Medium" VerticalAlignment="Center" />
+          <Button Classes="ghost helpIcon" ToolTip.Tip="{Binding SmartConfigurationHelp}" AutomationProperties.Name="{loc:Loc models_smart_configuration_about}">
             <controls:Icon Classes="icon small" Data="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM12 11v6M12 7h.01" />
           </Button>
         </StackPanel>
-        <ToggleSwitch x:Name="SmartConfigurationToggle" Grid.Column="1" IsChecked="{Binding Draft.SmartConfiguration, Mode=TwoWay}" AutomationProperties.Name="Smart configuration" />
+        <ToggleSwitch x:Name="SmartConfigurationToggle" Grid.Column="1" IsChecked="{Binding Draft.SmartConfiguration, Mode=TwoWay}" AutomationProperties.Name="{loc:Loc models_smart_configuration}" />
       </Grid>
     </StackPanel>
     <ScrollViewer x:Name="EditorScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
       <StackPanel Spacing="18" Margin="0,0,12,20">
         <StackPanel Spacing="6">
-          <TextBlock Classes="label" Text="Model ID" />
-          <TextBox x:Name="ModelIdBox" Text="{Binding Draft.ModelId, Mode=TwoWay}" Watermark="Model ID" FontFamily="{DynamicResource AlcolerFontMonospace}" AutomationProperties.Name="Model ID" />
+          <TextBlock Classes="label" Text="{loc:Loc settings_model_id}" />
+          <TextBox x:Name="ModelIdBox" Text="{Binding Draft.ModelId, Mode=TwoWay}" Watermark="{loc:Loc settings_model_id}" FontFamily="{DynamicResource AlcolerFontMonospace}" AutomationProperties.Name="{loc:Loc settings_model_id}" />
         </StackPanel>
         <StackPanel Spacing="6">
-          <TextBlock Classes="label" Text="Context window" ToolTip.Tip="Maximum input and output context in tokens. Leave empty in smart mode to inherit the catalog value." />
-          <TextBox x:Name="ContextWindowBox" Text="{Binding Draft.ContextWindowTokens, Mode=TwoWay}" Watermark="{Binding Draft.ContextWindowPlaceholder}" AutomationProperties.Name="Context window" />
+          <TextBlock Classes="label" Text="{loc:Loc models_context_window}" ToolTip.Tip="{loc:Loc models_context_window_tooltip}" />
+          <TextBox x:Name="ContextWindowBox" Text="{Binding Draft.ContextWindowTokens, Mode=TwoWay}" Watermark="{Binding Draft.ContextWindowPlaceholder}" AutomationProperties.Name="{loc:Loc models_context_window}" />
         </StackPanel>
         <StackPanel Spacing="6">
-          <TextBlock Classes="label" Text="Max output tokens" ToolTip.Tip="The model's output token limit, not a request to use that many tokens." />
-          <TextBox x:Name="MaxOutputTokensBox" Text="{Binding Draft.MaxOutputTokens, Mode=TwoWay}" Watermark="{Binding Draft.MaxOutputTokensPlaceholder}" AutomationProperties.Name="Max output tokens" />
+          <TextBlock Classes="label" Text="{loc:Loc models_max_output_tokens}" ToolTip.Tip="{loc:Loc models_max_output_tokens_tooltip}" />
+          <TextBox x:Name="MaxOutputTokensBox" Text="{Binding Draft.MaxOutputTokens, Mode=TwoWay}" Watermark="{Binding Draft.MaxOutputTokensPlaceholder}" AutomationProperties.Name="{loc:Loc models_max_output_tokens}" />
         </StackPanel>
-        <Expander x:Name="AdvancedExpander" Classes="advanced" Header="Advanced" IsExpanded="{Binding IsAdvancedExpanded, Mode=TwoWay}" HorizontalContentAlignment="Stretch">
+        <Expander x:Name="AdvancedExpander" Classes="advanced" Header="{loc:Loc models_advanced}" IsExpanded="{Binding IsAdvancedExpanded, Mode=TwoWay}" HorizontalContentAlignment="Stretch">
           <StackPanel Spacing="18" Margin="0,12,0,0">
             <StackPanel Spacing="8">
-              <TextBlock Classes="label" Text="Input modalities" />
+              <TextBlock Classes="label" Text="{loc:Loc models_input_modalities}" />
               <WrapPanel>
-                <ToggleButton Classes="chip" IsChecked="True" IsEnabled="False" AutomationProperties.Name="Text input is required">
+                <ToggleButton Classes="chip" IsChecked="True" IsEnabled="False" AutomationProperties.Name="{loc:Loc models_text_input_required}">
                   <StackPanel Orientation="Horizontal" Spacing="6">
-                    <TextBlock Text="Text" />
+                    <TextBlock Text="{loc:Loc models_text}" />
                     <controls:Icon Classes="icon small" Data="M6 10h12v11H6Zm3 0V6a3 3 0 0 1 6 0v4" />
                   </StackPanel>
                 </ToggleButton>
-                <ToggleButton x:Name="ImageToggle" Classes="chip" Content="Image" IsChecked="{Binding Draft.EffectiveSupportsImage, Mode=TwoWay}" AutomationProperties.Name="Image input" />
-                <ToggleButton x:Name="VideoToggle" Classes="chip" Content="Video" IsChecked="{Binding Draft.EffectiveSupportsVideo, Mode=TwoWay}" AutomationProperties.Name="Video input" />
-                <ToggleButton x:Name="PdfToggle" Classes="chip" Content="PDF" IsChecked="{Binding Draft.EffectiveSupportsPdf, Mode=TwoWay}" AutomationProperties.Name="PDF input" />
+                <ToggleButton x:Name="ImageToggle" Classes="chip" Content="{loc:Loc models_image}" IsChecked="{Binding Draft.EffectiveSupportsImage, Mode=TwoWay}" AutomationProperties.Name="{loc:Loc settings_model_image_input}" />
+                <ToggleButton x:Name="VideoToggle" Classes="chip" Content="{loc:Loc models_video}" IsChecked="{Binding Draft.EffectiveSupportsVideo, Mode=TwoWay}" AutomationProperties.Name="{loc:Loc settings_model_video_input}" />
+                <ToggleButton x:Name="PdfToggle" Classes="chip" Content="{loc:Loc models_pdf}" IsChecked="{Binding Draft.EffectiveSupportsPdf, Mode=TwoWay}" AutomationProperties.Name="{loc:Loc settings_model_pdf_input}" />
               </WrapPanel>
             </StackPanel>
             <StackPanel Spacing="8">
-              <TextBlock Classes="label" Text="Capabilities" />
-              <TextBlock Classes="help" Text="These describe model support. Enabling a capability does not force that feature on every request." />
+              <TextBlock Classes="label" Text="{loc:Loc models_capabilities}" />
+              <TextBlock Classes="help" Text="{loc:Loc models_capabilities_help}" />
               <WrapPanel>
-                <ToggleButton x:Name="StructuredOutputToggle" Classes="chip" Content="Structured output" IsChecked="{Binding Draft.EffectiveSupportsJsonSchemaOutput, Mode=TwoWay}" AutomationProperties.Name="Structured output capability" />
-                <ToggleButton x:Name="NativeWebSearchToggle" Classes="chip" Content="Native web search" IsChecked="{Binding Draft.EffectiveSupportsNativeWebSearch, Mode=TwoWay}" AutomationProperties.Name="Native web search capability" />
-                <ToggleButton x:Name="MidConversationSystemToggle" Classes="chip" Content="System in conversation" IsChecked="{Binding Draft.EffectiveSupportsMidConversationSystem, Mode=TwoWay}" AutomationProperties.Name="System in conversation capability" />
+                <ToggleButton x:Name="StructuredOutputToggle" Classes="chip" Content="{loc:Loc models_structured_output}" IsChecked="{Binding Draft.EffectiveSupportsJsonSchemaOutput, Mode=TwoWay}" AutomationProperties.Name="{loc:Loc settings_model_structured_output}" />
+                <ToggleButton x:Name="NativeWebSearchToggle" Classes="chip" Content="{loc:Loc settings_model_native_web_search}" IsChecked="{Binding Draft.EffectiveSupportsNativeWebSearch, Mode=TwoWay}" AutomationProperties.Name="{loc:Loc models_native_web_search_capability}" />
+                <ToggleButton x:Name="MidConversationSystemToggle" Classes="chip" Content="{loc:Loc models_system_in_conversation}" IsChecked="{Binding Draft.EffectiveSupportsMidConversationSystem, Mode=TwoWay}" AutomationProperties.Name="{loc:Loc models_system_in_conversation_capability}" />
               </WrapPanel>
             </StackPanel>
             <StackPanel Spacing="8">
-              <TextBlock Classes="label" Text="Reasoning levels (ordered)" />
-              <TextBlock Classes="help" Text="Use unique values in ascending effort order. Edit a value, move it up or down, or remove it." />
+              <TextBlock Classes="label" Text="{loc:Loc models_reasoning_levels_ordered}" />
+              <TextBlock Classes="help" Text="{loc:Loc models_reasoning_levels_help}" />
               <ItemsControl ItemsSource="{Binding ReasoningLevels}">
                 <ItemsControl.ItemsPanel>
                   <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
@@ -254,14 +255,14 @@
                   <DataTemplate x:DataType="vm:ReasoningLevelViewModel">
                     <Border Classes="reasoningChip" BorderThickness="0" CornerRadius="6" Padding="4" Margin="0,0,8,8">
                       <Grid Width="84" RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="0">
-                        <TextBox Grid.ColumnSpan="3" Text="{Binding Value, Mode=TwoWay}" MinHeight="24" Padding="4,2" BorderThickness="0" Background="Transparent" AutomationProperties.Name="Reasoning level" />
-                        <Button Grid.Row="1" Grid.Column="0" Classes="icon" Command="{Binding MoveUpCommand}" ToolTip.Tip="Move reasoning level up" AutomationProperties.Name="Move reasoning level up">
+                        <TextBox Grid.ColumnSpan="3" Text="{Binding Value, Mode=TwoWay}" MinHeight="24" Padding="4,2" BorderThickness="0" Background="Transparent" AutomationProperties.Name="{loc:Loc models_reasoning_level}" />
+                        <Button Grid.Row="1" Grid.Column="0" Classes="icon" Command="{Binding MoveUpCommand}" ToolTip.Tip="{loc:Loc models_move_reasoning_up}" AutomationProperties.Name="{loc:Loc models_move_reasoning_up}">
                           <controls:Icon Classes="icon small" Data="m6 14 6-6 6 6" />
                         </Button>
-                        <Button Grid.Row="1" Grid.Column="1" Classes="icon" Command="{Binding MoveDownCommand}" ToolTip.Tip="Move reasoning level down" AutomationProperties.Name="Move reasoning level down">
+                        <Button Grid.Row="1" Grid.Column="1" Classes="icon" Command="{Binding MoveDownCommand}" ToolTip.Tip="{loc:Loc models_move_reasoning_down}" AutomationProperties.Name="{loc:Loc models_move_reasoning_down}">
                           <controls:Icon Classes="icon small" Data="m6 10 6 6 6-6" />
                         </Button>
-                        <Button Grid.Row="1" Grid.Column="2" Classes="icon" Command="{Binding RemoveCommand}" ToolTip.Tip="Remove reasoning level" AutomationProperties.Name="Remove reasoning level">
+                        <Button Grid.Row="1" Grid.Column="2" Classes="icon" Command="{Binding RemoveCommand}" ToolTip.Tip="{loc:Loc models_remove_reasoning}" AutomationProperties.Name="{loc:Loc models_remove_reasoning}">
                           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
                         </Button>
                       </Grid>
@@ -270,14 +271,14 @@
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                <TextBox x:Name="NewReasoningLevelBox" Text="{Binding NewReasoningLevel, Mode=TwoWay}" Watermark="New reasoning level" AutomationProperties.Name="New reasoning level" />
-                <Button x:Name="AddReasoningLevelButton" Grid.Column="1" Classes="secondary action" Content="Add" Command="{Binding AddReasoningLevelCommand}" />
+                <TextBox x:Name="NewReasoningLevelBox" Text="{Binding NewReasoningLevel, Mode=TwoWay}" Watermark="{loc:Loc models_new_reasoning_level}" AutomationProperties.Name="{loc:Loc models_new_reasoning_level}" />
+                <Button x:Name="AddReasoningLevelButton" Grid.Column="1" Classes="secondary action" Content="{loc:Loc models_add}" Command="{Binding AddReasoningLevelCommand}" />
               </Grid>
             </StackPanel>
             <StackPanel Spacing="8">
-              <TextBlock Classes="label" Text="Reasoning level mapping (JSON / CEL)" />
-              <TextBlock Classes="help" Text="An object-valued JSON or restricted CEL expression. Use reasoningLevel to map each configured level to provider request fields. Empty inherits the catalog mapping." />
-              <TextBox x:Name="ReasoningMappingBox" Text="{Binding Draft.ReasoningMapping, Mode=TwoWay}" Watermark="{Binding Draft.ReasoningMappingPlaceholder}" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontMonospace}" MinHeight="120" MaxHeight="240" AutomationProperties.Name="Reasoning level mapping" />
+              <TextBlock Classes="label" Text="{loc:Loc models_reasoning_mapping}" />
+              <TextBlock Classes="help" Text="{loc:Loc models_reasoning_mapping_help}" />
+              <TextBox x:Name="ReasoningMappingBox" Text="{Binding Draft.ReasoningMapping, Mode=TwoWay}" Watermark="{Binding Draft.ReasoningMappingPlaceholder}" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontMonospace}" MinHeight="120" MaxHeight="240" AutomationProperties.Name="{loc:Loc models_reasoning_mapping_automation}" />
             </StackPanel>
           </StackPanel>
         </Expander>
@@ -288,10 +289,10 @@
         <TextBlock x:Name="ValidationError" Text="{Binding Error}" Foreground="{DynamicResource AlcolerError}" TextWrapping="Wrap" FontSize="{DynamicResource AlcolerFontSmall}" />
       </ScrollViewer>
       <Grid ColumnDefinitions="*,Auto">
-        <Button x:Name="RestoreButton" Classes="ghost action" Content="Restore defaults" Command="{Binding RestoreDefaultsCommand}" HorizontalAlignment="Left" />
+        <Button x:Name="RestoreButton" Classes="ghost action" Content="{loc:Loc models_restore_defaults}" Command="{Binding RestoreDefaultsCommand}" HorizontalAlignment="Left" />
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-          <Button x:Name="CancelButton" Classes="secondary action" Content="Cancel" IsCancel="True" Click="OnCancelClick" />
-          <Button x:Name="SaveButton" Classes="primary action" Content="Save" IsDefault="True" Click="OnSaveClick" />
+          <Button x:Name="CancelButton" Classes="secondary action" Content="{loc:Loc common_cancel}" IsCancel="True" Click="OnCancelClick" />
+          <Button x:Name="SaveButton" Classes="primary action" Content="{loc:Loc models_save}" IsDefault="True" Click="OnSaveClick" />
         </StackPanel>
       </Grid>
     </StackPanel>

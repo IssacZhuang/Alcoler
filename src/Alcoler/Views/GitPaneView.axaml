@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.GitPaneView"
              x:DataType="vm:GitPaneViewModel">
   <UserControl.Resources>
@@ -85,11 +86,11 @@
                    Foreground="{DynamicResource AlcolerTextPrimary}" VerticalAlignment="Center" />
       </StackPanel>
       <Button Grid.Column="1" x:Name="PART_GitRefresh" Classes="ghost" Click="OnRefreshClick"
-              IsEnabled="{Binding !IsLoading}" ToolTip.Tip="Refresh git state"
+              IsEnabled="{Binding !IsLoading}" ToolTip.Tip="{loc:Loc git_refresh_tooltip}"
               Height="28" Padding="8,0">
         <StackPanel Orientation="Horizontal" Spacing="6">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
-          <TextBlock Text="Refresh" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" />
+          <TextBlock Text="{loc:Loc git_refresh}" FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center" />
         </StackPanel>
       </Button>
     </Grid>
@@ -102,13 +103,13 @@
       <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
         <TextBlock Text="{Binding Banner}" FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap"
                    VerticalAlignment="Center" Foreground="{DynamicResource AlcolerError}" />
-        <Button Grid.Column="1" Classes="icon tiny" Click="OnDismissBannerClick" ToolTip.Tip="Dismiss">
+        <Button Grid.Column="1" Classes="icon tiny" Click="OnDismissBannerClick" ToolTip.Tip="{loc:Loc main_dismiss}">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
         </Button>
       </Grid>
     </Border>
 
-    <TextBlock DockPanel.Dock="Top" Text="Loading git state..." FontSize="{DynamicResource AlcolerFontSmall}"
+    <TextBlock DockPanel.Dock="Top" Text="{loc:Loc git_loading}" FontSize="{DynamicResource AlcolerFontSmall}"
                Margin="12,4" IsVisible="{Binding IsLoading}"
                Foreground="{DynamicResource AlcolerTextTertiary}" />
 
@@ -117,20 +118,20 @@
                   Margin="24" IsVisible="{Binding !IsRepo}">
         <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconGitBranch}" Width="32" Height="32"
               HorizontalAlignment="Center" Stroke="{DynamicResource AlcolerTextTertiary}" />
-        <TextBlock x:Name="PART_GitEmpty" Text="Not a git repository"
+        <TextBlock x:Name="PART_GitEmpty" Text="{loc:Loc git_not_a_repo}"
                    FontSize="{DynamicResource AlcolerFontSmall}" IsVisible="{Binding !IsRepo}"
                    Foreground="{DynamicResource AlcolerTextSecondary}" HorizontalAlignment="Center" />
       </StackPanel>
       <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsRepo}">
         <StackPanel Margin="0,0,0,12">
-          <TextBlock Classes="gitSection" Text="{Binding Unstaged.Count, StringFormat='Changes ({0})'}" />
+          <TextBlock Classes="gitSection" Text="{Binding UnstagedText}" />
           <ItemsControl ItemsSource="{Binding Unstaged}" ItemTemplate="{StaticResource FileChangeRow}" />
-          <TextBlock Classes="gitSection" Text="{Binding Untracked.Count, StringFormat='Untracked ({0})'}" />
+          <TextBlock Classes="gitSection" Text="{Binding UntrackedText}" />
           <ItemsControl ItemsSource="{Binding Untracked}" ItemTemplate="{StaticResource FileChangeRow}" />
-          <TextBlock Classes="gitSection" Text="{Binding Staged.Count, StringFormat='Staged ({0})'}" />
+          <TextBlock Classes="gitSection" Text="{Binding StagedText}" />
           <ItemsControl ItemsSource="{Binding Staged}" ItemTemplate="{StaticResource FileChangeRow}" />
 
-          <TextBlock Classes="gitSection" Text="{Binding Branches.Count, StringFormat='Branches ({0})'}" />
+          <TextBlock Classes="gitSection" Text="{Binding BranchesText}" />
           <ItemsControl ItemsSource="{Binding Branches}" IsEnabled="{Binding !IsBusy}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:GitBranchViewModel">
@@ -149,7 +150,7 @@
             </ItemsControl.ItemTemplate>
           </ItemsControl>
 
-          <TextBlock Classes="gitSection" Text="{Binding RecentCommits.Count, StringFormat='Recent commits ({0})'}" />
+          <TextBlock Classes="gitSection" Text="{Binding RecentCommitsText}" />
           <ItemsControl ItemsSource="{Binding RecentCommits}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:GitCommitViewModel">

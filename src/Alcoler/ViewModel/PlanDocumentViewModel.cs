@@ -1,3 +1,4 @@
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Alcoler.ViewModel;
@@ -26,7 +27,7 @@ public sealed partial class PlanDocumentViewModel : ObservableObject
     {
         if (!string.IsNullOrWhiteSpace(summary))
             return summary.Trim();
-        return FirstHeading(markdown) ?? "Plan";
+        return FirstHeading(markdown) ?? Loc.Get("workbench_plan");
     }
 
     private static string? FirstHeading(string? markdown)

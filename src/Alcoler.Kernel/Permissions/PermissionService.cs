@@ -22,6 +22,7 @@ public sealed class PermissionService : IPermissionGate
 
     private PermissionRuleset _projectRules;
     private PermissionMode _mode;
+    private bool _planEnabled;
 
     public PermissionService(
         IPermissionBroker broker,
@@ -30,11 +31,15 @@ public sealed class PermissionService : IPermissionGate
         IReadOnlyList<string>? disallowedTools = null,
         TimeProvider? timeProvider = null,
         TimeSpan? brokerTimeout = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        bool planEnabled = false)
     {
         _broker = broker;
         _projectRules = projectRules;
-        _mode = initialMode;
+        // Legacy callers passed Plan as a mode; fold it into the flag without changing
+        // the mode they would have started from.
+        _mode = initialMode == PermissionMode.Plan ? PermissionMode.Edit : initialMode;
+        _planEnabled = planEnabled || initialMode == PermissionMode.Plan;
         _disallowedTools = disallowedTools ?? [];
         _timeProvider = timeProvider ?? TimeProvider.System;
         _brokerTimeout = brokerTimeout ?? DefaultBrokerTimeout;
@@ -43,7 +48,22 @@ public sealed class PermissionService : IPermissionGate
 
     public PermissionMode Mode => _mode;
 
-    public void SetMode(PermissionMode mode) => _mode = mode;
+    public bool PlanEnabled => _planEnabled;
+
+    public ExecutionState ExecutionState => new(_mode, _planEnabled);
+
+    public void SetExecutionState(PermissionMode mode, bool planEnabled)
+    {
+        _mode = mode == PermissionMode.Plan ? PermissionMode.Edit : mode;
+        _planEnabled = planEnabled || mode == PermissionMode.Plan;
+    }
+
+    public void SetMode(PermissionMode mode)
+    {
+        SetExecutionState(mode, mode == PermissionMode.Plan);
+    }
+
+    public void SetPlanEnabled(bool planEnabled) => _planEnabled = planEnabled;
 
     public void GrantSessionPermission(PermissionRule rule)
     {
@@ -55,10 +75,12 @@ public sealed class PermissionService : IPermissionGate
     public async ValueTask<PermissionDecision> CheckAsync(PermissionCheckRequest request, CancellationToken cancellationToken)
     {
         var tool = request.Tool;
+        // Requests carry the session's execution state; Mode == Plan is the legacy shape.
+        var planEnabled = request.PlanEnabled || request.Mode == PermissionMode.Plan || _planEnabled;
 
         // ExitPlanMode must never reach the broker outside plan mode.
         if (string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase)
-            && _mode != PermissionMode.Plan)
+            && !planEnabled)
             return PermissionDecision.Deny;
 
         if (tool.RequiresUserInteraction)
@@ -74,7 +96,7 @@ public sealed class PermissionService : IPermissionGate
             return PermissionDecision.Deny;
 
         // Plan mode overrides project allow and ask rules so they cannot escalate non-plan-safe tools.
-        if (_mode == PermissionMode.Plan)
+        if (planEnabled)
             return DecidePlanMode(request);
 
         if (gate.Verdict == PermissionVerdict.Ask)
@@ -83,7 +105,7 @@ public sealed class PermissionService : IPermissionGate
         if (gate.Verdict == PermissionVerdict.Allow)
             return PermissionDecision.Allow;
 
-        if (_mode == PermissionMode.Yolo)
+        if (_mode == PermissionMode.Yolo && !planEnabled)
             return PermissionDecision.Allow;
 
         return await DecideByModeDefaultsAsync(request, tool, cancellationToken).ConfigureAwait(false);

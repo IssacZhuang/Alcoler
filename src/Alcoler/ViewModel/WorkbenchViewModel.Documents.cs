@@ -1,4 +1,5 @@
 using Alcoler.Contracts.Projections;
+using Alcoler.Localization;
 
 namespace Alcoler.ViewModel;
 
@@ -25,7 +26,7 @@ public sealed partial class WorkbenchViewModel
     {
         var workspaceRoot = CurrentWorkspaceRoot;
         var ownerId = CurrentDocumentOwnerId;
-        title = string.IsNullOrWhiteSpace(title) ? "Plan" : title.Trim();
+        title = string.IsNullOrWhiteSpace(title) ? Loc.Get("workbench_plan") : title.Trim();
         var plan = new PlanDocumentViewModel(title, markdown);
         var document = OpenDocument(new DocumentViewModel(
             $"plan:{id}", "plan", title, PlanDocumentIcon, plan, workspaceRoot, ownerId));
@@ -82,12 +83,12 @@ public sealed partial class WorkbenchViewModel
                 if (projection is null)
                 {
                     OpenTextDocument($"agent:{activity.Id}", activity.Title,
-                        activity.OutputText ?? "This agent transcript is no longer available.", "markdown");
+                        activity.OutputText ?? Loc.Get("workbench_agent_transcript_unavailable"), "markdown");
                     return;
                 }
                 var transcript = new SubagentDocumentViewModel(
                     _runtime, childSessionId, CurrentWorkspaceRoot, projection,
-                    () => Observe() ?? throw new InvalidOperationException("This agent transcript is no longer available."), _scheduler);
+                    () => Observe() ?? throw new InvalidOperationException(Loc.Get("workbench_agent_transcript_unavailable")), _scheduler);
                 OpenDocument(new DocumentViewModel(
                     id, "subagent", activity.Title, TextDocumentIcon, transcript, CurrentWorkspaceRoot, ownerId));
             }
@@ -98,12 +99,12 @@ public sealed partial class WorkbenchViewModel
             else
             {
                 OpenTextDocument($"activity:{activity.Id}", activity.Title,
-                    string.IsNullOrEmpty(activity.OutputText) ? "This command has not produced output yet." : activity.OutputText);
+                    string.IsNullOrEmpty(activity.OutputText) ? Loc.Get("workbench_no_command_output") : activity.OutputText);
             }
         }
         catch (Exception exception)
         {
-            Banner = $"Could not open activity output. {exception.Message}";
+            Banner = Loc.Get("workbench_activity_error", exception.Message);
         }
     }
 
@@ -121,10 +122,10 @@ public sealed partial class WorkbenchViewModel
         {
             var invalid = new TextDocumentViewModel(path, string.Empty)
             {
-                Error = $"This file path cannot be opened. Check the path and try again. {exception.Message}",
+                Error = Loc.Get("workbench_file_path_error", exception.Message),
             };
             return OpenDocument(new DocumentViewModel(
-                $"file:{path}", "file", "Invalid file path", TextDocumentIcon, invalid, workspaceRoot, ownerId));
+                $"file:{path}", "file", Loc.Get("workbench_invalid_file_path"), TextDocumentIcon, invalid, workspaceRoot, ownerId));
         }
         var canonicalId = OperatingSystem.IsWindows() ? fullPath.ToUpperInvariant() : fullPath;
         var preview = TextDocumentViewModel.ForFile(fullPath, _scheduler);

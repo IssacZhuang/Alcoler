@@ -1,5 +1,6 @@
 using System.Globalization;
 using Alcoler.Controls;
+using Alcoler.Localization;
 using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
@@ -17,10 +18,10 @@ public partial class TimelineView : UserControl
     private const double BottomStickThreshold = 48;
 
     public static readonly StyledProperty<string> EmptyTitleProperty =
-        AvaloniaProperty.Register<TimelineView, string>(nameof(EmptyTitle), "What can I help you with?");
+        AvaloniaProperty.Register<TimelineView, string>(nameof(EmptyTitle), Loc.Get("timeline_empty_title"));
 
     public static readonly StyledProperty<string> EmptyDescriptionProperty =
-        AvaloniaProperty.Register<TimelineView, string>(nameof(EmptyDescription), "Ask a question, plan a change, or describe a task.");
+        AvaloniaProperty.Register<TimelineView, string>(nameof(EmptyDescription), Loc.Get("timeline_empty_description"));
 
     public string EmptyTitle
     {
@@ -249,7 +250,7 @@ public partial class TimelineView : UserControl
         if (sender is Button { DataContext: ToolCallItemViewModel item }
             && TopLevel.GetTopLevel(this) is MainWindow { DataContext: WorkbenchViewModel workbench })
         {
-            workbench.OpenTextDocument($"tool-output:{item.RowId}", $"{item.ToolName} output", item.OutputText);
+            workbench.OpenTextDocument($"tool-output:{item.RowId}", Loc.Get("timeline_tool_output_title", item.ToolName), item.OutputText);
             e.Handled = true;
         }
     }
@@ -301,7 +302,7 @@ public partial class TimelineView : UserControl
         {
             if (_conversation is not null)
             {
-                _conversation.Banner = $"Could not open {file.FileName}. {exception.Message}";
+                _conversation.Banner = Loc.Get("timeline_open_failed", file.FileName, exception.Message);
             }
         }
     }
@@ -325,7 +326,7 @@ public partial class TimelineView : UserControl
         {
             if (_conversation is not null)
             {
-                _conversation.Banner = $"The message could not be copied. {exception.Message}";
+                _conversation.Banner = Loc.Get("timeline_copy_failed", exception.Message);
             }
         }
     }

@@ -5,6 +5,7 @@
         xmlns:vm="using:Alcoler.ViewModel"
         xmlns:views="using:Alcoler.Views"
         xmlns:controls="using:Alcoler.Controls"
+        xmlns:loc="using:Alcoler.Localization"
         Title="Alcoler"
         Width="1440" Height="820" MinWidth="980" MinHeight="620"
         SystemDecorations="None"
@@ -43,15 +44,15 @@
                 BorderThickness="0"
                 PointerPressed="OnTitleBarPointerPressed">
           <Grid ColumnDefinitions="Auto,*,Auto" Margin="6,0,4,0" ColumnSpacing="4">
-            <Button Classes="icon" Command="{Binding ToggleSidebarCommand}" ToolTip.Tip="Toggle sidebar (Ctrl+B)"
-                    AutomationProperties.Name="Toggle sidebar">
+            <Button Classes="icon" Command="{Binding ToggleSidebarCommand}" ToolTip.Tip="{loc:Loc main_toggle_sidebar_tooltip}"
+                    AutomationProperties.Name="{loc:Loc main_toggle_sidebar}">
               <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
             </Button>
             <Grid Grid.Column="1" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
               <TextBlock Text="{Binding Active.HeaderTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" FontWeight="Medium"
                          TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                          IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNotNull}}" />
-              <TextBlock Text="New task" FontSize="{DynamicResource AlcolerFontBase}" FontWeight="Medium" VerticalAlignment="Center"
+              <TextBlock Text="{loc:Loc main_new_task}" FontSize="{DynamicResource AlcolerFontBase}" FontWeight="Medium" VerticalAlignment="Center"
                          IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNull}}" />
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="8,0"
                           IsVisible="{Binding Active, Converter={x:Static ObjectConverters.IsNotNull}}">
@@ -61,20 +62,20 @@
                            VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
                 <Border x:Name="PART_QueueBadge" CornerRadius="{DynamicResource AlcolerRadiusFull}" Padding="6,1"
                         Background="{DynamicResource AlcolerSurfaceHigh}" VerticalAlignment="Center"
-                        IsVisible="{Binding Active.HasQueuedInput}" ToolTip.Tip="Queued inputs">
+                        IsVisible="{Binding Active.HasQueuedInput}" ToolTip.Tip="{loc:Loc main_queued_inputs}">
                   <TextBlock Text="{Binding Active.Queue.Count}" FontSize="{DynamicResource AlcolerFontXs}" />
                 </Border>
               </StackPanel>
             </Grid>
             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
               <Button Classes="icon" Command="{Binding ToggleTerminalCommand}"
-                      Classes.active="{Binding IsTerminalVisible}" ToolTip.Tip="Toggle terminal (Ctrl+J)"
-                      AutomationProperties.Name="Toggle terminal">
+                      Classes.active="{Binding IsTerminalVisible}" ToolTip.Tip="{loc:Loc main_toggle_terminal_tooltip}"
+                      AutomationProperties.Name="{loc:Loc main_toggle_terminal}">
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconTerminal}" />
               </Button>
               <Button Classes="icon" Command="{Binding ToggleSidePaneCommand}"
-                      Classes.active="{Binding IsSidePaneVisible}" ToolTip.Tip="Toggle side panel"
-                      AutomationProperties.Name="Toggle side panel">
+                      Classes.active="{Binding IsSidePaneVisible}" ToolTip.Tip="{loc:Loc main_toggle_side_panel}"
+                      AutomationProperties.Name="{loc:Loc main_toggle_side_panel}">
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPanel}" />
               </Button>
               <Border Width="92" IsVisible="{Binding !IsSidePaneVisible}" />
@@ -88,10 +89,10 @@
           </Grid>
           <StackPanel Grid.Row="0" x:Name="DraftHeader" VerticalAlignment="Bottom" Spacing="16" Margin="16,24,16,24"
                       IsVisible="{Binding IsDraft}">
-            <TextBlock Text="What can I help you build?" FontSize="26" FontWeight="Medium"
+            <TextBlock Text="{loc:Loc main_draft_greeting}" FontSize="26" FontWeight="Medium"
                        HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
             <Button x:Name="WorkspaceChooser" Classes="ghost" HorizontalAlignment="Center"
-                    ToolTip.Tip="{Binding Draft.WorkspaceRoot}" AutomationProperties.Name="Choose workspace">
+                    ToolTip.Tip="{Binding Draft.WorkspaceRoot}" AutomationProperties.Name="{loc:Loc main_choose_workspace}">
               <StackPanel Orientation="Horizontal" Spacing="8">
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconFolder}" />
                 <TextBlock Text="{Binding Draft.WorkspaceName}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}" VerticalAlignment="Center" MaxWidth="360"
@@ -101,7 +102,7 @@
               <Button.Flyout>
                 <Flyout Placement="Bottom">
                   <StackPanel Spacing="6" MinWidth="240" MaxWidth="420">
-                    <TextBlock Text="Workspace" Margin="8,4" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <TextBlock Text="{loc:Loc main_workspace}" Margin="8,4" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
                     <ScrollViewer MaxHeight="280" HorizontalScrollBarVisibility="Disabled">
                       <ItemsControl ItemsSource="{Binding Sidebar.Groups}">
                         <ItemsControl.ItemTemplate>
@@ -114,9 +115,9 @@
                         </ItemsControl.ItemTemplate>
                       </ItemsControl>
                     </ScrollViewer>
-                    <Button x:Name="OpenFolderButton" Classes="ghost" Content="Open Folder..." Click="OnOpenFolderClick"
+                    <Button x:Name="OpenFolderButton" Classes="ghost" Content="{loc:Loc main_open_folder}" Click="OnOpenFolderClick"
                             HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
-                    <Button x:Name="OutsideProjectButton" Classes="ghost" Content="Work outside project" Click="OnOutsideProjectClick"
+                    <Button x:Name="OutsideProjectButton" Classes="ghost" Content="{loc:Loc main_work_outside_project}" Click="OnOutsideProjectClick"
                             HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
                   </StackPanel>
                 </Flyout>
@@ -149,14 +150,14 @@
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
             <StackPanel Spacing="6" VerticalAlignment="Center">
               <TextBlock Text="{Binding Banner}" FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap" Foreground="{DynamicResource AlcolerError}" />
-              <Expander Header="Original message" FontSize="{DynamicResource AlcolerFontSmall}"
+              <Expander Header="{loc:Loc main_original_message}" FontSize="{DynamicResource AlcolerFontSmall}"
                         IsVisible="{Binding UnsentText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
                 <ScrollViewer MaxHeight="140" HorizontalScrollBarVisibility="Disabled">
                   <SelectableTextBlock Text="{Binding UnsentText}" FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap" />
                 </ScrollViewer>
               </Expander>
             </StackPanel>
-            <Button Grid.Column="1" Classes="icon tiny" Click="OnDismissWorkbenchBannerClick" ToolTip.Tip="Dismiss">
+            <Button Grid.Column="1" Classes="icon tiny" Click="OnDismissWorkbenchBannerClick" ToolTip.Tip="{loc:Loc main_dismiss}">
               <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
             </Button>
           </Grid>
@@ -174,13 +175,13 @@
     </Border>
     <StackPanel Grid.Column="0" Grid.ColumnSpan="5" Orientation="Horizontal" HorizontalAlignment="Right"
                 VerticalAlignment="Top" Margin="0,10,4,0" Spacing="2">
-      <Button Classes="icon" Click="OnMinimizeClick" ToolTip.Tip="Minimize" AutomationProperties.Name="Minimize">
+      <Button Classes="icon" Click="OnMinimizeClick" ToolTip.Tip="{loc:Loc main_minimize}" AutomationProperties.Name="{loc:Loc main_minimize}">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconMinimize}" />
       </Button>
-      <Button Classes="icon" Click="OnMaximizeClick" ToolTip.Tip="Maximize or restore" AutomationProperties.Name="Maximize or restore">
+      <Button Classes="icon" Click="OnMaximizeClick" ToolTip.Tip="{loc:Loc main_maximize_restore}" AutomationProperties.Name="{loc:Loc main_maximize_restore}">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconMaximize}" />
       </Button>
-      <Button Classes="icon windowClose" Click="OnCloseClick" ToolTip.Tip="Close" AutomationProperties.Name="Close">
+      <Button Classes="icon windowClose" Click="OnCloseClick" ToolTip.Tip="{loc:Loc main_close}" AutomationProperties.Name="{loc:Loc main_close}">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
       </Button>
     </StackPanel>

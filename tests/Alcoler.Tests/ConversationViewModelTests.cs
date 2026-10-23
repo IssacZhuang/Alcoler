@@ -78,6 +78,28 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public void ApplyState_SyncsPlanFlagWithoutChangingPermissionMode()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var state = TestSnapshots.State() with
+            {
+                Mode = PermissionMode.Edit,
+                PlanEnabled = true,
+            };
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, state, [new StatePatched(state)], Reset: false));
+
+            Assert.Equal(PermissionMode.Edit, viewModel.Composer.Mode);
+            Assert.True(viewModel.Composer.PlanEnabled);
+            Assert.Equal(PermissionMode.Edit, viewModel.Composer.SessionMode);
+            Assert.True(viewModel.Composer.SessionPlanEnabled);
+            Assert.True(viewModel.Composer.IsPlanMode);
+        }
+    }
+
+    [Fact]
     public void ApplyOps_AppendsUpsertsAndRemoves()
     {
         var (viewModel, _, store) = Create();
@@ -384,8 +406,10 @@ public class ConversationViewModelTests
 
         var command = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
         Assert.Equal("design the feature", command.Text);
-        Assert.Equal(PermissionMode.Plan, command.Mode);
-        Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+        Assert.Equal(PermissionMode.Build, command.Mode);
+        Assert.True(command.PlanEnabled);
+        Assert.Equal(PermissionMode.Build, viewModel.Composer.Mode);
+        Assert.True(viewModel.Composer.PlanEnabled);
         Assert.Equal(string.Empty, viewModel.Composer.Draft);
         store.Dispose();
     }
@@ -399,7 +423,8 @@ public class ConversationViewModelTests
         await viewModel.SendAsync();
 
         Assert.Empty(runtime.Submitted);
-        Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+        Assert.Equal(PermissionMode.Build, viewModel.Composer.Mode);
+        Assert.True(viewModel.Composer.PlanEnabled);
         Assert.Equal(string.Empty, viewModel.Composer.Draft);
         Assert.Null(viewModel.Composer.InputError);
         store.Dispose();
@@ -935,7 +960,8 @@ public class ConversationViewModelTests
             viewModel.ApplyUpdate(new ProjectionUpdate(1, stale, [new StatePatched(stale)], Reset: true));
 
             Assert.Equal("keep me", viewModel.Composer.Draft);
-            Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+            Assert.Equal(PermissionMode.Edit, viewModel.Composer.Mode);
+            Assert.True(viewModel.Composer.PlanEnabled);
             Assert.Equal(restored, viewModel.CurrentSelection);
             Assert.Equal("high", viewModel.ThoughtLevel);
             Assert.Empty(runtime.Submitted);

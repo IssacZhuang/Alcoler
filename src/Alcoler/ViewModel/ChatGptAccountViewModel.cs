@@ -1,4 +1,5 @@
 using Alcoler.Auth;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -77,7 +78,7 @@ public sealed partial class ChatGptAccountViewModel : ObservableObject
                 RefreshStatus();
                 // An unentitled sign-in stays signed in but must never infer.
                 Message = outcome.Entitled ? null
-                    : "Signed in, but this account cannot use ChatGPT plan-based inference.";
+                    : Loc.Get("settings_chatgpt_unentitled_signed_in");
                 if (outcome.Entitled)
                     _applyModels(outcome.ModelIds);
             }
@@ -126,18 +127,18 @@ public sealed partial class ChatGptAccountViewModel : ObservableObject
         AccountPlan = status.Account?.PlanType;
         State = status.SignedIn ? ChatGptPanelState.SignedIn : ChatGptPanelState.SignedOut;
         if (status.SignedIn && !status.Entitled)
-            Message = "This account cannot use ChatGPT plan-based inference.";
+            Message = Loc.Get("settings_chatgpt_unentitled");
     }
 
     private static string DescribeFailure(ChatGptSignInOutcome outcome) => outcome.Failure switch
     {
-        ChatGptSignInFailure.Denied => "Authorization was denied.",
-        ChatGptSignInFailure.Timeout => "Sign-in timed out.",
-        ChatGptSignInFailure.Cancelled => "Sign-in was cancelled.",
-        ChatGptSignInFailure.CredentialWriteFailed => "Could not store the ChatGPT credentials.",
-        ChatGptSignInFailure.Network => $"Network error during sign-in. {outcome.Message}".Trim(),
-        ChatGptSignInFailure.ServerError => $"The sign-in server rejected the request. {outcome.Message}".Trim(),
-        ChatGptSignInFailure.Protocol => $"The sign-in response was invalid. {outcome.Message}".Trim(),
-        _ => outcome.Message ?? "Sign-in failed.",
+        ChatGptSignInFailure.Denied => Loc.Get("settings_chatgpt_denied"),
+        ChatGptSignInFailure.Timeout => Loc.Get("settings_chatgpt_timeout"),
+        ChatGptSignInFailure.Cancelled => Loc.Get("settings_chatgpt_cancelled"),
+        ChatGptSignInFailure.CredentialWriteFailed => Loc.Get("settings_chatgpt_credential_store_failed"),
+        ChatGptSignInFailure.Network => Loc.Get("settings_chatgpt_network_error", outcome.Message).Trim(),
+        ChatGptSignInFailure.ServerError => Loc.Get("settings_chatgpt_server_error", outcome.Message).Trim(),
+        ChatGptSignInFailure.Protocol => Loc.Get("settings_chatgpt_protocol_error", outcome.Message).Trim(),
+        _ => outcome.Message ?? Loc.Get("settings_chatgpt_failed"),
     };
 }

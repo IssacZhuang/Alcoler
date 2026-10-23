@@ -3,6 +3,7 @@ using System.Text;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Skills;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -11,6 +12,8 @@ namespace Alcoler.ViewModel;
 public sealed record ProviderApiFormat(string Kind, string Label);
 
 public sealed record ShellChoice(string Label, ShellEnvironment? Environment = null);
+
+public sealed record LanguageChoice(string Value, string Display);
 
 public sealed partial class ProviderViewModel : ObservableObject
 {
@@ -30,10 +33,14 @@ public sealed partial class ProviderViewModel : ObservableObject
     public ProviderUsageViewModel Usage { get; } = new();
     public string? TemplateId { get; set; }
     public string EffectiveId => string.IsNullOrWhiteSpace(Id) ? Kind : Id;
-    public string Label => !string.IsNullOrWhiteSpace(Name) ? Name : string.IsNullOrWhiteSpace(Kind) ? "New provider" : Kind;
-    public string StatusLabel => Enabled ? "Enabled" : "Disabled";
+    public string Label => !string.IsNullOrWhiteSpace(Name)
+        ? Name
+        : string.IsNullOrWhiteSpace(Kind) ? Loc.Get("settings_new_provider") : Kind;
+    public string StatusLabel => Enabled ? Loc.Get("common_enabled") : Loc.Get("common_disabled");
     public char ApiKeyPasswordChar => IsApiKeyVisible ? '\0' : '*';
-    public string ApiKeyVisibilityLabel => IsApiKeyVisible ? "Hide API key" : "Show API key";
+    public string ApiKeyVisibilityLabel => IsApiKeyVisible
+        ? Loc.Get("settings_hide_api_key")
+        : Loc.Get("settings_show_api_key");
     public bool HasApiKeyManagementUrl => ApiKeyManagementUri is not null;
     public bool IsChatGptAccount => AccessType == ProviderTemplate.ChatGptAccount;
     public Uri? ApiKeyManagementUri => Uri.TryCreate(ApiKeyManagementUrl, UriKind.Absolute, out var uri)
@@ -167,9 +174,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public static readonly IReadOnlyList<string> ProviderKinds = ["anthropic", "openai-compatible", "openai-responses"];
     public static readonly IReadOnlyList<ProviderApiFormat> ApiFormats =
     [
-        new("anthropic", "Anthropic Messages (/v1/messages)"),
-        new("openai-compatible", "OpenAI Chat Completions (/chat/completions)"),
-        new("openai-responses", "OpenAI Responses (/responses)"),
+        new("anthropic", Loc.Get("settings_api_format_anthropic")),
+        new("openai-compatible", Loc.Get("settings_api_format_openai_chat")),
+        new("openai-responses", Loc.Get("settings_api_format_openai_responses")),
     ];
 
     public IReadOnlyList<ProviderTemplate> ProviderTemplates => WorkbenchModelCatalog.Templates;
@@ -205,14 +212,16 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _archivedSessions = archivedSessions;
         SupportsShellSelection = isWindows;
         ChatGpt = chatGptAccount is null ? null : new ChatGptAccountViewModel(chatGptAccount, ApplyChatGptModels);
-        var choices = new List<ShellChoice> { new("Auto (Git Bash, then CMD)") };
+        var choices = new List<ShellChoice> { new(Loc.Get("settings_shell_auto")) };
         choices.AddRange(shells.Select(shell => new ShellChoice(
             shell.Dialect == ShellDialect.Cmd ? "CMD" : shell.Name, shell)));
         if (config.IntegratedTerminalShell is { } savedShell
             && !choices.Any(choice => choice.Environment == savedShell))
-            choices.Add(new ShellChoice($"{savedShell.Name} (saved; Auto if unavailable)", savedShell));
+            choices.Add(new ShellChoice(Loc.Get("settings_shell_saved_unavailable", savedShell.Name), savedShell));
         ShellChoices = choices;
         SelectedShell = choices.FirstOrDefault(choice => choice.Environment == config.IntegratedTerminalShell) ?? choices[0];
+        SelectedLanguage = LanguageChoices.FirstOrDefault(choice =>
+            string.Equals(choice.Value, config.Language, StringComparison.OrdinalIgnoreCase)) ?? LanguageChoices[0];
         Theme = config.Theme == Light ? Light : Dark;
         AutoArchiveSessions = config.AutoArchiveSessions;
         AutoArchiveOlderThanDays = Math.Clamp(config.AutoArchiveOlderThanDays, 1, 365);
@@ -265,11 +274,20 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<SkillToggleViewModel> UserSkills { get; } = [];
 
-    public string UserSkillSummary => UserSkills.Count == 1 ? "1 skill" : $"{UserSkills.Count} skills";
+    public string UserSkillSummary => UserSkills.Count == 1
+        ? Loc.Get("settings_skill_count_one")
+        : Loc.Get("settings_skill_count_many", UserSkills.Count);
 
     public ChatGptAccountViewModel? ChatGpt { get; }
 
     public IReadOnlyList<string> ThemeChoices { get; } = [Dark, Light];
+
+    public IReadOnlyList<LanguageChoice> LanguageChoices { get; } =
+    [
+        new(Loc.Auto, "Auto (system language)"),
+        new(Loc.English, "English"),
+        new(Loc.Chinese, "中文"),
+    ];
 
     public bool SupportsShellSelection { get; }
 
@@ -277,6 +295,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private ShellChoice? _selectedShell;
+
+    [ObservableProperty]
+    private LanguageChoice? _selectedLanguage;
 
     [ObservableProperty]
     private ProviderViewModel? _selectedProvider;
@@ -308,12 +329,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private bool _isDeletingArchivedSessions;
 
     public string ArchivedSessionCountText => IsArchivedSessionCountLoading
-        ? "Loading..."
+        ? Loc.Get("settings_archived_count_loading")
         : ArchivedSessionCount switch
         {
-            0 => "No archived tasks",
-            1 => "1 archived task",
-            _ => $"{ArchivedSessionCount} archived tasks",
+            0 => Loc.Get("settings_archived_count_none"),
+            1 => Loc.Get("settings_archived_count_one"),
+            _ => Loc.Get("settings_archived_count_many", ArchivedSessionCount),
         };
 
     public bool CanDeleteArchivedSessions =>
@@ -336,7 +357,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            Error = $"Could not count archived tasks: {exception.Message}";
+            Error = Loc.Get("settings_could_not_count_archived", exception.Message);
         }
         finally
         {
@@ -359,7 +380,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            Error = $"Could not delete archived tasks: {exception.Message}";
+            Error = Loc.Get("settings_could_not_delete_archived", exception.Message);
         }
         finally
         {
@@ -433,7 +454,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Error = $"Could not save settings: {ex.Message}";
+            Error = Loc.Get("settings_could_not_save", ex.Message);
             return null;
         }
         Error = null;
@@ -448,17 +469,17 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         {
             var provider = Providers[i];
             if (!ProviderKinds.Contains(provider.Kind.Trim(), StringComparer.OrdinalIgnoreCase))
-                errors.Add($"Provider {i + 1}: kind must be one of {string.Join(", ", ProviderKinds)}.");
+                errors.Add(Loc.Get("settings_validation_provider_kind", i + 1, string.Join(", ", ProviderKinds)));
             if (!providerIds.Add(provider.EffectiveId.Trim()))
-                errors.Add($"Provider {i + 1}: duplicate provider ID '{provider.EffectiveId}'.");
+                errors.Add(Loc.Get("settings_validation_duplicate_provider", i + 1, provider.EffectiveId));
             var modelIds = new HashSet<string>(StringComparer.Ordinal);
             for (var j = 0; j < provider.Models.Count; j++)
             {
                 var model = provider.Models[j];
                 if (!modelIds.Add(model.ModelId.Trim()))
-                    errors.Add($"Provider {i + 1}: duplicate model ID '{model.ModelId.Trim()}'.");
+                    errors.Add(Loc.Get("settings_validation_duplicate_model", i + 1, model.ModelId.Trim()));
                 errors.AddRange(ModelConfigurationValidation.Validate(model, provider.ToConfig())
-                    .Select(error => $"Provider {i + 1} model {j + 1}: {error}"));
+                    .Select(error => Loc.Get("settings_validation_provider_model", i + 1, j + 1, error)));
             }
         }
         return errors;
@@ -469,6 +490,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         Providers = Providers.Select(ToProviderConfig).ToList(),
         McpServers = McpServers.Select(ToMcpServerConfig).ToList(),
         Theme = Theme,
+        Language = SelectedLanguage?.Value ?? Loc.Auto,
         IntegratedTerminalShell = SupportsShellSelection ? SelectedShell?.Environment : _config.IntegratedTerminalShell,
         DisabledSkillPaths = BuildDisabledSkillPaths(),
         AutoArchiveSessions = AutoArchiveSessions,

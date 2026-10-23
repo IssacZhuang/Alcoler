@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.ViewModel"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.FileDocumentView"
              x:DataType="vm:TextDocumentViewModel">
   <UserControl.Styles>
@@ -25,17 +26,17 @@
         <TextBlock x:Name="PART_DocumentPath" Text="{Binding SourceLabel}" TextTrimming="CharacterEllipsis"
                    ToolTip.Tip="{Binding SourceLabel}" FontSize="{DynamicResource AlcolerFontSmall}"
                    VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
-        <ToggleButton Grid.Column="1" x:Name="PART_DocumentWrap" Classes="documentWrap" Content="Wrap"
-                      IsChecked="{Binding Wrap, Mode=TwoWay}" ToolTip.Tip="Wrap long lines (read-only preview)"
+        <ToggleButton Grid.Column="1" x:Name="PART_DocumentWrap" Classes="documentWrap" Content="{loc:Loc docs_wrap}"
+                      IsChecked="{Binding Wrap, Mode=TwoWay}" ToolTip.Tip="{loc:Loc docs_wrap_tooltip}"
                       Padding="8,3" Height="26" VerticalAlignment="Center" FontSize="{DynamicResource AlcolerFontSmall}" />
-        <Button Grid.Column="2" x:Name="PART_DocumentReload" Classes="ghost" Content="Reload"
+        <Button Grid.Column="2" x:Name="PART_DocumentReload" Classes="ghost" Content="{loc:Loc docs_reload}"
                 Command="{Binding ReloadCommand}" IsVisible="{Binding CanReload}" Padding="8,3"
                 Height="26" VerticalAlignment="Center" FontSize="{DynamicResource AlcolerFontSmall}" />
       </Grid>
     </Border>
-    <TextBlock DockPanel.Dock="Bottom" Margin="12,4" Text="{Binding Language, StringFormat='Read-only · {0}'}"
+    <TextBlock DockPanel.Dock="Bottom" Margin="12,4" Text="{Binding ReadOnlyText}"
                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
-    <TextBlock DockPanel.Dock="Top" Text="Loading file..." IsVisible="{Binding IsLoading}" Margin="12,8"
+    <TextBlock DockPanel.Dock="Top" Text="{loc:Loc docs_loading_file}" IsVisible="{Binding IsLoading}" Margin="12,8"
                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
     <Border DockPanel.Dock="Top" Margin="12" Padding="10"
             BorderThickness="0" CornerRadius="{DynamicResource AlcolerRadius}"

@@ -6,6 +6,7 @@ using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
+using Alcoler.Localization;
 using Alcoler.Stores;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -88,13 +89,22 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
     public GitPaneViewModel? Git => _git;
     public bool HasGit => Git is { IsRepo: true, HasChanges: true };
     public bool HasGitLineChanges => Git is { } git && (git.AddedLines > 0 || git.RemovedLines > 0);
-    public string GitFileCountText => $"{Git?.ChangedFileCount ?? 0} {(Git?.ChangedFileCount == 1 ? "file" : "files")}";
+    public string GitFileCountText
+    {
+        get
+        {
+            var count = Git?.ChangedFileCount ?? 0;
+            return count == 1 ? Loc.Get("status_file_one", count) : Loc.Get("status_file_many", count);
+        }
+    }
     public string GitAddedText => $"+{Git?.AddedLines ?? 0}";
     public string GitRemovedText => $"-{Git?.RemovedLines ?? 0}";
     public IReadOnlyList<StatusTodo> Todos => _todos;
     public IReadOnlyList<StatusTodo> VisibleTodos => _visibleTodos;
     public IReadOnlyList<StatusTodo> EarlierTodos => _earlierTodos;
     public IReadOnlyList<StatusTodo> LaterTodos => _laterTodos;
+    public string EarlierTodosText => Loc.Get("status_earlier_tasks", EarlierTodos.Count);
+    public string LaterTodosText => Loc.Get("status_later_tasks", LaterTodos.Count);
     public bool HasTodos => Todos.Count > 0;
     public string TodoCountText => $"{Todos.Count(todo => todo.IsCompleted)}/{Todos.Count}";
     public IReadOnlyList<StatusPlan> Plans => _plans;
@@ -105,12 +115,12 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
     public IReadOnlyList<StatusActivity> Agents => _agents;
     public IReadOnlyList<StatusActivity> EndedAgents => _endedAgents;
     public bool HasAgents => Agents.Count + EndedAgents.Count > 0;
-    public string AgentCountText => Agents.Count > 0 ? $"{Agents.Count} running" : string.Empty;
+    public string AgentCountText => Agents.Count > 0 ? Loc.Get("status_running_many", Agents.Count) : string.Empty;
     public bool HasRunningActivities => Terminals.Count > 0 || Agents.Count > 0;
     public string RunningActivityCountText => (Terminals.Count + Agents.Count) switch
     {
-        1 => "1 running",
-        var count => $"{count} running",
+        1 => Loc.Get("status_running_one"),
+        var count => Loc.Get("status_running_many", count),
     };
 
     public void ApplyUpdate(ProjectionUpdate update)
@@ -250,11 +260,11 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
                 {
                     Id = job.Id.Value,
                     BackgroundJobId = job.Id,
-                    Title = string.IsNullOrWhiteSpace(job.Description) ? "Background command" : job.Description,
+                    Title = string.IsNullOrWhiteSpace(job.Description) ? Loc.Get("status_background_command") : job.Description,
                     StartedAt = job.StartedAt,
                     DurationText = FormatDuration(job.StartedAt, currentTime),
                     OutputPath = job.OutputPath,
-                    StatusText = "Running",
+                    StatusText = Loc.Get("status_running"),
                     CanStop = true,
                 });
             }
@@ -394,7 +404,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         {
             return null;
         }
-        var statusText = tool.Status == ToolCallStatus.Pending ? "Pending" : "Running";
+        var statusText = tool.Status == ToolCallStatus.Pending ? Loc.Get("status_pending") : Loc.Get("status_running");
         var outputText = TerminalOutputText(tool.Output, previous, out var outputBuilder,
             out var outputSource, out var outputTextBlocks);
         var activityChanges = previous?.Terminal is null || previous.Terminal.StatusText != statusText
@@ -406,7 +416,7 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
             {
                 Id = tool.Id.Value,
                 RowId = tool.RowId,
-                Title = ReadText(tool.Input, "description") ?? ReadText(tool.Input, "command") ?? "Terminal",
+                Title = ReadText(tool.Input, "description") ?? ReadText(tool.Input, "command") ?? Loc.Get("status_terminal"),
                 StartedAt = tool.StartedAt,
                 StatusText = statusText,
                 OutputText = outputText,
@@ -605,6 +615,8 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         SetList(ref _visibleTodos, Todos.Skip(start).Take(count).ToArray(), nameof(VisibleTodos));
         SetList(ref _earlierTodos, Todos.Take(start).ToArray(), nameof(EarlierTodos));
         SetList(ref _laterTodos, Todos.Skip(start + count).ToArray(), nameof(LaterTodos));
+        OnPropertyChanged(nameof(EarlierTodosText));
+        OnPropertyChanged(nameof(LaterTodosText));
         OnPropertyChanged(nameof(HasTodos));
         OnPropertyChanged(nameof(TodoCountText));
     }
@@ -667,7 +679,9 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         }
         else if (HasGit)
         {
-            text = $"{Git!.ChangedFileCount} changed {(Git.ChangedFileCount == 1 ? "file" : "files")}";
+            text = Git!.ChangedFileCount == 1
+                ? Loc.Get("status_changed_files_one", Git.ChangedFileCount)
+                : Loc.Get("status_changed_files_many", Git.ChangedFileCount);
             icon = StatusIcons.Git;
         }
         else if (Todos.LastOrDefault(todo => todo.IsCompleted) is { } completed)
@@ -687,11 +701,23 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         }
         else
         {
-            var terminals = $"{Terminals.Count} {(Terminals.Count == 1 ? "terminal" : "terminals")}";
-            var agents = $"{Agents.Count} {(Agents.Count == 1 ? "agent" : "agents")}";
-            text = HasTerminals && Agents.Count > 0 ? $"{terminals} and {agents} running"
-                : HasTerminals ? $"{terminals} running" : Agents.Count > 0 ? $"{agents} running"
-                : EndedAgents.Count > 0 ? $"{EndedAgents.Count} ended {(EndedAgents.Count == 1 ? "agent" : "agents")}" : string.Empty;
+            var terminals = Terminals.Count == 1
+                ? Loc.Get("status_terminal_one", Terminals.Count)
+                : Loc.Get("status_terminal_many", Terminals.Count);
+            var agents = Agents.Count == 1
+                ? Loc.Get("status_agent_one", Agents.Count)
+                : Loc.Get("status_agent_many", Agents.Count);
+            text = HasTerminals && Agents.Count > 0
+                ? Loc.Get("status_terminals_and_agents_running", terminals, agents)
+                : HasTerminals
+                    ? Loc.Get("status_x_running", terminals)
+                    : Agents.Count > 0
+                        ? Loc.Get("status_x_running", agents)
+                        : EndedAgents.Count > 0
+                            ? (EndedAgents.Count == 1
+                                ? Loc.Get("status_ended_agents_one", EndedAgents.Count)
+                                : Loc.Get("status_ended_agents_many", EndedAgents.Count))
+                            : string.Empty;
             icon = HasTerminals && Agents.Count > 0 ? StatusIcons.Activities
                 : HasTerminals ? StatusIcons.Terminal : HasAgents ? StatusIcons.Agent : string.Empty;
         }

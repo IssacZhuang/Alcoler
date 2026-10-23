@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Globalization;
 using Alcoler.Adapters.Models;
 using Alcoler.Contracts.Models;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -40,7 +41,9 @@ public sealed partial class ModelViewModel : ObservableObject
     public string ContextBadge => EffectiveProperties.ContextWindowTokens is { } tokens
         ? tokens >= 1000 ? (tokens / 1000d).ToString("0.#", CultureInfo.InvariantCulture) + "K" : tokens.ToString(CultureInfo.InvariantCulture)
         : "—";
-    public string ContextDescription => $"Context window: {EffectiveProperties.ContextWindowTokens?.ToString("N0", CultureInfo.InvariantCulture) ?? "unknown"} tokens";
+    public string ContextDescription => Loc.Get("settings_context_description",
+        EffectiveProperties.ContextWindowTokens?.ToString("N0", CultureInfo.InvariantCulture)
+        ?? Loc.Get("settings_context_unknown"));
     public bool EffectiveSupportsImage { get => EffectiveProperties.SupportsImage; set => SupportsImage = value; }
     public bool EffectiveSupportsVideo { get => EffectiveProperties.SupportsVideo; set => SupportsVideo = value; }
     public bool EffectiveSupportsPdf { get => EffectiveProperties.SupportsPdf; set => SupportsPdf = value; }
@@ -148,9 +151,9 @@ public sealed partial class ModelConfigurationViewModel : ObservableObject
     public ModelViewModel Draft { get; }
     public ObservableCollection<ReasoningLevelViewModel> ReasoningLevels { get; } = [];
     public bool IsAdding => _original is null;
-    public string Title => IsAdding ? "Add model configuration" : "Edit model configuration";
+    public string Title => IsAdding ? Loc.Get("models_add_title") : Loc.Get("settings_edit_model");
     public bool HasError => !string.IsNullOrEmpty(Error);
-    public string SmartConfigurationHelp => "Smart configuration follows the model catalog. Only fields you change are stored as overrides. Turn it off to freeze the editable configuration. Restore defaults clears overrides without changing the model ID or enabled state.";
+    public string SmartConfigurationHelp => Loc.Get("models_smart_configuration_help");
 
     public ModelConfigurationViewModel(ProviderViewModel provider, ModelViewModel? original = null)
     {
@@ -245,12 +248,12 @@ public sealed partial class ModelConfigurationViewModel : ObservableObject
         var errors = ModelConfigurationValidation.Validate(Draft, _provider.ToConfig());
         if (!Draft.SmartConfiguration)
         {
-            if (string.IsNullOrWhiteSpace(Draft.ContextWindowTokens)) errors.Add("Context window is required in manual mode.");
-            if (string.IsNullOrWhiteSpace(Draft.MaxOutputTokens)) errors.Add("Max output tokens is required in manual mode.");
-            if (string.IsNullOrWhiteSpace(Draft.ReasoningMapping)) errors.Add("Reasoning mapping is required in manual mode.");
+            if (string.IsNullOrWhiteSpace(Draft.ContextWindowTokens)) errors.Add(Loc.Get("models_validation_context_required"));
+            if (string.IsNullOrWhiteSpace(Draft.MaxOutputTokens)) errors.Add(Loc.Get("models_validation_max_output_required"));
+            if (string.IsNullOrWhiteSpace(Draft.ReasoningMapping)) errors.Add(Loc.Get("models_validation_reasoning_mapping_required"));
         }
         if (_provider.Models.Any(model => model != _original && string.Equals(model.ModelId.Trim(), Draft.ModelId.Trim(), StringComparison.Ordinal)))
-            errors.Add("A model with this model ID already exists in this provider.");
+            errors.Add(Loc.Get("models_validation_duplicate_model_id"));
         if (errors.Count > 0)
         {
             Error = string.Join(Environment.NewLine, errors);
@@ -270,25 +273,25 @@ internal static class ModelConfigurationValidation
     public static List<string> Validate(ModelViewModel model, WorkbenchProviderConfig provider)
     {
         var errors = new List<string>();
-        if (string.IsNullOrWhiteSpace(model.ModelId)) errors.Add("Model id is required.");
-        ValidateTokens(model.ContextWindowTokens, "Context window", errors);
-        ValidateTokens(model.MaxOutputTokens, "Max output tokens", errors);
+        if (string.IsNullOrWhiteSpace(model.ModelId)) errors.Add(Loc.Get("models_validation_model_id_required"));
+        ValidateTokens(model.ContextWindowTokens, Loc.Get("models_context_window"), errors);
+        ValidateTokens(model.MaxOutputTokens, Loc.Get("models_max_output_tokens"), errors);
         var config = model.ToConfig();
         if (config.ReasoningLevels is { } levels && (levels.Count == 0 || levels.Any(string.IsNullOrWhiteSpace)
             || levels.Select(level => level.Trim()).Distinct(StringComparer.Ordinal).Count() != levels.Count))
-            errors.Add("Reasoning levels must be unique, nonempty values.");
+            errors.Add(Loc.Get("models_validation_reasoning_levels"));
         var effective = WorkbenchModelCatalog.Resolve(provider, config);
-        ValidateMapping(config.ReasoningMapping, "Reasoning mapping", effective.ReasoningLevels, effective.DefaultMaxOutputTokens, errors);
+        ValidateMapping(config.ReasoningMapping, Loc.Get("models_reasoning_mapping_label"), effective.ReasoningLevels, effective.DefaultMaxOutputTokens, errors);
         if (config.ReasoningLevels is not null && config.ReasoningMapping is null)
-            ValidateMapping(effective.ReasoningMapping, "Reasoning mapping", config.ReasoningLevels, effective.DefaultMaxOutputTokens, errors);
-        ValidateMapping(config.MaxOutputTokensMapping, "Max output tokens mapping", effective.ReasoningLevels, effective.DefaultMaxOutputTokens, errors);
+            ValidateMapping(effective.ReasoningMapping, Loc.Get("models_reasoning_mapping_label"), config.ReasoningLevels, effective.DefaultMaxOutputTokens, errors);
+        ValidateMapping(config.MaxOutputTokensMapping, Loc.Get("models_max_output_tokens_mapping"), effective.ReasoningLevels, effective.DefaultMaxOutputTokens, errors);
         return errors;
     }
 
     private static void ValidateTokens(string value, string label, List<string> errors)
     {
         if (!string.IsNullOrWhiteSpace(value) && ModelViewModel.ParseTokens(value) is not > 0)
-            errors.Add($"{label} must be a positive integer.");
+            errors.Add(Loc.Get("models_validation_positive_integer", label));
     }
 
     private static void ValidateMapping(string? expression, string label, IReadOnlyList<string>? levels, int? maxOutputTokens, List<string> errors)
@@ -303,6 +306,6 @@ internal static class ModelConfigurationValidation
             }
             else ModelOptionMapping.Evaluate(expression, null, maxOutputTokens ?? 4096);
         }
-        catch (ArgumentException ex) { errors.Add($"{label}: {ex.Message}"); }
+        catch (ArgumentException ex) { errors.Add(Loc.Get("models_validation_mapping_error", label, ex.Message)); }
     }
 }

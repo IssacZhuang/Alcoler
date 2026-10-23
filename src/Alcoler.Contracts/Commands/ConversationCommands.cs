@@ -36,7 +36,8 @@ public sealed record SendTextCommand(
     ModelSelection? ModelSelection = null,
     SendTextDelivery Delivery = SendTextDelivery.Queue,
     IReadOnlyList<InputImageBlock>? Images = null,
-    IReadOnlyList<string>? Workflows = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
+    IReadOnlyList<string>? Workflows = null,
+    bool? PlanEnabled = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 public sealed record RemoveQueuedInputCommand(
     CommandId CommandId,
@@ -76,11 +77,13 @@ public sealed record SwitchModelCommand(
     long BaseRevision,
     ModelSelection Selection) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
+// Mode null leaves the permission mode untouched; PlanEnabled null leaves plan mode untouched.
 public sealed record SetModeCommand(
     CommandId CommandId,
     SessionId SessionId,
     long BaseRevision,
-    PermissionMode Mode) : ConversationCommand(CommandId, SessionId, BaseRevision);
+    PermissionMode? Mode = null,
+    bool? PlanEnabled = null) : ConversationCommand(CommandId, SessionId, BaseRevision);
 
 // Replaces the full active-workflow set; null entries and duplicates are rejected upstream.
 public sealed record SetWorkflowsCommand(

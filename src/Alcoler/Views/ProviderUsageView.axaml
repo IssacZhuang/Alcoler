@@ -2,18 +2,19 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.ProviderUsageView"
              x:DataType="vm:ProviderUsageViewModel">
   <StackPanel x:Name="PART_UsageSection" Spacing="8" IsVisible="{Binding IsVisible}">
     <Grid ColumnDefinitions="*,Auto,28" ColumnSpacing="6" MinHeight="28">
-      <TextBlock Text="Usage" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
+      <TextBlock Text="{loc:Loc usage_title}" FontSize="{DynamicResource AlcolerFontSmall}" FontWeight="Medium"
                  VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
-      <TextBlock Grid.Column="1" x:Name="PART_UsageLoading" Text="Loading..."
+      <TextBlock Grid.Column="1" x:Name="PART_UsageLoading" Text="{loc:Loc common_loading}"
                  IsVisible="{Binding IsLoading}" VerticalAlignment="Center"
                  FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
       <Button Grid.Column="2" x:Name="PART_UsageRefresh" Classes="icon" Width="28" Height="28"
               MinWidth="28" MinHeight="28" Padding="0" Command="{Binding RefreshCommand}"
-              ToolTip.Tip="Refresh usage" AutomationProperties.Name="Refresh usage">
+              ToolTip.Tip="{loc:Loc usage_refresh}" AutomationProperties.Name="{loc:Loc usage_refresh}">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconRefresh}" />
       </Button>
     </Grid>
@@ -24,12 +25,12 @@
         <TextBlock x:Name="PART_UsageError" Text="{Binding ErrorMessage}" TextWrapping="Wrap"
                    FontSize="{DynamicResource AlcolerFontSmall}" VerticalAlignment="Center"
                    Foreground="{DynamicResource AlcolerTextSecondary}" />
-        <Button Grid.Column="1" x:Name="PART_UsageRetry" Classes="ghost" Content="Retry"
+        <Button Grid.Column="1" x:Name="PART_UsageRetry" Classes="ghost" Content="{loc:Loc common_retry}"
                 Height="28" MinHeight="28" Padding="8,0" Command="{Binding RefreshCommand}" />
       </Grid>
     </Border>
 
-    <TextBlock Text="No usage data available." IsVisible="{Binding IsEmpty}"
+    <TextBlock Text="{loc:Loc usage_none}" IsVisible="{Binding IsEmpty}"
                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" />
 
     <StackPanel x:Name="PART_UsageBalance" Spacing="4" IsVisible="{Binding ShowBalance}">
@@ -48,7 +49,7 @@
       </ItemsControl.ItemsPanel>
       <ItemsControl.ItemTemplate>
         <DataTemplate x:DataType="vm:ProviderUsageTierViewModel">
-          <StackPanel Spacing="5" Margin="0,0,8,0" ToolTip.Tip="Remaining quota">
+          <StackPanel Spacing="5" Margin="0,0,8,0" ToolTip.Tip="{loc:Loc usage_remaining_quota}">
             <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"
                        FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextSecondary}" />
             <TextBlock Text="{Binding PercentageText}" FontFamily="{DynamicResource AlcolerFontMonospace}"

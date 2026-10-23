@@ -10,6 +10,7 @@ using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Kernel.Workflows;
+using Alcoler.Localization;
 using Alcoler.Stores;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -74,7 +75,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     public ModelSelection? CurrentSelection => _currentSelection;
 
-    public event Action<PermissionMode>? ModeSubmitted;
+    public event Action<PermissionMode, bool>? ModeSubmitted;
 
     public event Action<ModelSelection>? ModelSelectionChanged;
 
@@ -99,7 +100,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     [ObservableProperty]
     private string _title = string.Empty;
 
-    public string HeaderTitle => string.IsNullOrWhiteSpace(Title) ? "Untitled session" : Title;
+    public string HeaderTitle => string.IsNullOrWhiteSpace(Title) ? Loc.Get("sidebar_untitled") : Title;
 
     partial void OnTitleChanged(string value) => OnPropertyChanged(nameof(HeaderTitle));
 
@@ -117,6 +118,9 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     [ObservableProperty]
     private PermissionMode _mode = PermissionMode.Yolo;
+
+    [ObservableProperty]
+    private bool _planEnabled;
 
     [ObservableProperty]
     private string _modelText = string.Empty;
@@ -429,23 +433,25 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             SetModelSelection(state.ModelSelection, local: false);
         }
         Title = state.Title;
-        if (!_restoredMode && !_restoredComposer && Composer.Mode == Mode)
+        if (!_restoredMode && !_restoredComposer && Composer.Mode == Mode && Composer.PlanEnabled == PlanEnabled)
         {
-            Composer.RestoreMode(state.Mode);
+            Composer.RestoreExecutionState(state.Mode, state.PlanEnabled);
         }
         Mode = state.Mode;
+        PlanEnabled = state.PlanEnabled;
         Composer.SessionMode = state.Mode;
+        Composer.SessionPlanEnabled = state.PlanEnabled;
         Composer.SessionWorkflows = state.ActiveWorkflows ?? [];
         PhaseText = state.Phase.ToString();
         ActivityText = state.Phase switch
         {
-            TurnPhase.ProcessingInput => "Preparing request",
-            TurnPhase.AwaitingModel => "Waiting for model",
-            TurnPhase.Streaming => "Generating response",
-            TurnPhase.ExecutingTools => "Running tools",
-            TurnPhase.AwaitingPermission => "Waiting for permission",
-            TurnPhase.AwaitingInteraction => "Waiting for your answer",
-            TurnPhase.Completing => "Finishing up",
+            TurnPhase.ProcessingInput => Loc.Get("status_phase_preparing"),
+            TurnPhase.AwaitingModel => Loc.Get("status_phase_awaiting_model"),
+            TurnPhase.Streaming => Loc.Get("status_phase_streaming"),
+            TurnPhase.ExecutingTools => Loc.Get("status_phase_running_tools"),
+            TurnPhase.AwaitingPermission => Loc.Get("status_phase_awaiting_permission"),
+            TurnPhase.AwaitingInteraction => Loc.Get("status_phase_awaiting_interaction"),
+            TurnPhase.Completing => Loc.Get("status_phase_completing"),
             _ => string.Empty,
         };
         IsWorking = state.Phase is TurnPhase.ProcessingInput or TurnPhase.AwaitingModel
@@ -492,14 +498,14 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             if (Composer.IsTurnActive)
             {
-                Composer.InputError = "Stop the active turn before changing permissions.";
+                Composer.InputError = Loc.Get("composer_stop_first_banner");
                 return;
             }
             IReadOnlyList<string>? workflows = null;
             switch (command.Kind)
             {
                 case ComposerCommandKind.Plan:
-                    Composer.Mode = PermissionMode.Plan;
+                    Composer.PlanEnabled = true;
                     break;
                 case ComposerCommandKind.Orchestrator:
                     if (command.Prompt.Length == 0)
@@ -516,7 +522,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                         }
                         else
                         {
-                            Banner = toggleAck.RejectionReason ?? "Input was rejected";
+                            Banner = toggleAck.RejectionReason ?? Loc.Get("conversation_input_rejected");
                         }
                         return;
                     }
@@ -540,6 +546,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         var selection = CurrentSelection;
         var submissionSequence = NextSubmissionSequence?.Invoke() ?? 0;
         var mode = Composer.IsTurnActive ? (PermissionMode?)null : Composer.Mode;
+        var planEnabled = Composer.IsTurnActive ? (bool?)null : Composer.PlanEnabled;
         var commandWorkflows = _pendingWorkflows;
         _pendingWorkflows = null;
         Composer.IsSending = true;
@@ -550,13 +557,14 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             _restoredComposer = false;
             var ack = await SubmitAsync(new SendTextCommand(
                 StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: selection, Mode: mode,
-                Images: images, Workflows: commandWorkflows));
+                Images: images, Workflows: commandWorkflows, PlanEnabled: planEnabled));
             if (ack.Accepted)
             {
                 if (mode is { } submittedMode)
                 {
-                    AcknowledgeMode(submittedMode);
-                    ModeSubmitted?.Invoke(submittedMode);
+                    var submittedPlanEnabled = planEnabled ?? Composer.PlanEnabled;
+                    AcknowledgeMode(submittedMode, submittedPlanEnabled);
+                    ModeSubmitted?.Invoke(submittedMode, submittedPlanEnabled);
                 }
                 if (commandWorkflows is { } submittedWorkflows)
                 {
@@ -570,7 +578,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             }
             else
             {
-                Banner = ack.RejectionReason ?? "Input was rejected";
+                Banner = ack.RejectionReason ?? Loc.Get("conversation_input_rejected");
             }
         }
         catch (Exception exception)
@@ -593,35 +601,36 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             if (Queue.FirstOrDefault(item => item.CommandId == input.CommandId) is not { } queued)
             {
-                Banner = "That queued message is no longer available.";
+                Banner = Loc.Get("conversation_queue_unavailable");
                 return;
             }
             if (!string.IsNullOrWhiteSpace(Composer.Draft) || Composer.HasAttachments)
             {
-                Banner = "Send or clear the current draft before withdrawing a queued message.";
+                Banner = Loc.Get("conversation_queue_withdraw_draft_first");
                 return;
             }
             var ack = await SubmitAsync(new RemoveQueuedInputCommand(
                 StrongId.NewCommandId(), SessionId, _store.Revision, queued.CommandId));
             if (!ack.Accepted)
             {
-                Banner = ack.RejectionReason ?? "The queued message could not be withdrawn.";
+                Banner = ack.RejectionReason ?? Loc.Get("conversation_queue_withdraw_failed");
                 return;
             }
             Composer.Draft = queued.Text;
             if (queued.Mode is { } mode)
             {
-                Composer.RestoreMode(mode);
+                Composer.RestoreExecutionState(mode, queued.PlanEnabled ?? false);
             }
             if (queued.ModelSelection is { } selection)
             {
                 RestoreModelSelection(selection);
             }
-            await RestoreImagesAsync(queued.Images, "queued message", "withdrawn");
+            await RestoreImagesAsync(queued.Images,
+                Loc.Get("conversation_subject_queued_message"), Loc.Get("conversation_action_withdrawn"));
         }
         catch (Exception exception)
         {
-            Banner = $"The queued message could not be withdrawn. {exception.Message}";
+            Banner = Loc.Get("conversation_queue_withdraw_failed_detail", exception.Message);
         }
         finally
         {
@@ -637,7 +646,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
         if (!string.IsNullOrWhiteSpace(Composer.Draft) || Composer.HasAttachments)
         {
-            Banner = "Send or clear the current draft before rewinding a message.";
+            Banner = Loc.Get("conversation_rewind_draft_first");
             return;
         }
         try
@@ -646,16 +655,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 StrongId.NewCommandId(), SessionId, _store.Revision, item.Id));
             if (!ack.Accepted)
             {
-                Banner = ack.RejectionReason ?? "The message could not be rewound.";
+                Banner = ack.RejectionReason ?? Loc.Get("conversation_rewind_failed");
                 return;
             }
             Banner = null;
             Composer.Draft = item.Text;
-            await RestoreImagesAsync(item.Images, "message", "rewound");
+            await RestoreImagesAsync(item.Images,
+                Loc.Get("conversation_subject_message"), Loc.Get("conversation_action_rewound"));
         }
         catch (Exception exception)
         {
-            Banner = $"The message could not be rewound. {exception.Message}";
+            Banner = Loc.Get("conversation_rewind_failed_detail", exception.Message);
         }
     }
 
@@ -691,12 +701,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 StrongId.NewCommandId(), SessionId, _store.Revision, input.CommandId));
             if (!ack.Accepted)
             {
-                Banner = ack.RejectionReason ?? "The queued message could not be deleted.";
+                Banner = ack.RejectionReason ?? Loc.Get("conversation_queue_delete_failed");
             }
         }
         catch (Exception exception)
         {
-            Banner = $"The queued message could not be deleted. {exception.Message}";
+            Banner = Loc.Get("conversation_queue_delete_failed_detail", exception.Message);
         }
         finally
         {
@@ -719,11 +729,11 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 var data = await _artifacts.TryLoadAsync(image.ArtifactUri, CancellationToken.None);
                 if (data is null)
                 {
-                    Banner = $"The {subject} was {action}, but some of its images are no longer available.";
+                    Banner = Loc.Get("conversation_images_lost", subject, action);
                     continue;
                 }
                 restored.Add(ComposerImageAttachment.FromBytes(
-                    data.Value.ToArray(), image.MimeType, image.FileName ?? "Image"));
+                    data.Value.ToArray(), image.MimeType, image.FileName ?? Loc.Get("conversation_image_fallback")));
             }
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException
@@ -743,26 +753,26 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     public async Task CompactAsync() =>
         await SubmitAsync(new CompactCommand(StrongId.NewCommandId(), SessionId, _store.Revision));
 
-    internal void AcknowledgeMode(PermissionMode mode)
+    internal void AcknowledgeMode(PermissionMode mode, bool planEnabled)
     {
-        if (Composer.Mode == mode)
+        if (Composer.Mode == mode && Composer.PlanEnabled == planEnabled)
             _restoredMode = false;
     }
 
     private void OnModeSelected(PermissionMode mode) => _restoredMode = true;
 
-    internal void RestorePendingMode(PermissionMode mode)
+    internal void RestorePendingMode(PermissionMode mode, bool planEnabled = false)
     {
         _restoredMode = true;
-        Composer.RestoreMode(mode);
+        Composer.RestoreExecutionState(mode, planEnabled);
     }
 
-    public void RestoreComposerState(string draft, PermissionMode mode, ModelSelection? selection)
+    public void RestoreComposerState(string draft, PermissionMode mode, ModelSelection? selection, bool planEnabled = false)
     {
         _restoredComposer = true;
         _restoredRevision = _store.Revision;
         Composer.Draft = draft;
-        RestorePendingMode(mode);
+        RestorePendingMode(mode, planEnabled);
         RestoreModelSelection(selection);
     }
 
@@ -913,13 +923,13 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 StrongId.NewCommandId(), SessionId, _store.Revision, pending.InteractionId,
                 InteractionAnswer: new InteractionAnswer(answers, dismiss ? null : pending.SelectedAnnotations)));
             if (!ack.Accepted)
-                Banner = ack.RejectionReason ?? "Answers were not accepted";
+                Banner = ack.RejectionReason ?? Loc.Get("conversation_answers_rejected");
             else
                 awaitingProjection = ReferenceEquals(PendingInteraction, pending);
         }
         catch (Exception exception)
         {
-            Banner = $"Could not submit answers. {exception.Message}";
+            Banner = Loc.Get("conversation_answers_failed_detail", exception.Message);
         }
         finally
         {

@@ -31,7 +31,7 @@ public class PlanModeEndToEndTests
         new Alcoler.Contracts.Models.ModelStreamFinished(Alcoler.Contracts.Models.ModelFinishReason.Stop)]);
 
     [Fact]
-    public async Task PlanApproval_SwitchesModeToEdit()
+    public async Task LegacyPlanSession_ApprovalKeepsUnderlyingEditMode()
     {
         await using var harness = TestHarness.Create(
             ToolCall("ExitPlanMode", new { plan = "1. Write the file.\n2. Verify." }),
@@ -43,6 +43,8 @@ public class PlanModeEndToEndTests
             CancellationToken.None);
 
         using var projection = runtime.Subscribe(session.Id);
+        Assert.Equal(PermissionMode.Edit, projection.Snapshot().State.Mode);
+        Assert.True(projection.Snapshot().State.PlanEnabled);
         var ack = await runtime.SubmitAsync(new SendTextCommand(
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Plan writing notes.txt"),
             CancellationToken.None);
@@ -59,12 +61,46 @@ public class PlanModeEndToEndTests
 
         var snapshot = projection.Snapshot();
         Assert.Equal(PermissionMode.Edit, snapshot.State.Mode);
+        Assert.False(snapshot.State.PlanEnabled);
         Assert.Contains(snapshot.Rows, r => r is ToolCallRow t
             && t.ToolName == "ExitPlanMode"
             && t.Status == ToolCallStatus.Succeeded
             && t.Output!.OfType<Contracts.Conversation.ToolResultText>().Any(b => b.Text.Contains("User has approved your plan")));
         Assert.Contains(snapshot.Rows, r => r is AssistantMessageRow a
             && a.Parts.OfType<Contracts.Conversation.TextPart>().Any(p => p.Text.Contains("Implementing now.")));
+    }
+
+    [Fact]
+    public async Task PlanApproval_PreservesPermissionModeSelectedBeforePlanning()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("ExitPlanMode", new { plan = "1. Write the file.\n2. Verify." }),
+            FinalText("Implementing now."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        Assert.Equal(PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        Assert.True(projection.Snapshot().State.PlanEnabled);
+
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Plan writing notes.txt"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted);
+
+        var permission = await WaitForPermissionAsync(projection);
+        await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        var snapshot = projection.Snapshot();
+        Assert.Equal(PermissionMode.Yolo, snapshot.State.Mode);
+        Assert.False(snapshot.State.PlanEnabled);
     }
 
     [Fact]
@@ -76,7 +112,8 @@ public class PlanModeEndToEndTests
 
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
             CancellationToken.None);
 
         using var projection = runtime.Subscribe(session.Id);
@@ -100,7 +137,8 @@ public class PlanModeEndToEndTests
 
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
             CancellationToken.None);
 
         using var projection = runtime.Subscribe(session.Id);
@@ -130,8 +168,8 @@ public class PlanModeEndToEndTests
 
         using var projection = runtime.Subscribe(session.Id);
         Assert.True((await runtime.SubmitAsync(new SetModeCommand(
-            StrongId.NewCommandId(), session.Id, 0, PermissionMode.Plan), CancellationToken.None)).Accepted);
-        await WaitForModeAsync(projection, PermissionMode.Plan);
+            StrongId.NewCommandId(), session.Id, 0, PlanEnabled: true), CancellationToken.None)).Accepted);
+        await WaitForPlanEnabledAsync(projection, expected: true);
 
         var ack = await runtime.SubmitAsync(new SendTextCommand(
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Plan the work"), CancellationToken.None);
@@ -144,6 +182,7 @@ public class PlanModeEndToEndTests
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
 
         Assert.Equal(PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        Assert.False(projection.Snapshot().State.PlanEnabled);
         var planPath = Path.Combine(harness.Root, "plans", $"plan-{session.Id.Value}.md");
         Assert.True(File.Exists(planPath));
         Assert.Equal(plan, await File.ReadAllTextAsync(planPath));
@@ -152,6 +191,66 @@ public class PlanModeEndToEndTests
         await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
         using var resumedProjection = resumed.Subscribe(session.Id);
         Assert.Equal(PermissionMode.Yolo, resumedProjection.Snapshot().State.Mode);
+        Assert.False(resumedProjection.Snapshot().State.PlanEnabled);
+    }
+
+    [Fact]
+    public async Task PlanApproval_UsesPermissionModeChangedWhilePlanning()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("ExitPlanMode", new { plan = "1. Write the file." }),
+            FinalText("Implementing now."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        Assert.True((await runtime.SubmitAsync(new SetModeCommand(
+            StrongId.NewCommandId(), session.Id, 0, Mode: PermissionMode.Edit, PlanEnabled: true),
+            CancellationToken.None)).Accepted);
+        Assert.Equal(PermissionMode.Edit, projection.Snapshot().State.Mode);
+        Assert.True(projection.Snapshot().State.PlanEnabled);
+
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Plan the work"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted);
+        var permission = await WaitForPermissionAsync(projection);
+        await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        Assert.Equal(PermissionMode.Edit, projection.Snapshot().State.Mode);
+        Assert.False(projection.Snapshot().State.PlanEnabled);
+    }
+
+    [Fact]
+    public async Task Resume_WhilePlanIsActive_PreservesModeAndPlanFlag()
+    {
+        await using var harness = TestHarness.Create(FinalText("Still planning."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
+            CancellationToken.None);
+
+        using var projection = runtime.Subscribe(session.Id);
+        var ack = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Keep planning"),
+            CancellationToken.None);
+        Assert.True(ack.Accepted);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var resumedProjection = resumed.Subscribe(session.Id);
+        Assert.Equal(PermissionMode.Yolo, resumedProjection.Snapshot().State.Mode);
+        Assert.True(resumedProjection.Snapshot().State.PlanEnabled);
     }
 
     [Fact]
@@ -163,7 +262,8 @@ public class PlanModeEndToEndTests
 
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
             CancellationToken.None);
 
         using var projection = runtime.Subscribe(session.Id);
@@ -181,7 +281,8 @@ public class PlanModeEndToEndTests
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
 
         var snapshot = projection.Snapshot();
-        Assert.Equal(PermissionMode.Plan, snapshot.State.Mode);
+        Assert.Equal(PermissionMode.Yolo, snapshot.State.Mode);
+        Assert.True(snapshot.State.PlanEnabled);
         Assert.Equal(
             ["plan something", "Use the existing parser instead."],
             snapshot.Rows.OfType<UserMessageRow>().Select(row => row.Text).ToArray());
@@ -204,7 +305,8 @@ public class PlanModeEndToEndTests
 
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
             CancellationToken.None);
 
         using var projection = runtime.Subscribe(session.Id);
@@ -245,7 +347,8 @@ public class PlanModeEndToEndTests
 
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
             CancellationToken.None);
 
         using var projection = runtime.Subscribe(session.Id);
@@ -262,7 +365,8 @@ public class PlanModeEndToEndTests
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
 
         var snapshot = projection.Snapshot();
-        Assert.Equal(PermissionMode.Plan, snapshot.State.Mode);
+        Assert.Equal(PermissionMode.Yolo, snapshot.State.Mode);
+        Assert.True(snapshot.State.PlanEnabled);
         Assert.Contains(snapshot.Rows, r => r is ToolCallRow t
             && t.ToolName == "ExitPlanMode" && t.Status == ToolCallStatus.Failed);
     }
@@ -295,14 +399,15 @@ public class PlanModeEndToEndTests
         }
     }
 
-    private static async Task WaitForModeAsync(IConversationProjection projection, PermissionMode mode)
+    private static async Task WaitForPlanEnabledAsync(IConversationProjection projection, bool expected)
     {
         var deadline = Task.Delay(TimeSpan.FromSeconds(30));
-        while (projection.Snapshot().State.Mode != mode)
+        while (projection.Snapshot().State.PlanEnabled != expected)
         {
             if (deadline.IsCompleted)
             {
-                throw new TimeoutException($"Mode never reached {mode} (current: {projection.Snapshot().State.Mode}).");
+                throw new TimeoutException(
+                    $"PlanEnabled never reached {expected} (current: {projection.Snapshot().State.PlanEnabled}).");
             }
             await Task.Delay(20);
         }

@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
@@ -15,8 +16,9 @@ namespace Alcoler.Kernel.Subagents;
 
 /// <summary>
 /// Bridges SubagentService to real runtimes: each request gets a child AgentRuntime sharing
-/// the parent's store/workspace/providers with the subagent dispatch tools removed and the
-/// tool set filtered to the agent type's scope. The child's system prompt is composed from
+/// the parent's store/workspace/providers and inheriting the parent session's model selection
+/// (unless the request overrides it) with no runtime-default fallback, with the subagent
+/// dispatch tools removed and the tool set filtered to the agent type's scope. The child's system prompt is composed from
 /// SubagentPrompts and installed via the per-session CustomSystemPrompt channel. Children
 /// inherit plan mode when the parent is planning; otherwise they run in Yolo because no UI
 /// answers a child broker and the parent already approved the Agent call. Interactive
@@ -81,8 +83,25 @@ public static class SubagentWiring
     private static string ResolveArtifactsRoot(AgentRuntime runtime) =>
         runtime.Options.SubagentOutputRoot ?? Path.Combine(Path.GetTempPath(), "alcoler-agents");
 
-    public static PermissionMode ResolveChildMode(PermissionMode parentMode) =>
-        parentMode == PermissionMode.Plan ? PermissionMode.Plan : PermissionMode.Yolo;
+    public static PermissionMode ResolveChildMode(PermissionMode parentMode, bool parentPlanEnabled = false) =>
+        parentPlanEnabled || parentMode == PermissionMode.Plan
+            ? parentMode == PermissionMode.Plan ? PermissionMode.Edit : parentMode
+            : PermissionMode.Yolo;
+
+    /// <summary>
+    /// A child runs on the parent session's model unless the request names one explicitly.
+    /// A missing selection is an error; substituting the runtime default would silently run
+    /// the child on a model the parent is not using.
+    /// </summary>
+    public static ModelSelection ResolveChildModelSelection(
+        ModelSelection? requestSelection,
+        ModelSelection? parentSelection,
+        SessionId parentSessionId) =>
+        requestSelection
+        ?? parentSelection
+        ?? throw new InvalidOperationException(
+            $"No model is selected for parent session {parentSessionId.Value}; " +
+            "subagents inherit the parent session model and do not fall back to a runtime default.");
 
     /// <summary>
     /// ExitPlanMode is removed from every child because plan approval exists only at the parent;
@@ -92,11 +111,12 @@ public static class SubagentWiring
         IReadOnlyList<ITool> tools,
         SubagentRequest request,
         RespondToCoordinatorTool? coordinatorResponse = null,
-        PermissionMode childMode = PermissionMode.Yolo)
+        PermissionMode childMode = PermissionMode.Yolo,
+        bool childPlanEnabled = false)
     {
         var hidden = new HashSet<string>(ChildHiddenTools, StringComparer.OrdinalIgnoreCase);
         IEnumerable<ITool> scope = tools.Where(tool => !hidden.Contains(tool.Contract.Name));
-        if (childMode == PermissionMode.Plan)
+        if (childPlanEnabled || childMode == PermissionMode.Plan)
         {
             // No UI answers a child broker; interactive tools would stall until the broker timeout.
             scope = scope.Where(tool => !tool.Metadata.RequiresUserInteraction);
@@ -132,10 +152,22 @@ public static class SubagentWiring
             ?? throw new InvalidOperationException(
                 $"parent session {request.ParentSessionId} was not found; subagents need a WorkspaceRoot");
         var inheritedShell = parentRuntime?.Shell ?? parentRecord?.Shell;
-        var parentMode = parentRuntime?.Mode ?? parentRecord?.PermissionMode ?? PermissionMode.Yolo;
-        var childMode = ResolveChildMode(parentMode);
+        var rawParentMode = parentRuntime?.Mode ?? parentRecord?.PermissionMode ?? PermissionMode.Yolo;
+        var parentMode = rawParentMode == PermissionMode.Plan
+            ? parentRecord?.PreviousPermissionMode is { } previous && previous != PermissionMode.Plan
+                ? previous
+                : PermissionMode.Edit
+            : rawParentMode;
+        var parentPlanEnabled = parentRuntime?.PlanEnabled
+            ?? parentRecord?.PlanEnabled
+            ?? parentRecord?.PermissionMode == PermissionMode.Plan;
+        var childMode = ResolveChildMode(parentMode, parentPlanEnabled);
+        var childPlanEnabled = parentPlanEnabled;
 
-        var selection = request.ModelSelection ?? runtime.CurrentDefaultModel;
+        var selection = ResolveChildModelSelection(
+            request.ModelSelection,
+            parentRuntime?.ModelSelection ?? parentRecord?.ModelSelection,
+            request.ParentSessionId);
         string BuildChildPrompt(ShellEnvironment? shell) => SubagentPrompts.BuildChildSystemPrompt(
             request.AgentType,
             new SubagentEnvironmentFacts(
@@ -144,8 +176,8 @@ public static class SubagentWiring
                 RuntimeEnvironmentFacts.Platform,
                 shell?.Name ?? options.ShellName ?? RuntimeEnvironmentFacts.Shell,
                 RuntimeEnvironmentFacts.OsVersion,
-                selection?.ProviderId,
-                selection?.ModelId));
+                selection.ProviderId,
+                selection.ModelId));
 
         var responseTool = new RespondToCoordinatorTool(
             id,
@@ -162,7 +194,8 @@ public static class SubagentWiring
             Store = options.Store,
             Artifacts = options.Artifacts,
             Providers = runtime.CurrentProviders,
-            Tools = SelectChildTools(parentRuntime?.ToolRegistry.Tools ?? options.Tools, request, responseTool, childMode),
+            Tools = SelectChildTools(parentRuntime?.ToolRegistry.Tools ?? options.Tools, request, responseTool,
+                childMode, childPlanEnabled),
             WorkspaceFactory = options.WorkspaceFactory,
             PermissionRules = options.PermissionRules,
             Clock = options.Clock,
@@ -179,8 +212,9 @@ public static class SubagentWiring
         });
 
         var handle = await childRuntime.CreateSessionAsync(
-            new SessionOptions(root, request.Description, childMode, request.ModelSelection,
-                ParentSessionId: request.ParentSessionId, Shell: inheritedShell),
+            new SessionOptions(root, request.Description, childMode, selection,
+                ParentSessionId: request.ParentSessionId, Shell: inheritedShell,
+                PlanEnabled: childPlanEnabled),
             ct);
 
         runtime.RegisterSubagentRuntime(request.ParentSessionId, handle.Id, childRuntime);

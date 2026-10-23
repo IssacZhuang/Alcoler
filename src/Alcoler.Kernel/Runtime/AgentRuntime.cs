@@ -104,18 +104,25 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         var now = _options.Clock.GetUtcNow();
         var title = options.Title ?? "New session";
         var selection = options.ModelSelection ?? Volatile.Read(ref _defaultModel);
+        // Plan is a legacy SessionOptions value: fold it into the flag and keep a usable
+        // underlying permission mode instead of writing Plan into the record.
+        var permissionMode = options.PermissionMode == PermissionMode.Plan
+            ? PermissionMode.Edit
+            : options.PermissionMode;
+        var planEnabled = options.PlanEnabled || options.PermissionMode == PermissionMode.Plan;
         var record = new SessionRecord(
             StrongId.NewSessionId(),
             options.WorkspaceRoot,
             title,
-            options.PermissionMode,
+            permissionMode,
             selection,
             now,
             now,
             ParentSessionId: options.ParentSessionId,
             TitleSource: options.Title is null ? SessionTitleSource.Default : SessionTitleSource.Custom,
             Shell: options.Shell,
-            ActiveWorkflows: activeWorkflows.Count == 0 ? null : activeWorkflows);
+            ActiveWorkflows: activeWorkflows.Count == 0 ? null : activeWorkflows,
+            PlanEnabled: planEnabled);
         await _options.Store.UpsertSessionAsync(record, cancellationToken).ConfigureAwait(false);
         await CreateRuntimeAsync(record, isNewSession: true, cancellationToken).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
@@ -178,11 +185,16 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         }
 
         var now = _options.Clock.GetUtcNow();
+        var parentMode = parent.PermissionMode == PermissionMode.Plan
+            ? parent.PreviousPermissionMode is { } previous && previous != PermissionMode.Plan
+                ? previous
+                : PermissionMode.Edit
+            : parent.PermissionMode;
         var child = new SessionRecord(
             StrongId.NewSessionId(),
             parent.WorkspaceRoot,
             $"Fork of {parent.Title}",
-            parent.PermissionMode,
+            parentMode,
             parent.ModelSelection,
             now,
             now,
@@ -192,8 +204,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             Shell: parent.Shell,
             ForkedFromSessionId: parent.Id,
             ForkedFromMessageId: boundaryMessageId,
-            PreviousPermissionMode: parent.PreviousPermissionMode,
-            ActiveWorkflows: parent.ActiveWorkflows);
+            ActiveWorkflows: parent.ActiveWorkflows,
+            PlanEnabled: parent.PlanEnabled || parent.PermissionMode == PermissionMode.Plan);
         var copied = active.Take(copyEnd).Select(storedMessage => storedMessage.Message).ToList();
         var events = new List<SequencedEvent>(copied.Count + completedTails.Count);
         long sequence = 1;
@@ -518,8 +530,6 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         _sessions.TryGetValue(sessionId, out var runtime) ? runtime : null;
 
     internal IReadOnlyList<IModelProvider> CurrentProviders => Volatile.Read(ref _providers);
-
-    internal ModelSelection? CurrentDefaultModel => Volatile.Read(ref _defaultModel);
 
     public void ApplyProviderConfiguration(IReadOnlyList<IModelProvider> providers, ModelSelection? defaultModel)
     {

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Alcoler.Ui;
 using Alcoler.Controls;
+using Alcoler.Localization;
 using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
@@ -409,7 +410,7 @@ public partial class MainWindow : Window
         {
             var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
             {
-                Title = "Open workspace folder",
+                Title = Loc.Get("main_folder_picker_title"),
                 AllowMultiple = false,
             });
             if (folders.Count > 0 && folders[0].TryGetLocalPath() is { } path)
@@ -420,7 +421,7 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            _viewModel.Banner = $"Could not open the folder picker. {exception.Message}";
+            _viewModel.Banner = Loc.Get("main_folder_picker_error", exception.Message);
         }
     }
 
@@ -436,7 +437,7 @@ public partial class MainWindow : Window
         {
             if (_viewModel is not null)
             {
-                _viewModel.Banner = $"Could not open the default workspace. {exception.Message}";
+                _viewModel.Banner = Loc.Get("main_default_workspace_error", exception.Message);
             }
         }
     }

@@ -3,6 +3,7 @@
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:views="using:Alcoler.Views"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.DocumentWorkspaceView"
              x:DataType="vm:WorkbenchViewModel">
   <UserControl.DataTemplates>
@@ -12,8 +13,8 @@
     <DataTemplate DataType="vm:TextDocumentViewModel"><views:FileDocumentView /></DataTemplate>
     <DataTemplate DataType="vm:PlanDocumentViewModel"><views:PlanDocumentView /></DataTemplate>
     <DataTemplate DataType="vm:SubagentDocumentViewModel" x:DataType="vm:SubagentDocumentViewModel">
-      <views:TimelineView DataContext="{Binding Conversation}" EmptyTitle="No agent output yet"
-                          EmptyDescription="This agent's messages, thinking and tool calls will appear here." />
+      <views:TimelineView DataContext="{Binding Conversation}" EmptyTitle="{loc:Loc docs_subagent_empty_title}"
+                          EmptyDescription="{loc:Loc docs_subagent_empty_description}" />
     </DataTemplate>
   </UserControl.DataTemplates>
   <UserControl.Styles>
@@ -55,13 +56,13 @@
     <Border x:Name="DocumentHeader" BorderThickness="0"
             PointerPressed="OnHeaderPointerPressed">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="8,0,6,0" ColumnSpacing="4">
-        <Button x:Name="DocumentOverviewButton" Classes="icon" ToolTip.Tip="Search tabs" AutomationProperties.Name="Search tabs"
+        <Button x:Name="DocumentOverviewButton" Classes="icon" ToolTip.Tip="{loc:Loc docs_search_tabs}" AutomationProperties.Name="{loc:Loc docs_search_tabs}"
                 VerticalAlignment="Center">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSearch}" />
           <Button.Flyout>
             <Flyout Placement="BottomEdgeAlignedLeft">
               <StackPanel Width="280" Spacing="8">
-                <TextBox x:Name="DocumentSearch" Watermark="Search tabs" TextChanged="OnSearchChanged" FontSize="12" />
+                <TextBox x:Name="DocumentSearch" Watermark="{loc:Loc docs_search_tabs}" TextChanged="OnSearchChanged" FontSize="12" />
                 <ScrollViewer MaxHeight="320" HorizontalScrollBarVisibility="Disabled">
                   <ItemsControl x:Name="DocumentOverviewItems" ItemsSource="{Binding Documents.VisibleItems}">
                     <ItemsControl.ItemTemplate>
@@ -96,17 +97,17 @@
                     <TextBlock Grid.Column="1" Text="{Binding Title}" FontSize="12" VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis" />
                     <Button Grid.Column="2" Classes="icon tiny documentClose" Click="OnCloseDocumentClick"
-                            ToolTip.Tip="Close tab" AutomationProperties.Name="Close tab">
+                            ToolTip.Tip="{loc:Loc docs_close_tab}" AutomationProperties.Name="{loc:Loc docs_close_tab}">
                       <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
                     </Button>
                   </Grid>
                   <Border.ContextMenu>
                     <ContextMenu>
-                      <MenuItem Header="Close" Click="OnCloseDocumentClick" />
-                      <MenuItem Header="Close others" Click="OnCloseOthersClick" />
-                      <MenuItem Header="Close all" Click="OnCloseAllClick" />
-                      <MenuItem Header="Move left" Click="OnMoveLeftClick" />
-                      <MenuItem Header="Move right" Click="OnMoveRightClick" />
+                      <MenuItem Header="{loc:Loc docs_tab_close}" Click="OnCloseDocumentClick" />
+                      <MenuItem Header="{loc:Loc docs_tab_close_others}" Click="OnCloseOthersClick" />
+                      <MenuItem Header="{loc:Loc docs_tab_close_all}" Click="OnCloseAllClick" />
+                      <MenuItem Header="{loc:Loc docs_tab_move_left}" Click="OnMoveLeftClick" />
+                      <MenuItem Header="{loc:Loc docs_tab_move_right}" Click="OnMoveRightClick" />
                     </ContextMenu>
                   </Border.ContextMenu>
                 </Border>
@@ -115,21 +116,21 @@
           </ItemsControl>
         </ScrollViewer>
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-          <Button x:Name="AddDocumentButton" Classes="icon" ToolTip.Tip="New tab" AutomationProperties.Name="New tab">
+          <Button x:Name="AddDocumentButton" Classes="icon" ToolTip.Tip="{loc:Loc docs_new_tab}" AutomationProperties.Name="{loc:Loc docs_new_tab}">
             <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPlus}" />
             <Button.Flyout>
               <Flyout Placement="BottomEdgeAlignedRight">
                 <StackPanel MinWidth="180" Spacing="2">
-                  <Button Classes="ghost" Content="Changes" Click="OnOpenChangesClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
-                  <Button Classes="ghost" Content="Terminal" Click="OnOpenTerminalClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
-                  <Button Classes="ghost" Content="Browser" Click="OnOpenBrowserClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
-                  <Button Classes="ghost" Content="Open file..." Click="OnOpenFileClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
+                  <Button Classes="ghost" Content="{loc:Loc status_changes}" Click="OnOpenChangesClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
+                  <Button Classes="ghost" Content="{loc:Loc status_terminal}" Click="OnOpenTerminalClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
+                  <Button Classes="ghost" Content="{loc:Loc browser_title}" Click="OnOpenBrowserClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
+                  <Button Classes="ghost" Content="{loc:Loc docs_open_file}" Click="OnOpenFileClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" />
                 </StackPanel>
               </Flyout>
             </Button.Flyout>
           </Button>
           <Button x:Name="CollapseDocumentsButton" Classes="icon" Command="{Binding Documents.CollapseCommand}"
-                  ToolTip.Tip="Collapse side panel (Ctrl+Alt+B)" AutomationProperties.Name="Collapse side panel">
+                  ToolTip.Tip="{loc:Loc docs_collapse_tooltip}" AutomationProperties.Name="{loc:Loc docs_collapse_a11y}">
             <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconPanel}" />
           </Button>
         </StackPanel>
@@ -141,10 +142,10 @@
                   IsVisible="{Binding !Documents.HasDocuments}" Margin="24">
         <controls:Icon Data="{StaticResource AlcolerIconPanel}" Width="32" Height="32" HorizontalAlignment="Center"
                        Stroke="{DynamicResource AlcolerTextTertiary}" />
-        <TextBlock Text="Open a tab" FontSize="14" HorizontalAlignment="Center" />
-        <TextBlock Text="Files, changes, browser, terminal and more" FontSize="12" TextWrapping="Wrap" TextAlignment="Center"
+        <TextBlock Text="{loc:Loc docs_empty_title}" FontSize="14" HorizontalAlignment="Center" />
+        <TextBlock Text="{loc:Loc docs_empty_description}" FontSize="12" TextWrapping="Wrap" TextAlignment="Center"
                    Foreground="{DynamicResource AlcolerTextSecondary}" />
-        <Button Classes="secondary" Content="Open tab" Click="OnOpenTabClick" HorizontalAlignment="Center" />
+        <Button Classes="secondary" Content="{loc:Loc docs_open_tab}" Click="OnOpenTabClick" HorizontalAlignment="Center" />
       </StackPanel>
       <ItemsControl x:Name="DocumentBodies" ItemsSource="{Binding Documents.Items}">
         <ItemsControl.ItemsPanel><ItemsPanelTemplate><Grid /></ItemsPanelTemplate></ItemsControl.ItemsPanel>

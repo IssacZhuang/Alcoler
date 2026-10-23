@@ -51,11 +51,12 @@ public sealed record SessionStartedEvent(
     string Title,
     PermissionMode Mode,
     ModelSelection? ModelSelection,
-    IReadOnlyList<string>? ActiveWorkflows = null) : SessionEvent;
+    IReadOnlyList<string>? ActiveWorkflows = null,
+    bool PlanEnabled = false) : SessionEvent;
 
 public sealed record SessionTitleChangedEvent(string Title) : SessionEvent;
 
-public sealed record SessionModeChangedEvent(PermissionMode Mode) : SessionEvent;
+public sealed record SessionModeChangedEvent(PermissionMode Mode, bool PlanEnabled = false) : SessionEvent;
 
 public sealed record SessionWorkflowsChangedEvent(IReadOnlyList<string> Active) : SessionEvent;
 
@@ -136,7 +137,8 @@ public sealed record QueuedInput(
     IReadOnlyList<FilePart>? Images = null,
     PermissionMode? Mode = null,
     ModelSelection? ModelSelection = null,
-    SendTextDelivery Delivery = SendTextDelivery.Queue);
+    SendTextDelivery Delivery = SendTextDelivery.Queue,
+    bool? PlanEnabled = null);
 
 public sealed record InputQueuedEvent(QueuedInput Input) : SessionEvent;
 

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Projections;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Tools;
@@ -332,16 +333,18 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
 
     public bool ShowStatus => HasError || Status != ToolCallStatus.Succeeded;
 
-    public string DisplayStatusText => HasError ? "Error" : Status switch
+    public string DisplayStatusText => HasError ? Loc.Get("status_error") : Status switch
     {
-        ToolCallStatus.Pending => "Pending",
-        ToolCallStatus.Running => "Running",
-        ToolCallStatus.AwaitingPermission => "Needs permission",
-        ToolCallStatus.Cancelled => "Cancelled",
+        ToolCallStatus.Pending => Loc.Get("status_pending"),
+        ToolCallStatus.Running => Loc.Get("status_running"),
+        ToolCallStatus.AwaitingPermission => Loc.Get("status_needs_permission"),
+        ToolCallStatus.Cancelled => Loc.Get("status_cancelled"),
         _ => string.Empty,
     };
 
-    public string AccessibleDurationText => string.IsNullOrEmpty(DurationText) ? string.Empty : $"Elapsed time {DurationText}";
+    public string AccessibleDurationText => string.IsNullOrEmpty(DurationText)
+        ? string.Empty
+        : Loc.Get("timeline_elapsed_time", DurationText);
 
     public bool HasImages => ImageMedia.Count > 0;
 
@@ -471,15 +474,15 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
 
     private static (string DisplayName, string IconPath) GetPresentation(string toolName) => toolName.ToLowerInvariant() switch
     {
-        "bash" or "shell" or "terminal" or "runcommand" => ("Terminal", ToolIcons.Terminal),
-        "read" or "readfile" => ("Read", ToolIcons.Read),
-        "edit" or "editfile" => ("Edit", ToolIcons.Edit),
-        "write" or "writefile" => ("Write", ToolIcons.Write),
-        "grep" or "glob" => ("Search", ToolIcons.Search),
-        "browser" => ("Browser", ToolIcons.Browser),
-        "todoread" or "todowrite" => ("Tasks", ToolIcons.Tasks),
-        "task" => ("Agent", ToolIcons.Agent),
-        "exitplanmode" => ("Plan", ToolIcons.Plan),
+        "bash" or "shell" or "terminal" or "runcommand" => (Loc.Get("timeline_tool_terminal"), ToolIcons.Terminal),
+        "read" or "readfile" => (Loc.Get("timeline_tool_read"), ToolIcons.Read),
+        "edit" or "editfile" => (Loc.Get("timeline_tool_edit"), ToolIcons.Edit),
+        "write" or "writefile" => (Loc.Get("timeline_tool_write"), ToolIcons.Write),
+        "grep" or "glob" => (Loc.Get("timeline_tool_search"), ToolIcons.Search),
+        "browser" => (Loc.Get("timeline_tool_browser"), ToolIcons.Browser),
+        "todoread" or "todowrite" => (Loc.Get("timeline_tool_tasks"), ToolIcons.Tasks),
+        "task" => (Loc.Get("timeline_tool_agent"), ToolIcons.Agent),
+        "exitplanmode" => (Loc.Get("timeline_tool_plan"), ToolIcons.Plan),
         _ => (toolName, ToolIcons.Tool),
     };
 
@@ -578,7 +581,9 @@ public sealed partial class FileChangeSummaryItemViewModel : TimelineItemViewMod
 
     public bool HasRemovedLines => _removed > 0;
 
-    public string FilesChangedText => _files.Count == 1 ? "1 file changed" : $"{_files.Count} files changed";
+    public string FilesChangedText => _files.Count == 1
+        ? Loc.Get("timeline_files_changed_one")
+        : Loc.Get("timeline_files_changed_many", _files.Count);
 
     public string AddedLinesText => $"+{_added}";
 
@@ -615,9 +620,9 @@ public sealed partial class SystemNoticeItemViewModel : TimelineItemViewModel
 
     public string DisplayKind => Kind.ToLowerInvariant() switch
     {
-        "turn_error" => "Error",
-        "compact" => "Context",
-        "subagent" => "Agent",
+        "turn_error" => Loc.Get("status_error"),
+        "compact" => Loc.Get("status_context"),
+        "subagent" => Loc.Get("timeline_tool_agent"),
         _ => string.Join(" ", Kind.Split(['_', '-'], StringSplitOptions.RemoveEmptyEntries)
             .Select(word => char.ToUpperInvariant(word[0]) + word[1..])),
     };

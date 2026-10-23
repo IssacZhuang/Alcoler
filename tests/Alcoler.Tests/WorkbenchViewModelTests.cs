@@ -69,7 +69,8 @@ public sealed class WorkbenchViewModelTests : IDisposable
         await draft.SendAsync();
 
         var persisted = Assert.Single(await runtime.ListSessionsAsync(null, 200, CancellationToken.None));
-        Assert.Equal(PermissionMode.Plan, persisted.PermissionMode);
+        Assert.Equal(PermissionMode.Yolo, persisted.PermissionMode);
+        Assert.True(persisted.PlanEnabled);
         Assert.Empty(draft.Composer.Draft);
         var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
         await WaitUntilAsync(() => conversation.Items.OfType<AssistantMessageItemViewModel>()
@@ -91,7 +92,8 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
         await draft.SendAsync();
 
-        Assert.Equal(PermissionMode.Plan, draft.Composer.Mode);
+        Assert.Equal(PermissionMode.Yolo, draft.Composer.Mode);
+        Assert.True(draft.Composer.PlanEnabled);
         Assert.Empty(draft.Composer.Draft);
         Assert.Null(draft.CreatedSessionId);
         Assert.Empty(await runtime.ListSessionsAsync(null, 200, CancellationToken.None));
@@ -333,7 +335,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
                 saveComposer: composer => (WorkbenchConfig.LoadOrDefault(configPath) with { Composer = composer }).Save(configPath));
             await workbench.OpenSessionAsync(session.Id);
             await WaitUntilAsync(() => workbench.Active!.Title.Length > 0, scheduler);
-            workbench.Active!.Composer.Mode = PermissionMode.Plan;
+            workbench.Active!.Composer.Mode = PermissionMode.Edit;
             Assert.Equal(PermissionMode.Yolo, Assert.Single(await runtime.ListSessionsAsync(null, 200, CancellationToken.None)).PermissionMode);
             await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
         }
@@ -348,15 +350,15 @@ public sealed class WorkbenchViewModelTests : IDisposable
         await WaitUntilAsync(() => restarted.Active!.CurrentSelection is not null, reopenedScheduler);
 
         var conversation = restarted.Active!;
-        Assert.Equal(PermissionMode.Plan, conversation.Composer.Mode);
+        Assert.Equal(PermissionMode.Edit, conversation.Composer.Mode);
         Assert.Equal(PermissionMode.Yolo, conversation.Composer.SessionMode);
-        conversation.Composer.Draft = "Continue in plan mode.";
+        conversation.Composer.Draft = "Continue in edit mode.";
         await conversation.SendAsync();
         await WaitUntilAsync(() => conversation.Items.OfType<AssistantMessageItemViewModel>()
             .Any(item => item.MarkdownText == "Plan restored." && !item.IsStreaming), reopenedScheduler);
-        Assert.Equal(PermissionMode.Plan, Assert.Single(await reopenedRuntime.ListSessionsAsync(null, 200, CancellationToken.None)).PermissionMode);
+        Assert.Equal(PermissionMode.Edit, Assert.Single(await reopenedRuntime.ListSessionsAsync(null, 200, CancellationToken.None)).PermissionMode);
         Assert.False(WorkbenchConfig.LoadOrDefault(configPath).Composer!.PendingSessionModes!.ContainsKey(session.Id.Value));
-        Assert.Equal(PermissionMode.Plan, conversation.Composer.Mode);
+        Assert.Equal(PermissionMode.Edit, conversation.Composer.Mode);
         await WaitUntilAsync(() => restarted.GitPane is { IsLoading: false }, reopenedScheduler);
     }
 

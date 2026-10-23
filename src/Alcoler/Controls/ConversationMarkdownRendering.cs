@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
+using Alcoler.Localization;
 using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
@@ -171,10 +172,10 @@ internal static class ConversationMarkdownRendering
         var block = new CTextBlockElement([new CRun { Text = code.TrimEnd('\n') }], "CodeBlock");
         var textBlock = (CTextBlock)block.Control;
         textBlock.TextWrapping = TextWrapping.NoWrap;
-        var copy = new Button { Content = "Copy" };
+        var copy = new Button { Content = Loc.Get("markdown_copy") };
         copy.Classes.Add("copyCode");
-        AutomationProperties.SetName(copy, "Copy code");
-        ToolTip.SetTip(copy, "Copy code");
+        AutomationProperties.SetName(copy, Loc.Get("markdown_copy_code"));
+        ToolTip.SetTip(copy, Loc.Get("markdown_copy_code"));
         copy.Click += async (_, e) =>
         {
             e.Handled = true;
@@ -183,12 +184,12 @@ internal static class ConversationMarkdownRendering
             try
             {
                 await clipboard.SetTextAsync(code);
-                copy.Content = "Copied";
-                DispatcherTimer.RunOnce(() => copy.Content = "Copy", TimeSpan.FromSeconds(1.2));
+                copy.Content = Loc.Get("markdown_copied");
+                DispatcherTimer.RunOnce(() => copy.Content = Loc.Get("markdown_copy"), TimeSpan.FromSeconds(1.2));
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.Runtime.InteropServices.ExternalException)
             {
-                copy.Content = "Copy failed";
+                copy.Content = Loc.Get("markdown_copy_failed");
             }
         };
         var label = new TextBlock { Text = language, VerticalAlignment = VerticalAlignment.Center };

@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Tools;
+using Alcoler.Localization;
 
 namespace Alcoler;
 
@@ -50,7 +51,8 @@ public sealed record WorkbenchComposerConfig(
     IReadOnlyDictionary<string, PermissionMode>? PendingSessionModes = null,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, ModelSelection>>? ModelSelections = null,
     IReadOnlyDictionary<string, ModelSelection>? RecentModelSelections = null,
-    IReadOnlyList<string>? RemovedWorkspaceRoots = null)
+    IReadOnlyList<string>? RemovedWorkspaceRoots = null,
+    bool DefaultPlanEnabled = false)
 {
     public const string DraftSessionKey = "__draft__";
 }
@@ -66,6 +68,7 @@ public sealed record WorkbenchConfig(
     WorkbenchDefaultModelConfig? DefaultModel = null,
     IReadOnlyList<WorkbenchMcpServerConfig>? McpServers = null,
     string Theme = "dark",
+    string Language = "auto",
     string? BraveApiKey = null,
     WorkbenchComposerConfig? Composer = null,
     ShellEnvironment? IntegratedTerminalShell = null,
@@ -95,6 +98,12 @@ public sealed record WorkbenchConfig(
         return parsed with
         {
             Theme = string.IsNullOrWhiteSpace(parsed.Theme) ? "dark" : parsed.Theme,
+            Language = parsed.Language?.Trim().ToLowerInvariant() switch
+            {
+                Loc.English => Loc.English,
+                Loc.Chinese => Loc.Chinese,
+                _ => Loc.Auto,
+            },
             AutoArchiveOlderThanDays = Math.Clamp(parsed.AutoArchiveOlderThanDays, 1, 365),
         };
     }

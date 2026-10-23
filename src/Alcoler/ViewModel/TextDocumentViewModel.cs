@@ -1,4 +1,5 @@
 using System.Text;
+using Alcoler.Localization;
 using Alcoler.Ui;
 using Avalonia.Controls.Primitives;
 using Avalonia.Media;
@@ -21,7 +22,7 @@ public sealed partial class TextDocumentViewModel : ObservableObject, IDisposabl
     {
         SourceLabel = sourceLabel;
         _text = text;
-        Language = string.IsNullOrWhiteSpace(language) ? "Plain text" : language;
+        Language = string.IsNullOrWhiteSpace(language) ? Loc.Get("docs_plain_text") : language;
         _scheduler = InlineUiScheduler.Instance;
     }
 
@@ -32,7 +33,7 @@ public sealed partial class TextDocumentViewModel : ObservableObject, IDisposabl
     {
         FilePath = filePath;
         SourceLabel = filePath;
-        Language = Path.GetExtension(filePath).TrimStart('.') is { Length: > 0 } extension ? extension : "Plain text";
+        Language = Path.GetExtension(filePath).TrimStart('.') is { Length: > 0 } extension ? extension : Loc.Get("docs_plain_text");
         _scheduler = scheduler;
         _openStream = openStream;
     }
@@ -46,6 +47,8 @@ public sealed partial class TextDocumentViewModel : ObservableObject, IDisposabl
     public string SourceLabel { get; }
 
     public string Language { get; }
+
+    public string ReadOnlyText => Loc.Get("docs_read_only_language", Language);
 
     public bool CanReload => FilePath is not null && !_disposed;
 
@@ -110,7 +113,7 @@ public sealed partial class TextDocumentViewModel : ObservableObject, IDisposabl
         }
         catch (Exception exception)
         {
-            result = new PreviewResult(string.Empty, $"Could not read this file. Check that it exists and is readable, then reload. {exception.Message}");
+            result = new PreviewResult(string.Empty, Loc.Get("docs_read_failed", exception.Message));
         }
         _scheduler.Post(() =>
         {
@@ -141,19 +144,18 @@ public sealed partial class TextDocumentViewModel : ObservableObject, IDisposabl
         cancellationToken.ThrowIfCancellationRequested();
         if (length > MaxFileBytes)
         {
-            return new PreviewResult(string.Empty, $"This file exceeds the {MaxFileBytes / 1024} KiB preview limit. Open a smaller file or use an external viewer.");
+            return new PreviewResult(string.Empty, Loc.Get("docs_preview_limit", MaxFileBytes / 1024));
         }
         try
         {
             var text = Decode(bytes.AsSpan(0, length));
             return text.Contains('\0')
-                ? new PreviewResult(string.Empty, "Binary files cannot be previewed as text. Open this file in an external application.")
+                ? new PreviewResult(string.Empty, Loc.Get("docs_binary"))
                 : new PreviewResult(text, null);
         }
         catch (DecoderFallbackException)
         {
-            return new PreviewResult(string.Empty,
-                "This file uses binary data or an unsupported encoding. Use UTF-8 or BOM-marked UTF-16/UTF-32 text, or open it in an external application.");
+            return new PreviewResult(string.Empty, Loc.Get("docs_unsupported_encoding"));
         }
     }
 

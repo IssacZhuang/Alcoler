@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Alcoler.ViewModel;
@@ -43,7 +44,7 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
 
     public bool IsArchived { get; }
 
-    public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? "Untitled session" : Title;
+    public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? Loc.Get("sidebar_untitled_session") : Title;
 
     public string UpdatedAtText => RelativeTime.Format(UpdatedAt);
 
@@ -67,7 +68,9 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
 
     public bool IsBusy => IsRunning || IsAwaitingConfirmation;
 
-    public string ActivityLabel => IsAwaitingConfirmation ? "Waiting for confirmation" : "Running";
+    public string ActivityLabel => IsAwaitingConfirmation
+        ? Loc.Get("sidebar_waiting_for_confirmation")
+        : Loc.Get("sidebar_activity_running");
 
     public bool IsCompleted => Indicator == SessionActivityIndicator.Completed;
 
@@ -168,10 +171,10 @@ public static class RelativeTime
         var delta = DateTimeOffset.UtcNow - utc;
         return delta switch
         {
-            { TotalMinutes: < 1 } => "just now",
-            { TotalMinutes: < 60 } => $"{(int)delta.TotalMinutes}m ago",
-            { TotalHours: < 24 } => $"{(int)delta.TotalHours}h ago",
-            { TotalDays: < 7 } => $"{(int)delta.TotalDays}d ago",
+            { TotalMinutes: < 1 } => Loc.Get("sidebar_relative_just_now"),
+            { TotalMinutes: < 60 } => Loc.Get("sidebar_relative_minutes", (int)delta.TotalMinutes),
+            { TotalHours: < 24 } => Loc.Get("sidebar_relative_hours", (int)delta.TotalHours),
+            { TotalDays: < 7 } => Loc.Get("sidebar_relative_days", (int)delta.TotalDays),
             _ => utc.ToLocalTime().ToString("yyyy-MM-dd"),
         };
     }
@@ -199,11 +202,13 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(ArchivedToggleToolTip))]
     private bool _isArchivedView;
 
-    public string HeaderTitle => IsArchivedView ? "Archived" : "Projects";
+    public string HeaderTitle => IsArchivedView ? Loc.Get("sidebar_archived") : Loc.Get("sidebar_projects");
 
-    public string EmptyText => IsArchivedView ? "No archived sessions" : "No sessions yet";
+    public string EmptyText => IsArchivedView ? Loc.Get("sidebar_empty_archived") : Loc.Get("sidebar_empty_active");
 
-    public string ArchivedToggleToolTip => IsArchivedView ? "Show active sessions" : "Show archived sessions";
+    public string ArchivedToggleToolTip => IsArchivedView
+        ? Loc.Get("sidebar_show_active_tooltip")
+        : Loc.Get("sidebar_show_archived_tooltip");
 
     public async Task RefreshAsync()
     {

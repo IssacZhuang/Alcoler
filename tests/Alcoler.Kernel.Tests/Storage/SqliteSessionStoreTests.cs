@@ -30,8 +30,8 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         await using var connection = OpenRawConnection();
         Assert.Equal("wal", ExecuteScalar(connection, "PRAGMA journal_mode;"));
-        Assert.Equal(7L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
-        Assert.Equal(7L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
+        Assert.Equal(8L, ExecuteScalar(connection, "SELECT COUNT(*) FROM schema_version;"));
+        Assert.Equal(8L, ExecuteScalar(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         using var column = connection.CreateCommand();
         column.CommandText = "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('session') WHERE name = 'title_source'";
         using var reader = column.ExecuteReader();
@@ -112,7 +112,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         await using var reopened = await NewInitializedStoreAsync();
         AssertMetadata(Assert.IsType<SessionRecord>(await reopened.GetSessionAsync(record.Id, CancellationToken.None)));
         await using var raw = OpenRawConnection();
-        Assert.Equal(7L, ExecuteScalar(raw, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(8L, ExecuteScalar(raw, "SELECT MAX(version) FROM schema_version"));
         using var previousModeColumn = raw.CreateCommand();
         previousModeColumn.CommandText = "SELECT type FROM pragma_table_info('session') WHERE name = 'previous_permission_mode'";
         Assert.Equal("TEXT", previousModeColumn.ExecuteScalar());
@@ -128,13 +128,42 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         void AssertMetadata(SessionRecord loaded)
         {
-            Assert.Equal(record with { Branch = null }, loaded with { Branch = null });
+            // Legacy Plan rows are folded into the orthogonal plan flag on read.
+            Assert.Equal(
+                record with
+                {
+                    Branch = null,
+                    PermissionMode = PermissionMode.Edit,
+                    PlanEnabled = true,
+                    PreviousPermissionMode = null,
+                },
+                loaded with { Branch = null });
             Assert.NotNull(loaded.Branch);
             Assert.Equal(branch.CutAfterMessageId, loaded.Branch.CutAfterMessageId);
             Assert.Equal(branch.KeptMessageIds, loaded.Branch.KeptMessageIds);
             Assert.Null(loaded.Branch.CutEventSequence);
             Assert.Null(loaded.Shell);
         }
+    }
+
+    [Fact]
+    public async Task PlanEnabled_RoundTripsAcrossRestart()
+    {
+        var record = NewRecord() with { PermissionMode = PermissionMode.Edit, PlanEnabled = true };
+        await using (var store = await NewInitializedStoreAsync())
+        {
+            await store.UpsertSessionAsync(record, CancellationToken.None);
+        }
+
+        await using var reopened = await NewInitializedStoreAsync();
+        var loaded = Assert.IsType<SessionRecord>(await reopened.GetSessionAsync(record.Id, CancellationToken.None));
+        Assert.Equal(PermissionMode.Edit, loaded.PermissionMode);
+        Assert.True(loaded.PlanEnabled);
+        Assert.Null(loaded.PreviousPermissionMode);
+
+        var summary = Assert.Single(await reopened.ListSessionsAsync(null, 10, CancellationToken.None));
+        Assert.Equal(PermissionMode.Edit, summary.PermissionMode);
+        Assert.True(summary.PlanEnabled);
     }
 
     [Fact]
@@ -591,7 +620,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         foreach (var record in expected)
             Assert.Equal(record, await reopened.GetSessionAsync(record.Id, CancellationToken.None));
         await using var connection = OpenRawConnection();
-        Assert.Equal(7L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(8L, ExecuteScalar(connection, "SELECT MAX(version) FROM schema_version"));
         Assert.Equal(0L, ExecuteScalar(connection, "SELECT COUNT(*) FROM session WHERE title_source = 'legacy'"));
     }
 

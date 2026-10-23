@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Kernel.Workflows;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Alcoler.ViewModel;
@@ -15,7 +16,6 @@ public sealed partial class ComposerViewModel : ObservableObject
     private string? _workspaceRoot;
     private int? _historyIndex;
     private bool _recalling;
-    private PermissionMode _lastNonPlanMode = PermissionMode.Yolo;
 
     public ComposerViewModel(ComposerPromptHistory? history = null)
     {
@@ -52,7 +52,7 @@ public sealed partial class ComposerViewModel : ObservableObject
         {
             foreach (var image in images)
                 image.Dispose();
-            InputError = "You can attach up to 8 images.";
+            InputError = Loc.Get("composer_attachment_limit");
             return;
         }
         InputError = null;
@@ -125,12 +125,15 @@ public sealed partial class ComposerViewModel : ObservableObject
 
     public event Action<PermissionMode>? ModeSelected;
 
-    internal void RestoreMode(PermissionMode mode)
+    public event Action<bool>? PlanModeSelected;
+
+    internal void RestoreExecutionState(PermissionMode mode, bool planEnabled)
     {
         _restoringMode = true;
         try
         {
-            Mode = mode;
+            Mode = mode == PermissionMode.Plan ? PermissionMode.Edit : mode;
+            PlanEnabled = planEnabled || mode == PermissionMode.Plan;
         }
         finally
         {
@@ -153,6 +156,12 @@ public sealed partial class ComposerViewModel : ObservableObject
     [ObservableProperty]
     private PermissionMode _sessionMode = PermissionMode.Yolo;
 
+    [ObservableProperty]
+    private bool _planEnabled;
+
+    [ObservableProperty]
+    private bool _sessionPlanEnabled;
+
     // Session-confirmed workflows mirror SessionMode; armed workflows apply to drafts that
     // have not created a session yet.
     [ObservableProperty]
@@ -164,31 +173,28 @@ public sealed partial class ComposerViewModel : ObservableObject
     public bool IsOrchestratorActive =>
         SessionWorkflows.Contains(OrchestratorWorkflow.Id) || ArmedWorkflows.Contains(OrchestratorWorkflow.Id);
 
-    public PermissionMode DisplayMode
+    public string ModeLabel => Mode switch
     {
-        get => Mode == PermissionMode.Plan ? _lastNonPlanMode : Mode;
-        set
-        {
-            if (value == PermissionMode.Plan || value == Mode)
-                return;
-            Mode = value;
-        }
-    }
+        PermissionMode.Yolo => Loc.Get("composer_mode_full_access"),
+        PermissionMode.Build => Loc.Get("composer_mode_build"),
+        PermissionMode.Edit => Loc.Get("composer_mode_edit"),
+        _ => Mode.ToString(),
+    };
 
-    public string ModeLabel => DisplayMode == PermissionMode.Yolo ? "Full access" : DisplayMode.ToString();
+    public bool IsFullAccess => Mode == PermissionMode.Yolo;
 
-    public bool IsFullAccess => DisplayMode == PermissionMode.Yolo;
-
-    public bool IsPlanMode => Mode == PermissionMode.Plan;
+    public bool IsPlanMode => PlanEnabled;
 
     public bool ShowStop => IsTurnActive && string.IsNullOrWhiteSpace(Draft) && !HasAttachments;
 
+    private bool MatchesSessionState => Mode == SessionMode && PlanEnabled == SessionPlanEnabled;
+
     public bool CanSend => !IsSending && (!string.IsNullOrWhiteSpace(Draft) || HasAttachments)
-        && (!IsTurnActive || Mode == SessionMode);
+        && (!IsTurnActive || MatchesSessionState);
 
     public string SendHint => IsTurnActive
-        ? Mode == SessionMode ? "Queue message (Enter)" : "Stop the active turn before changing permissions"
-        : "Send message (Enter)";
+        ? MatchesSessionState ? Loc.Get("composer_send_hint_queue") : Loc.Get("composer_send_hint_stop_first")
+        : Loc.Get("composer_send_hint_send");
 
     public void ClearIfSendable(string sentText, IReadOnlyList<InputImageBlock>? images = null)
     {
@@ -218,6 +224,8 @@ public sealed partial class ComposerViewModel : ObservableObject
     partial void OnIsSendingChanged(bool value) => OnPropertyChanged(nameof(CanSend));
 
     partial void OnSessionModeChanged(PermissionMode value) => NotifySendState();
+
+    partial void OnSessionPlanEnabledChanged(bool value) => NotifySendState();
 
     partial void OnSessionWorkflowsChanged(IReadOnlyList<string> value) => OnPropertyChanged(nameof(IsOrchestratorActive));
 
@@ -260,16 +268,22 @@ public sealed partial class ComposerViewModel : ObservableObject
 
     partial void OnModeChanged(PermissionMode value)
     {
-        if (value != PermissionMode.Plan)
-            _lastNonPlanMode = value;
-        OnPropertyChanged(nameof(DisplayMode));
         OnPropertyChanged(nameof(ModeLabel));
         OnPropertyChanged(nameof(IsFullAccess));
-        OnPropertyChanged(nameof(IsPlanMode));
         NotifySendState();
         if (!_restoringMode)
         {
             ModeSelected?.Invoke(value);
+        }
+    }
+
+    partial void OnPlanEnabledChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsPlanMode));
+        NotifySendState();
+        if (!_restoringMode)
+        {
+            PlanModeSelected?.Invoke(value);
         }
     }
 

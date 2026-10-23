@@ -1,4 +1,5 @@
 using Alcoler.Kernel.Skills;
+using Alcoler.Localization;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Avalonia.Controls;
@@ -50,9 +51,9 @@ public partial class SettingsDialog : Window
         }
 
         var message = count == 1
-            ? "This permanently deletes 1 archived task and its conversation. This cannot be undone."
-            : $"This permanently deletes {count} archived tasks and their conversations. This cannot be undone.";
-        if (!await ConfirmDialog.ShowAsync(this, message, "Delete"))
+            ? Loc.Get("settings_archived_delete_confirm_one")
+            : Loc.Get("settings_archived_delete_confirm_many", count);
+        if (!await ConfirmDialog.ShowAsync(this, message, Loc.Get("common_delete")))
         {
             return;
         }
@@ -141,7 +142,7 @@ public partial class SettingsDialog : Window
             try { await Launcher.LaunchUriAsync(uri); }
             catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
             {
-                _viewModel.Error = $"Could not open API key management: {ex.Message}";
+                _viewModel.Error = Loc.Get("settings_could_not_open_api_key", ex.Message);
             }
         }
     }
@@ -155,7 +156,7 @@ public partial class SettingsDialog : Window
         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
             var input = this.GetVisualDescendants().OfType<TextBox>()
-                .FirstOrDefault(box => ReferenceEquals(box.DataContext, provider) && box.Watermark == "Provider name");
+                .FirstOrDefault(box => ReferenceEquals(box.DataContext, provider) && box.Name == "ProviderNameBox");
             if (input is not null)
             {
                 input.Focus();
@@ -193,12 +194,12 @@ public partial class SettingsDialog : Window
         SessionsPanel.IsVisible = section == "sessions";
         SectionTitle.Text = section switch
         {
-            "runtime" => "Runtime",
-            "appearance" => "Appearance",
-            "sessions" => "Sessions",
-            "mcp" => "MCP servers",
-            "skills" => "Skills",
-            _ => "Model providers",
+            "runtime" => Loc.Get("settings_runtime"),
+            "appearance" => Loc.Get("settings_appearance"),
+            "sessions" => Loc.Get("settings_sessions"),
+            "mcp" => Loc.Get("settings_mcp"),
+            "skills" => Loc.Get("settings_skills"),
+            _ => Loc.Get("settings_providers"),
         };
     }
 }

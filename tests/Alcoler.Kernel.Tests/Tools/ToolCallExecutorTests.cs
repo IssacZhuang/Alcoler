@@ -161,7 +161,7 @@ public class ToolCallExecutorTests
         var tool = new ExitPlanModeTool();
         var gate = new ScriptedPermissionGate(PermissionDecision.Deny);
         var executor = new ToolCallExecutor(
-            new ToolRegistry([tool]), gate, static _ => PermissionMode.Plan);
+            new ToolRegistry([tool]), gate, static _ => new ExecutionState(PermissionMode.Edit, PlanEnabled: true));
         var call = new ToolCall(
             StrongId.NewToolCallId(),
             "ExitPlanMode",

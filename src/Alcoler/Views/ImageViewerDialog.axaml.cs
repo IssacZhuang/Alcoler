@@ -1,4 +1,5 @@
 using Alcoler.Adapters.Storage;
+using Alcoler.Localization;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Avalonia;
@@ -32,7 +33,7 @@ public partial class ImageViewerDialog : Window
 
     internal ImageViewerDialog(string? fileName, Func<CancellationToken, Task<Bitmap?>> loader) : this()
     {
-        FileNameLabel.Text = string.IsNullOrWhiteSpace(fileName) ? "Image preview" : fileName;
+        FileNameLabel.Text = string.IsNullOrWhiteSpace(fileName) ? Loc.Get("imageviewer_title") : fileName;
         Title = FileNameLabel.Text;
         _loader = loader;
     }
@@ -77,7 +78,7 @@ public partial class ImageViewerDialog : Window
             }
             if (bitmap is null)
             {
-                ShowError("The image is no longer available.");
+                ShowError(Loc.Get("imageviewer_unavailable"));
                 return;
             }
             PreviewImage.Source = _bitmap = bitmap;
@@ -92,7 +93,7 @@ public partial class ImageViewerDialog : Window
             or ArgumentException or NotSupportedException or ObjectDisposedException)
         {
             if (!_closed)
-                ShowError("Could not open this image.");
+                ShowError(Loc.Get("imageviewer_open_failed"));
         }
     }
 

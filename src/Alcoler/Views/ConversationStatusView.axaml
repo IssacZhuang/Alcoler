@@ -3,10 +3,11 @@
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
              xmlns:views="using:Alcoler.Views"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.ConversationStatusView"
              x:Name="StatusView"
              x:DataType="vm:ConversationStatusViewModel"
-             AutomationProperties.Name="Status"
+             AutomationProperties.Name="{loc:Loc status_a11y}"
              HorizontalAlignment="Right" VerticalAlignment="Top"
              MaxWidth="320" MaxHeight="512" IsVisible="{Binding IsCardVisible, FallbackValue=False}">
   <UserControl.Resources>
@@ -41,9 +42,9 @@
             </StackPanel>
           </Grid>
         </Button>
-        <Button Grid.Column="1" Classes="stopActivity" Content="Stop" Click="OnStopActivityClick"
-                IsVisible="{Binding CanStop}" AutomationProperties.Name="Stop terminal"
-                ToolTip.Tip="Stop this terminal" />
+        <Button Grid.Column="1" Classes="stopActivity" Content="{loc:Loc status_stop}" Click="OnStopActivityClick"
+                IsVisible="{Binding CanStop}" AutomationProperties.Name="{loc:Loc status_stop_terminal}"
+                ToolTip.Tip="{loc:Loc status_stop_this_terminal}" />
       </Grid>
     </DataTemplate>
     <DataTemplate x:Key="AgentRow" x:DataType="vm:StatusActivity">
@@ -64,9 +65,9 @@
             </StackPanel>
           </Grid>
         </Button>
-        <Button Grid.Column="1" Classes="stopActivity" Content="Stop" Click="OnStopActivityClick"
-                IsVisible="{Binding CanStop}" AutomationProperties.Name="Stop agent"
-                ToolTip.Tip="Stop this agent" />
+        <Button Grid.Column="1" Classes="stopActivity" Content="{loc:Loc status_stop}" Click="OnStopActivityClick"
+                IsVisible="{Binding CanStop}" AutomationProperties.Name="{loc:Loc status_stop_agent}"
+                ToolTip.Tip="{loc:Loc status_stop_this_agent}" />
       </Grid>
     </DataTemplate>
   </UserControl.Resources>
@@ -286,8 +287,8 @@
           BoxShadow="0 4 12 0 #26000000">
     <Grid>
       <Button x:Name="SummaryButton" Classes="summaryButton" Click="OnExpandClick"
-              IsVisible="{Binding !#StatusView.IsExpanded}" ToolTip.Tip="Expand status"
-              AutomationProperties.Name="Expand status">
+              IsVisible="{Binding !#StatusView.IsExpanded}" ToolTip.Tip="{loc:Loc status_expand}"
+              AutomationProperties.Name="{loc:Loc status_expand}">
         <Grid ColumnDefinitions="16,*" ColumnSpacing="6">
           <Grid Width="16" Height="16" VerticalAlignment="Center">
             <controls:Icon Classes="icon summaryIcon" Stroke="{DynamicResource AlcolerTextPrimary}"
@@ -304,15 +305,15 @@
                     HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="8" Spacing="8">
           <Border x:Name="GitContainer" IsVisible="{Binding HasGit}">
-            <Expander x:Name="GitSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Git tools">
-              <Expander.Header><TextBlock Classes="statusHeading" Text="Git tools" /></Expander.Header>
+            <Expander x:Name="GitSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="{loc:Loc status_git_tools}">
+              <Expander.Header><TextBlock Classes="statusHeading" Text="{loc:Loc status_git_tools}" /></Expander.Header>
               <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <StackPanel>
                   <Button x:Name="ChangesButton" Classes="statusRow" Height="32" Click="OnReviewClick"
-                          AutomationProperties.Name="Review changes">
+                          AutomationProperties.Name="{loc:Loc status_review_changes}">
                     <Grid ColumnDefinitions="16,*,Auto,Auto" ColumnSpacing="8">
                       <controls:Icon Classes="icon" Data="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M8 13h6M11 10v6M8 19h6" />
-                      <TextBlock Grid.Column="1" Text="Changes" FontSize="14" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Text="{loc:Loc status_changes}" FontSize="14" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Text="{Binding GitAddedText}" IsVisible="{Binding HasGitLineChanges}"
                                  FontSize="14" VerticalAlignment="Center" Foreground="{DynamicResource AlcolerDiffAdded}" />
                       <TextBlock Grid.Column="3" Text="{Binding GitRemovedText}" IsVisible="{Binding HasGitLineChanges}"
@@ -358,8 +359,8 @@
           </Border>
 
           <Border x:Name="PlansContainer" IsVisible="{Binding HasPlans}">
-            <Expander x:Name="PlansSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Plans">
-              <Expander.Header><TextBlock Classes="statusHeading" Text="Plans" /></Expander.Header>
+            <Expander x:Name="PlansSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="{loc:Loc status_plans}">
+              <Expander.Header><TextBlock Classes="statusHeading" Text="{loc:Loc status_plans}" /></Expander.Header>
               <ScrollViewer MaxHeight="192" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                 <ItemsControl ItemsSource="{Binding Plans}">
                   <ItemsControl.ItemTemplate>
@@ -380,10 +381,10 @@
           </Border>
 
           <Border x:Name="ProgressContainer" IsVisible="{Binding HasTodos}">
-            <Expander x:Name="ProgressSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="Progress">
+            <Expander x:Name="ProgressSection" Classes="statusSection" IsExpanded="True" AutomationProperties.Name="{loc:Loc status_progress}">
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="6">
-                  <TextBlock Classes="statusHeading" Text="Progress" />
+                  <TextBlock Classes="statusHeading" Text="{loc:Loc status_progress}" />
                   <TextBlock Classes="statusCount" Text="{Binding TodoCountText}" />
                 </StackPanel>
               </Expander.Header>
@@ -392,7 +393,7 @@
                   <Button x:Name="EarlierTodosButton" Classes="statusRow" IsVisible="{Binding !!EarlierTodos.Count}">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                       <controls:Icon Classes="icon small" Data="m15 18-6-6 6-6" />
-                      <TextBlock Text="{Binding EarlierTodos.Count, StringFormat='Earlier tasks ({0})'}" FontSize="14"
+                      <TextBlock Text="{Binding EarlierTodosText}" FontSize="14"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
                     </StackPanel>
                     <ToolTip.Tip>
@@ -414,7 +415,7 @@
                   <Button x:Name="LaterTodosButton" Classes="statusRow" IsVisible="{Binding !!LaterTodos.Count}">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                       <controls:Icon Classes="icon small" Data="m15 18-6-6 6-6" />
-                      <TextBlock Text="{Binding LaterTodos.Count, StringFormat='Later tasks ({0})'}" FontSize="14"
+                      <TextBlock Text="{Binding LaterTodosText}" FontSize="14"
                                  Foreground="{DynamicResource AlcolerTextSecondary}" />
                     </StackPanel>
                     <ToolTip.Tip>
@@ -438,10 +439,10 @@
           </Border>
 
           <Border x:Name="TerminalsContainer" IsVisible="{Binding HasTerminals}">
-            <Expander x:Name="TerminalsSection" Classes="statusSection" IsExpanded="False" AutomationProperties.Name="Terminals">
+            <Expander x:Name="TerminalsSection" Classes="statusSection" IsExpanded="False" AutomationProperties.Name="{loc:Loc status_terminals}">
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="6">
-                  <TextBlock Classes="statusHeading" Text="Terminals" />
+                  <TextBlock Classes="statusHeading" Text="{loc:Loc status_terminals}" />
                   <TextBlock Classes="statusCount" Text="{Binding TerminalCountText}" />
                 </StackPanel>
               </Expander.Header>
@@ -452,10 +453,10 @@
           </Border>
 
           <Border x:Name="AgentsContainer" IsVisible="{Binding HasAgents}">
-            <Expander x:Name="AgentsSection" Classes="statusSection" IsExpanded="False" AutomationProperties.Name="Agents">
+            <Expander x:Name="AgentsSection" Classes="statusSection" IsExpanded="False" AutomationProperties.Name="{loc:Loc status_agents}">
               <Expander.Header>
                 <StackPanel Orientation="Horizontal" Spacing="6">
-                  <TextBlock Classes="statusHeading" Text="Agents" />
+                  <TextBlock Classes="statusHeading" Text="{loc:Loc status_agents}" />
                   <TextBlock x:Name="AgentRunningCount" Classes="statusCount" Text="{Binding AgentCountText}"
                              IsVisible="{Binding !!Agents.Count}" />
                 </StackPanel>
@@ -464,10 +465,10 @@
                 <StackPanel>
                   <ItemsControl ItemsSource="{Binding Agents}" ItemTemplate="{StaticResource AgentRow}" />
                   <Border x:Name="EndedAgentsContainer" IsVisible="{Binding !!EndedAgents.Count}">
-                    <Button x:Name="EndedAgentsButton" Classes="statusRow" AutomationProperties.Name="Ended agents">
+                    <Button x:Name="EndedAgentsButton" Classes="statusRow" AutomationProperties.Name="{loc:Loc status_ended_agents}">
                       <Grid ColumnDefinitions="16,*,Auto,14" ColumnSpacing="8">
                         <controls:Icon Classes="icon" Data="M9 12l2 2 4-4M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" />
-                        <TextBlock Grid.Column="1" Text="Ended" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{loc:Loc status_ended}" FontSize="14" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="2" Classes="statusCount" Text="{Binding EndedAgents.Count}" />
                         <controls:Icon Grid.Column="3" Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" />
                       </Grid>
@@ -489,17 +490,17 @@
 
       <StackPanel x:Name="CardControls" IsVisible="{Binding #StatusView.IsExpanded}" Orientation="Horizontal" Spacing="4"
                   HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,12,0">
-        <Button x:Name="DisplayModeButton" Classes="cardControl" ToolTip.Tip="Status display mode"
-                AutomationProperties.Name="Status display mode">
+        <Button x:Name="DisplayModeButton" Classes="cardControl" ToolTip.Tip="{loc:Loc status_display_mode}"
+                AutomationProperties.Name="{loc:Loc status_display_mode}">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconMore}" />
           <Button.Flyout>
             <MenuFlyout Placement="BottomEdgeAlignedRight">
-              <MenuItem Header="Auto expand" Click="OnAutoExpandClick" />
+              <MenuItem Header="{loc:Loc status_auto_expand}" Click="OnAutoExpandClick" />
             </MenuFlyout>
           </Button.Flyout>
         </Button>
-        <Button x:Name="MinimizeButton" Classes="cardControl" Click="OnMinimizeClick" ToolTip.Tip="Minimize status"
-                AutomationProperties.Name="Minimize status">
+        <Button x:Name="MinimizeButton" Classes="cardControl" Click="OnMinimizeClick" ToolTip.Tip="{loc:Loc status_minimize}"
+                AutomationProperties.Name="{loc:Loc status_minimize}">
           <controls:Icon Classes="icon small" Data="M4 14h6v6M20 10h-6V4M10 14l-7 7M14 10l7-7" />
         </Button>
       </StackPanel>

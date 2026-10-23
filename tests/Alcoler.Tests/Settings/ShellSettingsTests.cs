@@ -114,6 +114,17 @@ public sealed class ShellSettingsTests
     }
 
     [Fact]
+    public void AppliedSettingsBanner_LanguageChangeRequiresRestart()
+    {
+        var config = new WorkbenchConfig([], Language: "en");
+
+        Assert.Null(SidebarView.AppliedSettingsBanner(config, config with { Language = "en" }));
+        var banner = SidebarView.AppliedSettingsBanner(config, config with { Language = "zh" });
+        Assert.NotNull(banner);
+        Assert.Contains("Restart", banner);
+    }
+
+    [Fact]
     public void ShellAndMcpOnlyChanges_DoNotCountAsProviderChanges()
     {
         var config = new WorkbenchConfig([]);

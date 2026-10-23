@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Alcoler.ViewModel;
@@ -120,7 +121,7 @@ public sealed partial class DraftConversationViewModel : ObservableObject, IComp
         {
             _configuredModel = null;
             _selection = null;
-            ModelText = "default model";
+            ModelText = Loc.Get("composer_default_model");
             ThoughtLevels = [];
             ThoughtLevel = "off";
             OnPropertyChanged(nameof(CurrentSelection));

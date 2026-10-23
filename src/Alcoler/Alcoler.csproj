@@ -26,6 +26,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Alcoler.Tests" />
     <EmbeddedResource Include="Models\ModelDefaults.json" />
+    <EmbeddedResource Include="Localization\Strings.en.json" WithCulture="false" />
+    <EmbeddedResource Include="Localization\Strings.zh.json" WithCulture="false" />
     <AvaloniaResource Include="Assets\Fonts\*.ttf" />
     <AvaloniaResource Include="Assets\Icons\Alcoler-mark.png" />
     <AvaloniaResource Include="Assets\Icons\Alcoler.ico" />

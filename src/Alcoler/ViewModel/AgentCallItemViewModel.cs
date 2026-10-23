@@ -3,6 +3,7 @@ using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Subagents;
+using Alcoler.Localization;
 
 namespace Alcoler.ViewModel;
 
@@ -32,15 +33,15 @@ public sealed class AgentCallItemViewModel : TimelineItemViewModel
 
     public ToolCallId? Id { get; }
     public bool IsDispatch => Id is not null;
-    public string Title => _subagent?.Description ?? ReadInput("description") ?? "Agent task";
+    public string Title => _subagent?.Description ?? ReadInput("description") ?? Loc.Get("agentcall_agent_task");
     public string AgentType => _subagent?.AgentType ?? ReadInput("subagent_type") ?? "general-purpose";
     public bool IsExplore => string.Equals(AgentType, "Explore", StringComparison.OrdinalIgnoreCase);
     public bool IsRunning => _subagent is { Status: SubagentStatus.Running }
         || _subagent is null && _tool?.Status is ToolCallStatus.Pending or ToolCallStatus.Running;
     public bool HasError => _subagent?.Status == SubagentStatus.Failed
         || _subagent is null && (_tool is { IsError: true } or { Status: ToolCallStatus.Failed });
-    public string StatusText => HasError ? "Failed" : string.Empty;
-    public string AccessibleText => $"SubAgent {AgentType} · {Title}";
+    public string StatusText => HasError ? Loc.Get("status_failed") : string.Empty;
+    public string AccessibleText => Loc.Get("agentcall_accessible", AgentType, Title);
     public string ToolTipText => HasError
         ? _subagent?.ResultSummary ?? string.Join("\n", _tool?.Output?.OfType<ToolResultText>().Select(block => block.Text) ?? [])
         : AccessibleText;

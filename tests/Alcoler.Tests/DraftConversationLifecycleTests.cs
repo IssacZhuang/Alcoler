@@ -283,9 +283,10 @@ public sealed class DraftConversationLifecycleTests
         await ApplyInitialProjectionAsync();
         var original = workbench.Active!;
         original.Composer.Draft = "Session draft";
-        original.Composer.Mode = PermissionMode.Plan;
-        original.RestoreComposerState("Session draft", PermissionMode.Plan,
-            new ModelSelection("custom", "test-model", new ModelCallOptions(ReasoningLevel: "low")));
+        original.Composer.PlanEnabled = true;
+        original.RestoreComposerState("Session draft", PermissionMode.Edit,
+            new ModelSelection("custom", "test-model", new ModelCallOptions(ReasoningLevel: "low")),
+            planEnabled: true);
         workbench.ShowNewTask();
         var draft = workbench.Draft!;
         draft.Composer.Draft = "Workspace draft";
@@ -296,7 +297,8 @@ public sealed class DraftConversationLifecycleTests
         Assert.NotSame(original, workbench.Active);
         Assert.Same(original.Composer, workbench.Active!.Composer);
         Assert.Equal("Session draft", workbench.Active.Composer.Draft);
-        Assert.Equal(PermissionMode.Plan, workbench.Active.Composer.Mode);
+        Assert.Equal(PermissionMode.Edit, workbench.Active.Composer.Mode);
+        Assert.True(workbench.Active.Composer.PlanEnabled);
         Assert.Equal("low", workbench.Active.ThoughtLevel);
         workbench.ShowNewTask();
         Assert.Same(draft, workbench.Draft);
@@ -306,7 +308,6 @@ public sealed class DraftConversationLifecycleTests
     [Theory]
     [InlineData(PermissionMode.Build)]
     [InlineData(PermissionMode.Edit)]
-    [InlineData(PermissionMode.Plan)]
     [InlineData(PermissionMode.Yolo)]
     public async Task SelectedMode_IsSavedImmediately_AndRestoredForFreshConversations(PermissionMode mode)
     {
@@ -314,7 +315,7 @@ public sealed class DraftConversationLifecycleTests
         try
         {
             var config = new WorkbenchConfig([], Composer: new WorkbenchComposerConfig(
-                mode == PermissionMode.Build ? PermissionMode.Plan : PermissionMode.Build));
+                mode == PermissionMode.Build ? PermissionMode.Edit : PermissionMode.Build));
             config.Save(path);
             var runtime = new DraftRuntime();
             using (var workbench = new WorkbenchViewModel(runtime, _scheduler, config,
@@ -338,7 +339,24 @@ public sealed class DraftConversationLifecycleTests
     }
 
     [Fact]
-    public async Task DirectSessionCreation_UsesRememberedMode()
+    public async Task DirectSessionCreation_UsesRememberedModeAndPlanFlag()
+    {
+        var runtime = new DraftRuntime();
+        using var workbench = new WorkbenchViewModel(runtime, _scheduler,
+            new WorkbenchConfig([], Composer: new WorkbenchComposerConfig(
+                PermissionMode.Edit, DefaultPlanEnabled: true)));
+
+        await workbench.NewSessionAsync(Environment.CurrentDirectory);
+        await ApplyInitialProjectionAsync();
+
+        Assert.Equal(PermissionMode.Edit, Assert.Single(runtime.Created).PermissionMode);
+        Assert.True(Assert.Single(runtime.Created).PlanEnabled);
+        Assert.Equal(PermissionMode.Edit, workbench.Active!.Composer.Mode);
+        Assert.True(workbench.Active.Composer.PlanEnabled);
+    }
+
+    [Fact]
+    public async Task LegacyDefaultPlanMode_MigratesToThePlanFlag()
     {
         var runtime = new DraftRuntime();
         using var workbench = new WorkbenchViewModel(runtime, _scheduler,
@@ -347,8 +365,11 @@ public sealed class DraftConversationLifecycleTests
         await workbench.NewSessionAsync(Environment.CurrentDirectory);
         await ApplyInitialProjectionAsync();
 
-        Assert.Equal(PermissionMode.Plan, Assert.Single(runtime.Created).PermissionMode);
-        Assert.Equal(PermissionMode.Plan, workbench.Active!.Composer.Mode);
+        var created = Assert.Single(runtime.Created);
+        Assert.Equal(PermissionMode.Yolo, created.PermissionMode);
+        Assert.True(created.PlanEnabled);
+        Assert.Equal(PermissionMode.Yolo, workbench.Active!.Composer.Mode);
+        Assert.True(workbench.Active.Composer.PlanEnabled);
     }
 
     [Fact]
@@ -370,18 +391,18 @@ public sealed class DraftConversationLifecycleTests
             {
                 await workbench.OpenSessionAsync(first);
                 await ApplyInitialProjectionAsync();
-                workbench.Active!.Composer.Mode = PermissionMode.Plan;
+                workbench.Active!.Composer.Mode = PermissionMode.Yolo;
                 await workbench.OpenSessionAsync(second);
                 await ApplyInitialProjectionAsync();
                 Assert.Equal(PermissionMode.Edit, workbench.Active!.Composer.Mode);
-                Assert.Equal(PermissionMode.Plan, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
+                Assert.Equal(PermissionMode.Yolo, WorkbenchConfig.LoadOrDefault(path).Composer!.DefaultMode);
                 workbench.Active.Composer.Mode = PermissionMode.Yolo;
                 Assert.Empty(runtime.Submitted);
             }
             using var restarted = new WorkbenchViewModel(runtime, _scheduler, WorkbenchConfig.LoadOrDefault(path));
             await restarted.OpenSessionAsync(first);
             await ApplyInitialProjectionAsync();
-            Assert.Equal(PermissionMode.Plan, restarted.Active!.Composer.Mode);
+            Assert.Equal(PermissionMode.Yolo, restarted.Active!.Composer.Mode);
             Assert.Equal(PermissionMode.Build, restarted.Active.Composer.SessionMode);
             Assert.Equal(model, restarted.Active.CurrentSelection);
             Assert.Equal("high", restarted.Active.ThoughtLevel);
@@ -407,14 +428,14 @@ public sealed class DraftConversationLifecycleTests
             saveComposer: composer => saved = composer);
         await workbench.OpenSessionAsync(id);
         await ApplyInitialProjectionAsync();
-        workbench.Active!.Composer.Mode = PermissionMode.Plan;
+        workbench.Active!.Composer.Mode = PermissionMode.Edit;
         workbench.Active.Composer.Draft = "Use the selected mode";
 
         await workbench.Active.SendAsync();
 
-        Assert.Equal(PermissionMode.Plan, Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted)).Mode);
+        Assert.Equal(PermissionMode.Edit, Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted)).Mode);
         Assert.Equal(rejected, saved!.PendingSessionModes!.ContainsKey(id.Value));
-        Assert.Equal(PermissionMode.Plan, saved.DefaultMode);
+        Assert.Equal(PermissionMode.Edit, saved.DefaultMode);
     }
 
     [Fact]
@@ -496,9 +517,9 @@ public sealed class DraftConversationLifecycleTests
         using var workbench = new WorkbenchViewModel(new DraftRuntime(), _scheduler, new WorkbenchConfig([]),
             saveComposer: _ => throw new IOException("Storage unavailable"));
 
-        workbench.Draft!.Composer.Mode = PermissionMode.Plan;
+        workbench.Draft!.Composer.Mode = PermissionMode.Edit;
 
-        Assert.Equal(PermissionMode.Plan, workbench.Draft.Composer.Mode);
+        Assert.Equal(PermissionMode.Edit, workbench.Draft.Composer.Mode);
         Assert.Contains("Storage unavailable", workbench.Banner);
     }
 
@@ -838,10 +859,15 @@ public sealed class DraftConversationLifecycleTests
                 throw CreateFailure;
             }
             LastSessionId = StrongId.NewSessionId();
-            var state = TestSnapshots.State(modelSelection: options.ModelSelection) with { Mode = options.PermissionMode };
+            var state = TestSnapshots.State(modelSelection: options.ModelSelection) with
+            {
+                Mode = options.PermissionMode,
+                PlanEnabled = options.PlanEnabled,
+            };
             _projections[LastSessionId] = new FakeConversationProjection(new ConversationSnapshot(0, 1, [], state));
             _summaries.Add(new SessionSummary(LastSessionId, options.Title ?? "", options.WorkspaceRoot,
-                options.PermissionMode, options.ModelSelection, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+                options.PermissionMode, options.ModelSelection, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                PlanEnabled: options.PlanEnabled));
             return new SessionHandle(LastSessionId, options.WorkspaceRoot, options.Title ?? "");
         }
 

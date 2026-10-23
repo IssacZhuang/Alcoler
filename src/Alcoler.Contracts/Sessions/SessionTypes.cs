@@ -26,7 +26,8 @@ public sealed record SessionOptions(
     ModelSelection? ModelSelection = null,
     SessionId? ParentSessionId = null,
     ShellEnvironment? Shell = null,
-    IReadOnlyList<string>? ActiveWorkflows = null);
+    IReadOnlyList<string>? ActiveWorkflows = null,
+    bool PlanEnabled = false);
 
 public sealed record SessionHandle(
     SessionId Id,
@@ -42,4 +43,5 @@ public sealed record SessionSummary(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     bool IsArchived = false,
-    SessionId? ParentSessionId = null);
+    SessionId? ParentSessionId = null,
+    bool PlanEnabled = false);

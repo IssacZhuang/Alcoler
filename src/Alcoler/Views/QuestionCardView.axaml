@@ -3,6 +3,7 @@
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
              xmlns:ct="using:ColorTextBlock.Avalonia"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Views.QuestionCardView"
              x:DataType="vm:PendingInteractionViewModel">
   <UserControl.Styles>
@@ -89,13 +90,13 @@
             </TextBlock>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top">
               <Button x:Name="PreviousQuestionButton" Classes="icon tiny ghost" Width="20" Height="20" CornerRadius="2" IsEnabled="{Binding CanMovePrevious}"
-                      ToolTip.Tip="Previous question" AutomationProperties.Name="Previous question" Click="OnPreviousClick">
+                      ToolTip.Tip="{loc:Loc question_previous}" AutomationProperties.Name="{loc:Loc question_previous}" Click="OnPreviousClick">
                 <controls:Icon Classes="icon small" Data="m15 18-6-6 6-6" Width="12" Height="12" />
               </Button>
               <TextBlock x:Name="QuestionPage" Text="{Binding PageText}" MinWidth="40" FontSize="14" FontWeight="Medium"
                          TextAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
               <Button x:Name="NextQuestionButton" Classes="icon tiny ghost" Width="20" Height="20" CornerRadius="2" IsEnabled="{Binding CanMoveNext}"
-                      ToolTip.Tip="Next question" AutomationProperties.Name="Next question" Click="OnNextClick">
+                      ToolTip.Tip="{loc:Loc question_next}" AutomationProperties.Name="{loc:Loc question_next}" Click="OnNextClick">
                 <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" Width="12" Height="12" />
               </Button>
             </StackPanel>
@@ -142,7 +143,7 @@
                                    Stroke="{DynamicResource AlcolerBrandText}" IsVisible="{Binding CurrentQuestion.IsCustomSelected}" />
                   </Border>
                 </Grid>
-                <TextBox x:Name="CustomAnswerInput" Grid.Column="1" Classes="bare questionInput" Watermark="Enter your answer..."
+                <TextBox x:Name="CustomAnswerInput" Grid.Column="1" Classes="bare questionInput" Watermark="{loc:Loc question_answer_watermark}"
                          Text="{Binding CurrentQuestion.CustomAnswer, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
                          MinHeight="20" MaxHeight="100" MinLines="1" MaxLines="5" LineHeight="20"
                          FontSize="14" FontWeight="Medium" Padding="0" BorderThickness="0"
@@ -165,10 +166,10 @@
               </ScrollViewer>
             </Border>
           </Grid>
-          <TextBox x:Name="PreviewNotesInput" IsVisible="{Binding HasPreviews}" Watermark="Add notes about your selection..."
+          <TextBox x:Name="PreviewNotesInput" IsVisible="{Binding HasPreviews}" Watermark="{loc:Loc question_notes_watermark}"
                    Text="{Binding CurrentQuestion.PreviewNotes, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap"
                    MinHeight="32" MaxHeight="100" />
-          <TextBlock Text="No questions available." FontSize="14" IsVisible="{Binding !HasQuestions}"
+          <TextBlock Text="{loc:Loc question_none}" FontSize="14" IsVisible="{Binding !HasQuestions}"
                      Foreground="{DynamicResource AlcolerTextSecondary}" />
         </StackPanel>
       </ScrollViewer>
@@ -178,11 +179,11 @@
         <Grid x:Name="KeyboardHint" ColumnDefinitions="Auto,*" ColumnSpacing="8" VerticalAlignment="Center">
           <controls:Icon Width="16" Height="16" StrokeThickness="1.5" Stroke="{DynamicResource AlcolerTextPrimary}"
                          Data="M12 16v-4M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0" VerticalAlignment="Center" />
-          <TextBlock Grid.Column="1" Text="Use Tab / arrow keys to choose, then Enter or Space to select"
+          <TextBlock Grid.Column="1" Text="{loc:Loc question_keyboard_hint}"
                      FontSize="14" TextWrapping="Wrap" Foreground="{DynamicResource AlcolerTextSecondary}" />
         </Grid>
         <StackPanel x:Name="QuestionActions" Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-          <Button x:Name="DismissQuestionButton" Content="Dismiss" Classes="secondary" Height="32" CornerRadius="8" Padding="10,0" Click="OnDismissClick" />
+          <Button x:Name="DismissQuestionButton" Content="{loc:Loc question_dismiss}" Classes="secondary" Height="32" CornerRadius="8" Padding="10,0" Click="OnDismissClick" />
           <Button x:Name="SubmitAnswersButton" Content="{Binding PrimaryActionText}" Classes="primary" Height="32" CornerRadius="8" Padding="10,0" Click="OnContinueClick" />
         </StackPanel>
       </Grid>

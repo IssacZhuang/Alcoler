@@ -1,5 +1,6 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
+using Alcoler.Localization;
 using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
@@ -234,14 +235,14 @@ public partial class DocumentWorkspaceView : UserControl
         var owner = workbench.CurrentDocumentOwnerId;
         try
         {
-            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Open document", AllowMultiple = true });
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = Loc.Get("docs_open_document_title"), AllowMultiple = true });
             foreach (var file in files)
                 if (file.TryGetLocalPath() is { } path)
                     await workbench.OpenFileDocumentAsync(path, root, owner);
         }
         catch (Exception exception)
         {
-            workbench.Banner = $"Could not open the file picker. {exception.Message}";
+            workbench.Banner = Loc.Get("docs_file_picker_failed", exception.Message);
         }
     }
 

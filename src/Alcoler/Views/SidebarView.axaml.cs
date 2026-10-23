@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Alcoler.Localization;
 using Alcoler.Themes;
 using Alcoler.ViewModel;
 using Avalonia.Controls;
@@ -85,9 +86,8 @@ public partial class SidebarView : UserControl
         if (group.HasRunningSessions && TopLevel.GetTopLevel(this) is Window owner)
         {
             var confirmed = await ConfirmDialog.ShowAsync(owner,
-                $"\"{group.DisplayTitle}\" still has a running task. It keeps running and stays stored; " +
-                "the project only leaves the sidebar until you start a task in this folder again.",
-                "Remove project");
+                Loc.Get("sidebar_remove_project_running_message", group.DisplayTitle),
+                Loc.Get("sidebar_remove_project_confirm"));
             if (!confirmed)
             {
                 return;
@@ -148,17 +148,21 @@ public partial class SidebarView : UserControl
 
     internal static string? AppliedSettingsBanner(WorkbenchConfig before, WorkbenchConfig after)
     {
+        if (Loc.ResolveLanguage(before.Language) != Loc.ResolveLanguage(after.Language))
+        {
+            return Loc.Get("sidebar_language_restart_banner");
+        }
         if (!string.Equals(before.BraveApiKey, after.BraveApiKey, StringComparison.Ordinal))
         {
-            return "Web search settings saved. Restart Alcoler to apply them.";
+            return Loc.Get("sidebar_web_search_banner");
         }
         if (McpServersChanged(before, after))
         {
-            return "MCP settings saved. They apply to new sessions; open sessions keep their current tools.";
+            return Loc.Get("sidebar_mcp_banner");
         }
         if (before.IntegratedTerminalShell != after.IntegratedTerminalShell)
         {
-            return "Shell preference saved. It applies to new sessions; existing sessions keep their shell.";
+            return Loc.Get("sidebar_shell_banner");
         }
         return null;
     }

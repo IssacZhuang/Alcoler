@@ -1,3 +1,4 @@
+using Alcoler.Localization;
 using Alcoler.Ui;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -65,7 +66,7 @@ public partial class NewSessionDialog : Window
     {
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         {
-            Title = "Choose workspace folder",
+            Title = Loc.Get("newtask_folder_picker_title"),
             AllowMultiple = false,
         });
         if (folders.Count > 0 && folders[0].TryGetLocalPath() is { } path)

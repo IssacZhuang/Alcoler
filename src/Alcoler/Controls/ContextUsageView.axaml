@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Alcoler.ViewModel"
              xmlns:controls="using:Alcoler.Controls"
+             xmlns:loc="using:Alcoler.Localization"
              x:Class="Alcoler.Controls.ContextUsageView"
              x:DataType="vm:ContextUsageViewModel"
              x:Name="Root" IsVisible="{Binding IsVisible, FallbackValue=False}">
@@ -25,7 +26,7 @@
         <StackPanel Spacing="12">
           <StackPanel Spacing="8">
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" Margin="0,0,0,4">
-              <TextBlock Text="Context capacity" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource AlcolerTextPrimary}" />
+              <TextBlock Text="{loc:Loc context_capacity}" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource AlcolerTextPrimary}" />
               <TextBlock x:Name="ContextSummary" Grid.Column="1" Text="{Binding Summary}" FontSize="12"
                          FontFamily="{DynamicResource AlcolerFontMonospace}" HorizontalAlignment="Right" VerticalAlignment="Center"
                          Foreground="{DynamicResource AlcolerTextSecondary}" />
@@ -33,7 +34,7 @@
             <controls:ContextUsageProgress x:Name="ContextProgress" Height="8" Usage="{Binding}" />
           </StackPanel>
           <ItemsControl x:Name="ContextBreakdown" ItemsSource="{Binding Segments}" IsVisible="{Binding HasBreakdown}"
-                        AutomationProperties.Name="Context usage breakdown">
+                        AutomationProperties.Name="{loc:Loc context_breakdown_a11y}">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate><StackPanel Spacing="6" /></ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
@@ -52,7 +53,7 @@
           <Border IsVisible="{Binding HasCacheHitRate}" BorderThickness="0"
                   Padding="0,12,0,0">
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-              <TextBlock Text="Cache hit rate" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
+              <TextBlock Text="{loc:Loc context_cache_hit_rate}" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
               <TextBlock Grid.Column="1" Text="{Binding CacheHitRateText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"
                          Foreground="{DynamicResource AlcolerTextPrimary}" />
             </Grid>
