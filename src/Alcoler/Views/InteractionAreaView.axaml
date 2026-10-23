@@ -70,6 +70,13 @@
                   <StackPanel Grid.Row="1" Spacing="8">
                     <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" FontSize="12"
                                Foreground="{DynamicResource AlcolerTextSecondary}" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" IsVisible="{Binding HasPlanPreview}">
+                      <TextBlock Text="Plan preview" FontSize="{DynamicResource AlcolerFontSmall}"
+                                 Foreground="{DynamicResource AlcolerTextSecondary}" VerticalAlignment="Center" />
+                      <Button Grid.Column="1" x:Name="OpenPlanButton" Classes="ghost" Content="View full plan"
+                              Click="OnOpenPlanClick" Padding="6,2" FontSize="{DynamicResource AlcolerFontSmall}"
+                              ToolTip.Tip="Open this plan in the side panel" />
+                    </Grid>
                     <Border IsVisible="{Binding HasPlanPreview}" MaxHeight="340" Padding="12" CornerRadius="8"
                             Background="{DynamicResource AlcolerSurface}" BorderThickness="0">
                       <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">

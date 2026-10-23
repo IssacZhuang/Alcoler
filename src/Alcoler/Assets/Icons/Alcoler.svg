@@ -7,16 +7,19 @@
       <stop offset="100%" stop-color="#182029"/>
     </linearGradient>
     <clipPath id="rc">
-      <rect x="16" y="16" width="480" height="480" rx="112"/>
+      <rect x="0" y="0" width="512" height="512" rx="116"/>
     </clipPath>
   </defs>
-  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="0" y="0" width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect x="3" y="3" width="506" height="506" rx="113" fill="none" stroke="#9fb3c8" stroke-opacity="0.12" stroke-width="3"/>
   <g clip-path="url(#rc)">
-    <g transform="translate(0 8)">
-      <path d="M228 48 H284 A14 14 0 0 1 298 62 V90 L288 100 V186 C288 204 295 216 310 229 L332 248 C350 264 356 280 356 302 V400 A40 40 0 0 1 316 440 H196 A40 40 0 0 1 156 400 V302 C156 280 162 264 180 248 L202 229 C217 216 224 204 224 186 V100 L214 92 V62 A14 14 0 0 1 228 48 Z"
-            fill="none" stroke="#dbe4ee" stroke-width="20" stroke-linejoin="round"/>
-      <polyline points="200,282 256,328 200,374" fill="none" stroke="#dbe4ee" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
-      <rect x="280" y="282" width="44" height="92" rx="10" fill="#35c2a1"/>
+    <g transform="translate(256 252) scale(1.08) translate(-256 -252)">
+      <g transform="translate(0 8)">
+        <path d="M228 48 H284 A14 14 0 0 1 298 62 V90 L288 100 V186 C288 204 295 216 310 229 L332 248 C350 264 356 280 356 302 V400 A40 40 0 0 1 316 440 H196 A40 40 0 0 1 156 400 V302 C156 280 162 264 180 248 L202 229 C217 216 224 204 224 186 V100 L214 92 V62 A14 14 0 0 1 228 48 Z"
+              fill="none" stroke="#dbe4ee" stroke-width="20" stroke-linejoin="round"/>
+        <polyline points="200,282 256,328 200,374" fill="none" stroke="#dbe4ee" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="280" y="282" width="44" height="92" rx="10" fill="#35c2a1"/>
+      </g>
     </g>
   </g>
 </svg>

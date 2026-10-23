@@ -216,6 +216,45 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task PermissionCard_OpenFullPlan_OpensMarkdownPlanDocumentInSidePane()
+    {
+        using var workbench = ShellSmokeTests.CreateWorkbench();
+        var toolCallId = StrongId.NewToolCallId();
+        var request = new PermissionRequest(
+            StrongId.NewInteractionId(),
+            new SessionId(Guid.NewGuid().ToString("N")),
+            "ExitPlanMode",
+            JsonSerializer.SerializeToElement(new
+            {
+                summary = "Implement plan tabs",
+                plan = "# Implement plan tabs\n\nOpen the plan on the right.",
+            }),
+            RiskLevel.Medium,
+            "tool requires user interaction",
+            AllowsFeedback: true,
+            ToolCallId: toolCallId);
+        using var harness = Show<InteractionAreaView>(workbench: workbench);
+        await PumpAsync();
+        var state = StateWith(permission: request);
+        harness.ViewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+        await PumpAsync();
+
+        var open = FindNamed<Button>(harness.View, "OpenPlanButton");
+        Assert.True(open.IsVisible);
+        open.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await PumpAsync();
+
+        Assert.True(workbench.Documents.IsVisible);
+        var document = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        Assert.Equal($"plan:{toolCallId.Value}", document.Id);
+        Assert.Equal("plan", document.Kind);
+        Assert.Equal("Implement plan tabs", document.Title);
+        var content = Assert.IsType<PlanDocumentViewModel>(document.Content);
+        Assert.Equal("# Implement plan tabs\n\nOpen the plan on the right.", content.Markdown);
+        Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
     public async Task QuestionCard_PointerSelectSingleOption_SubmitsImmediately()
     {
         var question = new InteractionQuestion("Destination", "Where should the branch land?",

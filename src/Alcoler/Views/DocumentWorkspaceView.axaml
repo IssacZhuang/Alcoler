@@ -10,6 +10,7 @@
     <DataTemplate DataType="vm:BrowserPaneViewModel"><views:BrowserPaneView /></DataTemplate>
     <DataTemplate DataType="vm:TerminalPaneViewModel"><views:TerminalView /></DataTemplate>
     <DataTemplate DataType="vm:TextDocumentViewModel"><views:FileDocumentView /></DataTemplate>
+    <DataTemplate DataType="vm:PlanDocumentViewModel"><views:PlanDocumentView /></DataTemplate>
     <DataTemplate DataType="vm:SubagentDocumentViewModel" x:DataType="vm:SubagentDocumentViewModel">
       <views:TimelineView DataContext="{Binding Conversation}" EmptyTitle="No agent output yet"
                           EmptyDescription="This agent's messages, thinking and tool calls will appear here." />

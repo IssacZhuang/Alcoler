@@ -232,6 +232,16 @@ public partial class TimelineView : UserControl
         }
     }
 
+    private void OnOpenPlanClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ToolCallItemViewModel item }
+            && TopLevel.GetTopLevel(this)?.DataContext is WorkbenchViewModel workbench)
+        {
+            workbench.OpenToolPlan(item);
+            e.Handled = true;
+        }
+    }
+
     private void OnOpenToolOutputClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: ToolCallItemViewModel item }

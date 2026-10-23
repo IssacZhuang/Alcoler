@@ -77,6 +77,35 @@ public class DocumentWorkspaceViewTests
     }
 
     [AvaloniaFact]
+    public async Task StatusPlan_OpensReadOnlyMarkdownDocument()
+    {
+        using var harness = new Harness();
+        var plan = new StatusPlan
+        {
+            RowId = "plan-row",
+            Title = "Plan title",
+            Markdown = "# Plan title\n\nUse `ConversationMarkdown`.",
+        };
+
+        harness.Workbench.OpenStatusPlan(plan);
+        await RenderAsync(harness.Window);
+
+        var document = Assert.IsType<DocumentViewModel>(harness.Documents.ActiveDocument);
+        Assert.Equal("plan:plan-row", document.Id);
+        Assert.Equal("plan", document.Kind);
+        Assert.Equal("Plan title", document.Title);
+        var planView = Assert.Single(harness.View.GetVisualDescendants().OfType<PlanDocumentView>());
+        Assert.True(planView.IsEffectivelyVisible);
+        var markdown = Assert.Single(planView.GetVisualDescendants().OfType<Alcoler.Controls.ConversationMarkdown>());
+        Assert.Equal(plan.Markdown, markdown.Markdown);
+        Assert.True(markdown.IsEffectivelyVisible);
+        Assert.Empty(planView.GetVisualDescendants().OfType<FileDocumentView>());
+        var footer = Assert.Single(planView.GetVisualDescendants().OfType<TextBlock>(),
+            block => block.Text == "Read-only · Markdown");
+        Assert.True(footer.IsEffectivelyVisible);
+    }
+
+    [AvaloniaFact]
     public async Task LocalDataTemplate_RendersUnknownViewModelAndRetainsItsView()
     {
         using var harness = new Harness();

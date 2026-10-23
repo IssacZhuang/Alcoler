@@ -529,37 +529,8 @@ public sealed class ConversationStatusViewModel : ObservableObject, IDisposable
         {
             RowId = row.RowId,
             Markdown = markdown,
-            Title = ReadText(row.Input, "summary")?.Trim() ?? FirstHeading(markdown) ?? "Plan",
+            Title = PlanDocumentViewModel.ResolveTitle(ReadText(row.Input, "summary"), markdown),
         };
-    }
-
-    private static string? FirstHeading(string markdown)
-    {
-        string? fence = null;
-        foreach (var line in markdown.Split('\n'))
-        {
-            var text = line.Trim();
-            if (text.StartsWith("```", StringComparison.Ordinal) || text.StartsWith("~~~", StringComparison.Ordinal))
-            {
-                var marker = text[..3];
-                fence = fence is null ? marker : fence == marker ? null : fence;
-                continue;
-            }
-            if (fence is not null)
-            {
-                continue;
-            }
-            var heading = text.TakeWhile(character => character == '#').Count();
-            if (heading is >= 1 and <= 6 && text.Length > heading && char.IsWhiteSpace(text[heading]))
-            {
-                var title = text[heading..].Trim().TrimEnd('#').TrimEnd();
-                if (title.Length > 0)
-                {
-                    return title;
-                }
-            }
-        }
-        return null;
     }
 
     private static string? ReadText(JsonElement input, string name) =>

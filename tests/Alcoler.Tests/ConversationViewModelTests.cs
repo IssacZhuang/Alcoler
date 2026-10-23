@@ -755,8 +755,10 @@ public class ConversationViewModelTests
     [Fact]
     public void Permission_PlanApproval_ExposesPlanPreviewAndFeedback()
     {
+        var toolCallId = StrongId.NewToolCallId();
         var input = JsonSerializer.SerializeToElement(new
         {
+            summary = "Parser plan",
             plan = "# Plan\n\n1. Add the parser.\n2. Verify.",
             allowedPrompts = new[] { new { tool = "Bash", prompt = "dotnet test" } },
         });
@@ -767,10 +769,13 @@ public class ConversationViewModelTests
             input,
             RiskLevel.Medium,
             "tool requires user interaction",
-            AllowsFeedback: true));
+            AllowsFeedback: true,
+            ToolCallId: toolCallId));
 
         Assert.True(pending.AllowsFeedback);
         Assert.True(pending.HasPlanPreview);
+        Assert.Equal(toolCallId, pending.ToolCallId);
+        Assert.Equal("Parser plan", pending.PlanTitle);
         Assert.Equal("# Plan\n\n1. Add the parser.\n2. Verify.", pending.PlanMarkdown);
         Assert.Equal("Plan ready for approval", pending.PermissionTitle);
         Assert.Equal("Approve", pending.AllowActionText);

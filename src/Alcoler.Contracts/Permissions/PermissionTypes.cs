@@ -36,7 +36,8 @@ public sealed record PermissionRequest(
     JsonElement Input,
     RiskLevel RiskLevel,
     string Reason,
-    bool AllowsFeedback = false);
+    bool AllowsFeedback = false,
+    ToolCallId? ToolCallId = null);
 
 public enum PermissionOutcome
 {
@@ -65,7 +66,8 @@ public sealed record PermissionCheckRequest(
     JsonElement Input,
     ToolMetadata Tool,
     PermissionMode Mode,
-    bool TreatAsReadOnly = false);
+    bool TreatAsReadOnly = false,
+    ToolCallId? ToolCallId = null);
 
 public interface IPermissionGate
 {

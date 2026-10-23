@@ -5,6 +5,7 @@ namespace Alcoler.ViewModel;
 public sealed partial class WorkbenchViewModel
 {
     private const string TextDocumentIcon = "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M8 13h8M8 17h6";
+    private const string PlanDocumentIcon = "M9 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4M9 3h6v4H9ZM8 12h8M8 16h5";
 
     public DocumentViewModel OpenTextDocument(string id, string title, string content, string? language = null)
     {
@@ -20,8 +21,43 @@ public sealed partial class WorkbenchViewModel
         return document;
     }
 
+    public DocumentViewModel OpenPlanDocument(string id, string title, string markdown)
+    {
+        var workspaceRoot = CurrentWorkspaceRoot;
+        var ownerId = CurrentDocumentOwnerId;
+        title = string.IsNullOrWhiteSpace(title) ? "Plan" : title.Trim();
+        var plan = new PlanDocumentViewModel(title, markdown);
+        var document = OpenDocument(new DocumentViewModel(
+            $"plan:{id}", "plan", title, PlanDocumentIcon, plan, workspaceRoot, ownerId));
+        if (document.Content is PlanDocumentViewModel retained)
+        {
+            retained.Update(title, markdown);
+            document.Title = title;
+        }
+        return document;
+    }
+
     public void OpenStatusPlan(StatusPlan plan) =>
-        OpenTextDocument($"plan:{plan.RowId}", plan.Title, plan.Markdown, "markdown");
+        OpenPlanDocument(plan.RowId, plan.Title, plan.Markdown);
+
+    public void OpenPendingPlan(PendingInteractionViewModel pending)
+    {
+        ArgumentNullException.ThrowIfNull(pending);
+        if (!pending.HasPlanPreview)
+            return;
+        var id = pending.ToolCallId is { } toolCallId
+            ? toolCallId.Value
+            : $"interaction:{pending.InteractionId.Value}";
+        OpenPlanDocument(id, pending.PlanTitle, pending.PlanMarkdown!);
+    }
+
+    public void OpenToolPlan(ToolCallItemViewModel item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (!item.HasPlan)
+            return;
+        OpenPlanDocument(item.RowId, item.PlanTitle, item.PlanMarkdown);
+    }
 
     public async Task OpenStatusActivityAsync(StatusActivity activity)
     {

@@ -356,6 +356,48 @@ public class TimelineSmokeTests
         }
     }
 
+    [AvaloniaFact]
+    public void ExitPlanModeRow_ExposesPlanAndOpenInSidePanelAction()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 800);
+        try
+        {
+            var row = new ToolCallRow("row-plan", StrongId.NewToolCallId(), "ExitPlanMode",
+                JsonSerializer.SerializeToElement(new
+                {
+                    summary = "Implementation",
+                    plan = "# Implementation\n\nBody",
+                }),
+                ToolCallStatus.Succeeded, [new ToolResultText("Plan approved.")], IsError: false,
+                Duration: null, StartedAt: DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(row)], Reset: false));
+            Pump();
+
+            var item = Assert.IsType<ToolCallItemViewModel>(Assert.Single(viewModel.Items));
+            Assert.True(item.HasPlan);
+            Assert.Equal("# Implementation\n\nBody", item.PlanMarkdown);
+            Assert.Equal("Implementation", item.PlanTitle);
+            item.IsExpanded = true;
+            Pump();
+
+            var details = Assert.Single(view.GetVisualDescendants().OfType<Border>(),
+                border => border.Classes.Contains("toolDetails") && ReferenceEquals(border.DataContext, item));
+            var open = Assert.Single(details.GetVisualDescendants().OfType<Button>(),
+                button => button.Name == "OpenPlanButton");
+            Assert.True(open.IsEffectivelyVisible);
+            Assert.Equal("Open in side panel", open.Content);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
     [AvaloniaTheory]
     [InlineData(ToolCallStatus.Succeeded, 1500, "1.5s")]
     [InlineData(ToolCallStatus.Failed, 1500, "1.5s")]

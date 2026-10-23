@@ -4,6 +4,7 @@ using System.Text.Json;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Tools;
@@ -163,6 +164,48 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
     }
 
     [Fact]
+    public void PendingPlan_UsesToolCallIdAndSharesTabWithStatusPlan()
+    {
+        var runtime = new FakeAgentRuntime();
+        using var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        var toolCallId = StrongId.NewToolCallId();
+        var pending = PendingInteractionViewModel.FromPermission(new PermissionRequest(
+            StrongId.NewInteractionId(),
+            new SessionId("sess_pending"),
+            "ExitPlanMode",
+            JsonSerializer.SerializeToElement(new
+            {
+                summary = "Pending plan",
+                plan = "# Pending plan\n\nBody",
+            }),
+            RiskLevel.Medium,
+            "tool requires user interaction",
+            AllowsFeedback: true,
+            ToolCallId: toolCallId));
+
+        workbench.OpenPendingPlan(pending);
+        var document = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
+        Assert.Equal($"plan:{toolCallId.Value}", document.Id);
+        Assert.Equal("plan", document.Kind);
+        Assert.Equal("Pending plan", document.Title);
+        var content = Assert.IsType<PlanDocumentViewModel>(document.Content);
+        Assert.Equal("# Pending plan\n\nBody", content.Markdown);
+
+        var status = new StatusPlan
+        {
+            RowId = toolCallId.Value,
+            Title = "Status title",
+            Markdown = "# Status title\n\nUpdated body",
+        };
+        workbench.OpenStatusPlan(status);
+        Assert.Same(document, workbench.Documents.ActiveDocument);
+        Assert.Equal("Status title", document.Title);
+        Assert.Same(content, document.Content);
+        Assert.Equal(status.Markdown, content.Markdown);
+    }
+
+    [Fact]
     public async Task StatusDocuments_OpenWithinParentWithoutSubmittingCommands()
     {
         var runtime = new FakeAgentRuntime();
@@ -182,7 +225,11 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
         var plan = new StatusPlan { RowId = "plan", Title = "Implementation", Markdown = "# Implementation\n\nUse the existing API." };
         workbench.OpenStatusPlan(plan);
         var document = Assert.IsType<DocumentViewModel>(workbench.Documents.ActiveDocument);
-        Assert.Equal(plan.Markdown, Assert.IsType<TextDocumentViewModel>(document.Content).Text);
+        Assert.Equal("plan:plan", document.Id);
+        Assert.Equal("plan", document.Kind);
+        var planDocument = Assert.IsType<PlanDocumentViewModel>(document.Content);
+        Assert.Equal(plan.Title, planDocument.Title);
+        Assert.Equal(plan.Markdown, planDocument.Markdown);
         Assert.Equal(parentId.Value, document.OwnerId);
         workbench.OpenStatusPlan(plan);
         Assert.Same(document, workbench.Documents.ActiveDocument);

@@ -48,6 +48,16 @@ public partial class InteractionAreaView : UserControl
 
     private void OnDismissBanner(object? sender, RoutedEventArgs e) => ViewModel?.ClearBanner();
 
+    private void OnOpenPlanClick(object? sender, RoutedEventArgs e)
+    {
+        if (ViewModel?.PendingInteraction is { HasPlanPreview: true } pending
+            && TopLevel.GetTopLevel(this)?.DataContext is WorkbenchViewModel workbench)
+        {
+            workbench.OpenPendingPlan(pending);
+            e.Handled = true;
+        }
+    }
+
     private void OnAllowClick(object? sender, RoutedEventArgs e) =>
         _ = ViewModel?.ResolvePermissionAsync(PermissionDecision.Allow);
 

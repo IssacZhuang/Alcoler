@@ -187,7 +187,8 @@ public sealed class PermissionService : IPermissionGate
             request.Input,
             request.Tool.RiskLevel,
             reason,
-            AllowsFeedback: string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase));
+            AllowsFeedback: string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase),
+            ToolCallId: request.ToolCallId);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var timer = _timeProvider.CreateTimer(

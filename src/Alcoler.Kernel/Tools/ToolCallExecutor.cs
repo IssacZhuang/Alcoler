@@ -86,7 +86,8 @@ public sealed class ToolCallExecutor
                 tool.Contract.Name,
                 input,
                 tool.Metadata.RiskLevel,
-                $"Tool '{tool.Contract.Name}' (risk level: {tool.Metadata.RiskLevel})");
+                $"Tool '{tool.Contract.Name}' (risk level: {tool.Metadata.RiskLevel})",
+                ToolCallId: call.Id);
             await notificationSink(new ToolExecutionPermissionAsked(effectiveCall, request)).ConfigureAwait(false);
 
             var decision = await _permissionGate.CheckAsync(
@@ -96,7 +97,8 @@ public sealed class ToolCallExecutor
                     input,
                     tool.Metadata,
                     _modeResolver(context),
-                    TreatAsReadOnly: tool is IToolInputPolicy policy && policy.IsReadOnlyInput(input)),
+                    TreatAsReadOnly: tool is IToolInputPolicy policy && policy.IsReadOnlyInput(input),
+                    ToolCallId: call.Id),
                 cancellationToken).ConfigureAwait(false);
 
             if (decision.Outcome == PermissionOutcome.Denied)

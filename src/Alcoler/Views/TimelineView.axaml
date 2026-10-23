@@ -466,6 +466,11 @@
                           BorderThickness="0"
                           IsVisible="{Binding IsExpanded}">
                     <StackPanel Spacing="12" MinWidth="0">
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" IsVisible="{Binding HasPlan}">
+                        <TextBlock Classes="caption" Text="Plan" VerticalAlignment="Center" />
+                        <Button Grid.Column="1" x:Name="OpenPlanButton" Classes="ghost" Content="Open in side panel"
+                                Click="OnOpenPlanClick" Padding="6,2" FontSize="{DynamicResource AlcolerFontBase}" />
+                      </Grid>
                       <StackPanel Spacing="6" IsVisible="{Binding InputJson, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
                         <TextBlock Classes="caption" Text="Input" />
                         <Border Classes="monoPane">

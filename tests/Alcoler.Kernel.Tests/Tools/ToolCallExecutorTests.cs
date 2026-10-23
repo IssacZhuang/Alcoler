@@ -102,9 +102,11 @@ public class ToolCallExecutorTests
         Assert.Single(gate.Requests);
         Assert.Equal("Write", gate.Requests[0].ToolName);
         Assert.Equal(tool.Metadata, gate.Requests[0].Tool);
+        Assert.Equal(call.Id, gate.Requests[0].ToolCallId);
         var asked = Assert.Single(notifications.Of<ToolExecutionPermissionAsked>());
         Assert.Equal(call.Id, asked.Call.Id);
         Assert.Equal("Write", asked.Request.ToolName);
+        Assert.Equal(call.Id, asked.Request.ToolCallId);
     }
 
     [Fact]

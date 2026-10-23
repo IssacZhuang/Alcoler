@@ -377,6 +377,15 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     private string _outputText = string.Empty;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasPlan))]
+    private string _planMarkdown = string.Empty;
+
+    [ObservableProperty]
+    private string _planTitle = string.Empty;
+
+    public bool HasPlan => PlanMarkdown.Length > 0;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasImages))]
     private IReadOnlyList<ToolResultMedia> _imageMedia = [];
 
@@ -412,6 +421,13 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
             _hasInputSource = true;
             _inputSource = row.Input.Clone();
             InputJson = JsonSerializer.Serialize(row.Input, IndentedJson);
+            var plan = string.Equals(ToolName, "ExitPlanMode", StringComparison.OrdinalIgnoreCase)
+                ? ReadText(row.Input, "plan") ?? string.Empty
+                : string.Empty;
+            PlanMarkdown = plan;
+            PlanTitle = plan.Length == 0
+                ? string.Empty
+                : PlanDocumentViewModel.ResolveTitle(ReadText(row.Input, "summary"), plan);
         }
 
         var statusChanged = row.Status != Status;
@@ -480,6 +496,13 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         internal const string Plan = "M9 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4M9 3h6v4H9ZM8 12h8M8 16h5";
         internal const string Tool = "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z";
     }
+
+    private static string? ReadText(JsonElement input, string name) =>
+        input.ValueKind == JsonValueKind.Object
+        && input.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static string GetSummary(JsonElement input)
     {

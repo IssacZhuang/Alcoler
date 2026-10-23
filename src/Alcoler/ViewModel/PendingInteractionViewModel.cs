@@ -18,11 +18,13 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
     }
 
     public InteractionId InteractionId { get; }
+    public ToolCallId? ToolCallId { get; private init; }
     public bool IsPermission { get; private init; }
     public bool AllowsFeedback { get; private init; }
     public string ToolName { get; private init; } = string.Empty;
     public RiskLevel RiskLevel { get; private init; }
     public string? PlanMarkdown { get; private init; }
+    public string PlanTitle { get; private init; } = "Plan";
     public bool HasPlanPreview => !string.IsNullOrWhiteSpace(PlanMarkdown);
     public string AllowActionText => AllowsFeedback ? "Approve" : "Allow";
     public string DenyActionText => AllowsFeedback ? "Request changes" : "Deny";
@@ -74,23 +76,26 @@ public sealed partial class PendingInteractionViewModel : ObservableObject
 
     public static PendingInteractionViewModel FromPermission(PermissionRequest request)
     {
+        var plan = request.AllowsFeedback ? ReadText(request.Input, "plan") : null;
         var vm = new PendingInteractionViewModel(request.InteractionId)
         {
+            ToolCallId = request.ToolCallId,
             IsPermission = true,
             AllowsFeedback = request.AllowsFeedback,
             ToolName = request.ToolName,
             RiskLevel = request.RiskLevel,
-            PlanMarkdown = request.AllowsFeedback ? ReadPlan(request.Input) : null,
+            PlanMarkdown = plan,
+            PlanTitle = PlanDocumentViewModel.ResolveTitle(ReadText(request.Input, "summary"), plan),
         };
         vm.Reason = request.Reason;
         return vm;
     }
 
-    private static string? ReadPlan(JsonElement input) =>
+    private static string? ReadText(JsonElement input, string name) =>
         input.ValueKind == JsonValueKind.Object
-        && input.TryGetProperty("plan", out var plan)
-        && plan.ValueKind == JsonValueKind.String
-            ? plan.GetString()
+        && input.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
             : null;
 
     public static PendingInteractionViewModel FromInteraction(InteractionRequest request)

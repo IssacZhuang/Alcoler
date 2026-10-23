@@ -391,9 +391,10 @@ public class PermissionServiceTests
     {
         var broker = new StubBroker { Next = PermissionDecision.Deny };
         var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Build);
+        var toolCallId = StrongId.NewToolCallId();
 
         var decision = await service.CheckAsync(
-            Request("Bash", Preset("destructive"), new { command = "rm -rf build" }),
+            Request("Bash", Preset("destructive"), new { command = "rm -rf build" }) with { ToolCallId = toolCallId },
             CancellationToken.None);
 
         Assert.Equal(PermissionOutcome.Denied, decision.Outcome);
@@ -403,6 +404,7 @@ public class PermissionServiceTests
         Assert.Equal(RiskLevel.Medium, request.RiskLevel);
         Assert.Equal("rm -rf build", request.Input.GetProperty("command").GetString());
         Assert.NotEqual(default, request.InteractionId);
+        Assert.Equal(toolCallId, request.ToolCallId);
         Assert.False(string.IsNullOrEmpty(request.Reason));
     }
 
