@@ -2,9 +2,11 @@ using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
+using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Subagents;
+using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Kernel.Runtime;
 
@@ -19,6 +21,10 @@ public sealed class ProjectionBuilder
     private IReadOnlyList<QueuedInput> _queueSnapshot = Array.Empty<QueuedInput>();
     private bool _queueDirty;
     private string? _lastAssistantRowId;
+    private string _workspaceRoot = string.Empty;
+    private readonly List<PendingFileChange> _turnFileChanges = [];
+    private readonly Dictionary<string, PendingFileChange> _turnFileChangeIndex =
+        new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
     public ConversationState State { get { lock (_sync) return _state; } }
@@ -48,6 +54,7 @@ public sealed class ProjectionBuilder
             switch (sequenced.Event)
             {
                 case SessionStartedEvent started:
+                    _workspaceRoot = started.WorkspaceRoot;
                     _state = _state with
                     {
                         Title = started.Title,
@@ -87,6 +94,7 @@ public sealed class ProjectionBuilder
 
                 case TurnStartedEvent turnStarted:
                     _lastAssistantRowId = null;
+                    ClearTurnFileChanges();
                     _state = _state with { Phase = TurnPhase.ProcessingInput, ActiveTurn = turnStarted.TurnId };
                     stateChanged = true;
                     break;
@@ -98,6 +106,7 @@ public sealed class ProjectionBuilder
                     {
                         Upsert(tail with { CanFork = true }, ops);
                     }
+                    AppendFileChangeSummary(turnCompleted.TurnId, ops);
                     _lastAssistantRowId = null;
                     _state = _state with
                     {
@@ -115,6 +124,10 @@ public sealed class ProjectionBuilder
                     break;
 
                 case TurnFailedEvent turnFailed:
+                    if (_state.ActiveTurn is { } failedTurn)
+                        AppendFileChangeSummary(failedTurn, ops);
+                    else
+                        ClearTurnFileChanges();
                     _lastAssistantRowId = null;
                     _state = _state with
                     {
@@ -143,6 +156,7 @@ public sealed class ProjectionBuilder
 
                 case ConversationRewoundEvent rewound:
                     _lastAssistantRowId = null;
+                    ClearTurnFileChanges();
                     ApplyRewind(rewound.TargetMessageId.Value, ops);
                     _streamingText.Clear();
                     _queue.Clear();
@@ -182,6 +196,8 @@ public sealed class ProjectionBuilder
                         var existing = _rowIndex.TryGetValue(toolResult.ToolCallId.Value, out var index)
                             ? _rows[index] as ToolCallRow
                             : null;
+                        if (!toolResult.Result.IsError)
+                            TrackFileChange(toolResult.Result.FileChangePath, toolResult.Result.FileChange);
                         Upsert(new ToolCallRow(
                             toolResult.ToolCallId.Value,
                             toolResult.ToolCallId,
@@ -482,6 +498,75 @@ public sealed class ProjectionBuilder
         }
     }
 
+    private void TrackFileChange(string? path, FileChangeStats? change)
+    {
+        if (change is null || string.IsNullOrWhiteSpace(path) || change.Added + change.Removed <= 0)
+            return;
+
+        var displayPath = ToDisplayPath(path);
+        if (_turnFileChangeIndex.TryGetValue(displayPath, out var existing))
+        {
+            existing.Added += change.Added;
+            existing.Removed += change.Removed;
+            return;
+        }
+
+        var pending = new PendingFileChange(displayPath)
+        {
+            Added = change.Added,
+            Removed = change.Removed,
+        };
+        _turnFileChangeIndex.Add(displayPath, pending);
+        _turnFileChanges.Add(pending);
+    }
+
+    private string ToDisplayPath(string path)
+    {
+        try
+        {
+            var fullPath = Path.IsPathRooted(path)
+                ? Path.GetFullPath(path)
+                : Path.GetFullPath(path, _workspaceRoot);
+            if (_workspaceRoot.Length > 0)
+            {
+                var relative = Path.GetRelativePath(_workspaceRoot, fullPath);
+                if (relative != ".." && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                    return relative.Replace('\\', '/');
+            }
+            return fullPath.Replace('\\', '/');
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path.Replace('\\', '/');
+        }
+    }
+
+    private void AppendFileChangeSummary(TurnId turnId, List<RowOp> ops)
+    {
+        if (_turnFileChanges.Count > 0)
+        {
+            var files = _turnFileChanges
+                .Select(file => new FileChangeSummaryItem(file.Path, file.Added, file.Removed))
+                .OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var added = 0;
+            var removed = 0;
+            foreach (var file in files)
+            {
+                added += file.Added;
+                removed += file.Removed;
+            }
+            Append(new FileChangeSummaryRow($"file-changes:{turnId.Value}", files, added, removed), ops);
+        }
+        ClearTurnFileChanges();
+    }
+
+    private void ClearTurnFileChanges()
+    {
+        _turnFileChanges.Clear();
+        _turnFileChangeIndex.Clear();
+    }
+
     private void CloseOpenToolRows(ToolCallStatus status, List<RowOp> ops)
     {
         for (var i = 0; i < _rows.Count; i++)
@@ -535,5 +620,14 @@ public sealed class ProjectionBuilder
             _rowIndex[_rows[i].RowId] = i;
         }
         ops.Add(new RowRemoved(rowId));
+    }
+
+    private sealed class PendingFileChange(string path)
+    {
+        public string Path { get; } = path;
+
+        public int Added { get; set; }
+
+        public int Removed { get; set; }
     }
 }

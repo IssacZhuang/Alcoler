@@ -85,6 +85,7 @@ public sealed class WriteTool : ITool
             exists
                 ? $"The file {rawPath} has been updated successfully.{StorageSuffix}"
                 : $"File created successfully at: {rawPath}{StorageSuffix}",
-            fileChange: fileChange);
+            fileChange: fileChange,
+            fileChangePath: path);
     }
 }

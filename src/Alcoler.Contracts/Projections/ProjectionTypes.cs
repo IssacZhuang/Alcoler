@@ -78,6 +78,7 @@ public enum ToolCallStatus
 [JsonDerivedType(typeof(UserMessageRow), "user_message")]
 [JsonDerivedType(typeof(AssistantMessageRow), "assistant_message")]
 [JsonDerivedType(typeof(ToolCallRow), "tool_call")]
+[JsonDerivedType(typeof(FileChangeSummaryRow), "file_change_summary")]
 [JsonDerivedType(typeof(SystemNoticeRow), "system_notice")]
 public abstract record ConversationRow(string RowId);
 
@@ -107,6 +108,14 @@ public sealed record ToolCallRow(
     TimeSpan? Duration,
     DateTimeOffset StartedAt,
     FileChangeStats? FileChange = null) : ConversationRow(RowId);
+
+public sealed record FileChangeSummaryItem(string Path, int Added, int Removed);
+
+public sealed record FileChangeSummaryRow(
+    string RowId,
+    IReadOnlyList<FileChangeSummaryItem> Files,
+    int Added,
+    int Removed) : ConversationRow(RowId);
 
 public sealed record SystemNoticeRow(
     string RowId,

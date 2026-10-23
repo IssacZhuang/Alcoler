@@ -210,6 +210,31 @@
     <Style Selector="Button.toolRow:focus-visible controls|Icon.disclosure">
       <Setter Property="Opacity" Value="1" />
     </Style>
+    <Style Selector="Button.fileSummaryHeader">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="12,10" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.fileSummaryHeader:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.fileSummaryHeader:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+    </Style>
+    <Style Selector="Button.fileSummaryOpen">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="8,3" />
+      <Setter Property="MinHeight" Value="26" />
+      <Setter Property="FontSize" Value="{DynamicResource AlcolerFontSmall}" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerTextPrimary}" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.fileSummaryOpen:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.fileSummaryOpen:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
+    </Style>
     <Style Selector="TextBlock.agentType">
       <Setter Property="Foreground" Value="{DynamicResource AlcolerAgentGeneral}" />
     </Style>
@@ -501,6 +526,70 @@
                     </StackPanel>
                   </Border>
                 </StackPanel>
+              </DataTemplate>
+
+              <DataTemplate x:DataType="vm:FileChangeSummaryItemViewModel">
+                <Border Margin="0,8,0,20" CornerRadius="10" BorderThickness="1" ClipToBounds="True"
+                        BorderBrush="{DynamicResource AlcolerSurfaceHigh}"
+                        Background="{DynamicResource AlcolerCard}">
+                  <StackPanel>
+                    <Button Classes="fileSummaryHeader" Click="OnFileSummaryHeaderClick"
+                            AutomationProperties.Name="Toggle changed files">
+                      <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
+                        <Grid Width="14" Height="14" VerticalAlignment="Center">
+                          <controls:Icon Classes="conversationIcon" Width="14" Height="14"
+                                         Data="{StaticResource AlcolerIconChevronRight}" IsVisible="{Binding !IsExpanded}" />
+                          <controls:Icon Classes="conversationIcon" Width="14" Height="14"
+                                         Data="{StaticResource AlcolerIconChevronDown}" IsVisible="{Binding IsExpanded}" />
+                        </Grid>
+                        <TextBlock Grid.Column="1" Text="{Binding FilesChangedText}" FontSize="14" FontWeight="Medium"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource AlcolerTextPrimary}" />
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding AddedLinesText}" IsVisible="{Binding HasAddedLines}"
+                                     FontFamily="{DynamicResource AlcolerFontMonospace}" FontSize="{DynamicResource AlcolerFontSmall}"
+                                     Foreground="{DynamicResource AlcolerDiffAdded}" />
+                          <TextBlock Text="{Binding RemovedLinesText}" IsVisible="{Binding HasRemovedLines}"
+                                     FontFamily="{DynamicResource AlcolerFontMonospace}" FontSize="{DynamicResource AlcolerFontSmall}"
+                                     Foreground="{DynamicResource AlcolerDiffRemoved}" />
+                        </StackPanel>
+                      </Grid>
+                    </Button>
+                    <StackPanel IsVisible="{Binding IsExpanded}">
+                      <Border Height="1" Background="{DynamicResource AlcolerSurfaceHigh}" />
+                      <ItemsControl ItemsSource="{Binding Files}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="vm:ChangedFileItemViewModel">
+                            <Grid ColumnDefinitions="16,*,Auto,Auto" ColumnSpacing="8" Margin="12,0" Height="42">
+                              <controls:Icon Classes="conversationIcon"
+                                             Data="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M8 13h8M8 17h6" />
+                              <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="6"
+                                    VerticalAlignment="Center" MinWidth="0">
+                                <TextBlock Text="{Binding FileName}" MaxWidth="220" TextTrimming="CharacterEllipsis"
+                                           FontSize="14" FontWeight="Medium" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource AlcolerTextPrimary}" />
+                                <TextBlock Grid.Column="1" Text="{Binding DirectoryPath}" TextTrimming="CharacterEllipsis"
+                                           FontSize="14" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource AlcolerTextTertiary}" />
+                              </Grid>
+                              <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding AddedLinesText}" IsVisible="{Binding HasAddedLines}"
+                                           FontFamily="{DynamicResource AlcolerFontMonospace}" FontSize="{DynamicResource AlcolerFontSmall}"
+                                           VerticalAlignment="Center" Foreground="{DynamicResource AlcolerDiffAdded}" />
+                                <TextBlock Text="{Binding RemovedLinesText}" IsVisible="{Binding HasRemovedLines}"
+                                           FontFamily="{DynamicResource AlcolerFontMonospace}" FontSize="{DynamicResource AlcolerFontSmall}"
+                                           VerticalAlignment="Center" Foreground="{DynamicResource AlcolerDiffRemoved}" />
+                              </StackPanel>
+                              <Button Grid.Column="3" Classes="fileSummaryOpen" Content="Open"
+                                      Click="OnOpenChangedFileClick" ToolTip.Tip="Open file"
+                                      AutomationProperties.Name="Open file" />
+                            </Grid>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </StackPanel>
+                </Border>
               </DataTemplate>
 
               <DataTemplate x:DataType="vm:SystemNoticeItemViewModel">

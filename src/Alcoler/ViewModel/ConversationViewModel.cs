@@ -340,6 +340,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             TimelineItemFactory.Update(item, row),
         (ToolCallItemViewModel tool, ToolCallRow toolRow) when tool.Id == toolRow.Id && tool.ToolName == toolRow.ToolName =>
             TimelineItemFactory.Update(item, row),
+        (FileChangeSummaryItemViewModel, FileChangeSummaryRow) => TimelineItemFactory.Update(item, row),
         (UserMessageItemViewModel user, UserMessageRow userRow) =>
             user.Text == userRow.Text && user.CanRewind == userRow.CanRewind,
         (SystemNoticeItemViewModel notice, SystemNoticeRow noticeRow) => notice.Kind == noticeRow.Kind && notice.Text == noticeRow.Text,

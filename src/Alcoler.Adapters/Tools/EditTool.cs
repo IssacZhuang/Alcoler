@@ -100,7 +100,7 @@ public sealed class EditTool : ITool
                 return createFailure;
             await WritePreservingLineEndingsAsync(path, rawContent, requestedNewString, cancellationToken).ConfigureAwait(false);
             context.FileReads?.RecordWrite(path);
-            return Success(rawPath, replaceAll, FileChangeStatsCalculator.Compute(content, requestedNewString));
+            return Success(rawPath, path, replaceAll, FileChangeStatsCalculator.Compute(content, requestedNewString));
         }
 
         if (path.EndsWith(".ipynb", StringComparison.Ordinal))
@@ -129,15 +129,16 @@ public sealed class EditTool : ITool
         var newContent = ApplyEdit(content, actualOldString, actualNewString, replaceAll);
         await WritePreservingLineEndingsAsync(path, rawContent, newContent, cancellationToken).ConfigureAwait(false);
         context.FileReads?.RecordWrite(path);
-        return Success(rawPath, replaceAll, FileChangeStatsCalculator.Compute(content, newContent));
+        return Success(rawPath, path, replaceAll, FileChangeStatsCalculator.Compute(content, newContent));
     }
 
-    private static ToolExecutionResult Success(string filePath, bool replaceAll, FileChangeStats fileChange) =>
+    private static ToolExecutionResult Success(string filePath, string resolvedPath, bool replaceAll, FileChangeStats fileChange) =>
         ToolExecutionResult.Text(
             replaceAll
                 ? $"The file {filePath} has been updated. All occurrences were successfully replaced.{FreshnessSuffix}"
                 : $"The file {filePath} has been updated successfully.{FreshnessSuffix}",
-            fileChange: fileChange);
+            fileChange: fileChange,
+            fileChangePath: resolvedPath);
 
     private static string CurrentDirectory(ToolExecutionContext context) =>
         context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
@@ -168,7 +169,7 @@ public sealed class EditTool : ITool
             Directory.CreateDirectory(directory);
         await File.WriteAllTextAsync(path, newString, cancellationToken).ConfigureAwait(false);
         context.FileReads?.RecordWrite(path);
-        return Success(rawPath, replaceAll, FileChangeStatsCalculator.Compute(null, newString));
+        return Success(rawPath, path, replaceAll, FileChangeStatsCalculator.Compute(null, newString));
     }
 
     private static string AmbiguousMessage(int matchCount, string oldString) =>

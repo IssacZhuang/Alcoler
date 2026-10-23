@@ -1010,6 +1010,39 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public void FileChangeSummaryRow_ExposesTotalsAndPreservesExpansionOnUpsert()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var row = new FileChangeSummaryRow("summary",
+                [
+                    new FileChangeSummaryItem("src/AgentRuntime.cs", 2, 5),
+                    new FileChangeSummaryItem("README.md", 4, 0),
+                ], 6, 5);
+            ApplyRows(viewModel, 1, true, row);
+
+            var summary = Assert.IsType<FileChangeSummaryItemViewModel>(Assert.Single(viewModel.Items));
+            Assert.Equal("2 files changed", summary.FilesChangedText);
+            Assert.Equal("+6", summary.AddedLinesText);
+            Assert.Equal("-5", summary.RemovedLinesText);
+            Assert.Equal("AgentRuntime.cs", summary.Files[0].FileName);
+            Assert.Equal("src/", summary.Files[0].DirectoryPath);
+            Assert.True(summary.Files[0].HasAddedLines);
+            Assert.True(summary.Files[0].HasRemovedLines);
+            Assert.False(summary.Files[1].HasRemovedLines);
+
+            summary.IsExpanded = true;
+            ApplyRows(viewModel, 2, false, row with { Added = 7, Removed = 6 });
+            Assert.Same(summary, Assert.Single(viewModel.Items));
+            Assert.True(summary.IsExpanded);
+            Assert.Equal("+7", summary.AddedLinesText);
+            Assert.Equal("-6", summary.RemovedLinesText);
+        }
+    }
+
+    [Fact]
     public void ThoughtLevelFromState_DoesNotResubmit()
     {
         var (viewModel, runtime, store) = Create();

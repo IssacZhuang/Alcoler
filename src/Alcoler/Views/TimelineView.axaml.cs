@@ -273,6 +273,39 @@ public partial class TimelineView : UserControl
         }
     }
 
+    private void OnFileSummaryHeaderClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: FileChangeSummaryItemViewModel item })
+        {
+            item.IsExpanded = !item.IsExpanded;
+            e.Handled = true;
+        }
+    }
+
+    private async void OnOpenChangedFileClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ChangedFileItemViewModel file })
+        {
+            return;
+        }
+        e.Handled = true;
+        if (TopLevel.GetTopLevel(this) is not MainWindow { DataContext: WorkbenchViewModel workbench })
+        {
+            return;
+        }
+        try
+        {
+            await workbench.OpenFileDocumentAsync(file.Path);
+        }
+        catch (Exception exception)
+        {
+            if (_conversation is not null)
+            {
+                _conversation.Banner = $"Could not open {file.FileName}. {exception.Message}";
+            }
+        }
+    }
+
     private async void OnCopyUserMessageClick(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button { DataContext: UserMessageItemViewModel item })

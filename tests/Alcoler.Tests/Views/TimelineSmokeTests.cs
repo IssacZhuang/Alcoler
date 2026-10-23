@@ -357,6 +357,72 @@ public class TimelineSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task FileChangeSummaryRow_RendersChangedFilesWhenExpanded()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 1000);
+        try
+        {
+            var row = new FileChangeSummaryRow("summary",
+                [
+                    new FileChangeSummaryItem("src/AgentRuntime.cs", 2, 5),
+                    new FileChangeSummaryItem("tests/FileTests.cs", 4, 0),
+                ], 6, 5);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(row)], Reset: false));
+            Pump();
+
+            var item = Assert.IsType<FileChangeSummaryItemViewModel>(Assert.Single(viewModel.Items));
+            var header = Assert.Single(view.GetVisualDescendants().OfType<Button>(),
+                button => button.Classes.Contains("fileSummaryHeader") && ReferenceEquals(button.DataContext, item));
+            Assert.Contains(header.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "2 files changed");
+            Assert.Contains(header.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "+6");
+            Assert.Contains(header.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "-5");
+            Assert.DoesNotContain(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "AgentRuntime.cs");
+
+            await ClickAsync(window, header);
+            Assert.True(item.IsExpanded);
+            Assert.Contains(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "AgentRuntime.cs");
+            Assert.Contains(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "src/");
+            Assert.Contains(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "FileTests.cs");
+            Assert.Contains(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "+2");
+            Assert.Contains(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "-5");
+            var openButtons = view.GetVisualDescendants().OfType<Button>()
+                .Where(button => button.Classes.Contains("fileSummaryOpen"))
+                .ToArray();
+            Assert.Equal(2, openButtons.Length);
+            Assert.All(openButtons, button => Assert.Contains(button.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "Open"));
+
+            window.Width = 360;
+            Pump();
+            Assert.True(view.Scroller.Extent.Width <= view.Scroller.Viewport.Width + 1);
+            Assert.Equal(0, view.Scroller.Offset.X);
+
+            await ClickAsync(window, header);
+            Assert.False(item.IsExpanded);
+            Assert.DoesNotContain(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "AgentRuntime.cs");
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
     public void ExitPlanModeRow_ExposesPlanAndOpenInSidePanelAction()
     {
         EnsureFluentTheme();

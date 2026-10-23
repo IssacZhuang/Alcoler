@@ -524,6 +524,85 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     }
 }
 
+public sealed class ChangedFileItemViewModel
+{
+    public ChangedFileItemViewModel(FileChangeSummaryItem file)
+    {
+        Path = file.Path;
+        HasAddedLines = file.Added > 0;
+        HasRemovedLines = file.Removed > 0;
+        AddedLinesText = $"+{file.Added}";
+        RemovedLinesText = $"-{file.Removed}";
+    }
+
+    public string Path { get; }
+
+    public string FileName => SplitPath(Path).FileName;
+
+    public string DirectoryPath => SplitPath(Path).DirectoryPath;
+
+    public bool HasAddedLines { get; }
+
+    public bool HasRemovedLines { get; }
+
+    public string AddedLinesText { get; }
+
+    public string RemovedLinesText { get; }
+
+    private static (string FileName, string DirectoryPath) SplitPath(string path)
+    {
+        var normalized = path.Replace('\\', '/');
+        var index = normalized.LastIndexOf('/');
+        return index < 0
+            ? (normalized, string.Empty)
+            : (normalized[(index + 1)..], normalized[..(index + 1)]);
+    }
+}
+
+public sealed partial class FileChangeSummaryItemViewModel : TimelineItemViewModel
+{
+    public FileChangeSummaryItemViewModel(string rowId, FileChangeSummaryRow row) : base(rowId) =>
+        UpdateFrom(row);
+
+    private IReadOnlyList<ChangedFileItemViewModel> _files = [];
+    private int _added;
+    private int _removed;
+
+    public IReadOnlyList<ChangedFileItemViewModel> Files => _files;
+
+    public int Added => _added;
+
+    public int Removed => _removed;
+
+    public bool HasAddedLines => _added > 0;
+
+    public bool HasRemovedLines => _removed > 0;
+
+    public string FilesChangedText => _files.Count == 1 ? "1 file changed" : $"{_files.Count} files changed";
+
+    public string AddedLinesText => $"+{_added}";
+
+    public string RemovedLinesText => $"-{_removed}";
+
+    [ObservableProperty]
+    private bool _isExpanded;
+
+    public void UpdateFrom(FileChangeSummaryRow row)
+    {
+        _files = row.Files.Select(file => new ChangedFileItemViewModel(file)).ToArray();
+        _added = row.Added;
+        _removed = row.Removed;
+        OnPropertyChanged(nameof(Files));
+        OnPropertyChanged(nameof(Added));
+        OnPropertyChanged(nameof(Removed));
+        OnPropertyChanged(nameof(HasAddedLines));
+        OnPropertyChanged(nameof(HasRemovedLines));
+        OnPropertyChanged(nameof(FilesChangedText));
+        OnPropertyChanged(nameof(AddedLinesText));
+        OnPropertyChanged(nameof(RemovedLinesText));
+    }
+}
+
 public sealed partial class SystemNoticeItemViewModel : TimelineItemViewModel
 {
     public SystemNoticeItemViewModel(string rowId, string kind, string text) : base(rowId)
@@ -558,6 +637,7 @@ public static class TimelineItemFactory
         AssistantMessageRow assistant => CreateAssistant(assistant),
         ToolCallRow tool when AgentCallItemViewModel.IsAgentTool(tool.ToolName) => new AgentCallItemViewModel(tool),
         ToolCallRow tool => CreateTool(tool),
+        FileChangeSummaryRow summary => new FileChangeSummaryItemViewModel(summary.RowId, summary),
         SystemNoticeRow { Subagent: not null } agent => new AgentCallItemViewModel(agent),
         SystemNoticeRow notice => new SystemNoticeItemViewModel(notice.RowId, notice.Kind, notice.Text),
         _ => null,
@@ -572,6 +652,9 @@ public static class TimelineItemFactory
                 return true;
             case (ToolCallItemViewModel tool, ToolCallRow toolRow):
                 tool.UpdateFrom(toolRow);
+                return true;
+            case (FileChangeSummaryItemViewModel summary, FileChangeSummaryRow summaryRow):
+                summary.UpdateFrom(summaryRow);
                 return true;
             default:
                 return false;
