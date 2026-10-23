@@ -460,6 +460,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             persistStartEvents: isNewSession).ConfigureAwait(false);
         runtime.TurnStarted += OnSessionTurnStarted;
         runtime.TurnFinished += OnSessionTurnFinished;
+        runtime.ActivityChanged += OnSessionActivityChanged;
         runtime.TitleChanged += OnSessionTitleChanged;
         _sessions[runtime.SessionId] = runtime;
         return runtime;
@@ -469,6 +470,9 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         SessionTitleChanged?.Invoke(runtime.SessionId, title);
 
     private void OnSessionTurnStarted(SessionRuntime runtime) =>
+        SessionActivityChanged?.Invoke(runtime.SessionId);
+
+    private void OnSessionActivityChanged(SessionRuntime runtime) =>
         SessionActivityChanged?.Invoke(runtime.SessionId);
 
     private ValueTask OnSessionTurnFinished(SessionRuntime runtime, TurnOutcome outcome)

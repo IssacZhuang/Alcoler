@@ -25,6 +25,15 @@ public sealed class SidebarActivityIndicatorTests
         sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.Streaming, null));
         Assert.Equal(SessionActivityIndicator.Running, session.Indicator);
 
+        sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.AwaitingPermission, null));
+        Assert.Equal(SessionActivityIndicator.AwaitingConfirmation, session.Indicator);
+        Assert.True(session.IsAwaitingConfirmation);
+        Assert.True(session.IsBusy);
+        Assert.False(session.ShowActiveDot);
+
+        sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.AwaitingInteraction, null));
+        Assert.Equal(SessionActivityIndicator.AwaitingConfirmation, session.Indicator);
+
         sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed));
         Assert.Equal(SessionActivityIndicator.Completed, session.Indicator);
 
@@ -119,23 +128,28 @@ public sealed class SidebarActivityIndicatorTests
     }
 
     [Fact]
-    public void RunningState_SurvivesRefreshButDoesNotReportCompletion()
+    public void ActiveState_SurvivesRefreshButDoesNotReportCompletion()
     {
         var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask);
         var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         sidebar.ApplySummaries([session]);
 
-        sidebar.SyncRunningState(session.Id, new SessionActivitySnapshot(TurnPhase.ExecutingTools, null));
+        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.ExecutingTools, null));
         Assert.Equal(SessionActivityIndicator.Running, session.Indicator);
 
         var refreshed = new SessionSummaryViewModel(session.Id, "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         sidebar.ApplySummaries([refreshed]);
         Assert.Equal(SessionActivityIndicator.Running, refreshed.Indicator);
 
-        sidebar.SyncRunningState(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, null));
+        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.AwaitingPermission, null));
+        refreshed = new SessionSummaryViewModel(session.Id, "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
+        sidebar.ApplySummaries([refreshed]);
+        Assert.Equal(SessionActivityIndicator.AwaitingConfirmation, refreshed.Indicator);
+
+        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, null));
         Assert.Equal(SessionActivityIndicator.None, sidebar.Groups[0].Sessions[0].Indicator);
 
-        sidebar.SyncRunningState(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed));
+        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed));
         Assert.Equal(SessionActivityIndicator.None, sidebar.Groups[0].Sessions[0].Indicator);
     }
 
@@ -150,5 +164,39 @@ public sealed class SidebarActivityIndicatorTests
 
         session.Indicator = SessionActivityIndicator.Running;
         Assert.False(session.ShowActiveDot);
+    }
+
+    [AvaloniaFact]
+    public async Task Sidebar_ShowsWaitingBadgeInsteadOfTime()
+    {
+        using var viewModel = ShellSmokeTests.CreateWorkbench();
+        var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Active", @"C:\ws\alpha", DateTimeOffset.UtcNow);
+        viewModel.Sidebar.ApplySummaries([session]);
+        session.Indicator = SessionActivityIndicator.AwaitingConfirmation;
+
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            await Task.Yield();
+            Dispatcher.UIThread.RunJobs();
+            var sidebar = Assert.Single(window.GetVisualDescendants().OfType<Alcoler.Views.SidebarView>());
+            var badge = Assert.Single(sidebar.GetVisualDescendants().OfType<Border>(),
+                border => border.Name == "PART_AwaitingIndicator");
+            var time = Assert.Single(sidebar.GetVisualDescendants().OfType<TextBlock>(),
+                text => text.Name == "PART_SessionTime");
+            var spinner = Assert.Single(sidebar.GetVisualDescendants().OfType<Icon>(),
+                icon => icon.Name == "PART_RunningIndicator");
+            var label = Assert.Single(badge.GetVisualDescendants().OfType<TextBlock>());
+
+            Assert.True(badge.IsVisible);
+            Assert.False(time.IsVisible);
+            Assert.True(spinner.IsVisible);
+            Assert.Equal("Waiting for confirmation", label.Text);
+        }
+        finally
+        {
+            window.Close();
+        }
     }
 }

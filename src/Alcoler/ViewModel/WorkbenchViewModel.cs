@@ -429,7 +429,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         conversation.ModelSelectionSubmitted += (selection, sequence) => RecordAcceptedSelection(workspaceRoot, sessionId, selection, sequence);
         Active = conversation;
         Sidebar.SetActive(sessionId);
-        Sidebar.SyncRunningState(sessionId, _activities?.GetSessionActivity(sessionId));
+        Sidebar.SyncActiveState(sessionId, _activities?.GetSessionActivity(sessionId));
         BrowserPane?.Bind(sessionId);
         EnsureDocumentContext();
         TryShowActiveBrowserDocument();
@@ -851,7 +851,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             foreach (var summary in displayed)
             {
                 _sessionRoots.TryAdd(summary.Id, summary.WorkspaceRoot);
-                Sidebar.SyncRunningState(summary.Id, _activities?.GetSessionActivity(summary.Id));
+                Sidebar.SyncActiveState(summary.Id, _activities?.GetSessionActivity(summary.Id));
             }
             if (_focusedWorkspaceRoot is null && Active is null && Draft is { } initial
                 && string.IsNullOrEmpty(initial.Composer.Draft) && !initial.Composer.IsSending

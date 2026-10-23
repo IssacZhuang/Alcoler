@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Alcoler.Adapters.Models;
 using Alcoler.Adapters.Storage;
+using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
@@ -60,6 +61,43 @@ public sealed class SidebarActivityFlowTests : IDisposable
         Assert.True(ack.Accepted, ack.RejectionReason);
         await WaitUntilAsync(() => watchedVm.IsFailed, scheduler);
         Assert.False(watchedVm.IsCompleted);
+    }
+
+    [Fact]
+    public async Task AwaitingPermission_ReachesTheSidebarOfNonActiveSessions()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, [new WriteTool()],
+            ToolCall("Write", new { file_path = "notes.txt", content = "Hello Alcoler" }),
+            Reply("written"));
+
+        var watched = await runtime.CreateSessionAsync(
+            new SessionOptions(_root, "Watched", PermissionMode: PermissionMode.Build), CancellationToken.None);
+        var active = await runtime.CreateSessionAsync(new SessionOptions(_root, "Active"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(active.Id);
+        scheduler.RunPending();
+        var watchedVm = FindSession(workbench, watched.Id);
+        using var projection = runtime.Subscribe(watched.Id);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "write notes"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is not null, scheduler);
+        await WaitUntilAsync(() => watchedVm.IsAwaitingConfirmation, scheduler);
+        Assert.False(watchedVm.IsRunning);
+        Assert.False(watchedVm.ShowActiveDot);
+
+        var permission = projection.Snapshot().State.PendingPermission!;
+        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), watched.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        Assert.True(resolve.Accepted, resolve.RejectionReason);
+
+        await WaitUntilAsync(() => watchedVm.IsCompleted, scheduler);
+        Assert.False(watchedVm.IsAwaitingConfirmation);
     }
 
     private static SessionSummaryViewModel FindSession(WorkbenchViewModel workbench, SessionId id) =>

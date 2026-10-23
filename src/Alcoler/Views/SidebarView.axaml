@@ -54,6 +54,14 @@
         </Animation>
       </Style.Animations>
     </Style>
+    <Style Selector="Border.sessionBadge">
+      <Setter Property="Background" Value="{DynamicResource AlcolerSelected}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AlcolerSuccess}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusFull}" />
+      <Setter Property="Padding" Value="6,0" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
   </UserControl.Styles>
   <DockPanel Background="{DynamicResource AlcolerSidebar}">
     <Grid DockPanel.Dock="Top" Height="40" Margin="12,0,8,0" ColumnDefinitions="Auto,*,Auto"
@@ -155,10 +163,10 @@
                                       Background="{DynamicResource AlcolerError}" IsVisible="{Binding IsFailed}"
                                       ToolTip.Tip="Failed" AutomationProperties.Name="Failed" />
                               <controls:Icon x:Name="PART_RunningIndicator" Classes="icon small sessionSpinner"
-                                             Classes.running="{Binding IsRunning}" IsVisible="{Binding IsRunning}"
+                                             Classes.running="{Binding IsBusy}" IsVisible="{Binding IsBusy}"
                                              RenderTransformOrigin="50%,50%" Stroke="{DynamicResource AlcolerTextSecondary}"
-                                             Data="M12 3a9 9 0 1 0 9 9" ToolTip.Tip="Running"
-                                             AutomationProperties.Name="Running">
+                                             Data="M12 3a9 9 0 1 0 9 9" ToolTip.Tip="{Binding ActivityLabel}"
+                                             AutomationProperties.Name="{Binding ActivityLabel}">
                                 <controls:Icon.RenderTransform>
                                   <RotateTransform />
                                 </controls:Icon.RenderTransform>
@@ -166,8 +174,16 @@
                             </Grid>
                             <TextBlock Grid.Column="1" Classes="sessionTitle" Text="{Binding DisplayTitle}" FontSize="{DynamicResource AlcolerFontBase}" FontFamily="{DynamicResource AlcolerFontPrimary}"
                                        TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="2" Classes="sessionTime" Text="{Binding UpdatedAtText}" FontSize="{DynamicResource AlcolerFontSmall}"
+                            <TextBlock x:Name="PART_SessionTime" Grid.Column="2" Classes="sessionTime" Text="{Binding UpdatedAtText}" FontSize="{DynamicResource AlcolerFontSmall}"
+                                       IsVisible="{Binding !IsAwaitingConfirmation}"
                                        VerticalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                            <Border x:Name="PART_AwaitingIndicator" Grid.Column="2" Classes="sessionBadge"
+                                    IsVisible="{Binding IsAwaitingConfirmation}"
+                                    ToolTip.Tip="{Binding ActivityLabel}"
+                                    AutomationProperties.Name="{Binding ActivityLabel}">
+                              <TextBlock Text="Waiting for confirmation" FontSize="{DynamicResource AlcolerFontXs}"
+                                         Foreground="{DynamicResource AlcolerSuccess}" VerticalAlignment="Center" />
+                            </Border>
                           </Grid>
                         </Button>
                       </DataTemplate>

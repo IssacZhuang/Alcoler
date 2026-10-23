@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Alcoler.Adapters.Models;
 using Alcoler.Contracts.Commands;
@@ -62,6 +63,102 @@ public class SessionActivitySignalTests
             { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Failed });
         Assert.True(notifications.Count >= 4);
         Assert.All(notifications, id => Assert.Equal(session.Id, id));
+    }
+
+    [Fact]
+    public async Task ActivitySnapshot_ReportsAwaitingPermissionUntilResolved()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("Write", new { file_path = "notes.txt", content = "Hello Alcoler" }),
+            Reply());
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: PermissionMode.Build), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var activity = Assert.IsAssignableFrom<ISessionActivityRuntime>(runtime);
+        var notifications = new ConcurrentQueue<SessionId>();
+        activity.SessionActivityChanged += notifications.Enqueue;
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "write notes"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+
+        var permission = await WaitForPermissionAsync(projection);
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingPermission);
+        Assert.Contains(session.Id, notifications);
+
+        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        Assert.True(resolve.Accepted, resolve.RejectionReason);
+
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase
+            is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+    }
+
+    [Fact]
+    public async Task ActivitySnapshot_ReportsAwaitingInteractionUntilAnswered()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("AskUserQuestion", new
+            {
+                questions = new[]
+                {
+                    new
+                    {
+                        question = "Which library should we use?",
+                        header = "Library",
+                        options = new[]
+                        {
+                            new { label = "NodaTime", description = "Most precise" },
+                            new { label = "DateTime", description = "Built in" },
+                        },
+                    },
+                },
+            }),
+            Reply());
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var activity = Assert.IsAssignableFrom<ISessionActivityRuntime>(runtime);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "ask me"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+
+        var permission = await WaitForPermissionAsync(projection);
+        await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+
+        var interaction = await WaitForInteractionAsync(projection);
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingInteraction);
+
+        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, interaction.InteractionId,
+            InteractionAnswer: new InteractionAnswer(
+                new Dictionary<string, string> { ["Library"] = "NodaTime" })), CancellationToken.None);
+        Assert.True(resolve.Accepted, resolve.RejectionReason);
+
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase
+            is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+    }
+
+    private static async Task<PermissionRequest> WaitForPermissionAsync(IConversationProjection projection)
+    {
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is not null);
+        return projection.Snapshot().State.PendingPermission!;
+    }
+
+    private static async Task<InteractionRequest> WaitForInteractionAsync(IConversationProjection projection)
+    {
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingInteraction is not null);
+        return projection.Snapshot().State.PendingInteraction!;
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

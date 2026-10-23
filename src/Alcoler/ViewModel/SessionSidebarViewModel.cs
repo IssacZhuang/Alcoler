@@ -10,6 +10,7 @@ public enum SessionActivityIndicator
 {
     None,
     Running,
+    AwaitingConfirmation,
     Completed,
     Failed,
 }
@@ -52,12 +53,21 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsRunning))]
+    [NotifyPropertyChangedFor(nameof(IsAwaitingConfirmation))]
+    [NotifyPropertyChangedFor(nameof(IsBusy))]
+    [NotifyPropertyChangedFor(nameof(ActivityLabel))]
     [NotifyPropertyChangedFor(nameof(IsCompleted))]
     [NotifyPropertyChangedFor(nameof(IsFailed))]
     [NotifyPropertyChangedFor(nameof(ShowActiveDot))]
     private SessionActivityIndicator _indicator;
 
     public bool IsRunning => Indicator == SessionActivityIndicator.Running;
+
+    public bool IsAwaitingConfirmation => Indicator == SessionActivityIndicator.AwaitingConfirmation;
+
+    public bool IsBusy => IsRunning || IsAwaitingConfirmation;
+
+    public string ActivityLabel => IsAwaitingConfirmation ? "Waiting for confirmation" : "Running";
 
     public bool IsCompleted => Indicator == SessionActivityIndicator.Completed;
 
@@ -212,10 +222,11 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
     {
         if (_indicators.Count > 0)
         {
-            // Running entries may belong to sessions created after this listing was taken.
+            // Active entries may belong to sessions created after this listing was taken.
             var listed = summaries.Select(summary => summary.Id).ToHashSet();
             foreach (var stale in _indicators
-                         .Where(pair => !listed.Contains(pair.Key) && pair.Value != SessionActivityIndicator.Running)
+                         .Where(pair => !listed.Contains(pair.Key)
+                             && pair.Value is not (SessionActivityIndicator.Running or SessionActivityIndicator.AwaitingConfirmation))
                          .ToArray())
             {
                 _indicators.Remove(stale.Key);
@@ -278,6 +289,8 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
         var indicator = activity switch
         {
             null => SessionActivityIndicator.None,
+            { Phase: TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction }
+                => SessionActivityIndicator.AwaitingConfirmation,
             { Phase: not TurnPhase.Idle } => SessionActivityIndicator.Running,
             { LastOutcome: TurnOutcome.Failed } => SessionActivityIndicator.Failed,
             // Completion is acknowledged when the task is opened, matching the unread dot.
@@ -288,14 +301,22 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
         RecordIndicator(sessionId, indicator);
     }
 
-    /// <summary>Restores only running state; opening a completed task must not resurrect its indicator.</summary>
-    public void SyncRunningState(SessionId sessionId, SessionActivitySnapshot? activity)
+    /// <summary>Restores only non-terminal state; opening a completed task must not resurrect its indicator.</summary>
+    public void SyncActiveState(SessionId sessionId, SessionActivitySnapshot? activity)
     {
-        if (activity is { Phase: not TurnPhase.Idle })
+        var indicator = activity switch
         {
-            RecordIndicator(sessionId, SessionActivityIndicator.Running);
+            { Phase: TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction }
+                => SessionActivityIndicator.AwaitingConfirmation,
+            { Phase: not TurnPhase.Idle } => SessionActivityIndicator.Running,
+            _ => SessionActivityIndicator.None,
+        };
+        if (indicator != SessionActivityIndicator.None)
+        {
+            RecordIndicator(sessionId, indicator);
         }
-        else if (_indicators.GetValueOrDefault(sessionId) == SessionActivityIndicator.Running)
+        else if (_indicators.GetValueOrDefault(sessionId) is
+                 SessionActivityIndicator.Running or SessionActivityIndicator.AwaitingConfirmation)
         {
             RecordIndicator(sessionId, SessionActivityIndicator.None);
         }

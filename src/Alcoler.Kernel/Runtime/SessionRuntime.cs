@@ -98,6 +98,9 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private readonly SemaphoreSlim _recordLock = new(1, 1);
     private readonly CancellationTokenSource _sessionCts = new();
+    private readonly HashSet<InteractionId> _pendingPermissions = [];
+    private readonly HashSet<InteractionId> _pendingInteractions = [];
+    private readonly object _pendingSync = new();
 
     private SessionRecord _record;
     private long _revision;
@@ -160,6 +163,8 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     public event Func<SessionRuntime, TurnOutcome, ValueTask>? TurnFinished;
 
+    public event Action<SessionRuntime>? ActivityChanged;
+
     public event Action<SessionRuntime, string>? TitleChanged;
 
     internal ValueTask EmitSubagentStateAsync(SubagentState state, bool started) =>
@@ -192,7 +197,16 @@ public sealed class SessionRuntime : IAsyncDisposable
     internal SessionActivitySnapshot ActivitySnapshot()
     {
         var outcome = Volatile.Read(ref _lastTurnOutcome);
-        return new SessionActivitySnapshot(Phase, outcome < 0 ? null : (TurnOutcome)outcome);
+        TurnPhase phase;
+        lock (_pendingSync)
+        {
+            phase = _pendingPermissions.Count > 0
+                ? TurnPhase.AwaitingPermission
+                : _pendingInteractions.Count > 0
+                    ? TurnPhase.AwaitingInteraction
+                    : _turnMachine.Phase;
+        }
+        return new SessionActivitySnapshot(phase, outcome < 0 ? null : (TurnOutcome)outcome);
     }
 
     internal Task SetArchivedAsync(bool archived, CancellationToken cancellationToken) =>
@@ -1864,10 +1878,48 @@ public sealed class SessionRuntime : IAsyncDisposable
     private async ValueTask EmitAsync(SessionEvent sessionEvent, bool persist)
     {
         var sequenced = _events.Append(sessionEvent);
+        if (TracksPendingRequests(sessionEvent))
+        {
+            ActivityChanged?.Invoke(this);
+        }
         if (persist && !SessionEventRetention.IsTransient(sessionEvent))
         {
             await _deps.Store.AppendDurableEventsAsync([sequenced], _sessionCts.Token).ConfigureAwait(false);
         }
+    }
+
+    private bool TracksPendingRequests(SessionEvent sessionEvent)
+    {
+        bool changed;
+        lock (_pendingSync)
+        {
+            switch (sessionEvent)
+            {
+                case PermissionRequestedEvent requested:
+                    changed = _pendingPermissions.Add(requested.Request.InteractionId);
+                    break;
+                case PermissionResolvedEvent resolved:
+                    changed = _pendingPermissions.Remove(resolved.InteractionId);
+                    break;
+                case InteractionRequestedEvent requested:
+                    changed = _pendingInteractions.Add(requested.Request.InteractionId);
+                    break;
+                case InteractionResolvedEvent resolved:
+                    changed = _pendingInteractions.Remove(resolved.InteractionId);
+                    break;
+                case TurnStartedEvent:
+                case TurnCompletedEvent:
+                case TurnFailedEvent:
+                    changed = _pendingPermissions.Count > 0 || _pendingInteractions.Count > 0;
+                    _pendingPermissions.Clear();
+                    _pendingInteractions.Clear();
+                    break;
+                default:
+                    changed = false;
+                    break;
+            }
+        }
+        return changed;
     }
 
     private async Task EnsureShellAsync(CancellationToken ct)
