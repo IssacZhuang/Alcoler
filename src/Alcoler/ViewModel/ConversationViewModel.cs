@@ -64,7 +64,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         Status = new ConversationStatusViewModel(SessionId, runtime);
         _store.Updated += ApplyUpdate;
         ApplyUpdate(new ProjectionUpdate(0, store.State, [], Reset: true, ResetRows: store.Rows));
-        Composer.ModeSelected += OnModeSelected;
     }
 
     public SessionId SessionId { get; }
@@ -87,9 +86,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     private readonly HashSet<MessageId> _forkOperations = [];
 
-    private bool _restoredMode;
-    private bool _restoredComposer;
-    private long _restoredRevision;
     private ModelChoice? _configuredModel;
 
     public ObservableCollection<TimelineItemViewModel> Items { get; } = [];
@@ -426,16 +422,20 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     private void ApplyState(ConversationState state)
     {
-        if (_restoredComposer && _store.Revision > _restoredRevision)
-            _restoredComposer = false;
+        var modeChangedOnServer = state.Mode != Composer.SessionMode;
+        var planChangedOnServer = state.PlanEnabled != Composer.SessionPlanEnabled;
         if (!_hasLocalSelection)
         {
             SetModelSelection(state.ModelSelection, local: false);
         }
         Title = state.Title;
-        if (!_restoredMode && !_restoredComposer && Composer.Mode == Mode && Composer.PlanEnabled == PlanEnabled)
+        if (modeChangedOnServer || Composer.Mode == Mode)
         {
-            Composer.RestoreExecutionState(state.Mode, state.PlanEnabled);
+            Composer.RestoreModeOnly(state.Mode);
+        }
+        if (planChangedOnServer || Composer.PlanEnabled == PlanEnabled)
+        {
+            Composer.RestorePlanEnabled(state.PlanEnabled);
         }
         Mode = state.Mode;
         PlanEnabled = state.PlanEnabled;
@@ -553,8 +553,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         try
         {
             var images = Composer.SnapshotImages();
-            // Queued input must not mutate the active turn's permission policy.
-            _restoredComposer = false;
             var ack = await SubmitAsync(new SendTextCommand(
                 StrongId.NewCommandId(), SessionId, _store.Revision, text, ModelSelection: selection, Mode: mode,
                 Images: images, Workflows: commandWorkflows, PlanEnabled: planEnabled));
@@ -563,7 +561,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 if (mode is { } submittedMode)
                 {
                     var submittedPlanEnabled = planEnabled ?? Composer.PlanEnabled;
-                    AcknowledgeMode(submittedMode, submittedPlanEnabled);
                     ModeSubmitted?.Invoke(submittedMode, submittedPlanEnabled);
                 }
                 if (commandWorkflows is { } submittedWorkflows)
@@ -753,26 +750,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     public async Task CompactAsync() =>
         await SubmitAsync(new CompactCommand(StrongId.NewCommandId(), SessionId, _store.Revision));
 
-    internal void AcknowledgeMode(PermissionMode mode, bool planEnabled)
-    {
-        if (Composer.Mode == mode && Composer.PlanEnabled == planEnabled)
-            _restoredMode = false;
-    }
+    internal void RestorePendingMode(PermissionMode mode) => Composer.RestoreModeOnly(mode);
 
-    private void OnModeSelected(PermissionMode mode) => _restoredMode = true;
-
-    internal void RestorePendingMode(PermissionMode mode, bool planEnabled = false)
+    public void RestoreComposerState(string draft, PermissionMode mode, ModelSelection? selection)
     {
-        _restoredMode = true;
-        Composer.RestoreExecutionState(mode, planEnabled);
-    }
-
-    public void RestoreComposerState(string draft, PermissionMode mode, ModelSelection? selection, bool planEnabled = false)
-    {
-        _restoredComposer = true;
-        _restoredRevision = _store.Revision;
         Composer.Draft = draft;
-        RestorePendingMode(mode, planEnabled);
+        RestorePendingMode(mode);
         RestoreModelSelection(selection);
     }
 
@@ -896,12 +879,30 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     public async Task ResolvePermissionAsync(PermissionDecision decision)
     {
-        if (PendingInteraction is not { IsPermission: true } pending)
+        if (IsInteractionSubmitting || PendingInteraction is not { IsPermission: true } pending)
         {
             return;
         }
-        await SubmitAsync(new ResolveInteractionCommand(
-            StrongId.NewCommandId(), SessionId, _store.Revision, pending.InteractionId, PermissionDecision: decision));
+        IsInteractionSubmitting = true;
+        var awaitingProjection = false;
+        try
+        {
+            var ack = await SubmitAsync(new ResolveInteractionCommand(
+                StrongId.NewCommandId(), SessionId, _store.Revision, pending.InteractionId, PermissionDecision: decision));
+            if (!ack.Accepted)
+                Banner = ack.RejectionReason ?? Loc.Get("conversation_permission_rejected");
+            else
+                awaitingProjection = ReferenceEquals(PendingInteraction, pending);
+        }
+        catch (Exception exception)
+        {
+            Banner = Loc.Get("conversation_permission_failed_detail", exception.Message);
+        }
+        finally
+        {
+            if (ReferenceEquals(PendingInteraction, pending))
+                IsInteractionSubmitting = awaitingProjection;
+        }
     }
 
     public Task SubmitInteractionAnswersAsync() => ResolveQuestionAsync(dismiss: false);
@@ -953,7 +954,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     public void Dispose()
     {
         _store.Updated -= ApplyUpdate;
-        Composer.ModeSelected -= OnModeSelected;
         Status.Dispose();
     }
 }

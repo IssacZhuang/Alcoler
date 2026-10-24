@@ -6,11 +6,10 @@ namespace Alcoler.Contracts.Permissions;
 
 public enum PermissionMode
 {
-    Build,
-    Edit,
-    // Legacy persisted value; runtime sessions carry plan mode in PlanEnabled instead.
-    Plan,
-    Yolo,
+    Build = 0,
+    Edit = 1,
+    // Yolo keeps 3 so persisted numeric values stay stable.
+    Yolo = 3,
 }
 
 /// <summary>

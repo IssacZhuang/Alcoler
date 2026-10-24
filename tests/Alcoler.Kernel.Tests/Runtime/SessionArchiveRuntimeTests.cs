@@ -22,7 +22,7 @@ public class SessionArchiveRuntimeTests
 
         await runtime.SetSessionArchivedAsync(session.Id, true, CancellationToken.None);
         var ack = await runtime.SubmitAsync(
-            new SetModeCommand(StrongId.NewCommandId(), session.Id, 0, PermissionMode.Plan),
+            new SetModeCommand(StrongId.NewCommandId(), session.Id, 0, PermissionMode.Edit),
             CancellationToken.None);
 
         Assert.True(ack.Accepted);

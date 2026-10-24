@@ -118,7 +118,7 @@ public class SerializationSmokeTests
 
         var file = new FilePart(StrongId.NewPartId(), "alcoler-artifact://session/pixel.png", "image/png", "pixel.png");
         var queued = new QueuedInput(command.CommandId, "", DateTimeOffset.UtcNow, [file],
-            PermissionMode.Plan, new ModelSelection("provider", "model"), SendTextDelivery.Guide);
+            PermissionMode.Edit, new ModelSelection("provider", "model"), SendTextDelivery.Guide);
         var queuedReplay = Assert.IsType<InputQueuedEvent>(AlcolerJson.Deserialize<SessionEvent>(
             AlcolerJson.Serialize<SessionEvent>(new InputQueuedEvent(queued)))).Input;
         Assert.Equal(file, Assert.Single(queuedReplay.Images!));

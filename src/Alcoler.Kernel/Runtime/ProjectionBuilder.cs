@@ -55,12 +55,11 @@ public sealed class ProjectionBuilder
             {
                 case SessionStartedEvent started:
                     _workspaceRoot = started.WorkspaceRoot;
-                    var startedState = NormalizeExecutionState(started.Mode, started.PlanEnabled);
                     _state = _state with
                     {
                         Title = started.Title,
-                        Mode = startedState.Mode,
-                        PlanEnabled = startedState.PlanEnabled,
+                        Mode = started.Mode,
+                        PlanEnabled = started.PlanEnabled,
                         ModelSelection = started.ModelSelection,
                         ActiveWorkflows = started.ActiveWorkflows ?? [],
                     };
@@ -73,8 +72,7 @@ public sealed class ProjectionBuilder
                     break;
 
                 case SessionModeChangedEvent mode:
-                    var modeState = NormalizeExecutionState(mode.Mode, mode.PlanEnabled);
-                    _state = _state with { Mode = modeState.Mode, PlanEnabled = modeState.PlanEnabled };
+                    _state = _state with { Mode = mode.Mode, PlanEnabled = mode.PlanEnabled };
                     stateChanged = true;
                     break;
 
@@ -360,13 +358,6 @@ public sealed class ProjectionBuilder
             return ops;
         }
     }
-
-    // Legacy events wrote Plan as a permission mode; fold it into the plan flag so
-    // replay never resurrects a mode the runtime no longer uses.
-    private static ExecutionState NormalizeExecutionState(PermissionMode mode, bool planEnabled) =>
-        mode == PermissionMode.Plan
-            ? new ExecutionState(PermissionMode.Edit, true)
-            : new ExecutionState(mode, planEnabled);
 
     private void ApplyUserMessage(ConversationMessage message, List<RowOp> ops)
     {

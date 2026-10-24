@@ -65,6 +65,7 @@
   "settings_hide_api_key": "隐藏 API 密钥",
   "settings_language": "语言",
   "settings_language_description": "选择界面语言。",
+  "settings_language_auto": "自动（跟随系统语言）",
   "settings_mcp": "MCP 服务器",
   "settings_mcp_description": "通过 Model Context Protocol 服务器连接本地工具。",
   "settings_mcp_server": "MCP 服务器",
@@ -564,6 +565,8 @@
   "conversation_image_fallback": "图片",
   "conversation_answers_rejected": "答案未被接受",
   "conversation_answers_failed_detail": "无法提交答案。{0}",
+  "conversation_permission_rejected": "权限决定未被接受",
+  "conversation_permission_failed_detail": "无法提交权限决定。{0}",
 
   "status_phase_preparing": "正在准备请求",
   "status_phase_awaiting_model": "等待模型",

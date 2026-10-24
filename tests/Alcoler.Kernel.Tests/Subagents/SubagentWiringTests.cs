@@ -76,7 +76,6 @@ public class SubagentWiringTests
     }
 
     [Theory]
-    [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Plan, false, Alcoler.Contracts.Permissions.PermissionMode.Edit)]
     [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Yolo, false, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
     [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Edit, false, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]
     [InlineData(Alcoler.Contracts.Permissions.PermissionMode.Build, false, Alcoler.Contracts.Permissions.PermissionMode.Yolo)]

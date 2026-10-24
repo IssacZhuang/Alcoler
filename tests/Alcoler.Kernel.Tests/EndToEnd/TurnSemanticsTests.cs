@@ -427,8 +427,9 @@ public class TurnSemanticsTests
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var selection = new ModelSelection("scripted", "test-model", new ModelCallOptions(MaxOutputTokens: 1234));
-        var command = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "", Mode: PermissionMode.Plan,
-            ModelSelection: selection, Delivery: SendTextDelivery.Guide, Images: [new("image/png", png)]);
+        var command = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "", Mode: PermissionMode.Edit,
+            ModelSelection: selection, Delivery: SendTextDelivery.Guide, Images: [new("image/png", png)],
+            PlanEnabled: true);
         Assert.True((await runtime.SubmitAsync(command, CancellationToken.None)).Accepted);
         var queuedSnapshot = await WaitForProjectionAsync(projection,
             snapshot => snapshot.State.Queue.Any(input => input.CommandId == command.CommandId));
@@ -443,7 +444,7 @@ public class TurnSemanticsTests
         var restored = Assert.Single(replay.Snapshot().State.Queue);
         Assert.Equal(command.CommandId, restored.CommandId);
         Assert.Equal(artifact, Assert.Single(restored.Images!));
-        Assert.Equal(PermissionMode.Plan, restored.Mode);
+        Assert.Equal(PermissionMode.Edit, restored.Mode);
         Assert.Equal(selection, restored.ModelSelection);
         Assert.Equal(SendTextDelivery.Guide, restored.Delivery);
         Assert.Single(harness.Model.Requests);
@@ -1222,12 +1223,13 @@ public class TurnSemanticsTests
         await using var harness = new ScriptedCallHarness([.. calls]);
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan), CancellationToken.None);
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Edit,
+                PlanEnabled: true), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
 
         for (var i = 1; i <= 5; i++)
         {
-            await SendAndWaitIdleAsync(runtime, projection, session.Id, $"question {i}", mode: PermissionMode.Plan, expectedReplies: i);
+            await SendAndWaitIdleAsync(runtime, projection, session.Id, $"question {i}", expectedReplies: i);
         }
 
         Assert.Contains("Plan mode is active.", RequestTexts(harness.Model.Requests[0]), StringComparison.Ordinal);
@@ -1237,7 +1239,7 @@ public class TurnSemanticsTests
             Assert.Equal(1, RequestTexts(harness.Model.Requests[i]).Split("Plan mode is active.").Length - 1);
             Assert.DoesNotContain("Plan mode still active", RequestTexts(harness.Model.Requests[i]), StringComparison.Ordinal);
         }
-        await SendAndWaitIdleAsync(runtime, projection, session.Id, "question 6", mode: PermissionMode.Plan, expectedReplies: 6);
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "question 6", expectedReplies: 6);
         var sixth = RequestTexts(harness.Model.Requests[5]);
         Assert.Contains("Plan mode still active", sixth, StringComparison.Ordinal);
         Assert.Equal(1, sixth.Split("## Plan Workflow").Length - 1);
@@ -1258,7 +1260,8 @@ public class TurnSemanticsTests
         await using var harness = new ScriptedCallHarness(calls);
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan), CancellationToken.None);
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Edit,
+                PlanEnabled: true), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
 
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "plan it"), CancellationToken.None);
@@ -1291,15 +1294,18 @@ public class TurnSemanticsTests
         await using var harness = ScriptedCallHarness.Create(Text("planning"), Text("next answer"));
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan), CancellationToken.None);
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Edit,
+                PlanEnabled: true), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "first");
         Assert.True((await runtime.SubmitAsync(new SetModeCommand(
-            StrongId.NewCommandId(), session.Id, 0, PermissionMode.Yolo), CancellationToken.None)).Accepted);
+            StrongId.NewCommandId(), session.Id, 0, PermissionMode.Yolo, PlanEnabled: false),
+            CancellationToken.None)).Accepted);
         if (reenterPlan)
         {
             Assert.True((await runtime.SubmitAsync(new SetModeCommand(
-                StrongId.NewCommandId(), session.Id, 0, PermissionMode.Plan), CancellationToken.None)).Accepted);
+                StrongId.NewCommandId(), session.Id, 0, PlanEnabled: true),
+                CancellationToken.None)).Accepted);
         }
 
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "second", expectedReplies: 2);

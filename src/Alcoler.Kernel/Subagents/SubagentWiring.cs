@@ -83,10 +83,12 @@ public static class SubagentWiring
     private static string ResolveArtifactsRoot(AgentRuntime runtime) =>
         runtime.Options.SubagentOutputRoot ?? Path.Combine(Path.GetTempPath(), "alcoler-agents");
 
+    /// <summary>
+    /// A planning child inherits the parent's mode with plan mode still enabled; otherwise
+    /// the child runs in Yolo because the parent already approved the Agent call.
+    /// </summary>
     public static PermissionMode ResolveChildMode(PermissionMode parentMode, bool parentPlanEnabled = false) =>
-        parentPlanEnabled || parentMode == PermissionMode.Plan
-            ? parentMode == PermissionMode.Plan ? PermissionMode.Edit : parentMode
-            : PermissionMode.Yolo;
+        parentPlanEnabled ? parentMode : PermissionMode.Yolo;
 
     /// <summary>
     /// A child runs on the parent session's model unless the request names one explicitly.
@@ -116,7 +118,7 @@ public static class SubagentWiring
     {
         var hidden = new HashSet<string>(ChildHiddenTools, StringComparer.OrdinalIgnoreCase);
         IEnumerable<ITool> scope = tools.Where(tool => !hidden.Contains(tool.Contract.Name));
-        if (childPlanEnabled || childMode == PermissionMode.Plan)
+        if (childPlanEnabled)
         {
             // No UI answers a child broker; interactive tools would stall until the broker timeout.
             scope = scope.Where(tool => !tool.Metadata.RequiresUserInteraction);
@@ -152,15 +154,8 @@ public static class SubagentWiring
             ?? throw new InvalidOperationException(
                 $"parent session {request.ParentSessionId} was not found; subagents need a WorkspaceRoot");
         var inheritedShell = parentRuntime?.Shell ?? parentRecord?.Shell;
-        var rawParentMode = parentRuntime?.Mode ?? parentRecord?.PermissionMode ?? PermissionMode.Yolo;
-        var parentMode = rawParentMode == PermissionMode.Plan
-            ? parentRecord?.PreviousPermissionMode is { } previous && previous != PermissionMode.Plan
-                ? previous
-                : PermissionMode.Edit
-            : rawParentMode;
-        var parentPlanEnabled = parentRuntime?.PlanEnabled
-            ?? parentRecord?.PlanEnabled
-            ?? parentRecord?.PermissionMode == PermissionMode.Plan;
+        var parentMode = parentRuntime?.Mode ?? parentRecord?.PermissionMode ?? PermissionMode.Yolo;
+        var parentPlanEnabled = parentRuntime?.PlanEnabled ?? parentRecord?.PlanEnabled ?? false;
         var childMode = ResolveChildMode(parentMode, parentPlanEnabled);
         var childPlanEnabled = parentPlanEnabled;
 

@@ -31,43 +31,40 @@ public class PlanModeEndToEndTests
         new Alcoler.Contracts.Models.ModelStreamFinished(Alcoler.Contracts.Models.ModelFinishReason.Stop)]);
 
     [Fact]
-    public async Task LegacyPlanSession_ApprovalKeepsUnderlyingEditMode()
+    public async Task SetMode_WithOnlyMode_LeavesPlanEnabledUnchanged()
     {
-        await using var harness = TestHarness.Create(
-            ToolCall("ExitPlanMode", new { plan = "1. Write the file.\n2. Verify." }),
-            FinalText("Implementing now."));
+        await using var harness = TestHarness.Create(FinalText("Still planning."));
 
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(
-            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Plan),
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
             CancellationToken.None);
 
         using var projection = runtime.Subscribe(session.Id);
-        Assert.Equal(PermissionMode.Edit, projection.Snapshot().State.Mode);
+        Assert.True((await runtime.SubmitAsync(new SetModeCommand(
+            StrongId.NewCommandId(), session.Id, 0, Mode: PermissionMode.Edit), CancellationToken.None)).Accepted);
+        await WaitForModeAsync(projection, PermissionMode.Edit);
         Assert.True(projection.Snapshot().State.PlanEnabled);
-        var ack = await runtime.SubmitAsync(new SendTextCommand(
-            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Plan writing notes.txt"),
+    }
+
+    [Fact]
+    public async Task SetMode_WithExplicitPlanDisabled_ExitsPlanWithoutChangingMode()
+    {
+        await using var harness = TestHarness.Create(FinalText("Implementing now."));
+
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo,
+                PlanEnabled: true),
             CancellationToken.None);
-        Assert.True(ack.Accepted);
 
-        var permission = await WaitForPermissionAsync(projection);
-        Assert.Equal("ExitPlanMode", permission.ToolName);
-        var resolveAck = await runtime.SubmitAsync(new ResolveInteractionCommand(
-            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
-            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
-        Assert.True(resolveAck.Accepted);
-
-        await WaitForPhaseAsync(projection, TurnPhase.Idle);
-
-        var snapshot = projection.Snapshot();
-        Assert.Equal(PermissionMode.Edit, snapshot.State.Mode);
-        Assert.False(snapshot.State.PlanEnabled);
-        Assert.Contains(snapshot.Rows, r => r is ToolCallRow t
-            && t.ToolName == "ExitPlanMode"
-            && t.Status == ToolCallStatus.Succeeded
-            && t.Output!.OfType<Contracts.Conversation.ToolResultText>().Any(b => b.Text.Contains("User has approved your plan")));
-        Assert.Contains(snapshot.Rows, r => r is AssistantMessageRow a
-            && a.Parts.OfType<Contracts.Conversation.TextPart>().Any(p => p.Text.Contains("Implementing now.")));
+        using var projection = runtime.Subscribe(session.Id);
+        Assert.True((await runtime.SubmitAsync(new SetModeCommand(
+            StrongId.NewCommandId(), session.Id, 0, PlanEnabled: false), CancellationToken.None)).Accepted);
+        await WaitForPlanEnabledAsync(projection, expected: false);
+        Assert.Equal(PermissionMode.Yolo, projection.Snapshot().State.Mode);
+        Assert.False(projection.Snapshot().State.PlanEnabled);
     }
 
     [Fact]
@@ -154,7 +151,7 @@ public class PlanModeEndToEndTests
     }
 
     [Fact]
-    public async Task PlanApproval_RestoresPreviousModeAndWritesPlanFile()
+    public async Task PlanApproval_PreservesModeAndWritesPlanFile()
     {
         const string plan = "1. Write notes.txt.\n2. Verify the contents.";
         await using var harness = TestHarness.Create(
@@ -211,7 +208,7 @@ public class PlanModeEndToEndTests
         Assert.True((await runtime.SubmitAsync(new SetModeCommand(
             StrongId.NewCommandId(), session.Id, 0, Mode: PermissionMode.Edit, PlanEnabled: true),
             CancellationToken.None)).Accepted);
-        Assert.Equal(PermissionMode.Edit, projection.Snapshot().State.Mode);
+        await WaitForModeAsync(projection, PermissionMode.Edit);
         Assert.True(projection.Snapshot().State.PlanEnabled);
 
         var ack = await runtime.SubmitAsync(new SendTextCommand(
@@ -394,6 +391,20 @@ public class PlanModeEndToEndTests
             if (deadline.IsCompleted)
             {
                 throw new TimeoutException($"Assistant text was never committed: {text}");
+            }
+            await Task.Delay(20);
+        }
+    }
+
+    private static async Task WaitForModeAsync(IConversationProjection projection, PermissionMode expected)
+    {
+        var deadline = Task.Delay(TimeSpan.FromSeconds(30));
+        while (projection.Snapshot().State.Mode != expected)
+        {
+            if (deadline.IsCompleted)
+            {
+                throw new TimeoutException(
+                    $"Mode never reached {expected} (current: {projection.Snapshot().State.Mode}).");
             }
             await Task.Delay(20);
         }

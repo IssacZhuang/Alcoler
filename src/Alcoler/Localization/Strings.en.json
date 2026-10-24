@@ -65,6 +65,7 @@
   "settings_hide_api_key": "Hide API key",
   "settings_language": "Language",
   "settings_language_description": "Choose the interface language.",
+  "settings_language_auto": "Auto (system language)",
   "settings_mcp": "MCP servers",
   "settings_mcp_description": "Connect local tools through Model Context Protocol servers.",
   "settings_mcp_server": "MCP server",
@@ -564,6 +565,8 @@
   "conversation_image_fallback": "Image",
   "conversation_answers_rejected": "Answers were not accepted",
   "conversation_answers_failed_detail": "Could not submit answers. {0}",
+  "conversation_permission_rejected": "Permission decision was not accepted",
+  "conversation_permission_failed_detail": "Could not submit the permission decision. {0}",
 
   "status_phase_preparing": "Preparing request",
   "status_phase_awaiting_model": "Waiting for model",

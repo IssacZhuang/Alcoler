@@ -4,6 +4,7 @@ using Alcoler.Adapters.Models;
 using Alcoler.Adapters.Storage;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
@@ -11,6 +12,7 @@ using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
+using Alcoler.Kernel.Tools;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Xunit;
@@ -100,6 +102,132 @@ public sealed class SidebarActivityFlowTests : IDisposable
         Assert.False(watchedVm.IsAwaitingConfirmation);
     }
 
+    [Fact]
+    public async Task ExitPlanModeApproval_ClearsAwaitingConfirmationOfNonActiveSession()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, [new ExitPlanModeTool()],
+            ToolCall("ExitPlanMode", new { plan = "1. Implement the change." }),
+            Reply("implemented"));
+
+        var watched = await runtime.CreateSessionAsync(
+            new SessionOptions(_root, "Watched", PermissionMode: PermissionMode.Yolo, PlanEnabled: true),
+            CancellationToken.None);
+        var active = await runtime.CreateSessionAsync(new SessionOptions(_root, "Active"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(active.Id);
+        scheduler.RunPending();
+        var watchedVm = FindSession(workbench, watched.Id);
+        using var projection = runtime.Subscribe(watched.Id);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "present the plan"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is not null, scheduler);
+        await WaitUntilAsync(() => watchedVm.IsAwaitingConfirmation, scheduler);
+
+        var permission = projection.Snapshot().State.PendingPermission!;
+        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), watched.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        Assert.True(resolve.Accepted, resolve.RejectionReason);
+
+        await WaitUntilAsync(() => !watchedVm.IsAwaitingConfirmation, scheduler);
+        await WaitUntilAsync(() => watchedVm.IsCompleted, scheduler);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AskUserQuestionAnswerAndDismiss_ClearAwaitingConfirmation(bool dismiss)
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, [new AskUserQuestionTool()],
+            ToolCall("AskUserQuestion", new
+            {
+                questions = new[]
+                {
+                    new
+                    {
+                        question = "Which target should be used?",
+                        header = "Target",
+                        options = new[]
+                        {
+                            new { label = "main", description = "Main branch" },
+                            new { label = "branch", description = "Feature branch" },
+                        },
+                        multiSelect = false,
+                    },
+                },
+            }),
+            Reply("answered"));
+
+        var watched = await runtime.CreateSessionAsync(
+            new SessionOptions(_root, "Watched", PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        var active = await runtime.CreateSessionAsync(new SessionOptions(_root, "Active"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(active.Id);
+        scheduler.RunPending();
+        var watchedVm = FindSession(workbench, watched.Id);
+        using var projection = runtime.Subscribe(watched.Id);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "ask me"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is not null, scheduler);
+        var permission = projection.Snapshot().State.PendingPermission!;
+        var permissionResolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), watched.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        Assert.True(permissionResolve.Accepted, permissionResolve.RejectionReason);
+
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingInteraction is not null, scheduler);
+        await WaitUntilAsync(() => watchedVm.IsAwaitingConfirmation, scheduler);
+        var interaction = projection.Snapshot().State.PendingInteraction!;
+        var answer = dismiss
+            ? new InteractionAnswer(new Dictionary<string, string>())
+            : new InteractionAnswer(new Dictionary<string, string> { ["Target"] = "main" });
+        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), watched.Id, projection.Snapshot().Revision, interaction.InteractionId,
+            InteractionAnswer: answer), CancellationToken.None);
+        Assert.True(resolve.Accepted, resolve.RejectionReason);
+
+        await WaitUntilAsync(() => !watchedVm.IsAwaitingConfirmation, scheduler);
+        await WaitUntilAsync(() => watchedVm.IsCompleted, scheduler);
+    }
+
+    [Fact]
+    public async Task PermissionTimeout_ClearsAwaitingConfirmationOfNonActiveSession()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, [new WriteTool()], TimeSpan.FromSeconds(1),
+            ToolCall("Write", new { file_path = "notes.txt", content = "Hello Alcoler" }),
+            Reply("written"));
+
+        var watched = await runtime.CreateSessionAsync(
+            new SessionOptions(_root, "Watched", PermissionMode: PermissionMode.Build), CancellationToken.None);
+        var active = await runtime.CreateSessionAsync(new SessionOptions(_root, "Active"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(active.Id);
+        scheduler.RunPending();
+        var watchedVm = FindSession(workbench, watched.Id);
+        using var projection = runtime.Subscribe(watched.Id);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "write notes"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is not null, scheduler);
+        await WaitUntilAsync(() => watchedVm.IsAwaitingConfirmation, scheduler);
+
+        await WaitUntilAsync(() => !watchedVm.IsAwaitingConfirmation, scheduler);
+    }
+
     private static SessionSummaryViewModel FindSession(WorkbenchViewModel workbench, SessionId id) =>
         workbench.Sidebar.Groups.SelectMany(group => group.Sessions).Single(session => session.Id == id);
 
@@ -118,7 +246,11 @@ public sealed class SidebarActivityFlowTests : IDisposable
         }
     }
 
-    private AgentRuntime CreateRuntime(SqliteSessionStore store, IReadOnlyList<ITool> extraTools, params ScriptStep[] script)
+    private AgentRuntime CreateRuntime(SqliteSessionStore store, IReadOnlyList<ITool> extraTools, params ScriptStep[] script) =>
+        CreateRuntime(store, extraTools, null, script);
+
+    private AgentRuntime CreateRuntime(
+        SqliteSessionStore store, IReadOnlyList<ITool> extraTools, TimeSpan? interactionTimeout, params ScriptStep[] script)
     {
         var artifacts = new FileArtifactStore(Path.Combine(_root, "artifacts"));
         return new AgentRuntime(new AgentRuntimeOptions
@@ -129,6 +261,7 @@ public sealed class SidebarActivityFlowTests : IDisposable
             Tools = extraTools,
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
             DefaultModel = new ModelSelection("scripted", "scripted-model"),
+            InteractionTimeout = interactionTimeout ?? TimeSpan.FromMinutes(10),
         });
     }
 

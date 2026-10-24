@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 
@@ -6,44 +7,50 @@ namespace Alcoler.Localization;
 // UI-string catalog only: kernel prompts, agent instructions, and session data stay English.
 public static class Loc
 {
+    // Config preference sentinel meaning "follow the OS UI language"; not a language code.
     public const string Auto = "auto";
-    public const string English = "en";
-    public const string Chinese = "zh";
 
-    private static readonly Lazy<Dictionary<string, string>> EnglishCatalog = new(() => LoadCatalog(English));
-    private static readonly Lazy<Dictionary<string, string>> ChineseCatalog = new(() => LoadCatalog(Chinese));
+    public static readonly IReadOnlyList<LanguageDefinition> SupportedLanguages =
+    [
+        new("en", "English", ["en"], UseCjkCompactUnits: false),
+        new("zh", "中文", ["zh"], UseCjkCompactUnits: true),
+    ];
 
-    public static string Language { get; private set; } = English;
+    // The source language; missing keys in other catalogs fall back to its catalog.
+    public static LanguageDefinition Fallback => SupportedLanguages[0];
 
-    public static bool IsChinese => Language == Chinese;
+    private static readonly ConcurrentDictionary<string, Lazy<Dictionary<string, string>>> Catalogs =
+        new(StringComparer.OrdinalIgnoreCase);
 
-    public static void SetLanguage(string language) =>
-        Language = string.Equals(language, Chinese, StringComparison.OrdinalIgnoreCase) ? Chinese : English;
+    public static string Language => Current.Code;
 
-    // "auto" follows the OS UI language; unknown values fall back to English.
-    public static string ResolveLanguage(string configured)
+    public static LanguageDefinition Current { get; private set; } = Fallback;
+
+    public static void SetLanguage(string? code) => Current = Find(code) ?? Fallback;
+
+    public static string ResolveLanguage(string? configured)
     {
-        if (string.Equals(configured, Chinese, StringComparison.OrdinalIgnoreCase))
+        if (Find(configured) is { } exact)
         {
-            return Chinese;
+            return exact.Code;
         }
         if (string.IsNullOrWhiteSpace(configured)
-            || string.Equals(configured, Auto, StringComparison.OrdinalIgnoreCase))
+            || string.Equals(configured.Trim(), Auto, StringComparison.OrdinalIgnoreCase))
         {
-            return CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase)
-                ? Chinese
-                : English;
+            return ResolveOsLanguage();
         }
-        return English;
+        return Fallback.Code;
     }
+
+    // Returns a storable preference: a registered language code, or Auto for anything else.
+    public static string NormalizeConfiguredLanguage(string? configured) =>
+        Find(configured) is { } match ? match.Code : Auto;
 
     public static string Get(string key, params object?[] args)
     {
-        var template = Language == Chinese && ChineseCatalog.Value.TryGetValue(key, out var chinese)
-            ? chinese
-            : EnglishCatalog.Value.TryGetValue(key, out var english)
-                ? english
-                : key;
+        var template = CatalogFor(Current.Code).TryGetValue(key, out var value) ? value
+            : CatalogFor(Fallback.Code).TryGetValue(key, out var fallback) ? fallback
+            : key;
         if (args.Length == 0)
         {
             return template;
@@ -57,6 +64,27 @@ public static class Loc
             return template;
         }
     }
+
+    private static LanguageDefinition? Find(string? code)
+    {
+        var normalized = code?.Trim();
+        return string.IsNullOrEmpty(normalized)
+            ? null
+            : SupportedLanguages.FirstOrDefault(language =>
+                string.Equals(language.Code, normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ResolveOsLanguage()
+    {
+        var osLanguage = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+        return SupportedLanguages.FirstOrDefault(language =>
+            language.OsLanguagePrefixes.Contains(osLanguage, StringComparer.OrdinalIgnoreCase))?.Code
+            ?? Fallback.Code;
+    }
+
+    private static Dictionary<string, string> CatalogFor(string code) =>
+        Catalogs.GetOrAdd(code, static language =>
+            new Lazy<Dictionary<string, string>>(() => LoadCatalog(language))).Value;
 
     private static Dictionary<string, string> LoadCatalog(string language)
     {

@@ -11,17 +11,26 @@ namespace Alcoler.Tests.Localization;
 
 public sealed class LocTests
 {
-    // Loc holds process-wide state; every test that switches restores English so
-    // other suites keep asserting the English default.
+    // Loc holds process-wide state; every test that switches restores the fallback
+    // language so other suites keep asserting the English default.
     [Fact]
-    public void DefaultLanguage_IsEnglish()
+    public void DefaultLanguage_IsFallbackLanguage()
     {
-        Assert.Equal(Loc.English, Loc.Language);
-        Assert.False(Loc.IsChinese);
+        Assert.Equal(Loc.Fallback, Loc.Current);
+        Assert.Equal(Loc.Fallback.Code, Loc.Language);
     }
 
     [Fact]
-    public void Get_ReturnsEnglishByDefault()
+    public void SupportedLanguages_HaveUniqueCaseInsensitiveCodes()
+    {
+        Assert.NotEmpty(Loc.SupportedLanguages);
+        Assert.Equal(
+            Loc.SupportedLanguages.Count,
+            Loc.SupportedLanguages.Select(language => language.Code.ToLowerInvariant()).Distinct().Count());
+    }
+
+    [Fact]
+    public void Get_ReturnsFallbackCatalogByDefault()
     {
         Assert.Equal("Cancel", Loc.Get("common_cancel"));
     }
@@ -31,14 +40,14 @@ public sealed class LocTests
     {
         try
         {
-            Loc.SetLanguage(Loc.Chinese);
+            Loc.SetLanguage("zh");
 
-            Assert.True(Loc.IsChinese);
+            Assert.Equal("zh", Loc.Language);
             Assert.Equal("取消", Loc.Get("common_cancel"));
         }
         finally
         {
-            Loc.SetLanguage(Loc.English);
+            Loc.SetLanguage(Loc.Fallback.Code);
         }
     }
 
@@ -57,9 +66,10 @@ public sealed class LocTests
     [Theory]
     [InlineData("zh")]
     [InlineData("ZH")]
+    [InlineData(" zh ")]
     public void ResolveLanguage_ExplicitChinese_PassesThrough(string configured)
     {
-        Assert.Equal(Loc.Chinese, Loc.ResolveLanguage(configured));
+        Assert.Equal("zh", Loc.ResolveLanguage(configured));
     }
 
     [Theory]
@@ -68,7 +78,7 @@ public sealed class LocTests
     [InlineData(" en ")]
     public void ResolveLanguage_ExplicitEnglish_PassesThrough(string configured)
     {
-        Assert.Equal(Loc.English, Loc.ResolveLanguage(configured));
+        Assert.Equal("en", Loc.ResolveLanguage(configured));
     }
 
     [Theory]
@@ -79,41 +89,60 @@ public sealed class LocTests
     [InlineData("garbage")]
     public void ResolveLanguage_NullOrUnknown_ResolvesToSupportedLanguage(string? configured)
     {
-        Assert.True(Loc.ResolveLanguage(configured!) is Loc.English or Loc.Chinese);
+        Assert.Contains(Loc.ResolveLanguage(configured!), Loc.SupportedLanguages.Select(language => language.Code));
     }
 
     [Fact]
     public void ResolveLanguage_Auto_FollowsSystemUiCulture()
     {
-        Assert.Equal(
-            CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "zh" ? Loc.Chinese : Loc.English,
-            Loc.ResolveLanguage("auto"));
+        var osLanguage = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+        var expected = Loc.SupportedLanguages
+            .FirstOrDefault(language => language.OsLanguagePrefixes.Contains(osLanguage, StringComparer.OrdinalIgnoreCase))
+            ?? Loc.Fallback;
+
+        Assert.Equal(expected.Code, Loc.ResolveLanguage("auto"));
+    }
+
+    [Theory]
+    [InlineData("zh", "zh")]
+    [InlineData(" ZH ", "zh")]
+    [InlineData("en", "en")]
+    [InlineData("garbage", Loc.Auto)]
+    [InlineData("", Loc.Auto)]
+    [InlineData(null, Loc.Auto)]
+    public void NormalizeConfiguredLanguage_ReturnsStorablePreference(string? configured, string expected)
+    {
+        Assert.Equal(expected, Loc.NormalizeConfiguredLanguage(configured));
     }
 
     [Fact]
-    public void SetLanguage_UnknownValue_FallsBackToEnglish()
+    public void SetLanguage_UnknownValue_FallsBackToFallbackLanguage()
     {
-        Loc.SetLanguage(Loc.Chinese);
+        Loc.SetLanguage("zh");
         Loc.SetLanguage("fr");
 
-        Assert.Equal(Loc.English, Loc.Language);
+        Assert.Equal(Loc.Fallback, Loc.Current);
     }
 
     [Fact]
     public void Catalogs_HaveIdenticalKeysAndPlaceholders()
     {
         var assembly = typeof(Loc).Assembly;
-        var english = LoadCatalog(assembly, "en");
-        var chinese = LoadCatalog(assembly, "zh");
+        var fallback = LoadCatalog(assembly, Loc.Fallback.Code);
+        Assert.NotEmpty(fallback);
 
-        Assert.NotEmpty(english);
-        Assert.Equal(
-            english.Keys.OrderBy(key => key, StringComparer.Ordinal),
-            chinese.Keys.OrderBy(key => key, StringComparer.Ordinal));
-
-        foreach (var (key, value) in english)
+        foreach (var language in Loc.SupportedLanguages.Skip(1))
         {
-            Assert.Equal(Placeholders(value), Placeholders(chinese[key]));
+            var catalog = LoadCatalog(assembly, language.Code);
+
+            Assert.Equal(
+                fallback.Keys.OrderBy(key => key, StringComparer.Ordinal),
+                catalog.Keys.OrderBy(key => key, StringComparer.Ordinal));
+
+            foreach (var (key, value) in fallback)
+            {
+                Assert.Equal(Placeholders(value), Placeholders(catalog[key]));
+            }
         }
 
         static Dictionary<string, string> LoadCatalog(Assembly assembly, string language)
@@ -140,13 +169,13 @@ public sealed class LocTests
             composer.Mode = PermissionMode.Build;
             Assert.Equal("Build", composer.ModeLabel);
 
-            Loc.SetLanguage(Loc.Chinese);
+            Loc.SetLanguage("zh");
 
             Assert.Equal("构建", composer.ModeLabel);
         }
         finally
         {
-            Loc.SetLanguage(Loc.English);
+            Loc.SetLanguage(Loc.Fallback.Code);
         }
     }
 }

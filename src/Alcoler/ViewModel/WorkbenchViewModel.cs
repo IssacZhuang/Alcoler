@@ -46,7 +46,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     private readonly Action<WorkbenchConfig>? _applySettings;
     private ShellEnvironment? _shellPreference;
     private WorkbenchComposerConfig _composerConfig;
-    private readonly Dictionary<ComposerViewModel, Action<PermissionMode>> _modeObservers = [];
+    private readonly Dictionary<ComposerViewModel, (Action<PermissionMode> Mode, Action<bool> Plan)> _modeObservers = [];
     private readonly Dictionary<IComposerHost, Action<ModelSelection>> _selectionObservers = [];
     private readonly Dictionary<string, long> _recentSubmissionSequences = new(StringComparer.OrdinalIgnoreCase);
     private long _submissionSequence;
@@ -86,18 +86,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _applySettings = applySettings;
         _shellPreference = config.IntegratedTerminalShell;
         var composerConfig = config.Composer ?? new WorkbenchComposerConfig();
-        // Plan is transient and never becomes the saved default permission. Older configs
-        // stored it in DefaultMode; migrate that bit into the separate draft flag.
-        var legacyDefaultPlan = composerConfig.DefaultMode == PermissionMode.Plan;
         _composerConfig = composerConfig with
         {
-            DefaultMode = Enum.IsDefined(composerConfig.DefaultMode) && composerConfig.DefaultMode != PermissionMode.Plan
-                ? composerConfig.DefaultMode
-                : PermissionMode.Yolo,
-            DefaultPlanEnabled = composerConfig.DefaultPlanEnabled || legacyDefaultPlan,
-            PendingSessionModes = composerConfig.PendingSessionModes?
-                .Where(pair => Enum.IsDefined(pair.Value) && pair.Value != PermissionMode.Plan)
-                .ToDictionary(),
+            DefaultMode = Enum.IsDefined(composerConfig.DefaultMode) ? composerConfig.DefaultMode : PermissionMode.Yolo,
+            PendingSessionModes = composerConfig.PendingSessionModes?.Where(pair => Enum.IsDefined(pair.Value)).ToDictionary(),
         };
         _ownedResource = ownedResource;
         _scheduler = scheduler;
@@ -350,8 +342,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             _activities.SessionActivityChanged -= OnSessionActivityChanged;
         }
         CloseActive();
-        foreach (var (composer, observer) in _modeObservers)
-            composer.ModeSelected -= observer;
+        foreach (var (composer, observers) in _modeObservers)
+        {
+            composer.ModeSelected -= observers.Mode;
+            composer.PlanModeSelected -= observers.Plan;
+        }
         _modeObservers.Clear();
         // Pending attachments are owned by the draft registries, not by observer
         // registration; CloseActive above has re-saved the active composer.
@@ -406,7 +401,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _sessionDrafts.TryGetValue(sessionId, out var saved);
         var savedText = saved?.Composer.Draft;
         var savedMode = saved?.Composer.Mode;
-        var savedPlanEnabled = saved?.Composer.PlanEnabled ?? false;
         var conversation = new ConversationViewModel(_runtime, store, saved?.Composer, ModelChoices,
             WorkbenchModelCatalog.DefaultSelection(_config)) { WorkspaceRoot = workspaceRoot };
         conversation.Composer.ConfigureWorkspace(workspaceRoot);
@@ -417,7 +411,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             {
                 conversation.ConfigureModel(model);
             }
-            conversation.RestoreComposerState(savedText!, savedMode!.Value, saved.Selection, savedPlanEnabled);
+            conversation.RestoreComposerState(savedText!, savedMode!.Value, saved.Selection);
             conversation.Banner = saved.Banner;
             if (saved.UnsentText is not null)
             {
@@ -430,7 +424,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         if (GetSavedSelection(workspaceRoot, sessionId.Value) is { } persistedSelection)
             conversation.RestoreModelSelection(persistedSelection);
         if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
-            conversation.RestorePendingMode(pendingMode, savedPlanEnabled);
+            conversation.RestorePendingMode(pendingMode);
+        // The live projection owns plan state for an existing session, even when a saved composer carried Plan.
+        conversation.Composer.RestorePlanEnabled(store.State.PlanEnabled);
         ObserveMode(conversation.Composer, () => sessionId);
         ObserveSelection(conversation, () => sessionId.Value);
         conversation.ModeSubmitted += (mode, _) => ClearSubmittedMode(sessionId, mode);
@@ -562,8 +558,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
 
     private void UnobserveMode(ComposerViewModel composer)
     {
-        if (_modeObservers.Remove(composer, out var observer))
-            composer.ModeSelected -= observer;
+        if (_modeObservers.Remove(composer, out var observers))
+        {
+            composer.ModeSelected -= observers.Mode;
+            composer.PlanModeSelected -= observers.Plan;
+        }
     }
 
     private Dictionary<string, IReadOnlyDictionary<string, ModelSelection>> CopyModelSelections() =>
@@ -619,9 +618,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     {
         if (_modeObservers.ContainsKey(composer))
             return;
-        Action<PermissionMode> observer = mode =>
+        Action<PermissionMode> modeObserver = mode =>
         {
-            if (!Enum.IsDefined(mode) || mode == PermissionMode.Plan)
+            if (!Enum.IsDefined(mode))
                 return;
             var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes ?? new Dictionary<string, PermissionMode>());
             if (sessionId() is { } id)
@@ -635,13 +634,15 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             if (sessionId() is null)
                 SaveComposerConfig(_composerConfig with { DefaultPlanEnabled = planEnabled });
         };
-        _modeObservers[composer] = observer;
-        composer.ModeSelected += observer;
+        _modeObservers[composer] = (modeObserver, planObserver);
+        composer.ModeSelected += modeObserver;
         composer.PlanModeSelected += planObserver;
     }
 
     private void SavePendingMode(SessionId sessionId, PermissionMode mode)
     {
+        if (!Enum.IsDefined(mode))
+            return;
         var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes ?? new Dictionary<string, PermissionMode>())
         {
             [sessionId.Value] = mode,
@@ -769,8 +770,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             if (ack.Accepted)
             {
                 ClearSubmittedMode(handle.Id, mode);
-                if (Active?.SessionId == handle.Id)
-                    Active.AcknowledgeMode(mode, planEnabled);
                 if (selection is not null)
                     RecordAcceptedSelection(draft.WorkspaceRoot, handle.Id, selection, submissionSequence);
                 draft.Composer.RecordSent(text);
@@ -822,7 +821,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 title,
                 _composerConfig.DefaultMode,
                 GetNewDraftSelection(workspaceRoot),
-                PlanEnabled: _composerConfig.DefaultPlanEnabled),
+                PlanEnabled: false),
             CancellationToken.None);
         _sessionRoots[handle.Id] = workspaceRoot;
         RevealWorkspace(workspaceRoot);

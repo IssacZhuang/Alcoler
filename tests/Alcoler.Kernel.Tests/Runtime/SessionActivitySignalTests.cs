@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Alcoler.Adapters.Models;
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
@@ -145,6 +146,127 @@ public class SessionActivitySignalTests
 
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase
             is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+    }
+
+    [Fact]
+    public async Task ExitPlanModeApproval_ClearsAwaitingPermissionAndPlanEnabled()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("ExitPlanMode", new { plan = "1. Do the work." }),
+            Reply());
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo, PlanEnabled: true),
+            CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var activity = Assert.IsAssignableFrom<ISessionActivityRuntime>(runtime);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "present the plan"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+
+        var permission = await WaitForPermissionAsync(projection);
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingPermission);
+
+        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        Assert.True(resolve.Accepted, resolve.RejectionReason);
+
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase
+            is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+        await WaitUntilAsync(() => projection.Snapshot().State.PlanEnabled is false);
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+    }
+
+    [Fact]
+    public async Task PermissionTimeout_ClearsPendingStateAndLeavesAwaitingPermission()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("Write", new { file_path = "notes.txt", content = "Hello Alcoler" }),
+            Reply());
+        await using var runtime = harness.BuildRuntime(
+            options => options with { InteractionTimeout = TimeSpan.FromSeconds(1) });
+        var session = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: PermissionMode.Build), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var activity = Assert.IsAssignableFrom<ISessionActivityRuntime>(runtime);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "write notes"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+
+        await WaitForPermissionAsync(projection);
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingPermission);
+
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is null
+            && activity.GetSessionActivity(session.Id)?.Phase
+                is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        var resolved = Assert.Single(events.Select(sequenced => sequenced.Event).OfType<PermissionResolvedEvent>());
+        Assert.Equal(PermissionOutcome.Denied, resolved.Decision.Outcome);
+
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+    }
+
+    [Fact]
+    public async Task InteractionTimeout_ClearsPendingStateAndLeavesAwaitingInteraction()
+    {
+        await using var harness = TestHarness.Create(
+            ToolCall("AskUserQuestion", new
+            {
+                questions = new[]
+                {
+                    new
+                    {
+                        question = "Which library should we use?",
+                        header = "Library",
+                        options = new[]
+                        {
+                            new { label = "NodaTime", description = "Most precise" },
+                            new { label = "DateTime", description = "Built in" },
+                        },
+                    },
+                },
+            }),
+            Reply());
+        await using var runtime = harness.BuildRuntime(
+            options => options with { InteractionTimeout = TimeSpan.FromSeconds(2) });
+        var session = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var activity = Assert.IsAssignableFrom<ISessionActivityRuntime>(runtime);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "ask me"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+
+        var permission = await WaitForPermissionAsync(projection);
+        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
+            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
+            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
+        Assert.True(resolve.Accepted, resolve.RejectionReason);
+
+        await WaitForInteractionAsync(projection);
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingInteraction);
+
+        await WaitUntilAsync(() => projection.Snapshot().State.PendingInteraction is null
+            && activity.GetSessionActivity(session.Id)?.Phase
+                is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        var resolved = Assert.Single(events.Select(sequenced => sequenced.Event).OfType<InteractionResolvedEvent>());
+        Assert.Empty(resolved.Answer.Answers);
+
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
             { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
     }

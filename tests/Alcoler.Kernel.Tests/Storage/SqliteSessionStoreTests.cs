@@ -89,7 +89,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         var record = NewRecord(title: "Retain generated title", branch: branch, isArchived: true) with
         {
             ParentSessionId = StrongId.NewSessionId(),
-            PermissionMode = PermissionMode.Plan,
+            PermissionMode = PermissionMode.Yolo,
             TitleSource = SessionTitleSource.Generated,
         };
         CreateVersionTwoDatabase([record], [(record.Id, [NewMessage("Do not backfill this title")])]);
@@ -128,16 +128,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
 
         void AssertMetadata(SessionRecord loaded)
         {
-            // Legacy Plan rows are folded into the orthogonal plan flag on read.
-            Assert.Equal(
-                record with
-                {
-                    Branch = null,
-                    PermissionMode = PermissionMode.Edit,
-                    PlanEnabled = true,
-                    PreviousPermissionMode = null,
-                },
-                loaded with { Branch = null });
+            Assert.Equal(record with { Branch = null }, loaded with { Branch = null });
             Assert.NotNull(loaded.Branch);
             Assert.Equal(branch.CutAfterMessageId, loaded.Branch.CutAfterMessageId);
             Assert.Equal(branch.KeptMessageIds, loaded.Branch.KeptMessageIds);
@@ -159,7 +150,6 @@ public sealed class SqliteSessionStoreTests : IDisposable
         var loaded = Assert.IsType<SessionRecord>(await reopened.GetSessionAsync(record.Id, CancellationToken.None));
         Assert.Equal(PermissionMode.Edit, loaded.PermissionMode);
         Assert.True(loaded.PlanEnabled);
-        Assert.Null(loaded.PreviousPermissionMode);
 
         var summary = Assert.Single(await reopened.ListSessionsAsync(null, 10, CancellationToken.None));
         Assert.Equal(PermissionMode.Edit, summary.PermissionMode);
@@ -727,7 +717,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         await store.AppendMessagesAsync(target.Id, [NewMessage("a"), NewMessage("b")], 0, CancellationToken.None);
         await store.AppendMessagesAsync(survivor.Id, [NewMessage("s")], 0, CancellationToken.None);
         await store.AppendDurableEventsAsync(
-            [NewEvent(target.Id, 0, new SessionModeChangedEvent(PermissionMode.Plan))],
+            [NewEvent(target.Id, 0, new SessionModeChangedEvent(PermissionMode.Yolo))],
             CancellationToken.None);
 
         await store.DeleteSessionAsync(target.Id, CancellationToken.None);
@@ -899,7 +889,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
             NewEvent(sessionId, 11, new CompactBoundaryAppliedEvent(boundary)),
             NewEvent(sessionId, 7, new ToolCallStartedEvent(
                 new TurnId("turn_1"), new ToolCallId("call_1"), "Bash", input)),
-            NewEvent(sessionId, 3, new SessionModeChangedEvent(PermissionMode.Plan)),
+            NewEvent(sessionId, 3, new SessionModeChangedEvent(PermissionMode.Yolo)),
         };
 
         await store.AppendDurableEventsAsync(events, CancellationToken.None);
@@ -909,7 +899,7 @@ public sealed class SqliteSessionStoreTests : IDisposable
         Assert.All(loaded, sequenced => Assert.Equal(sessionId, sequenced.SessionId));
         Assert.Equal(Iso("2026-10-19T09:00:00Z"), loaded[0].OccurredAt);
 
-        Assert.Equal(PermissionMode.Plan, Assert.IsType<SessionModeChangedEvent>(loaded[0].Event).Mode);
+        Assert.Equal(PermissionMode.Yolo, Assert.IsType<SessionModeChangedEvent>(loaded[0].Event).Mode);
 
         var started = Assert.IsType<ToolCallStartedEvent>(loaded[1].Event);
         Assert.Equal("Bash", started.ToolName);

@@ -136,12 +136,10 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 INSERT OR REPLACE INTO session
                     (id, workspace_root, title, permission_mode, model_selection_json,
                      created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
-                     forked_from_session_id, forked_from_message_id, previous_permission_mode, active_workflows_json,
-                     plan_enabled)
+                     forked_from_session_id, forked_from_message_id, active_workflows_json, plan_enabled)
                 VALUES ($id, $workspace_root, $title, $permission_mode, $model_selection_json,
                         $created_at, $updated_at, $branch_json, $is_archived, $parent_session_id, $title_source, $shell_json,
-                        $forked_from_session_id, $forked_from_message_id, $previous_permission_mode, $active_workflows_json,
-                        $plan_enabled)
+                        $forked_from_session_id, $forked_from_message_id, $active_workflows_json, $plan_enabled)
                 """;
             command.Parameters.AddWithValue("$id", record.Id.Value);
             command.Parameters.AddWithValue("$workspace_root", record.WorkspaceRoot);
@@ -161,14 +159,11 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 (object?)record.ForkedFromSessionId?.Value ?? DBNull.Value);
             command.Parameters.AddWithValue("$forked_from_message_id",
                 (object?)record.ForkedFromMessageId?.Value ?? DBNull.Value);
-            command.Parameters.AddWithValue("$previous_permission_mode",
-                record.PreviousPermissionMode?.ToString() ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("$active_workflows_json",
                 record.ActiveWorkflows is { Count: > 0 } workflows
                     ? SerializeWorkflows(workflows)
                     : DBNull.Value);
-            command.Parameters.AddWithValue("$plan_enabled",
-                record.PlanEnabled || record.PermissionMode == PermissionMode.Plan);
+            command.Parameters.AddWithValue("$plan_enabled", record.PlanEnabled);
             command.ExecuteNonQuery();
         }, cancellationToken);
     }
@@ -195,8 +190,7 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             command.CommandText = """
                 SELECT workspace_root, title, permission_mode, model_selection_json,
                        created_at, updated_at, branch_json, is_archived, parent_session_id, title_source, shell_json,
-                       forked_from_session_id, forked_from_message_id, previous_permission_mode, active_workflows_json,
-                       plan_enabled
+                       forked_from_session_id, forked_from_message_id, active_workflows_json, plan_enabled
                 FROM session
                 WHERE id = $id
                 """;
@@ -858,17 +852,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
 
     private static SessionRecord ReadSessionRecord(SqliteDataReader reader, SessionId id)
     {
-        var mode = Enum.Parse<PermissionMode>(reader.GetString(reader.GetOrdinal("permission_mode")));
-        var previousMode = ReadPreviousPermissionMode(reader);
+        var mode = ReadPermissionMode(reader);
         var planEnabled = reader.GetBoolean(reader.GetOrdinal("plan_enabled"));
-        if (mode == PermissionMode.Plan)
-        {
-            mode = previousMode is { } previous && previous != PermissionMode.Plan
-                ? previous
-                : PermissionMode.Edit;
-            planEnabled = true;
-            previousMode = null;
-        }
 
         return new SessionRecord(
             id,
@@ -885,20 +870,14 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
             DeserializeOptional<ShellEnvironment>(reader, "shell_json"),
             ReadForkedFromSessionId(reader),
             ReadForkedFromMessageId(reader),
-            previousMode,
             ReadActiveWorkflows(reader),
             planEnabled);
     }
 
     private static SessionSummary ReadSummary(SqliteDataReader reader)
     {
-        var mode = Enum.Parse<PermissionMode>(reader.GetString(reader.GetOrdinal("permission_mode")));
+        var mode = ReadPermissionMode(reader);
         var planEnabled = reader.GetBoolean(reader.GetOrdinal("plan_enabled"));
-        if (mode == PermissionMode.Plan)
-        {
-            mode = PermissionMode.Edit;
-            planEnabled = true;
-        }
 
         return new SessionSummary(
             new SessionId(reader.GetString(reader.GetOrdinal("id"))),
@@ -935,13 +914,11 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         return reader.IsDBNull(ordinal) ? null : new MessageId(reader.GetString(ordinal));
     }
 
-    private static PermissionMode? ReadPreviousPermissionMode(SqliteDataReader reader)
-    {
-        var ordinal = reader.GetOrdinal("previous_permission_mode");
-        return reader.IsDBNull(ordinal)
-            ? null
-            : Enum.TryParse<PermissionMode>(reader.GetString(ordinal), out var mode) ? mode : null;
-    }
+    private static PermissionMode ReadPermissionMode(SqliteDataReader reader) =>
+        Enum.TryParse<PermissionMode>(reader.GetString(reader.GetOrdinal("permission_mode")), out var mode)
+            && Enum.IsDefined(mode)
+                ? mode
+                : PermissionMode.Edit;
 
     // Kept as hand-built JSON like branch_json: IReadOnlyList<string> has no source-gen metadata.
     private static string SerializeWorkflows(IReadOnlyList<string> workflows)

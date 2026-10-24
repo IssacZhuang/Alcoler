@@ -162,8 +162,9 @@ public class SettingsViewModelTests
             var config = SampleConfig() with
             {
                 BraveApiKey = "search-key",
-                Composer = new WorkbenchComposerConfig(PermissionMode.Plan,
-                    new Dictionary<string, PermissionMode> { ["session"] = PermissionMode.Edit }),
+                Composer = new WorkbenchComposerConfig(PermissionMode.Edit,
+                    new Dictionary<string, PermissionMode> { ["session"] = PermissionMode.Edit },
+                    DefaultPlanEnabled: true),
             };
             using var settings = new SettingsViewModel(config);
             settings.Theme = "light";
@@ -171,7 +172,8 @@ public class SettingsViewModelTests
             Assert.NotNull(await settings.SaveAsync(path));
 
             var loaded = WorkbenchConfig.LoadOrDefault(path);
-            Assert.Equal(PermissionMode.Plan, loaded.Composer!.DefaultMode);
+            Assert.Equal(PermissionMode.Edit, loaded.Composer!.DefaultMode);
+            Assert.True(loaded.Composer.DefaultPlanEnabled);
             Assert.Equal(PermissionMode.Edit, loaded.Composer.PendingSessionModes!["session"]);
             Assert.Equal("search-key", loaded.BraveApiKey);
             Assert.Equal("light", loaded.Theme);

@@ -132,8 +132,34 @@ public sealed partial class ComposerViewModel : ObservableObject
         _restoringMode = true;
         try
         {
-            Mode = mode == PermissionMode.Plan ? PermissionMode.Edit : mode;
-            PlanEnabled = planEnabled || mode == PermissionMode.Plan;
+            Mode = mode;
+            PlanEnabled = planEnabled;
+        }
+        finally
+        {
+            _restoringMode = false;
+        }
+    }
+
+    internal void RestoreModeOnly(PermissionMode mode)
+    {
+        _restoringMode = true;
+        try
+        {
+            Mode = mode;
+        }
+        finally
+        {
+            _restoringMode = false;
+        }
+    }
+
+    internal void RestorePlanEnabled(bool planEnabled)
+    {
+        _restoringMode = true;
+        try
+        {
+            PlanEnabled = planEnabled;
         }
         finally
         {

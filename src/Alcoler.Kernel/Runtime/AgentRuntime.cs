@@ -44,6 +44,8 @@ public sealed record AgentRuntimeOptions
 
     public TimeSpan SessionTitleGenerationTimeout { get; init; } = TimeSpan.FromSeconds(60);
 
+    public TimeSpan InteractionTimeout { get; init; } = TimeSpan.FromMinutes(10);
+
     public string? ShellName { get; init; }
 
     public string? SubagentOutputRoot { get; init; }
@@ -104,17 +106,11 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         var now = _options.Clock.GetUtcNow();
         var title = options.Title ?? "New session";
         var selection = options.ModelSelection ?? Volatile.Read(ref _defaultModel);
-        // Plan is a legacy SessionOptions value: fold it into the flag and keep a usable
-        // underlying permission mode instead of writing Plan into the record.
-        var permissionMode = options.PermissionMode == PermissionMode.Plan
-            ? PermissionMode.Edit
-            : options.PermissionMode;
-        var planEnabled = options.PlanEnabled || options.PermissionMode == PermissionMode.Plan;
         var record = new SessionRecord(
             StrongId.NewSessionId(),
             options.WorkspaceRoot,
             title,
-            permissionMode,
+            options.PermissionMode,
             selection,
             now,
             now,
@@ -122,7 +118,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             TitleSource: options.Title is null ? SessionTitleSource.Default : SessionTitleSource.Custom,
             Shell: options.Shell,
             ActiveWorkflows: activeWorkflows.Count == 0 ? null : activeWorkflows,
-            PlanEnabled: planEnabled);
+            PlanEnabled: options.PlanEnabled);
         await _options.Store.UpsertSessionAsync(record, cancellationToken).ConfigureAwait(false);
         await CreateRuntimeAsync(record, isNewSession: true, cancellationToken).ConfigureAwait(false);
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
@@ -185,16 +181,11 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         }
 
         var now = _options.Clock.GetUtcNow();
-        var parentMode = parent.PermissionMode == PermissionMode.Plan
-            ? parent.PreviousPermissionMode is { } previous && previous != PermissionMode.Plan
-                ? previous
-                : PermissionMode.Edit
-            : parent.PermissionMode;
         var child = new SessionRecord(
             StrongId.NewSessionId(),
             parent.WorkspaceRoot,
             $"Fork of {parent.Title}",
-            parentMode,
+            parent.PermissionMode,
             parent.ModelSelection,
             now,
             now,
@@ -205,7 +196,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             ForkedFromSessionId: parent.Id,
             ForkedFromMessageId: boundaryMessageId,
             ActiveWorkflows: parent.ActiveWorkflows,
-            PlanEnabled: parent.PlanEnabled || parent.PermissionMode == PermissionMode.Plan);
+            PlanEnabled: parent.PlanEnabled);
         var copied = active.Take(copyEnd).Select(storedMessage => storedMessage.Message).ToList();
         var events = new List<SequencedEvent>(copied.Count + completedTails.Count);
         long sequence = 1;
@@ -473,6 +464,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 DefaultModel = Volatile.Read(ref _defaultModel),
                 SessionTitleGenerationEnabled = _options.SessionTitleGenerationEnabled,
                 SessionTitleGenerationTimeout = _options.SessionTitleGenerationTimeout,
+                InteractionTimeout = _options.InteractionTimeout,
                 Workflows = _options.Workflows,
             },
             _options.Artifacts,

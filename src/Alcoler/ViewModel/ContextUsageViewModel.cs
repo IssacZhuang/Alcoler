@@ -83,7 +83,7 @@ public sealed class ContextUsageViewModel
 
     internal static string Compact(int value, CultureInfo culture, int maximumFractionDigits = 1)
     {
-        var units = Loc.IsChinese
+        var units = Loc.Current.UseCjkCompactUnits
             ? ChineseUnits
             : culture.TwoLetterISOLanguageName switch
             {

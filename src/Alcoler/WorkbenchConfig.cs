@@ -98,12 +98,7 @@ public sealed record WorkbenchConfig(
         return parsed with
         {
             Theme = string.IsNullOrWhiteSpace(parsed.Theme) ? "dark" : parsed.Theme,
-            Language = parsed.Language?.Trim().ToLowerInvariant() switch
-            {
-                Loc.English => Loc.English,
-                Loc.Chinese => Loc.Chinese,
-                _ => Loc.Auto,
-            },
+            Language = Loc.NormalizeConfiguredLanguage(parsed.Language),
             AutoArchiveOlderThanDays = Math.Clamp(parsed.AutoArchiveOlderThanDays, 1, 365),
         };
     }

@@ -164,7 +164,7 @@ public class SessionTitleGenerationTests
         var model = new TitleModel { BlockTitle = true };
         SessionHandle session;
         await using (var creator = fixture.Runtime(model))
-            session = await creator.CreateSessionAsync(new SessionOptions(fixture.Root, PermissionMode: PermissionMode.Plan), CancellationToken.None);
+            session = await creator.CreateSessionAsync(new SessionOptions(fixture.Root, PermissionMode: PermissionMode.Edit), CancellationToken.None);
         var now = DateTimeOffset.UtcNow;
         ConversationMessage[] history =
         [
@@ -357,7 +357,7 @@ public class SessionTitleGenerationTests
         await WaitForTurnAsync(projection, 1);
         clock.Advance(TimeSpan.FromHours(1));
         Assert.True((await runtime.SubmitAsync(
-            new SetModeCommand(StrongId.NewCommandId(), session.Id, 0, PermissionMode.Plan), CancellationToken.None)).Accepted);
+            new SetModeCommand(StrongId.NewCommandId(), session.Id, 0, PermissionMode.Edit), CancellationToken.None)).Accepted);
         var beforeRename = await fixture.RecordAsync(session.Id);
         clock.Advance(TimeSpan.FromHours(1));
         var manual = sameAsFallback ? fallback : "My chosen session title";

@@ -608,7 +608,8 @@ public class ConversationViewModelTests
             var request = new Alcoler.Contracts.Events.InteractionRequest(StrongId.NewInteractionId(), "Choose", [question]);
             var state = TestSnapshots.State(TurnPhase.AwaitingInteraction) with { PendingInteraction = request };
             viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
-            viewModel.Composer.Mode = PermissionMode.Plan;
+            viewModel.Composer.Mode = PermissionMode.Edit;
+            viewModel.Composer.PlanEnabled = true;
             viewModel.SelectInteractionAnswer("Target", "main");
             var pending = viewModel.PendingInteraction;
 
@@ -616,7 +617,8 @@ public class ConversationViewModelTests
 
             Assert.Same(pending, viewModel.PendingInteraction);
             Assert.Equal("main", viewModel.PendingInteraction!.SelectedAnswers["Target"]);
-            Assert.Equal(PermissionMode.Plan, viewModel.Composer.Mode);
+            Assert.Equal(PermissionMode.Edit, viewModel.Composer.Mode);
+            Assert.True(viewModel.Composer.PlanEnabled);
             Assert.True(viewModel.PendingInteraction.CanSubmit);
         }
     }
@@ -955,7 +957,8 @@ public class ConversationViewModelTests
         {
             var restored = new Alcoler.Contracts.Models.ModelSelection("other", "model",
                 new Alcoler.Contracts.Models.ModelCallOptions(ReasoningLevel: "high", MaxOutputTokens: 2048));
-            viewModel.RestoreComposerState("keep me", PermissionMode.Plan, restored);
+            viewModel.RestoreComposerState("keep me", PermissionMode.Edit, restored);
+            viewModel.Composer.PlanEnabled = true;
             var stale = TestSnapshots.State();
             viewModel.ApplyUpdate(new ProjectionUpdate(1, stale, [new StatePatched(stale)], Reset: true));
 
@@ -965,6 +968,70 @@ public class ConversationViewModelTests
             Assert.Equal(restored, viewModel.CurrentSelection);
             Assert.Equal("high", viewModel.ThoughtLevel);
             Assert.Empty(runtime.Submitted);
+        }
+    }
+
+    [Fact]
+    public void ApplyState_ServerPlanExitWinsAfterPendingModeRestore()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var planOn = TestSnapshots.State() with { Mode = PermissionMode.Edit, PlanEnabled = true };
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, planOn, [new StatePatched(planOn)], Reset: false));
+            viewModel.RestorePendingMode(PermissionMode.Edit);
+            var planOff = planOn with { PlanEnabled = false };
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, planOff, [new StatePatched(planOff)], Reset: false));
+
+            Assert.Equal(PermissionMode.Edit, viewModel.Composer.Mode);
+            Assert.False(viewModel.Composer.PlanEnabled);
+            Assert.False(viewModel.Composer.IsPlanMode);
+            Assert.False(viewModel.PlanEnabled);
+        }
+    }
+
+    [Fact]
+    public void ApplyState_UnchangedServerStatePreservesLocalModeAndPlanToggles()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var state = TestSnapshots.State() with { Mode = PermissionMode.Edit, PlanEnabled = false };
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            viewModel.Composer.Mode = PermissionMode.Yolo;
+            viewModel.Composer.PlanEnabled = true;
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, state, [new StatePatched(state)], Reset: false));
+
+            Assert.Equal(PermissionMode.Yolo, viewModel.Composer.Mode);
+            Assert.True(viewModel.Composer.PlanEnabled);
+            Assert.Equal(PermissionMode.Edit, viewModel.Mode);
+            Assert.False(viewModel.PlanEnabled);
+        }
+    }
+
+    [Fact]
+    public async Task ResolvePermission_RejectedAckShowsBannerAndReenablesSubmission()
+    {
+        var (viewModel, runtime, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var permission = Permission();
+            var state = StateWithPermission(permission);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [new StatePatched(state)], Reset: false));
+            runtime.RejectNextCommand = true;
+
+            await viewModel.ResolvePermissionAsync(PermissionDecision.Allow);
+
+            Assert.Single(runtime.Submitted);
+            Assert.False(viewModel.IsInteractionSubmitting);
+            Assert.Equal("rejected for test", viewModel.Banner);
+            Assert.NotNull(viewModel.PendingInteraction);
+            Assert.True(viewModel.PendingInteraction!.IsPermission);
         }
     }
 

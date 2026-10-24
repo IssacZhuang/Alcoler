@@ -42,8 +42,13 @@ public class PermissionServiceTests
         _ => throw new ArgumentException($"unknown tool preset: {name}", nameof(name)),
     };
 
-    private static PermissionCheckRequest Request(string toolName, ToolMetadata tool, object? input = null, PermissionMode mode = PermissionMode.Build) =>
-        new(Session, toolName, Input(input), tool, mode);
+    private static PermissionCheckRequest Request(
+        string toolName,
+        ToolMetadata tool,
+        object? input = null,
+        PermissionMode mode = PermissionMode.Build,
+        bool planEnabled = false) =>
+        new(Session, toolName, Input(input), tool, mode, PlanEnabled: planEnabled);
 
     private static PermissionRule Allow(string toolName, string? content) => new(toolName, content, PermissionVerdict.Allow);
 
@@ -77,35 +82,41 @@ public class PermissionServiceTests
     }
 
     [Theory]
-    [InlineData(PermissionMode.Build, "readOnlyLow", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Build, "readOnlyNetworkLow", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Build, "readOnlyMediumRisk", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Build, "bashNetwork", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Build, "workspaceWrite", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Build, "destructive", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Build, "highRiskSystem", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Build, "needsApproval", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Edit, "readOnlyLow", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Edit, "bashNetwork", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Edit, "destructive", PermissionOutcome.Allowed, true)]
-    [InlineData(PermissionMode.Edit, "workspaceWrite", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Plan, "readOnlyLow", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Plan, "readOnlyNetworkLow", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Plan, "noneScopeSideEffect", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Plan, "readOnlySession", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Plan, "sessionPlanAllowed", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Plan, "workspacePlanAllowed", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Plan, "workspaceWrite", PermissionOutcome.Denied, false)]
-    [InlineData(PermissionMode.Plan, "destructivePlanAllowed", PermissionOutcome.Denied, false)]
-    [InlineData(PermissionMode.Yolo, "bashNetwork", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Yolo, "workspaceWrite", PermissionOutcome.Allowed, false)]
-    [InlineData(PermissionMode.Yolo, "destructive", PermissionOutcome.Allowed, false)]
-    public async Task ModeDefaults_FollowPrecedenceChain(PermissionMode mode, string preset, PermissionOutcome expected, bool expectBrokerCall)
+    [InlineData(PermissionMode.Build, "readOnlyLow", PermissionOutcome.Allowed, false, false)]
+    [InlineData(PermissionMode.Build, "readOnlyNetworkLow", PermissionOutcome.Allowed, false, false)]
+    [InlineData(PermissionMode.Build, "readOnlyMediumRisk", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Build, "bashNetwork", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Build, "workspaceWrite", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Build, "destructive", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Build, "highRiskSystem", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Build, "needsApproval", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Edit, "readOnlyLow", PermissionOutcome.Allowed, false, false)]
+    [InlineData(PermissionMode.Edit, "bashNetwork", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Edit, "destructive", PermissionOutcome.Allowed, true, false)]
+    [InlineData(PermissionMode.Edit, "workspaceWrite", PermissionOutcome.Allowed, false, false)]
+    [InlineData(PermissionMode.Yolo, "readOnlyLow", PermissionOutcome.Allowed, false, true)]
+    [InlineData(PermissionMode.Yolo, "readOnlyNetworkLow", PermissionOutcome.Allowed, false, true)]
+    [InlineData(PermissionMode.Yolo, "noneScopeSideEffect", PermissionOutcome.Allowed, false, true)]
+    [InlineData(PermissionMode.Yolo, "readOnlySession", PermissionOutcome.Allowed, false, true)]
+    [InlineData(PermissionMode.Yolo, "sessionPlanAllowed", PermissionOutcome.Allowed, false, true)]
+    [InlineData(PermissionMode.Yolo, "workspacePlanAllowed", PermissionOutcome.Allowed, false, true)]
+    [InlineData(PermissionMode.Yolo, "workspaceWrite", PermissionOutcome.Denied, false, true)]
+    [InlineData(PermissionMode.Yolo, "destructivePlanAllowed", PermissionOutcome.Denied, false, true)]
+    [InlineData(PermissionMode.Yolo, "bashNetwork", PermissionOutcome.Allowed, false, false)]
+    [InlineData(PermissionMode.Yolo, "workspaceWrite", PermissionOutcome.Allowed, false, false)]
+    [InlineData(PermissionMode.Yolo, "destructive", PermissionOutcome.Allowed, false, false)]
+    public async Task ModeDefaults_FollowPrecedenceChain(
+        PermissionMode mode,
+        string preset,
+        PermissionOutcome expected,
+        bool expectBrokerCall,
+        bool planEnabled)
     {
         var broker = new StubBroker { Next = PermissionDecision.Allow };
-        var service = new PermissionService(broker, PermissionRuleset.Empty, mode);
+        var service = new PermissionService(broker, PermissionRuleset.Empty, mode, planEnabled: planEnabled);
 
-        var decision = await service.CheckAsync(Request("Bash", Preset(preset), mode: mode), CancellationToken.None);
+        var decision = await service.CheckAsync(
+            Request("Bash", Preset(preset), mode: mode, planEnabled: planEnabled), CancellationToken.None);
 
         Assert.Equal(expected, decision.Outcome);
         Assert.Equal(expectBrokerCall ? 1 : 0, broker.Calls);
@@ -115,9 +126,11 @@ public class PermissionServiceTests
     public async Task PlanMode_TransitionPolicy_DeniesToolDisallowedInPlanMode()
     {
         var broker = new StubBroker { Next = PermissionDecision.Allow };
-        var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Plan);
+        var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Yolo, planEnabled: true);
 
-        var decision = await service.CheckAsync(Request("Write", Preset("workspaceWrite"), mode: PermissionMode.Plan), CancellationToken.None);
+        var decision = await service.CheckAsync(
+            Request("Write", Preset("workspaceWrite"), mode: PermissionMode.Yolo, planEnabled: true),
+            CancellationToken.None);
 
         Assert.Equal(PermissionOutcome.Denied, decision.Outcome);
         Assert.Equal(0, broker.Calls);
@@ -127,14 +140,15 @@ public class PermissionServiceTests
     public async Task PlanMode_AllowsReadOnlyBashInput()
     {
         var broker = new StubBroker();
-        var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Plan);
+        var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Yolo, planEnabled: true);
         var request = new PermissionCheckRequest(
             Session,
             "Bash",
             Input(new { command = "git status" }),
             Preset("bashNetwork"),
-            PermissionMode.Plan,
-            TreatAsReadOnly: true);
+            PermissionMode.Yolo,
+            TreatAsReadOnly: true,
+            PlanEnabled: true);
 
         var decision = await service.CheckAsync(request, CancellationToken.None);
 
@@ -164,13 +178,14 @@ public class PermissionServiceTests
     public async Task ExitPlanMode_InsidePlanMode_AsksWithFeedbackEnabled()
     {
         var broker = new StubBroker();
-        var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Plan);
+        var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Yolo, planEnabled: true);
         var request = new PermissionCheckRequest(
             Session,
             "ExitPlanMode",
             Input(new { plan = "do it" }),
             Preset("userInteraction"),
-            PermissionMode.Plan);
+            PermissionMode.Yolo,
+            PlanEnabled: true);
 
         var decision = await service.CheckAsync(request, CancellationToken.None);
 
@@ -292,10 +307,10 @@ public class PermissionServiceTests
     {
         var broker = new StubBroker { Next = PermissionDecision.Allow };
         var rules = new PermissionRuleset([Allow("Write", null)], [], []);
-        var service = new PermissionService(broker, rules, PermissionMode.Plan);
+        var service = new PermissionService(broker, rules, PermissionMode.Yolo, planEnabled: true);
 
         var decision = await service.CheckAsync(
-            Request("Write", Preset("workspaceWrite"), mode: PermissionMode.Plan),
+            Request("Write", Preset("workspaceWrite"), mode: PermissionMode.Yolo, planEnabled: true),
             CancellationToken.None);
 
         Assert.Equal(PermissionOutcome.Denied, decision.Outcome);
@@ -307,10 +322,10 @@ public class PermissionServiceTests
     {
         var broker = new StubBroker { Next = PermissionDecision.Allow };
         var rules = new PermissionRuleset([], [Ask("Write", null)], []);
-        var service = new PermissionService(broker, rules, PermissionMode.Plan);
+        var service = new PermissionService(broker, rules, PermissionMode.Yolo, planEnabled: true);
 
         var decision = await service.CheckAsync(
-            Request("Write", Preset("workspaceWrite"), mode: PermissionMode.Plan),
+            Request("Write", Preset("workspaceWrite"), mode: PermissionMode.Yolo, planEnabled: true),
             CancellationToken.None);
 
         Assert.Equal(PermissionOutcome.Denied, decision.Outcome);

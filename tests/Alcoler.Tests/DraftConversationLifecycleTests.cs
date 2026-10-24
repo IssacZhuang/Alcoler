@@ -44,7 +44,8 @@ public sealed class DraftConversationLifecycleTests
         workbench.ShowNewTask(firstRoot);
         var first = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
         first.Composer.Draft = "Unsent first project message";
-        first.Composer.Mode = PermissionMode.Plan;
+        first.Composer.Mode = PermissionMode.Edit;
+        first.Composer.PlanEnabled = true;
         first.ThoughtLevel = "low";
 
         workbench.ShowNewTask(secondRoot);
@@ -53,7 +54,8 @@ public sealed class DraftConversationLifecycleTests
 
         Assert.Same(first, workbench.Draft);
         Assert.Equal("Unsent first project message", workbench.Draft!.Composer.Draft);
-        Assert.Equal(PermissionMode.Plan, workbench.Draft.Composer.Mode);
+        Assert.Equal(PermissionMode.Edit, workbench.Draft.Composer.Mode);
+        Assert.True(workbench.Draft.Composer.PlanEnabled);
         Assert.Equal("low", workbench.Draft.ThoughtLevel);
         Assert.Null(workbench.Active);
         Assert.Empty(runtime.Created);
@@ -108,7 +110,8 @@ public sealed class DraftConversationLifecycleTests
         using var workbench = Create(runtime);
         var draft = workbench.Draft!;
         draft.Composer.Draft = "Captured first prompt";
-        draft.Composer.Mode = PermissionMode.Plan;
+        draft.Composer.Mode = PermissionMode.Edit;
+        draft.Composer.PlanEnabled = true;
         draft.ThoughtLevel = "low";
 
         var sending = draft.SendAsync();
@@ -122,11 +125,13 @@ public sealed class DraftConversationLifecycleTests
         await ApplyInitialProjectionAsync();
 
         var created = Assert.Single(runtime.Created);
-        Assert.Equal(PermissionMode.Plan, created.PermissionMode);
+        Assert.Equal(PermissionMode.Edit, created.PermissionMode);
+        Assert.True(created.PlanEnabled);
         Assert.Equal("low", created.ModelSelection!.Options!.ReasoningLevel);
         var sent = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
         Assert.Equal("Captured first prompt", sent.Text);
-        Assert.Equal(PermissionMode.Plan, sent.Mode);
+        Assert.Equal(PermissionMode.Edit, sent.Mode);
+        Assert.True(sent.PlanEnabled);
         Assert.Equal(created.ModelSelection, sent.ModelSelection);
         Assert.Equal(runtime.LastSessionId, workbench.Active!.SessionId);
         Assert.Same(draft.Composer, workbench.Active.Composer);
@@ -285,8 +290,7 @@ public sealed class DraftConversationLifecycleTests
         original.Composer.Draft = "Session draft";
         original.Composer.PlanEnabled = true;
         original.RestoreComposerState("Session draft", PermissionMode.Edit,
-            new ModelSelection("custom", "test-model", new ModelCallOptions(ReasoningLevel: "low")),
-            planEnabled: true);
+            new ModelSelection("custom", "test-model", new ModelCallOptions(ReasoningLevel: "low")));
         workbench.ShowNewTask();
         var draft = workbench.Draft!;
         draft.Composer.Draft = "Workspace draft";
@@ -298,7 +302,7 @@ public sealed class DraftConversationLifecycleTests
         Assert.Same(original.Composer, workbench.Active!.Composer);
         Assert.Equal("Session draft", workbench.Active.Composer.Draft);
         Assert.Equal(PermissionMode.Edit, workbench.Active.Composer.Mode);
-        Assert.True(workbench.Active.Composer.PlanEnabled);
+        Assert.False(workbench.Active.Composer.PlanEnabled);
         Assert.Equal("low", workbench.Active.ThoughtLevel);
         workbench.ShowNewTask();
         Assert.Same(draft, workbench.Draft);
@@ -339,7 +343,7 @@ public sealed class DraftConversationLifecycleTests
     }
 
     [Fact]
-    public async Task DirectSessionCreation_UsesRememberedModeAndPlanFlag()
+    public async Task DirectSessionCreation_UsesRememberedModeWithoutInheritingPlanFlag()
     {
         var runtime = new DraftRuntime();
         using var workbench = new WorkbenchViewModel(runtime, _scheduler,
@@ -350,26 +354,35 @@ public sealed class DraftConversationLifecycleTests
         await ApplyInitialProjectionAsync();
 
         Assert.Equal(PermissionMode.Edit, Assert.Single(runtime.Created).PermissionMode);
-        Assert.True(Assert.Single(runtime.Created).PlanEnabled);
+        Assert.False(Assert.Single(runtime.Created).PlanEnabled);
         Assert.Equal(PermissionMode.Edit, workbench.Active!.Composer.Mode);
-        Assert.True(workbench.Active.Composer.PlanEnabled);
+        Assert.False(workbench.Active.Composer.PlanEnabled);
     }
 
     [Fact]
-    public async Task LegacyDefaultPlanMode_MigratesToThePlanFlag()
+    public async Task ReopeningAfterBackgroundPlanExit_UsesProjectionPlanAndDraftDoesNotInheritIt()
     {
         var runtime = new DraftRuntime();
-        using var workbench = new WorkbenchViewModel(runtime, _scheduler,
-            new WorkbenchConfig([], Composer: new WorkbenchComposerConfig(PermissionMode.Plan)));
+        using var workbench = Create(runtime);
+        var handle = await runtime.CreateSessionAsync(
+            new SessionOptions(Environment.CurrentDirectory, PermissionMode: PermissionMode.Edit, PlanEnabled: true),
+            CancellationToken.None);
+        await workbench.OpenSessionAsync(handle.Id);
+        await ApplyInitialProjectionAsync();
+        Assert.True(workbench.Active!.Composer.PlanEnabled);
+        workbench.ShowNewTask();
 
-        await workbench.NewSessionAsync(Environment.CurrentDirectory);
+        var projection = Assert.IsType<FakeConversationProjection>(runtime.TryObserve(handle.Id));
+        var planOff = TestSnapshots.State() with { Mode = PermissionMode.Edit, PlanEnabled = false };
+        projection.SetSnapshot(new ConversationSnapshot(0, 2, [], planOff));
+        projection.Emit(new ConversationDelta(2, [new StatePatched(planOff)]));
         await ApplyInitialProjectionAsync();
 
-        var created = Assert.Single(runtime.Created);
-        Assert.Equal(PermissionMode.Yolo, created.PermissionMode);
-        Assert.True(created.PlanEnabled);
-        Assert.Equal(PermissionMode.Yolo, workbench.Active!.Composer.Mode);
-        Assert.True(workbench.Active.Composer.PlanEnabled);
+        await workbench.OpenSessionAsync(handle.Id);
+        await ApplyInitialProjectionAsync();
+        Assert.False(workbench.Active!.Composer.PlanEnabled);
+        workbench.ShowNewTask(Path.Combine(Path.GetTempPath(), $"alcoler-plan-inherit-{Guid.NewGuid():N}"));
+        Assert.False(workbench.Draft!.Composer.PlanEnabled);
     }
 
     [Fact]
@@ -447,7 +460,8 @@ public sealed class DraftConversationLifecycleTests
         using var workbench = new WorkbenchViewModel(runtime, _scheduler, new WorkbenchConfig([]),
             saveComposer: composer => saved = composer);
         var draft = workbench.Draft!;
-        draft.Composer.Mode = PermissionMode.Plan;
+        draft.Composer.Mode = PermissionMode.Build;
+        draft.Composer.PlanEnabled = true;
         draft.Composer.Draft = "Captured prompt";
         var sending = draft.SendAsync();
         draft.Composer.Mode = PermissionMode.Edit;
@@ -458,7 +472,9 @@ public sealed class DraftConversationLifecycleTests
         Assert.Equal(PermissionMode.Edit, saved!.DefaultMode);
         Assert.Equal(PermissionMode.Edit, saved.PendingSessionModes![runtime.LastSessionId.Value]);
         Assert.Equal(PermissionMode.Edit, workbench.Active!.Composer.Mode);
-        Assert.Equal(PermissionMode.Plan, Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted)).Mode);
+        var sentCommand = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
+        Assert.Equal(PermissionMode.Build, sentCommand.Mode);
+        Assert.True(sentCommand.PlanEnabled);
     }
 
     [Fact]

@@ -284,9 +284,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<LanguageChoice> LanguageChoices { get; } =
     [
-        new(Loc.Auto, "Auto (system language)"),
-        new(Loc.English, "English"),
-        new(Loc.Chinese, "中文"),
+        new(Loc.Auto, Loc.Get("settings_language_auto")),
+        .. Loc.SupportedLanguages.Select(language => new LanguageChoice(language.Code, language.NativeName)),
     ];
 
     public bool SupportsShellSelection { get; }

@@ -36,10 +36,8 @@ public sealed class PermissionService : IPermissionGate
     {
         _broker = broker;
         _projectRules = projectRules;
-        // Legacy callers passed Plan as a mode; fold it into the flag without changing
-        // the mode they would have started from.
-        _mode = initialMode == PermissionMode.Plan ? PermissionMode.Edit : initialMode;
-        _planEnabled = planEnabled || initialMode == PermissionMode.Plan;
+        _mode = initialMode;
+        _planEnabled = planEnabled;
         _disallowedTools = disallowedTools ?? [];
         _timeProvider = timeProvider ?? TimeProvider.System;
         _brokerTimeout = brokerTimeout ?? DefaultBrokerTimeout;
@@ -54,14 +52,11 @@ public sealed class PermissionService : IPermissionGate
 
     public void SetExecutionState(PermissionMode mode, bool planEnabled)
     {
-        _mode = mode == PermissionMode.Plan ? PermissionMode.Edit : mode;
-        _planEnabled = planEnabled || mode == PermissionMode.Plan;
+        _mode = mode;
+        _planEnabled = planEnabled;
     }
 
-    public void SetMode(PermissionMode mode)
-    {
-        SetExecutionState(mode, mode == PermissionMode.Plan);
-    }
+    public void SetMode(PermissionMode mode) => _mode = mode;
 
     public void SetPlanEnabled(bool planEnabled) => _planEnabled = planEnabled;
 
@@ -75,8 +70,7 @@ public sealed class PermissionService : IPermissionGate
     public async ValueTask<PermissionDecision> CheckAsync(PermissionCheckRequest request, CancellationToken cancellationToken)
     {
         var tool = request.Tool;
-        // Requests carry the session's execution state; Mode == Plan is the legacy shape.
-        var planEnabled = request.PlanEnabled || request.Mode == PermissionMode.Plan || _planEnabled;
+        var planEnabled = request.PlanEnabled || _planEnabled;
 
         // ExitPlanMode must never reach the broker outside plan mode.
         if (string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase)

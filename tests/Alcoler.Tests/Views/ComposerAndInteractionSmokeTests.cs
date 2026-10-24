@@ -361,7 +361,7 @@ public class ComposerAndInteractionSmokeTests
         var state = TestSnapshots.State() with
         {
             Queue = [new QueuedInput(commandId, "queued text", DateTimeOffset.UtcNow,
-                Mode: PermissionMode.Plan, ModelSelection: selection, PlanEnabled: true)],
+                Mode: PermissionMode.Edit, ModelSelection: selection, PlanEnabled: true)],
         };
         using var harness = Show<ComposerView>(state);
         await PumpAsync();
