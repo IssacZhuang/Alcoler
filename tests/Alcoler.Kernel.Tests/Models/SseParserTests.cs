@@ -124,6 +124,25 @@ public class SseParserTests
         Assert.Empty(frames);
     }
 
+    [Theory]
+    [InlineData(499)]
+    [InlineData(500)]
+    [InlineData(20_000)]
+    public void FeedLine_StackAndPoolBoundaries_PreserveUnicodeAndOwnData(int asciiLength)
+    {
+        using var parser = new SseParser();
+        var data = new string('x', asciiLength) + "\u4f60\U0001F600";
+        Assert.Empty(parser.FeedLine("event: message"));
+        Assert.Empty(parser.FeedLine("data: " + data));
+        var frame = Assert.Single(parser.FeedLine(string.Empty));
+        Assert.Equal("message", frame.Event);
+        Assert.Equal(data, frame.Data);
+
+        Assert.Empty(parser.FeedLine("data: " + new string('y', asciiLength + 20)));
+        Assert.Equal(new string('y', asciiLength + 20), Assert.Single(parser.FeedLine(string.Empty)).Data);
+        Assert.Equal(data, frame.Data);
+    }
+
     [Fact]
     public void FeedLine_DispatchesCompleteLines()
     {

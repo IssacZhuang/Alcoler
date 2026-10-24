@@ -35,6 +35,42 @@ public class LiveConversationProjectionTests
     }
 
     [Fact]
+    public void EventStore_AfterMaximumSequence_ReplaysNothing()
+    {
+        var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
+        store.Append(new SessionTitleChangedEvent("one"));
+
+        Assert.Empty(store.EventsFrom(long.MaxValue));
+        using var subscription = store.Subscribe(long.MaxValue);
+        Assert.False(subscription.Reader.TryRead(out _));
+    }
+
+    [Fact]
+    public async Task WaitUntilSequenceAsync_CancellationRacingEvent_DoesNotBlockReplay()
+    {
+        var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
+        using var projection = new LiveConversationProjection(store, 0, () => 0);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        for (var sequence = 1; sequence <= 100; sequence++)
+        {
+            using var cancellation = new CancellationTokenSource();
+            var wait = projection.WaitUntilSequenceAsync(sequence, cancellation.Token);
+            await Task.WhenAll(
+                Task.Run(cancellation.Cancel),
+                Task.Run(() => store.Append(new SessionTitleChangedEvent(sequence.ToString()))))
+                .WaitAsync(timeout.Token);
+            try
+            {
+                await wait.WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (wait.IsCanceled)
+            {
+            }
+            await projection.WaitUntilSequenceAsync(sequence, timeout.Token);
+        }
+    }
+
+    [Fact]
     public async Task WaitUntilSequenceAsync_ConcurrentWaiters_AllCompleteAtTheirSequences()
     {
         var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);

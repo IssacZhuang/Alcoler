@@ -1,3 +1,6 @@
+using System.Collections;
+using System.Reflection;
+using System.Text.Json;
 using Alcoler.Adapters.Tools;
 using Xunit;
 
@@ -86,6 +89,23 @@ public class GrepToolEngineParityTests
     {
         var tool = new GrepTool(new ManagedGrepEngine());
         Assert.Equal("Grep", tool.Contract.Name);
+    }
+
+    [Fact]
+    public async Task ManagedEngine_RegexCacheRetentionIsBoundedAcrossUniqueSearches()
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "one.txt"), "needle");
+        var engine = new ManagedGrepEngine();
+        var prefix = Guid.NewGuid().ToString("N");
+        for (var index = 0; index < 256; index++)
+        {
+            await RunAsync(engine, workspace, JsonSerializer.Serialize(new { pattern = prefix + index }));
+        }
+
+        var cache = (IDictionary)typeof(ManagedGrepEngine)
+            .GetField("RegexCache", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        Assert.InRange(cache.Count, 0, 128);
     }
 
     private static async Task<string> RunAsync(IGrepEngine engine, TempWorkspace workspace, string input)

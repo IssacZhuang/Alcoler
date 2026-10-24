@@ -242,6 +242,40 @@ public class TerminalBufferTests
     }
 
     [Fact]
+    public void Clear_ReleasesFrozenRowsAfterScrollbackWraps()
+    {
+        var buffer = new TerminalBuffer(10, 1);
+        var frozenRows = PopulateScrollback(buffer);
+
+        buffer.Clear();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        Assert.Empty(buffer.Scrollback);
+        Assert.Equal(0, frozenRows.Count(row => row.IsAlive));
+        buffer.WriteText("new");
+        buffer.LineFeed();
+        Assert.Single(buffer.Scrollback);
+        Assert.Equal("new", buffer.GetScrollbackText(0));
+        GC.KeepAlive(buffer);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static WeakReference[] PopulateScrollback(TerminalBuffer buffer)
+    {
+        for (var index = 0; index < TerminalBuffer.MaxScrollbackLines + 5; index++)
+        {
+            buffer.WriteText(index.ToString());
+            buffer.ApplyControl('\r');
+            buffer.LineFeed();
+        }
+        Assert.Equal("5", buffer.GetScrollbackText(0));
+        Assert.Equal((TerminalBuffer.MaxScrollbackLines + 4).ToString(), buffer.GetScrollbackText(TerminalBuffer.MaxScrollbackLines - 1));
+        return buffer.Scrollback.Select(row => new WeakReference(row)).ToArray();
+    }
+
+    [Fact]
     public void Resize_ShrinkingRows_MovesTopLinesToScrollback()
     {
         var buffer = new TerminalBuffer(10, 4);

@@ -253,18 +253,24 @@ internal sealed class BashProcessSession : IDisposable
 
     private void AppendCwdText(char[] pending, ref int pendingCount, string text)
     {
-        text.AsSpan().CopyTo(pending.AsSpan(pendingCount));
-        pendingCount += text.Length;
-        if (pendingCount <= CwdTailChars)
-            return;
-        var safeLength = pendingCount - CwdTailChars;
-        if (char.IsHighSurrogate(pending[safeLength - 1]))
-            safeLength--;
-        if (safeLength <= 0)
-            return;
-        Append(pending.AsSpan(0, safeLength), stdout: true);
-        pending.AsSpan(safeLength, pendingCount - safeLength).CopyTo(pending);
-        pendingCount -= safeLength;
+        var remaining = text.AsSpan();
+        while (!remaining.IsEmpty)
+        {
+            var count = Math.Min(remaining.Length, pending.Length - pendingCount);
+            remaining[..count].CopyTo(pending.AsSpan(pendingCount));
+            pendingCount += count;
+            remaining = remaining[count..];
+            if (pendingCount <= CwdTailChars)
+                continue;
+            var safeLength = pendingCount - CwdTailChars;
+            if (char.IsHighSurrogate(pending[safeLength - 1]))
+                safeLength--;
+            if (safeLength <= 0)
+                continue;
+            Append(pending.AsSpan(0, safeLength), stdout: true);
+            pending.AsSpan(safeLength, pendingCount - safeLength).CopyTo(pending);
+            pendingCount -= safeLength;
+        }
     }
 
     private void Append(ReadOnlySpan<char> text, bool stdout)

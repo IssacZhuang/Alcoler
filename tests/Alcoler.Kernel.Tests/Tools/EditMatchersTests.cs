@@ -136,6 +136,20 @@ public class EditMatchersTests
     }
 
     [Fact]
+    public void BlockAnchor_NonzeroWindow_UsesOnlyThatWindowForSimilarityAndText()
+    {
+        var actual = "header\n  const alpha = 1;\n  const beta = 2;\nfooter";
+        var content = "unrelated\nheader\nnot similar\nnot similar\nfooter\n" + actual + "\ntrailing";
+        var search = "header\nconst alpha = 3;\nconst beta = 4;\nfooter";
+
+        var match = Assert.IsType<EditMatch.Matched>(EditMatchers.FindEditMatch(content, search, replaceAll: false));
+
+        Assert.Equal(EditMatchStrategy.BlockAnchor, match.Strategy);
+        Assert.Equal(1, match.CandidateCount);
+        Assert.Equal(actual, match.ActualString);
+    }
+
+    [Fact]
     public void BlockAnchor_DissimilarMiddles_DoNotMatch()
     {
         var content = "header\ncompute something entirely different here\nfooter";

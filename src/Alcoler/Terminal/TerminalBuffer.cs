@@ -255,6 +255,7 @@ public sealed class TerminalBuffer
     {
         _grid = NewGrid(Cols, Rows);
         _rowVersions = NewRowVersions(Rows);
+        Array.Clear(_scrollbackItems);
         _scrollbackHead = 0;
         _scrollbackCount = 0;
         CursorRow = 0;

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Alcoler.Adapters.Tools;
@@ -514,6 +515,63 @@ public class BashToolTests
         Assert.DoesNotContain(BashProcessSession.CwdMarker, persisted);
         Assert.Equal(80_008, session.OutputBytes);
         Assert.True(session.TryExtractCapturedCwd(out _));
+    }
+
+    [Fact]
+    public async Task ProcessCapture_LargeReadsAfterSplitSurrogate_PreserveOutputAndCwd()
+    {
+        using var workspace = new TempWorkspace();
+        var output = Path.Combine(workspace.Root, "chunked.log");
+        var first = new string('a', 32_764) + "\U0001F600";
+        var second = new string('b', 32_767);
+        var third = new string('c', 32_768);
+        using var reader = new ChunkedReadStream(
+            Encoding.UTF8.GetBytes(first), Encoding.UTF8.GetBytes(second), Encoding.UTF8.GetBytes(third),
+            Encoding.UTF8.GetBytes(BashProcessSession.CwdMarker + workspace.Root));
+        var constructor = typeof(BashProcessSession).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+        using var session = (BashProcessSession)constructor.Invoke([new Process(), true, 30_000, long.MaxValue, null]);
+        session.OpenOutputFile(output);
+        var pump = typeof(BashProcessSession).GetMethod("PumpAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        await (Task)pump.Invoke(session, [reader, true, null])!;
+
+        using var persisted = new StreamReader(new FileStream(output, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
+        Assert.Equal(first + second + third, await persisted.ReadToEndAsync());
+        Assert.Equal(Encoding.UTF8.GetByteCount(first + second + third), session.OutputBytes);
+        Assert.True(session.TryExtractCapturedCwd(out var cwd));
+        Assert.Equal(workspace.Root, cwd);
+        Assert.DoesNotContain('\ufffd', session.SnapshotTail());
+    }
+
+    private sealed class ChunkedReadStream(params byte[][] chunks) : Stream
+    {
+        private int _chunk;
+        private int _offset;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_chunk == chunks.Length)
+                return ValueTask.FromResult(0);
+            var count = Math.Min(buffer.Length, chunks[_chunk].Length - _offset);
+            chunks[_chunk].AsMemory(_offset, count).CopyTo(buffer);
+            _offset += count;
+            if (_offset == chunks[_chunk].Length)
+            {
+                _chunk++;
+                _offset = 0;
+            }
+            return ValueTask.FromResult(count);
+        }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Theory]

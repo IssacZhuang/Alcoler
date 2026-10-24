@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -16,8 +15,10 @@ internal sealed class ManagedGrepEngine : IGrepEngine
     private const byte MatchedLineFlag = 1;
     private const byte ContextLineFlag = 2;
 
-    // Regex instances are thread-safe; compiling per search dominates the cost of repeated patterns.
-    private static readonly ConcurrentDictionary<(string Pattern, RegexOptions Options), Regex> RegexCache = new();
+    private const int MaxCachedPatterns = 128;
+    private const int MaxCachedPatternLength = 4096;
+    private static readonly object RegexCacheSync = new();
+    private static readonly Dictionary<(string Pattern, RegexOptions Options), Regex> RegexCache = new();
 
     public GrepEngineResult Search(GrepEngineRequest request, CancellationToken cancellationToken)
     {
@@ -29,8 +30,7 @@ internal sealed class ManagedGrepEngine : IGrepEngine
         Regex regex;
         try
         {
-            regex = RegexCache.GetOrAdd((request.Pattern, regexOptions),
-                static key => new Regex(key.Pattern, key.Options));
+            regex = GetRegex(request.Pattern, regexOptions);
         }
         catch (ArgumentException)
         {
@@ -71,6 +71,22 @@ internal sealed class ManagedGrepEngine : IGrepEngine
                 result.CountEntries.Add((file, search.MatchCount));
         }
         return result;
+    }
+
+    private static Regex GetRegex(string pattern, RegexOptions options)
+    {
+        if (pattern.Length > MaxCachedPatternLength)
+            return new Regex(pattern, options);
+        lock (RegexCacheSync)
+        {
+            if (RegexCache.TryGetValue((pattern, options), out var cached))
+                return cached;
+            var regex = new Regex(pattern, options);
+            if (RegexCache.Count >= MaxCachedPatterns)
+                RegexCache.Remove(RegexCache.Keys.First());
+            RegexCache.Add((pattern, options), regex);
+            return regex;
+        }
     }
 
     private readonly record struct LineSearch(int MatchCount, List<GrepContentEntry> Entries);

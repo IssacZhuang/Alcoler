@@ -144,7 +144,8 @@ public sealed class SessionEventStore
 
     // Sequences are appended strictly ascending, but transient eviction can leave gaps, so
     // slicing goes through a binary search instead of index arithmetic.
-    private int FirstIndexAfter(long sequence) => FirstIndexAtOrAbove(sequence + 1);
+    private int FirstIndexAfter(long sequence) =>
+        sequence == long.MaxValue ? _events.Count : FirstIndexAtOrAbove(sequence + 1);
 
     private int FirstIndexAtOrAbove(long sequence)
     {

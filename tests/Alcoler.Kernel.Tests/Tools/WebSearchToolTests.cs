@@ -258,6 +258,26 @@ public sealed class WebSearchToolTests : IDisposable
     }
 
     [Fact]
+    public void RegistryConcurrentModelSelections_KeepAvailabilityMatchedToModel()
+    {
+        using var tool = new WebSearchTool(null);
+        var registry = new ToolRegistry([tool]);
+        var supported = new ModelProperties(SupportsNativeWebSearch: true);
+        var unsupported = new ModelProperties();
+        var mismatches = 0;
+
+        Parallel.For(0, 200_000, index =>
+        {
+            var available = index % 2 == 0;
+            var contracts = registry.VisibleContractsFor(available ? supported : unsupported);
+            if (contracts.Count != (available ? 1 : 0))
+                Interlocked.Increment(ref mismatches);
+        });
+
+        Assert.Equal(0, mismatches);
+    }
+
+    [Fact]
     public async Task UsesProviderNativeSearchWhenAvailable()
     {
         var handler = new FakeHttpMessageHandler(_ => throw new InvalidOperationException("Brave must not be called."));

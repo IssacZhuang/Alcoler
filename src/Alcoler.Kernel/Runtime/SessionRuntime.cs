@@ -137,7 +137,6 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly TurnRequestEntries _turnLocalRequestMessages = new();
     // Derived-history caches: appends can only extend the lists these are keyed against, so
     // only history rewrites (ReplaceAll) and workflow changes must reset them.
-    private readonly ConcurrentDictionary<string, MediaPayload> _mediaPayloadCache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<MessageId, int> _messageTokenEstimates = new();
     private (int HistoryCount, string[] WorkflowIds, HistoryReminderCounts Counts)? _reminderCountsCache;
     private IReadOnlyList<SkillInfo>? _skillsListingSource;
@@ -2025,9 +2024,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     // Stored history references media by artifact URI so sessions stay light in memory;
     // image payloads are hydrated per request, and models without image support get the
-    // adapter-level downgrade instead of a hydration skip. Artifacts are content-addressed
-    // and never mutate, so decoded payloads are cached per URI for the session lifetime;
-    // a (mime, filename) mismatch recomputes to keep first-wins assembly behavior exact.
+    // adapter-level downgrade instead of a hydration skip.
     private async Task<Dictionary<string, MediaPayload>?> LoadSessionMediaAsync(
         IReadOnlyList<ConversationMessage> history, CancellationToken cancellationToken)
     {
@@ -2063,19 +2060,10 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 return;
             }
-            if (_mediaPayloadCache.TryGetValue(uri, out var cached)
-                && cached.MimeType == mimeType
-                && cached.FileName == fileName)
-            {
-                media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
-                media[uri] = cached;
-                return;
-            }
             var bytes = await _deps.Artifacts.TryLoadAsync(uri, cancellationToken).ConfigureAwait(false);
             if (bytes is not { } data)
                 return;
             var payload = new MediaPayload(mimeType, Convert.ToBase64String(data.Span), fileName);
-            _mediaPayloadCache[uri] = payload;
             media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
             media[uri] = payload;
         }
@@ -2147,7 +2135,6 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private void ResetHistoryDerivedCaches()
     {
-        _mediaPayloadCache.Clear();
         _messageTokenEstimates.Clear();
         _reminderCountsCache = null;
     }

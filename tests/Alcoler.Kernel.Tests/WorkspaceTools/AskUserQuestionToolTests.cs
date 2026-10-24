@@ -285,6 +285,24 @@ public class AskUserQuestionToolTests
     }
 
     [Fact]
+    public void RuntimeSchema_ConcurrentReaders_SeeConsistentRequiredProperties()
+    {
+        var tools = Enumerable.Range(0, 16).Select(_ => new AskUserQuestionTool()).ToArray();
+
+        Parallel.For(0, 10_000, index =>
+        {
+            var tool = tools[index % tools.Length];
+            var question = tool.RuntimeInputSchema.GetProperty("properties")
+                .GetProperty("questions").GetProperty("items");
+            Assert.Equal(new[] { "question", "header", "options" },
+                question.GetProperty("required").EnumerateArray().Select(value => value.GetString()));
+            Assert.Contains("multiSelect", tool.Contract.InputSchema.GetProperty("properties")
+                .GetProperty("questions").GetProperty("items").GetProperty("required")
+                .EnumerateArray().Select(value => value.GetString()));
+        });
+    }
+
+    [Fact]
     public void Metadata_UsesInteractionPortInsteadOfApproval()
     {
         var metadata = new AskUserQuestionTool().Metadata;

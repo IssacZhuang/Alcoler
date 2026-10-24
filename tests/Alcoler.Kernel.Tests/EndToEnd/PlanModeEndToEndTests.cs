@@ -119,6 +119,7 @@ public class PlanModeEndToEndTests
             CancellationToken.None);
         Assert.True(ack.Accepted);
 
+        await WaitForAssistantTextAsync(projection, "Inspected the directory.");
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
         var call = Assert.Single(projection.Snapshot().Rows.OfType<ToolCallRow>());
         Assert.Equal(ToolCallStatus.Succeeded, call.Status);

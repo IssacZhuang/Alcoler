@@ -918,6 +918,186 @@ public class TimelineSmokeTests
         }
     }
 
+    [AvaloniaTheory]
+    [InlineData("insert-start", false)]
+    [InlineData("insert-middle", false)]
+    [InlineData("remove-start", false)]
+    [InlineData("remove-middle", false)]
+    [InlineData("replace", false)]
+    [InlineData("move-forward", false)]
+    [InlineData("move-backward", false)]
+    [InlineData("insert-start", true)]
+    [InlineData("insert-middle", true)]
+    [InlineData("remove-start", true)]
+    [InlineData("remove-middle", true)]
+    [InlineData("replace", true)]
+    [InlineData("move-forward", true)]
+    [InlineData("move-backward", true)]
+    public void ConversationPanel_IncrementalChangesPreserveContainersAndOrder(string change, bool shuffled)
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var rows = Enumerable.Range(0, 5).Select(index => (ConversationRow)new UserMessageRow($"u{index}",
+            $"Message {index}", DateTimeOffset.UtcNow)).ToArray();
+        viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], true, rows));
+        var window = Host(view, 900, 800);
+        try
+        {
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            if (shuffled)
+            {
+                viewModel.Items.Move(4, 0);
+                viewModel.Items.Move(2, 4);
+                Pump();
+            }
+            var containers = viewModel.Items.ToDictionary(item => item, item => items.ContainerFromIndex(viewModel.Items.IndexOf(item)));
+            Assert.All(containers.Values, container => Assert.NotNull(container));
+            var updated = rows.ToList();
+            switch (change)
+            {
+                case "insert-start":
+                case "insert-middle":
+                    updated.Insert(change == "insert-start" ? 0 : 2, new SystemNoticeRow("inserted", "notice", "Inserted"));
+                    break;
+                case "remove-start":
+                case "remove-middle":
+                    updated.RemoveAt(change == "remove-start" ? 0 : 2);
+                    break;
+                case "replace":
+                    updated[2] = new SystemNoticeRow(rows[2].RowId, "notice", "Replaced");
+                    break;
+                case "move-forward":
+                    viewModel.Items.Move(0, 3);
+                    break;
+                case "move-backward":
+                    viewModel.Items.Move(4, 1);
+                    break;
+            }
+            if (!change.StartsWith("move-", StringComparison.Ordinal))
+                viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(), [], true, updated));
+            Pump();
+
+            var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            Assert.Equal(viewModel.Items.Count, panel.Children.Count);
+            Assert.Equal(viewModel.Items, panel.Children.Select(child => child.DataContext));
+            for (var index = 0; index < viewModel.Items.Count; index++)
+            {
+                var item = viewModel.Items[index];
+                var container = items.ContainerFromIndex(index)!;
+                Assert.Same(item, container.DataContext);
+                Assert.Equal(index, items.IndexFromContainer(container));
+                if (containers.TryGetValue(item, out var original))
+                    Assert.Same(original, container);
+                if (index > 0)
+                    Assert.True(panel.Children[index - 1].Bounds.Bottom <= container.Bounds.Top);
+            }
+            Assert.Equal(panel.Children[^1].Bounds.Bottom, panel.DesiredSize.Height, precision: 5);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void ConversationPanel_MixedChangesKeepIndicesAndCachedLayoutConsistent()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 800);
+        try
+        {
+            var random = new Random(1947);
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            for (var sequence = 0; sequence < 80; sequence++)
+            {
+                var count = viewModel.Items.Count;
+                var operation = count == 0 ? 0 : random.Next(count >= 8 ? 1 : 0, 4);
+                var index = random.Next(count + 1);
+                var item = TimelineItemFactory.Create(new UserMessageRow($"u{sequence}",
+                    string.Join('\n', Enumerable.Repeat($"Message {sequence}", random.Next(1, 4))), DateTimeOffset.UtcNow))!;
+                switch (operation)
+                {
+                    case 0:
+                        viewModel.Items.Insert(index, item);
+                        break;
+                    case 1:
+                        viewModel.Items.RemoveAt(index % count);
+                        break;
+                    case 2:
+                        viewModel.Items[index % count] = item;
+                        break;
+                    case 3:
+                        viewModel.Items.Move(index % count, random.Next(count));
+                        break;
+                }
+                Pump();
+                var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+                Assert.Equal(viewModel.Items, panel.Children.Select(child => child.DataContext));
+                var bottom = 0d;
+                for (var row = 0; row < viewModel.Items.Count; row++)
+                {
+                    var container = items.ContainerFromIndex(row)!;
+                    Assert.Same(viewModel.Items[row], container.DataContext);
+                    Assert.Equal(row, items.IndexFromContainer(container));
+                    Assert.Equal(bottom, container.Bounds.Top, precision: 5);
+                    bottom = container.Bounds.Bottom;
+                }
+                Assert.Equal(bottom, panel.DesiredSize.Height, precision: 5);
+            }
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void ConversationPanel_RepeatedAgentSnapshotsPreserveVisibleHistory()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var id = StrongId.NewToolCallId();
+        var tool = new ToolCallRow("dispatch", id, "Agent",
+            JsonSerializer.SerializeToElement(new { description = "Explore", subagent_type = "Explore" }),
+            ToolCallStatus.Succeeded, [new ToolResultText("Done")], false, TimeSpan.FromSeconds(1), DateTimeOffset.UtcNow);
+        var state = new Alcoler.Contracts.Subagents.SubagentState(StrongId.NewSubagentId(), StrongId.NewSessionId(), "Explore",
+            Alcoler.Contracts.Subagents.SubagentStatus.Completed, "Done", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            ParentToolCallId: id, AgentType: "Explore");
+        ConversationRow[] rows = [tool, new SystemNoticeRow("agent", "subagent", "Completed", state),
+            .. Enumerable.Range(0, 5).Select(index => new UserMessageRow($"u{index}", $"Message {index}", DateTimeOffset.UtcNow))];
+        viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], true, rows));
+        var window = Host(view, 900, 800);
+        try
+        {
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            var original = viewModel.Items.ToArray();
+            var containers = Enumerable.Range(0, original.Length).Select(items.ContainerFromIndex).ToArray();
+            for (var sequence = 2; sequence <= 4; sequence++)
+            {
+                viewModel.ApplyUpdate(new ProjectionUpdate(sequence, TestSnapshots.State(), [], true, rows));
+                Pump();
+                Assert.Equal(original, viewModel.Items);
+                Assert.DoesNotContain(viewModel.Items, item => item.RowId == "agent");
+                for (var index = 0; index < original.Length; index++)
+                {
+                    Assert.Same(containers[index], items.ContainerFromIndex(index));
+                    Assert.Equal(index, items.IndexFromContainer(containers[index]!));
+                }
+            }
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
     [AvaloniaFact]
     public async Task AutoScroll_SmallUpwardWheelIntentCancelsPendingFollow()
     {

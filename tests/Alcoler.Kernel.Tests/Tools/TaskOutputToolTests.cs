@@ -121,6 +121,56 @@ public class TaskOutputToolTests
     }
 
     [Fact]
+    public async Task Block_True_CancellationPropagatesWhileJobKeepsRunning()
+    {
+        using var workspace = new TempWorkspace();
+        using var cancellation = new CancellationTokenSource();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var jobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
+        var started = jobs.Start("busy", null, async ct =>
+        {
+            await release.Task.WaitAsync(ct);
+            return new BackgroundJobResult(0);
+        });
+        var query = new TaskOutputTool().ExecuteAsync(
+            Context(workspace, jobs, $$"""{"task_id": "{{started.Id.Value}}", "block": true, "timeout": 1000}"""),
+            cancellation.Token).AsTask();
+
+        try
+        {
+            Assert.False(query.IsCompleted);
+            cancellation.Cancel();
+            var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => query.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(cancellation.Token, error.CancellationToken);
+            Assert.Equal(BackgroundJobStatus.Running, jobs.Find(started.Id)!.Status);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+    }
+
+    [Theory]
+    [InlineData("utf-16")]
+    [InlineData("utf-16BE")]
+    [InlineData("utf-32")]
+    [InlineData("utf-8")]
+    public async Task OutputWithByteOrderMark_PreservesDecodedText(string encodingName)
+    {
+        using var workspace = new TempWorkspace();
+        var outputPath = Path.Combine(workspace.Root, "encoded.log");
+        var output = "Build completed: \u4e2d\u6587 \ud834\udd1e";
+        await File.WriteAllTextAsync(outputPath, output, System.Text.Encoding.GetEncoding(encodingName));
+        var job = new BackgroundJobInfo(new BackgroundJobId("bg_encoded"), "command",
+            DateTimeOffset.UtcNow, BackgroundJobStatus.Completed, OutputPath: outputPath);
+
+        var result = TaskOutputTool.FormatResult("success", job);
+
+        Assert.Contains("<output>\n" + output + "\n</output>", result);
+    }
+
+    [Fact]
     public async Task OversizedOutput_TruncatesTail_WithFullPathPointer()
     {
         using var workspace = new TempWorkspace();

@@ -304,6 +304,56 @@ public class TerminalServiceTests
         }
     }
 
+    [AvaloniaFact]
+    public void TerminalSurface_FontChangesRebuildCachedRunsWhenGridSizeIsUnchanged()
+    {
+        using var service = new FakePtyService();
+        using var viewModel = new TerminalPaneViewModel(@"C:\ws\project", service, InlineUiScheduler.Instance);
+        var surface = new TerminalSurface { ViewModel = viewModel, Buffer = viewModel.Buffer };
+        surface.Arrange(new Rect(0, 0, 1, 1));
+        viewModel.Buffer.WriteText("M");
+        var dimensions = (viewModel.Buffer.Cols, viewModel.Buffer.Rows);
+        var initial = RenderRowCache();
+        Assert.Same(initial, RenderRowCache());
+
+        surface.FontSize = 20;
+        Assert.Equal(dimensions, (viewModel.Buffer.Cols, viewModel.Buffer.Rows));
+        var resized = RenderRowCache();
+        Assert.NotSame(initial, resized);
+        Assert.Same(resized, RenderRowCache());
+
+        surface.FontFamily = Avalonia.Media.FontFamily.Parse("Inter");
+        Assert.Equal(dimensions, (viewModel.Buffer.Cols, viewModel.Buffer.Rows));
+        Assert.NotSame(resized, RenderRowCache());
+
+        object RenderRowCache()
+        {
+            using var context = new Avalonia.Media.DrawingGroup().Open();
+            surface.Render(context);
+            var field = typeof(TerminalSurface).GetField("_rowRuns", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var rows = (System.Collections.IDictionary)field.GetValue(surface)!;
+            return rows[0]!;
+        }
+    }
+
+    [AvaloniaFact]
+    public void TerminalSurface_UnbindingReleasesCachedBufferAndRuns()
+    {
+        var surface = new TerminalSurface { Buffer = new TerminalBuffer(10, 2) };
+        using (var context = new Avalonia.Media.DrawingGroup().Open())
+        {
+            surface.Render(context);
+        }
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var cache = (System.Collections.IDictionary)typeof(TerminalSurface).GetField("_rowRuns", flags)!.GetValue(surface)!;
+        Assert.Equal(2, cache.Count);
+
+        surface.Buffer = null;
+
+        Assert.Empty(cache);
+        Assert.Null(typeof(TerminalSurface).GetField("_rowRunsBuffer", flags)!.GetValue(surface));
+    }
+
     private sealed class FakePtyConnection : IPtyConnection
     {
         public event EventHandler<PtyExitedEventArgs>? ProcessExited;

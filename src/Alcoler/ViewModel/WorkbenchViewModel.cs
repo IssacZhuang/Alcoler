@@ -406,7 +406,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         var conversation = new ConversationViewModel(_runtime, store, saved?.Composer, ModelChoices,
             WorkbenchModelCatalog.DefaultSelection(_config)) { WorkspaceRoot = workspaceRoot };
         conversation.Composer.ConfigureWorkspace(workspaceRoot);
-        conversation.ApplyUpdate(new ProjectionUpdate(0, store.State, [], Reset: true, ResetRows: store.Rows));
+        using var resumedProbe = residentProbe is null ? _runtime.TryObserve(sessionId) : null;
+        var snapshot = (residentProbe ?? resumedProbe)?.Snapshot();
+        var initialState = snapshot?.State ?? store.State;
+        conversation.ApplyUpdate(new ProjectionUpdate(snapshot?.Sequence ?? 0, initialState, [],
+            Reset: true, ResetRows: snapshot?.Rows ?? store.Rows));
         if (saved is not null)
         {
             if (FindModel(saved.Selection) is { } model)
@@ -428,7 +432,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
             conversation.RestorePendingMode(pendingMode);
         // The live projection owns plan state for an existing session, even when a saved composer carried Plan.
-        conversation.Composer.RestorePlanEnabled(store.State.PlanEnabled);
+        conversation.Composer.RestorePlanEnabled(initialState.PlanEnabled);
         ObserveMode(conversation.Composer, () => sessionId);
         ObserveSelection(conversation, () => sessionId.Value);
         conversation.ModeSubmitted += (mode, _) => ClearSubmittedMode(sessionId, mode);

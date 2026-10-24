@@ -62,7 +62,22 @@ public sealed class TerminalSurface : Control
         set => SetValue(FontFamilyProperty, value);
     }
 
-    public TerminalBuffer? Buffer { get; set; }
+    private TerminalBuffer? _buffer;
+
+    public TerminalBuffer? Buffer
+    {
+        get => _buffer;
+        set
+        {
+            if (ReferenceEquals(_buffer, value))
+                return;
+            _buffer = value;
+            _rowRuns.Clear();
+            _rowRunsBuffer = null;
+            _rowRunsRows = -1;
+            InvalidateVisual();
+        }
+    }
 
     public TerminalPaneViewModel? ViewModel { get; set; }
 
@@ -80,6 +95,7 @@ public sealed class TerminalSurface : Control
         if (change.Property == FontSizeProperty || change.Property == FontFamilyProperty)
         {
             _metricsValid = false;
+            _rowRuns.Clear();
             ResizeToViewport(Bounds.Size);
             InvalidateVisual();
         }

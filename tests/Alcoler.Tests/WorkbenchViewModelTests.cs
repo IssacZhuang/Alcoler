@@ -362,6 +362,49 @@ public sealed class WorkbenchViewModelTests : IDisposable
         await WaitUntilAsync(() => restarted.GitPane is { IsLoading: false }, reopenedScheduler);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OpenSession_DelayedInitialSnapshotPreservesLocalModeAndPlanUntilServerChanges(bool resident)
+    {
+        var sessionId = StrongId.NewSessionId();
+        var state = TestSnapshots.State() with { Mode = PermissionMode.Yolo, PlanEnabled = true };
+        await using var runtime = new DelayedSubscriptionRuntime(sessionId, _root, state, resident);
+        var scheduler = new QueuedUiScheduler();
+        var config = new WorkbenchConfig([], Composer: new WorkbenchComposerConfig(
+            PendingSessionModes: new Dictionary<string, PermissionMode> { [sessionId.Value] = PermissionMode.Edit }));
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, config);
+        try
+        {
+            await workbench.OpenSessionAsync(sessionId);
+            await runtime.SubscriptionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var conversation = workbench.Active!;
+            Assert.Equal(PermissionMode.Edit, conversation.Composer.Mode);
+            conversation.Composer.PlanEnabled = false;
+
+            runtime.ReleaseSubscription();
+            await runtime.InitialSnapshotPublished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            scheduler.RunPending();
+
+            Assert.Equal(PermissionMode.Edit, conversation.Composer.Mode);
+            Assert.Equal(PermissionMode.Yolo, conversation.Composer.SessionMode);
+            Assert.False(conversation.Composer.PlanEnabled);
+            Assert.True(conversation.Composer.SessionPlanEnabled);
+
+            conversation.Composer.PlanEnabled = true;
+            runtime.Projection.Emit(new ConversationDelta(1,
+                [new StatePatched(state with { Mode = PermissionMode.Build, PlanEnabled = false })]));
+            await WaitUntilAsync(() => conversation.Composer.SessionMode == PermissionMode.Build, scheduler);
+            Assert.Equal(PermissionMode.Build, conversation.Composer.Mode);
+            Assert.False(conversation.Composer.PlanEnabled);
+            await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+        }
+        finally
+        {
+            runtime.ReleaseSubscription();
+        }
+    }
+
     [Fact]
     public async Task OpenSession_DifferentWorkspace_ReplacesTerminalAndDisposesPreviousPane()
     {
@@ -876,6 +919,65 @@ public sealed class WorkbenchViewModelTests : IDisposable
             {
                 action();
             }
+        }
+    }
+
+    private sealed class DelayedSubscriptionRuntime(
+        SessionId sessionId, string workspaceRoot, ConversationState state, bool resident)
+        : IAgentRuntime, IConversationProjection
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool _resident = resident;
+
+        public FakeConversationProjection Projection { get; } = new(new ConversationSnapshot(0, 0, [], state));
+        public TaskCompletionSource SubscriptionStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource InitialSnapshotPublished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void ReleaseSubscription() => _release.TrySetResult();
+
+        public ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId id, CancellationToken cancellationToken)
+        {
+            _resident = true;
+            return ValueTask.FromResult(new SessionHandle(sessionId, workspaceRoot, state.Title));
+        }
+
+        public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
+            string? root, int limit, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IReadOnlyList<SessionSummary>>([
+                new(sessionId, state.Title, workspaceRoot, state.Mode, state.ModelSelection,
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, PlanEnabled: state.PlanEnabled)]);
+
+        public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 1));
+
+        public IConversationProjection Subscribe(SessionId id) => this;
+        public IConversationProjection? TryObserve(SessionId id) => _resident ? Projection : null;
+
+        public ConversationSnapshot Snapshot()
+        {
+            SubscriptionStarted.TrySetResult();
+            if (!_release.Task.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("The initial snapshot was not released.");
+            return Projection.Snapshot();
+        }
+
+        public IAsyncEnumerable<ConversationDelta> Deltas(CancellationToken cancellationToken)
+        {
+            InitialSnapshotPublished.TrySetResult();
+            return Projection.Deltas(cancellationToken);
+        }
+
+        public Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default) =>
+            Projection.WaitUntilSequenceAsync(sequence, cancellationToken);
+
+        public void Dispose() => ReleaseSubscription();
+        public ValueTask DisposeAsync()
+        {
+            ReleaseSubscription();
+            return ValueTask.CompletedTask;
         }
     }
 

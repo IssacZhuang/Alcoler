@@ -56,6 +56,44 @@ public class MediaHydrationTests
         Assert.Equal(TinyPngBase64, image.Base64Data);
     }
 
+    [Fact]
+    public async Task HydratedImagePayload_IsCollectibleWhileSessionRemainsResident()
+    {
+        await using var harness = TestHarness.Create();
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        var artifact = await runtime.Options.Artifacts.SaveAsync(session.Id, "pixel.png", "image/png",
+            Convert.FromBase64String(TinyPngBase64), CancellationToken.None);
+        var history = new[]
+        {
+            new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
+                [new FilePart(StrongId.NewPartId(), artifact.Uri, artifact.MimeType, artifact.FileName)],
+                DateTimeOffset.UtcNow),
+        };
+        var payload = HydrateWithoutRetainingRequest(runtime.GetSession(session.Id)!, history);
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        Assert.False(payload.IsAlive);
+        GC.KeepAlive(runtime);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static WeakReference HydrateWithoutRetainingRequest(
+        SessionRuntime session, IReadOnlyList<ConversationMessage> history)
+    {
+        var method = typeof(SessionRuntime).GetMethod("LoadSessionMediaAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var task = (Task<Dictionary<string, Alcoler.Kernel.Context.MediaPayload>?>)method.Invoke(
+            session, [history, CancellationToken.None])!;
+        var media = task.GetAwaiter().GetResult()!;
+        Assert.Equal(TinyPngBase64, Assert.Single(media).Value.Base64Data);
+        return new WeakReference(Assert.Single(media).Value.Base64Data);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("describe this pixel")]

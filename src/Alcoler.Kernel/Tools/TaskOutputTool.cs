@@ -100,16 +100,17 @@ public sealed class TaskOutputTool : ITool
                     ?.TryGetCompletion(new BackgroundJobId(taskId));
                 if (completion is not null)
                 {
-                    // Signal wait; the timeout arm still runs on the session clock, so the
-                    // deadline, cancellation, and timeout/error output match the poll loop.
                     var remaining = deadline - context.Clock.GetUtcNow();
                     if (remaining <= TimeSpan.Zero)
                         continue;
-                    var finished = await Task.WhenAny(
-                        completion,
-                        Task.Delay(remaining, context.Clock, cancellationToken)).ConfigureAwait(false);
-                    if (finished != completion)
+                    try
+                    {
+                        await completion.WaitAsync(remaining, context.Clock, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (TimeoutException)
+                    {
                         continue;
+                    }
                 }
                 else
                 {
@@ -249,6 +250,17 @@ public sealed class TaskOutputTool : ITool
             // the partial sequence the window start can cut; TruncateTail keeps only the
             // final DefaultOutputLength chars, so the head never reaches the result.
             using var stream = new FileStream(job.OutputPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            Span<byte> header = stackalloc byte[4];
+            var headerLength = stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+            var prefix = header[..headerLength];
+            if (prefix.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE])
+                || prefix.StartsWith((ReadOnlySpan<byte>)[0xFE, 0xFF])
+                || prefix.StartsWith((ReadOnlySpan<byte>)[0x00, 0x00, 0xFE, 0xFF]))
+            {
+                stream.Position = 0;
+                using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                return TruncateTail(reader.ReadToEnd(), job.OutputPath);
+            }
             var start = Math.Max(0L, stream.Length - (DefaultOutputLength * 3L + 512));
             var buffer = new byte[stream.Length - start];
             stream.Seek(start, SeekOrigin.Begin);

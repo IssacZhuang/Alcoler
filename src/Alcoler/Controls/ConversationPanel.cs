@@ -368,9 +368,10 @@ public sealed class ConversationPanel : VirtualizingPanel
                     if (pair.Key >= Math.Min(oldIndex, newIndex) && pair.Key <= Math.Max(oldIndex, newIndex))
                         _realizedSnapshot.Add((pair.Key, pair.Value));
                 }
+                foreach (var (index, _) in _realizedSnapshot)
+                    _realized.Remove(index);
                 foreach (var (index, row) in _realizedSnapshot)
                 {
-                    _realized.Remove(index);
                     var target = index == oldIndex ? newIndex : index + (oldIndex < newIndex ? -1 : 1);
                     _realized.Add(target, row);
                     if (target != index)
@@ -401,9 +402,10 @@ public sealed class ConversationPanel : VirtualizingPanel
             if (pair.Key >= fromIndex)
                 _realizedSnapshot.Add((pair.Key, pair.Value));
         }
+        foreach (var (oldIndex, _) in _realizedSnapshot)
+            _realized.Remove(oldIndex);
         foreach (var (oldIndex, row) in _realizedSnapshot)
         {
-            _realized.Remove(oldIndex);
             var newIndex = oldIndex + delta;
             _realized.Add(newIndex, row);
             ItemContainerGenerator!.ItemContainerIndexChanged(row.Container, oldIndex, newIndex);
