@@ -18,11 +18,11 @@ public class WorkflowEndToEndTests
         string.Join("\n", request.Messages.SelectMany(m => m.Content.OfType<InputTextBlock>().Select(b => b.Text)));
 
     [Fact]
-    public async Task ActivateOrchestratorViaCommand_InjectsSystemSectionWithoutReminders()
+    public async Task OrchestratorCommand_AppliesToSingleTurn()
     {
         await using var harness = TestHarness.Create(
             FinalText("Orchestrating."),
-            FinalText("Still orchestrating."));
+            FinalText("Working directly."));
         var capturing = new TestHarness.RequestCapturingModel(harness.ScriptedModel);
         await using var runtime = TestHarness.BuildRuntimeFor(capturing, harness.Root);
 
@@ -44,15 +44,25 @@ public class WorkflowEndToEndTests
             CancellationToken.None);
         Assert.True(sendAck.Accepted);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
 
         var requestText = RequestText(Assert.Single(capturing.Requests));
         Assert.Contains("# Orchestrator mode", requestText);
         Assert.Contains("Orchestrator mode is active.", requestText);
         Assert.DoesNotContain(WorkflowRegistry.ReminderMarker(OrchestratorWorkflow.Id), requestText);
+
+        var secondAck = await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "continue"),
+            CancellationToken.None);
+        Assert.True(secondAck.Accepted);
+        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+
+        Assert.Equal(2, capturing.Requests.Count);
+        Assert.DoesNotContain("# Orchestrator mode", RequestText(capturing.Requests[1]));
     }
 
     [Fact]
-    public async Task DeactivateOrchestrator_DropsSectionWithoutExitReminder()
+    public async Task OneShotOrchestratorFromSessionOptions_ClearsAfterTurnWithoutExitReminder()
     {
         await using var harness = TestHarness.Create(
             FinalText("Orchestrating."),
@@ -70,26 +80,19 @@ public class WorkflowEndToEndTests
             CancellationToken.None);
         Assert.True(sendAck.Accepted);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
-        await WaitForStateAsync(projection, state => state.ActiveWorkflows?.Contains(OrchestratorWorkflow.Id) == true);
-
-        var clearAck = await runtime.SubmitAsync(new SetWorkflowsCommand(
-            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, []),
-            CancellationToken.None);
-        Assert.True(clearAck.Accepted);
-        await WaitForSequenceAsync(projection, clearAck.LastEventSequence);
-        Assert.Empty(projection.Snapshot().State.ActiveWorkflows ?? []);
+        await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
 
         var secondAck = await runtime.SubmitAsync(new SendTextCommand(
-            StrongId.NewCommandId(), session.Id, clearAck.Revision, "continue"),
+            StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "continue"),
             CancellationToken.None);
         Assert.True(secondAck.Accepted);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
 
         Assert.Equal(2, capturing.Requests.Count);
+        Assert.Contains("# Orchestrator mode", RequestText(capturing.Requests[0]));
         var requestText = RequestText(capturing.Requests[1]);
         Assert.DoesNotContain("# Orchestrator mode", requestText);
         Assert.DoesNotContain("Orchestrator mode still active", requestText);
-        // One-shot injection: the section drops on deactivation and no reminder was ever attached.
         Assert.Equal(0, CountOccurrences(requestText, WorkflowRegistry.ReminderMarker(OrchestratorWorkflow.Id)));
     }
 
@@ -122,7 +125,7 @@ public class WorkflowEndToEndTests
     }
 
     [Fact]
-    public async Task SendTextWithWorkflows_AppliesOnSend()
+    public async Task SendTextWithWorkflows_AppliesToOneTurn()
     {
         await using var harness = TestHarness.Create(FinalText("Orchestrating."));
         var capturing = new TestHarness.RequestCapturingModel(harness.ScriptedModel);
@@ -138,13 +141,13 @@ public class WorkflowEndToEndTests
             CancellationToken.None);
         Assert.True(ack.Accepted);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
-        await WaitForStateAsync(projection, state => state.ActiveWorkflows?.Contains(OrchestratorWorkflow.Id) == true);
+        await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
 
         Assert.Contains("Orchestrator mode is active.", RequestText(Assert.Single(capturing.Requests)));
     }
 
     [Fact]
-    public async Task ActiveWorkflows_SurviveRuntimeRestart()
+    public async Task OneShotOrchestrator_DoesNotSurviveRuntimeRestart()
     {
         await using var harness = TestHarness.Create(
             FinalText("Orchestrating."),
@@ -166,6 +169,7 @@ public class WorkflowEndToEndTests
         using (var projection = runtime.Subscribe(session.Id))
         {
             await WaitForPhaseAsync(projection, TurnPhase.Idle);
+            await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
         }
         await runtime.DisposeAsync();
 
@@ -173,7 +177,7 @@ public class WorkflowEndToEndTests
         await using var resumed = TestHarness.BuildRuntimeFor(resuming, harness.Root, store);
         await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
         using var resumedProjection = resumed.Subscribe(session.Id);
-        Assert.Equal([OrchestratorWorkflow.Id], resumedProjection.Snapshot().State.ActiveWorkflows);
+        Assert.Empty(resumedProjection.Snapshot().State.ActiveWorkflows ?? []);
 
         var secondAck = await resumed.SubmitAsync(new SendTextCommand(
             StrongId.NewCommandId(), session.Id, resumedProjection.Snapshot().Revision, "continue"),
@@ -181,9 +185,7 @@ public class WorkflowEndToEndTests
         Assert.True(secondAck.Accepted);
         await WaitForPhaseAsync(resumedProjection, TurnPhase.Idle);
 
-        Assert.Contains("# Orchestrator mode", RequestText(Assert.Single(resuming.Requests)));
-        // One human turn since the first reminder: below the cadence threshold, so no re-attach.
-        Assert.DoesNotContain("Orchestrator mode still active", RequestText(Assert.Single(resuming.Requests)));
+        Assert.DoesNotContain("# Orchestrator mode", RequestText(Assert.Single(resuming.Requests)));
     }
 
     private static async Task WaitForPhaseAsync(IConversationProjection projection, TurnPhase phase)

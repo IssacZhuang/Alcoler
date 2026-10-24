@@ -493,6 +493,8 @@ public sealed class DraftConversationLifecycleTests
         var command = Assert.IsType<SendTextCommand>(Assert.Single(runtime.Submitted));
         Assert.Equal("refactor the storage layer", command.Text);
         Assert.Null(command.Workflows);
+        Assert.Empty(draft.Composer.ArmedWorkflows);
+        Assert.Contains(Alcoler.Kernel.Workflows.OrchestratorWorkflow.Id, draft.Composer.SessionWorkflows);
     }
 
     [Fact]
@@ -508,14 +510,14 @@ public sealed class DraftConversationLifecycleTests
 
         Assert.Empty(runtime.Created);
         Assert.Empty(runtime.Submitted);
-        Assert.True(draft.Composer.IsOrchestratorActive);
+        Assert.Contains(Alcoler.Kernel.Workflows.OrchestratorWorkflow.Id, draft.Composer.ArmedWorkflows);
 
         draft.Composer.Draft = "/orchestrator";
         await draft.SendAsync();
 
         Assert.Empty(runtime.Created);
         Assert.Empty(runtime.Submitted);
-        Assert.False(draft.Composer.IsOrchestratorActive);
+        Assert.DoesNotContain(Alcoler.Kernel.Workflows.OrchestratorWorkflow.Id, draft.Composer.ArmedWorkflows);
     }
 
     [Fact]
@@ -879,6 +881,7 @@ public sealed class DraftConversationLifecycleTests
             {
                 Mode = options.PermissionMode,
                 PlanEnabled = options.PlanEnabled,
+                ActiveWorkflows = options.ActiveWorkflows,
             };
             _projections[LastSessionId] = new FakeConversationProjection(new ConversationSnapshot(0, 1, [], state));
             _summaries.Add(new SessionSummary(LastSessionId, options.Title ?? "", options.WorkspaceRoot,

@@ -3,9 +3,10 @@ using System.Collections.Concurrent;
 namespace Alcoler.Kernel.Workflows;
 
 /// <summary>
-/// A session workflow: a slash-triggered, persistent prompt overlay. Definitions are data;
-/// the kernel applies the same activation mechanics (system-prompt section plus reminder
-/// cadence) to every registered workflow, so new modes ship as definitions, not code paths.
+/// A session workflow: a slash-triggered prompt overlay. Definitions are data; the kernel
+/// applies the same activation mechanics (system-prompt section plus reminder cadence) to
+/// every registered workflow, so new modes ship as definitions, not code paths. A one-shot
+/// workflow is cleared automatically once the turn that used it reaches a terminal outcome.
 /// </summary>
 public sealed record WorkflowDefinition(
     string Id,
@@ -14,7 +15,8 @@ public sealed record WorkflowDefinition(
     string? SystemSection = null,
     string? FullReminder = null,
     string? SparseReminder = null,
-    string? ExitReminder = null);
+    string? ExitReminder = null,
+    bool OneShot = false);
 
 public sealed class WorkflowRegistry
 {

@@ -13,5 +13,6 @@ public static class OrchestratorWorkflow
         # Orchestrator mode
 
         Orchestrator mode is active. Plan the task, dispatch the work to subagents, then accept each result yourself before reporting done.
-        """);
+        """,
+        OneShot: true);
 }

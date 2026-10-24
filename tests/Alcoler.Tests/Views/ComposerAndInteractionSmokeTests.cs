@@ -833,17 +833,16 @@ public class ComposerAndInteractionSmokeTests
         Assert.Equal("refactor the storage layer", command.Text);
         Assert.NotNull(command.Workflows);
         Assert.Contains("orchestrator", command.Workflows);
-        Assert.True(FindNamed<Border>(harness.View, "OrchestratorModeBadge").IsVisible);
+        Assert.Contains("orchestrator", harness.ViewModel.Composer.SessionWorkflows);
         Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
     }
 
     [AvaloniaFact]
-    public async Task Composer_OrchestratorCommandWithoutPrompt_TogglesWorkflowAndBadge()
+    public async Task Composer_OrchestratorCommandWithoutPrompt_TogglesWorkflow()
     {
         using var harness = Show<ComposerView>();
         await PrepareQuestionAsync(harness);
         var input = FindNamed<TextBox>(harness.View, "InputBox");
-        var badge = FindNamed<Border>(harness.View, "OrchestratorModeBadge");
         input.Focus();
         // The bare command opens the completion panel; the first Enter completes, the second sends.
         harness.Window.KeyTextInput("/orchestrator");
@@ -854,7 +853,7 @@ public class ComposerAndInteractionSmokeTests
         var on = Assert.IsType<Contracts.Commands.SetWorkflowsCommand>(Assert.Single(harness.Runtime.Submitted));
         Assert.Equal(["orchestrator"], on.Active);
         await PumpAsync();
-        Assert.True(badge.IsVisible);
+        Assert.Contains("orchestrator", harness.ViewModel.Composer.SessionWorkflows);
         Assert.Equal(string.Empty, harness.ViewModel.Composer.Draft);
 
         harness.Runtime.Submitted.Clear();
@@ -866,7 +865,7 @@ public class ComposerAndInteractionSmokeTests
         var off = Assert.IsType<Contracts.Commands.SetWorkflowsCommand>(Assert.Single(harness.Runtime.Submitted));
         Assert.Empty(off.Active);
         await PumpAsync();
-        Assert.False(badge.IsVisible);
+        Assert.Empty(harness.ViewModel.Composer.SessionWorkflows);
     }
 
     [AvaloniaFact]

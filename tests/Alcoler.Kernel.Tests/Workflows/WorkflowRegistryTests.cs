@@ -17,6 +17,7 @@ public class WorkflowRegistryTests
         Assert.Null(orchestrator.FullReminder);
         Assert.Null(orchestrator.SparseReminder);
         Assert.Null(orchestrator.ExitReminder);
+        Assert.True(orchestrator.OneShot);
         Assert.Contains(OrchestratorWorkflow.Id, WorkflowRegistry.BuiltIn.Definitions.Select(d => d.Id));
     }
 

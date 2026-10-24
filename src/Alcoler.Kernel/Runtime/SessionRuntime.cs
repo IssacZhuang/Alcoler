@@ -478,6 +478,25 @@ public sealed class SessionRuntime : IAsyncDisposable
         await EmitAsync(new SessionWorkflowsChangedEvent(active), persist: true).ConfigureAwait(false);
     }
 
+    // One-shot workflows are consumed by the turn they were armed for. Clearing before the
+    // completion event keeps observers from ever seeing an idle session with one still active.
+    private async Task ClearOneShotWorkflowsAsync()
+    {
+        if (_record.ActiveWorkflows is not { Count: > 0 } active)
+        {
+            return;
+        }
+        var remaining = active
+            .Where(id => _deps.Options.Workflows.Find(id)?.OneShot != true)
+            .ToArray();
+        if (remaining.Length == active.Count)
+        {
+            return;
+        }
+        await ApplyWorkflowsAsync(remaining, CancellationToken.None).ConfigureAwait(false);
+        BumpRevision();
+    }
+
     private async Task<CommandAck> HandleSendTextAsync(SendTextCommand sendText, CancellationToken ct)
     {
         sendText = sendText with { Text = sendText.Text ?? string.Empty };
@@ -838,6 +857,14 @@ public sealed class SessionRuntime : IAsyncDisposable
             await _commandLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
+                try
+                {
+                    await ClearOneShotWorkflowsAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _deps.Logger.LogError(ex, "Clearing one-shot workflows failed.");
+                }
                 try
                 {
                     Volatile.Write(ref _lastTurnOutcome, (int)outcome);

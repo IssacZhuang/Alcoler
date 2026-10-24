@@ -530,8 +530,6 @@
   "composer_plan_mode": "Plan mode",
   "composer_plan_mode_tooltip": "Read-only planning; approving the plan restores this permission mode",
   "composer_plan_badge_tooltip": "Plan mode: read-only until you approve a plan",
-  "composer_orchestrator": "Orchestrator",
-  "composer_orchestrator_tooltip": "Orchestrator mode: the lead agent orchestrates subagents (/orchestrator toggles)",
   "composer_show_activities": "Show running activities",
   "composer_choose_model": "Choose model",
   "composer_reasoning": "Reasoning effort",

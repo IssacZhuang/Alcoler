@@ -751,6 +751,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 ((BrowserPaneViewModel)document.Content).Bind(handle.Id);
             }
             _sessionDrafts[handle.Id] = new SessionDraft(draft.Composer, draft.Selection, null);
+            // Workflows now live on the session record; a stale armed copy would outlive the
+            // one-shot workflow and keep the badge visible after the turn clears it.
+            draft.Composer.ClearArmedWorkflows();
             // The plan flag the draft carried now lives on the session.
             if (_composerConfig.DefaultPlanEnabled)
                 SaveComposerConfig(_composerConfig with { DefaultPlanEnabled = false });

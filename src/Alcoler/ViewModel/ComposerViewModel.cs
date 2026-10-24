@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
-using Alcoler.Kernel.Workflows;
 using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -196,9 +195,6 @@ public sealed partial class ComposerViewModel : ObservableObject
     [ObservableProperty]
     private IReadOnlyList<string> _armedWorkflows = [];
 
-    public bool IsOrchestratorActive =>
-        SessionWorkflows.Contains(OrchestratorWorkflow.Id) || ArmedWorkflows.Contains(OrchestratorWorkflow.Id);
-
     public string ModeLabel => Mode switch
     {
         PermissionMode.Yolo => Loc.Get("composer_mode_full_access"),
@@ -253,10 +249,6 @@ public sealed partial class ComposerViewModel : ObservableObject
 
     partial void OnSessionPlanEnabledChanged(bool value) => NotifySendState();
 
-    partial void OnSessionWorkflowsChanged(IReadOnlyList<string> value) => OnPropertyChanged(nameof(IsOrchestratorActive));
-
-    partial void OnArmedWorkflowsChanged(IReadOnlyList<string> value) => OnPropertyChanged(nameof(IsOrchestratorActive));
-
     // Toggling flips armed state for bare "/orchestrator"; arming only adds, so "/orchestrator <prompt>"
     // never deactivates a workflow the prompt explicitly asks for.
     public void ToggleArmedWorkflow(string id)
@@ -273,6 +265,8 @@ public sealed partial class ComposerViewModel : ObservableObject
             ArmedWorkflows = [.. ArmedWorkflows, id];
         }
     }
+
+    public void ClearArmedWorkflows() => ArmedWorkflows = [];
 
     public static bool ContainsWorkflow(IReadOnlyList<string> workflows, string id)
     {
