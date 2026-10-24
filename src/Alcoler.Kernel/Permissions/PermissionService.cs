@@ -85,7 +85,9 @@ public sealed class PermissionService : IPermissionGate
             && !planEnabled)
             return PermissionDecision.Deny;
 
-        if (tool.RequiresUserInteraction)
+        // Interactive tools only need the broker when they request approval; tools such as
+        // AskUserQuestion own their prompt and must not be gated by a second permission card.
+        if (tool.RequiresUserInteraction && tool.NeedsApproval)
             return await AskBrokerAsync(request, "tool requires user interaction", cancellationToken).ConfigureAwait(false);
 
         // The always-ask gate runs before the yolo bypass and survives it.
@@ -172,6 +174,10 @@ public sealed class PermissionService : IPermissionGate
             return PermissionDecision.Allow;
 
         if (tool.ReadOnly && tool.RiskLevel == RiskLevel.Low && tool.SideEffectScope != SideEffectScope.UserInteraction)
+            return PermissionDecision.Allow;
+
+        if (tool.RequiresUserInteraction && !tool.NeedsApproval
+            && tool.SideEffectScope == SideEffectScope.UserInteraction)
             return PermissionDecision.Allow;
 
         if (tool.NeedsApproval)

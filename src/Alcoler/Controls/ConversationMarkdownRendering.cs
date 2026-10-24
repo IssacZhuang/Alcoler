@@ -22,8 +22,8 @@ internal static class ConversationMarkdownRendering
 {
     private static readonly ConcurrentDictionary<(char Delimiter, int Length), Regex> ClosingFences = new();
 
-    public static IMarkdownEngine2 CreateEngine(bool trimDocumentEdges = true) =>
-        new ConversationEngine { TrimDocumentEdges = trimDocumentEdges };
+    public static IMarkdownEngine2 CreateEngine(bool trimDocumentEdges = true, bool wrapCodeBlocks = false) =>
+        new ConversationEngine { TrimDocumentEdges = trimDocumentEdges, WrapCodeBlocks = wrapCodeBlocks };
 
     public static MdAvPlugins CreatePlugins()
     {
@@ -36,6 +36,7 @@ internal static class ConversationMarkdownRendering
     private sealed class ConversationEngine : global::Markdown.Avalonia.Markdown, IMarkdownEngine2
     {
         public bool TrimDocumentEdges { get; set; } = true;
+        public bool WrapCodeBlocks { get; set; }
 
         DocumentElement IMarkdownEngine2.TransformElement(string text)
         {
@@ -146,7 +147,8 @@ internal static class ConversationMarkdownRendering
     {
         public override IEnumerable<DocumentElement>? Convert2(string text, Match firstMatch, ParseStatus status,
             IMarkdownEngine2 engine, out int parseTextBegin, out int parseTextEnd) =>
-            ConvertFence(text, firstMatch, out parseTextBegin, out parseTextEnd);
+            ConvertFence(text, firstMatch, engine is ConversationEngine { WrapCodeBlocks: true },
+                out parseTextBegin, out parseTextEnd);
     }
 
     private sealed class TildeFenceParser() : BlockParser2(
@@ -154,10 +156,12 @@ internal static class ConversationMarkdownRendering
     {
         public override IEnumerable<DocumentElement>? Convert2(string text, Match firstMatch, ParseStatus status,
             IMarkdownEngine2 engine, out int parseTextBegin, out int parseTextEnd) =>
-            ConvertFence(text, firstMatch, out parseTextBegin, out parseTextEnd);
+            ConvertFence(text, firstMatch, engine is ConversationEngine { WrapCodeBlocks: true },
+                out parseTextBegin, out parseTextEnd);
     }
 
-    private static IEnumerable<DocumentElement> ConvertFence(string text, Match match, out int begin, out int end)
+    private static IEnumerable<DocumentElement> ConvertFence(
+        string text, Match match, bool wrapCodeBlocks, out int begin, out int end)
     {
         var delimiter = match.Groups[1].Value;
         var contentStart = match.Index + match.Length;
@@ -171,7 +175,7 @@ internal static class ConversationMarkdownRendering
         var language = match.Groups[2].Value.Trim().Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "text";
         var block = new CTextBlockElement([new CRun { Text = code.TrimEnd('\n') }], "CodeBlock");
         var textBlock = (CTextBlock)block.Control;
-        textBlock.TextWrapping = TextWrapping.NoWrap;
+        textBlock.TextWrapping = wrapCodeBlocks ? TextWrapping.Wrap : TextWrapping.NoWrap;
         var copy = new Button { Content = Loc.Get("markdown_copy") };
         copy.Classes.Add("copyCode");
         AutomationProperties.SetName(copy, Loc.Get("markdown_copy_code"));
@@ -201,7 +205,9 @@ internal static class ConversationMarkdownRendering
         header.Children.Add(copy);
         var scroll = new ScrollViewer
         {
-            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = wrapCodeBlocks
+                ? Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled
+                : Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
             Content = textBlock,
         };

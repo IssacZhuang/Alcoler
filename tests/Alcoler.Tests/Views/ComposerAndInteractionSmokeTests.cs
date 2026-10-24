@@ -18,11 +18,13 @@ using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Rendering.Composition;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using ColorTextBlock.Avalonia;
 using Assert = Xunit.Assert;
 
 namespace Alcoler.Tests.Views;
@@ -252,6 +254,54 @@ public class ComposerAndInteractionSmokeTests
         var content = Assert.IsType<PlanDocumentViewModel>(document.Content);
         Assert.Equal("# Implement plan tabs\n\nOpen the plan on the right.", content.Markdown);
         Assert.Empty(harness.Runtime.Submitted);
+    }
+
+    [AvaloniaFact]
+    public async Task QuestionCard_PreviewWrapsLongCodeLines()
+    {
+        var longLine = string.Join(" ", Enumerable.Repeat("column", 80));
+        var question = new InteractionQuestion("Layout", "Which layout?",
+            [new("Split", "Two panes", "```text\n// note\n" + longLine + "\n```"), new("Stack", "One column")]);
+        using var harness = Show<InteractionAreaView>(QuestionState(question));
+        await PrepareQuestionAsync(harness);
+
+        var panel = FindNamed<Border>(harness.View, "QuestionPreviewPanel");
+        var block = Assert.Single(harness.View.GetVisualDescendants().OfType<CTextBlock>(),
+            text => text.Classes.Contains("CodeBlock"));
+        var codeScroll = Assert.Single(harness.View.GetVisualDescendants().OfType<ScrollViewer>(),
+            scroll => scroll.Classes.Contains("CodeBlock"));
+
+        Assert.Equal(TextWrapping.Wrap, block.TextWrapping);
+        Assert.Equal(Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            codeScroll.HorizontalScrollBarVisibility);
+        Assert.True(block.Bounds.Height > 20);
+        Assert.True(block.Bounds.Width <= panel.Bounds.Width);
+    }
+
+    [AvaloniaFact]
+    public async Task QuestionCard_FooterActionLabels_AreVerticallyCentered()
+    {
+        var question = new InteractionQuestion("Destination", "Where should the branch land?",
+            [new InteractionOption("main"), new InteractionOption("feature/x")]);
+        using var harness = Show<InteractionAreaView>(QuestionState(question));
+        await PrepareQuestionAsync(harness);
+
+        var dismiss = FindNamed<Button>(harness.View, "DismissQuestionButton");
+        var submit = FindNamed<Button>(harness.View, "SubmitAnswersButton");
+        var dismissLabel = Assert.Single(dismiss.GetVisualDescendants().OfType<TextBlock>());
+        var submitLabel = Assert.Single(submit.GetVisualDescendants().OfType<TextBlock>());
+
+        Assert.Equal(VerticalAlignment.Center, dismiss.VerticalContentAlignment);
+        Assert.Equal(VerticalAlignment.Center, submit.VerticalContentAlignment);
+        Assert.True(dismissLabel.Bounds.Height < dismiss.Bounds.Height);
+        Assert.True(submitLabel.Bounds.Height < submit.Bounds.Height);
+        var dismissCenter = dismissLabel.TranslatePoint(
+            new Point(0, dismissLabel.Bounds.Height / 2), dismiss)!.Value.Y;
+        var submitCenter = submitLabel.TranslatePoint(
+            new Point(0, submitLabel.Bounds.Height / 2), submit)!.Value.Y;
+        Assert.InRange(dismissCenter, 15, 17);
+        Assert.InRange(submitCenter, 15, 17);
+        Assert.Equal(dismissCenter, submitCenter, precision: 1);
     }
 
     [AvaloniaFact]

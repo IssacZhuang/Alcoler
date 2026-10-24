@@ -178,14 +178,8 @@ public sealed class SidebarActivityFlowTests : IDisposable
         var ack = await runtime.SubmitAsync(
             new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "ask me"), CancellationToken.None);
         Assert.True(ack.Accepted, ack.RejectionReason);
-        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is not null, scheduler);
-        var permission = projection.Snapshot().State.PendingPermission!;
-        var permissionResolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
-            StrongId.NewCommandId(), watched.Id, ack.Revision, permission.InteractionId,
-            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
-        Assert.True(permissionResolve.Accepted, permissionResolve.RejectionReason);
-
         await WaitUntilAsync(() => projection.Snapshot().State.PendingInteraction is not null, scheduler);
+        Assert.Null(projection.Snapshot().State.PendingPermission);
         await WaitUntilAsync(() => watchedVm.IsAwaitingConfirmation, scheduler);
         var interaction = projection.Snapshot().State.PendingInteraction!;
         var answer = dismiss

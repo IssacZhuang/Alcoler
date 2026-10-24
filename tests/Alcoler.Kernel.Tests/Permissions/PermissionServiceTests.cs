@@ -39,6 +39,7 @@ public class PermissionServiceTests
         "sessionPlanAllowed" => Tool(scope: SideEffectScope.Session, risk: RiskLevel.Low, allowedInPlanMode: true),
         "destructivePlanAllowed" => Tool(destructive: true, scope: SideEffectScope.Session, risk: RiskLevel.High, allowedInPlanMode: true),
         "userInteraction" => Tool(requiresUserInteraction: true, readOnly: true, scope: SideEffectScope.UserInteraction, risk: RiskLevel.Low, allowedInPlanMode: true),
+        "userInteractionApproval" => Tool(requiresUserInteraction: true, readOnly: true, scope: SideEffectScope.UserInteraction, risk: RiskLevel.Low, needsApproval: true, allowedInPlanMode: true),
         _ => throw new ArgumentException($"unknown tool preset: {name}", nameof(name)),
     };
 
@@ -165,7 +166,7 @@ public class PermissionServiceTests
             Session,
             "ExitPlanMode",
             Input(new { plan = "do it" }),
-            Preset("userInteraction"),
+            Preset("userInteractionApproval"),
             PermissionMode.Edit);
 
         var decision = await service.CheckAsync(request, CancellationToken.None);
@@ -183,7 +184,7 @@ public class PermissionServiceTests
             Session,
             "ExitPlanMode",
             Input(new { plan = "do it" }),
-            Preset("userInteraction"),
+            Preset("userInteractionApproval"),
             PermissionMode.Yolo,
             PlanEnabled: true);
 
@@ -194,18 +195,36 @@ public class PermissionServiceTests
     }
 
     [Fact]
-    public async Task RequiresUserInteraction_AsksEvenInYolo()
+    public async Task UserInteractionApproval_AsksEvenInYolo()
     {
         var broker = new StubBroker { Next = PermissionDecision.Allow };
         var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Yolo);
 
         var decision = await service.CheckAsync(
-            Request("AskUserQuestion", Preset("userInteraction"), mode: PermissionMode.Yolo),
+            Request("InteractiveApprovalTool", Preset("userInteractionApproval"), mode: PermissionMode.Yolo),
             CancellationToken.None);
 
         Assert.Equal(PermissionOutcome.Allowed, decision.Outcome);
         Assert.Equal(1, broker.Calls);
         Assert.Contains("user interaction", broker.Requests[0].Reason);
+    }
+
+    [Theory]
+    [InlineData(PermissionMode.Build, false)]
+    [InlineData(PermissionMode.Edit, false)]
+    [InlineData(PermissionMode.Yolo, false)]
+    [InlineData(PermissionMode.Build, true)]
+    public async Task AskUserQuestion_IsAllowedWithoutPermissionBroker(PermissionMode mode, bool planEnabled)
+    {
+        var broker = new StubBroker { Next = PermissionDecision.Deny };
+        var service = new PermissionService(broker, PermissionRuleset.Empty, mode, planEnabled: planEnabled);
+
+        var decision = await service.CheckAsync(
+            Request("AskUserQuestion", Preset("userInteraction"), mode: mode, planEnabled: planEnabled),
+            CancellationToken.None);
+
+        Assert.Equal(PermissionOutcome.Allowed, decision.Outcome);
+        Assert.Equal(0, broker.Calls);
     }
 
     [Fact]

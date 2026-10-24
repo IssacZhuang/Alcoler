@@ -130,12 +130,8 @@ public class SessionActivitySignalTests
             new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "ask me"), CancellationToken.None);
         Assert.True(ack.Accepted, ack.RejectionReason);
 
-        var permission = await WaitForPermissionAsync(projection);
-        await runtime.SubmitAsync(new ResolveInteractionCommand(
-            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
-            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
-
         var interaction = await WaitForInteractionAsync(projection);
+        Assert.Null(projection.Snapshot().State.PendingPermission);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingInteraction);
 
         var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
@@ -248,13 +244,8 @@ public class SessionActivitySignalTests
             new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "ask me"), CancellationToken.None);
         Assert.True(ack.Accepted, ack.RejectionReason);
 
-        var permission = await WaitForPermissionAsync(projection);
-        var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
-            StrongId.NewCommandId(), session.Id, ack.Revision, permission.InteractionId,
-            PermissionDecision: PermissionDecision.Allow), CancellationToken.None);
-        Assert.True(resolve.Accepted, resolve.RejectionReason);
-
         await WaitForInteractionAsync(projection);
+        Assert.Null(projection.Snapshot().State.PendingPermission);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingInteraction);
 
         await WaitUntilAsync(() => projection.Snapshot().State.PendingInteraction is null

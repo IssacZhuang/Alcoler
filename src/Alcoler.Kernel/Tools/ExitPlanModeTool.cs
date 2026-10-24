@@ -5,8 +5,8 @@ using Alcoler.Contracts.Tools;
 namespace Alcoler.Kernel.Tools;
 
 /// <summary>
-/// Ends plan mode. RequiresUserInteraction routes every call through the permission broker,
-/// so a denial means ExecuteAsync never runs and the session stays in plan mode.
+/// Ends plan mode. RequiresUserInteraction plus NeedsApproval routes every call through the
+/// permission broker, so a denial means ExecuteAsync never runs and the session stays in plan mode.
 /// </summary>
 public sealed class ExitPlanModeTool : ITool
 {
