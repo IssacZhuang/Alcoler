@@ -20,6 +20,10 @@ internal sealed class ManualTimeProvider : TimeProvider
             return _origin.AddTicks(_offsetTicks);
     }
 
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp() => GetUtcNow().UtcTicks;
+
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
         var timer = new ManualTimer(this, callback, state, period);

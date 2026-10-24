@@ -36,7 +36,10 @@ public sealed class TestHarness : IAsyncDisposable
     }
 
     /// <summary>Full toolset runtime around a caller-supplied model and workspace root.</summary>
-    public static AgentRuntime BuildRuntimeFor(IChatModel model, string root, Contracts.Storage.ISessionStore? store = null)
+    public static AgentRuntime BuildRuntimeFor(IChatModel model, string root,
+        Contracts.Storage.ISessionStore? store = null,
+        Func<AgentRuntimeOptions, AgentRuntimeOptions>? transform = null,
+        params ITool[] extraTools)
     {
         store ??= new SqliteSessionStore(Path.Combine(root, "db.sqlite"));
         store.InitializeAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
@@ -64,7 +67,8 @@ public sealed class TestHarness : IAsyncDisposable
                 () => runtime ?? throw new InvalidOperationException("runtime is not initialized"),
                 messenger),
         };
-        runtime = new AgentRuntime(new AgentRuntimeOptions
+        tools.AddRange(extraTools);
+        var options = new AgentRuntimeOptions
         {
             Store = store,
             Artifacts = artifacts,
@@ -77,7 +81,8 @@ public sealed class TestHarness : IAsyncDisposable
             // Isolates the user skills level from the developer's real home directory.
             UserSkillsBase = Path.Combine(root, "user-skills-base"),
             SubagentOutputRoot = Path.Combine(root, "agent-output"),
-        });
+        };
+        runtime = new AgentRuntime(transform?.Invoke(options) ?? options);
         return runtime;
     }
 

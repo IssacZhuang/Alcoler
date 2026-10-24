@@ -468,6 +468,7 @@
   "context_capacity": "Context capacity",
   "context_breakdown_a11y": "Context usage breakdown",
   "context_cache_hit_rate": "Cache hit rate",
+  "context_output_speed": "Output speed",
   "context_label_messages": "Messages",
   "context_label_system_prompt": "System prompt",
   "context_label_meta_user_context": "Meta user context",

@@ -41,6 +41,12 @@ public sealed class ContextUsageViewModel
             item.Characters, item.Characters / total, Percent(item.Characters / total, culture), Tones[Math.Min(index, Tones.Length - 1)])).ToArray();
         CacheHitRate = usage.CacheInputTokens > 0 ? Math.Clamp((double)usage.CacheReadTokens / usage.CacheInputTokens, 0, 1) : null;
         CacheHitRateText = CacheHitRate is double rate && rate >= .78 ? Percent(rate, culture) : null;
+        OutputTokensPerSecond = usage.GenerationDurationMs > 0 && usage.OutputTokens > 0
+            ? usage.OutputTokens * 1000.0 / usage.GenerationDurationMs
+            : null;
+        OutputSpeedText = OutputTokensPerSecond is { } speed
+            ? speed.ToString("0.0", culture) + " tps"
+            : null;
         RingPath = BuildRingPath(Fraction);
     }
 
@@ -54,6 +60,10 @@ public sealed class ContextUsageViewModel
     public double? CacheHitRate { get; }
     public string? CacheHitRateText { get; }
     public bool HasCacheHitRate => CacheHitRateText is not null;
+    public double? OutputTokensPerSecond { get; }
+    public string? OutputSpeedText { get; }
+    public bool HasOutputSpeed => OutputSpeedText is not null;
+    public bool HasFooterStats => HasCacheHitRate || HasOutputSpeed;
     public string RingPath { get; }
 
     private static string Label(string source) => source switch

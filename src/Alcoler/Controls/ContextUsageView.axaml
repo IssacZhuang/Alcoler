@@ -50,13 +50,20 @@
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
-          <Border IsVisible="{Binding HasCacheHitRate}" BorderThickness="0"
+          <Border IsVisible="{Binding HasFooterStats}" BorderThickness="0"
                   Padding="0,12,0,0">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-              <TextBlock Text="{loc:Loc context_cache_hit_rate}" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
-              <TextBlock Grid.Column="1" Text="{Binding CacheHitRateText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"
-                         Foreground="{DynamicResource AlcolerTextPrimary}" />
-            </Grid>
+            <StackPanel Spacing="8">
+              <Grid IsVisible="{Binding HasCacheHitRate}" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <TextBlock Text="{loc:Loc context_cache_hit_rate}" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                <TextBlock Grid.Column="1" Text="{Binding CacheHitRateText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"
+                           Foreground="{DynamicResource AlcolerTextPrimary}" />
+              </Grid>
+              <Grid IsVisible="{Binding HasOutputSpeed}" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <TextBlock Text="{loc:Loc context_output_speed}" FontSize="12" Foreground="{DynamicResource AlcolerTextSecondary}" />
+                <TextBlock Grid.Column="1" Text="{Binding OutputSpeedText}" FontSize="12" FontFamily="{DynamicResource AlcolerFontMonospace}"
+                           Foreground="{DynamicResource AlcolerTextPrimary}" />
+              </Grid>
+            </StackPanel>
           </Border>
           <ContentControl x:Name="QuotaHost" Content="{Binding #Root.QuotaContent}" />
         </StackPanel>

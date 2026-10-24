@@ -128,6 +128,9 @@ public sealed class SessionRuntime : IAsyncDisposable
     private int _consecutiveRapidRefills;
     private int _toolRoundsSinceCompact;
     private int _outputContinuationsThisTurn;
+    private long _turnOutputTokens;
+    private double _turnGenerationMilliseconds;
+    private bool _turnSampleRecorded;
     private int? _overflowTokenGap;
     private ModelSelection? _consumedGuideSelection;
     private bool _planModeExitReminderPending;
@@ -744,6 +747,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
             var reactiveCompactAttempted = false;
             _outputContinuationsThisTurn = 0;
+            _turnSampleRecorded = false;
             _overflowTokenGap = null;
             _consumedGuideSelection = null;
             _streamRecoveriesThisTurn = 0;
@@ -1167,7 +1171,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             _deps.Tools, _toolExecutor, _toolRunner,
             (call, _) => ValueTask.FromResult(CreateToolExecutionContext(call)),
             notification => HandleToolNotificationAsync(turnId, notification), turnCt);
-        var accumulator = await StreamModelStepAsync(turnId, model, request, streamingTools, turnCt).ConfigureAwait(false);
+        var (accumulator, generationElapsed) = await StreamModelStepAsync(turnId, model, request, streamingTools, turnCt).ConfigureAwait(false);
 
         _lastActivityUtc = _deps.Clock.GetUtcNow();
 
@@ -1215,7 +1219,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             await EmitAsync(new ModelRequestCompletedEvent(turnId, usage), persist: false).ConfigureAwait(false);
             await PublishContextUsageAsync(request, usage.ContextUsageTokens ?? usage.InputTokens ?? requestTokens,
                 contextWindow, usage.ContextUsageTokens is not null || usage.InputTokens is not null
-                    ? TokenEstimator.ProviderUsageSource : source, usage).ConfigureAwait(false);
+                    ? TokenEstimator.ProviderUsageSource : source, usage, generationElapsed).ConfigureAwait(false);
         }
 
         var assistant = accumulator.BuildAssistantMessage(_deps.Clock.GetUtcNow()) with
@@ -1320,7 +1324,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         return ModelStepOutcome.ContinueWithTools;
     }
 
-    private async Task<ModelStepAccumulator> StreamModelStepAsync(
+    private async Task<(ModelStepAccumulator Accumulator, TimeSpan Elapsed)> StreamModelStepAsync(
         TurnId turnId, IChatModel model, AssembledContext request, StreamingToolCoordinator streamingTools, CancellationToken turnCt)
     {
         var runnerBase = new ModelRunnerOptions();
@@ -1332,6 +1336,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 IdleTimeout = runnerBase.IdleTimeout + runnerBase.IdleTimeoutGrowthPerRetry * _streamRecoveriesThisTurn,
             };
             var accumulator = new ModelStepAccumulator(turnId);
+            var startedAt = _deps.Clock.GetTimestamp();
             try
             {
                 await foreach (var streamEvent in ModelStreamRunner.RunAsync(model, request.Request, runnerOptions, turnCt)
@@ -1350,6 +1355,8 @@ public sealed class SessionRuntime : IAsyncDisposable
                 await CommitPartialAssistantAsync(accumulator, model.Descriptor).ConfigureAwait(false);
                 throw;
             }
+
+            var elapsed = _deps.Clock.GetElapsedTime(startedAt);
 
             // A transient failure after boundary content is recovered in-turn by discarding
             // the partial accumulator and re-running the request fresh, up to the budget;
@@ -1373,7 +1380,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 || attempt >= EmptyCompletionRetry.MaxRetries
                 || !IsSuspiciousEmptyCompletion(accumulator))
             {
-                return accumulator;
+                return (accumulator, elapsed);
             }
         }
     }
@@ -1893,7 +1900,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         _toolRoundsSinceCompact = 0;
         _lastProviderUsage = null;
         _usageAnchorIndex = -1;
-        _contextUsage = null;
+        // Cache totals are session-cumulative and survive compaction; only the provider usage anchor is invalid.
+        _contextUsage = _contextUsage is null ? null : _contextUsage with { LastUsage = null };
         await EmitAsync(new CompactBoundaryAppliedEvent(postCompact.Boundary), persist: true).ConfigureAwait(false);
         var compactedContext = await AssembleContextAsync(postCompact.Messages, options, model, ct).ConfigureAwait(false);
         await PublishContextUsageAsync(compactedContext, compactedContext.EstimatedRequestTokens,
@@ -2140,7 +2148,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     }
 
     private async ValueTask PublishContextUsageAsync(
-        AssembledContext context, int used, int max, string source, TokenUsage? usage = null)
+        AssembledContext context, int used, int max, string source, TokenUsage? usage = null,
+        TimeSpan? generationElapsed = null)
     {
         var cacheRead = _contextUsage?.CacheReadTokens ?? 0;
         var cacheInput = _contextUsage?.CacheInputTokens ?? 0;
@@ -2149,8 +2158,23 @@ public sealed class SessionRuntime : IAsyncDisposable
             cacheInput += inputTokens;
             cacheRead += Math.Clamp(usage?.CacheReadTokens ?? 0, 0, inputTokens);
         }
+        var outputTokens = _contextUsage?.OutputTokens ?? _turnOutputTokens;
+        var generationDurationMs = _contextUsage?.GenerationDurationMs ?? (long)Math.Round(_turnGenerationMilliseconds);
+        if (usage?.OutputTokens is > 0 && generationElapsed is { } elapsed && elapsed > TimeSpan.Zero)
+        {
+            if (!_turnSampleRecorded)
+            {
+                _turnOutputTokens = 0;
+                _turnGenerationMilliseconds = 0;
+                _turnSampleRecorded = true;
+            }
+            _turnOutputTokens += usage.OutputTokens.Value;
+            _turnGenerationMilliseconds += elapsed.TotalMilliseconds;
+            outputTokens = _turnOutputTokens;
+            generationDurationMs = (long)Math.Round(_turnGenerationMilliseconds);
+        }
         _contextUsage = new ContextUsageState(Math.Max(0, used), max, source, context.Breakdown,
-            cacheRead, cacheInput, usage ?? _contextUsage?.LastUsage);
+            cacheRead, cacheInput, usage ?? _contextUsage?.LastUsage, outputTokens, generationDurationMs);
         await EmitAsync(new ContextUsageUpdatedEvent(_contextUsage), persist: true).ConfigureAwait(false);
     }
 
@@ -2345,6 +2369,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (activeMessages.Count > 0)
         {
             _contextUsage = replayDurable.Select(evt => evt.Event).OfType<ContextUsageUpdatedEvent>().LastOrDefault()?.Usage;
+            _turnOutputTokens = _contextUsage?.OutputTokens ?? 0;
+            _turnGenerationMilliseconds = _contextUsage?.GenerationDurationMs ?? 0;
             var resumedSelection = _record.ModelSelection ?? _deps.Options.DefaultModel;
             if (resumedSelection is not null)
             {
@@ -2356,7 +2382,9 @@ public sealed class SessionRuntime : IAsyncDisposable
                 _contextUsage = new ContextUsageState(TokenEstimator.EstimateRequestTokens(resumed.Request),
                     descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens,
                     TokenEstimator.EstimateSource, resumed.Breakdown,
-                    _contextUsage?.CacheReadTokens ?? 0, _contextUsage?.CacheInputTokens ?? 0);
+                    _contextUsage?.CacheReadTokens ?? 0, _contextUsage?.CacheInputTokens ?? 0,
+                    OutputTokens: _contextUsage?.OutputTokens ?? 0,
+                    GenerationDurationMs: _contextUsage?.GenerationDurationMs ?? 0);
                 EmitForReplay(new ContextUsageUpdatedEvent(_contextUsage));
             }
         }

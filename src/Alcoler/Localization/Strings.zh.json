@@ -468,6 +468,7 @@
   "context_capacity": "上下文容量",
   "context_breakdown_a11y": "上下文用量明细",
   "context_cache_hit_rate": "缓存命中率",
+  "context_output_speed": "输出速度",
   "context_label_messages": "消息",
   "context_label_system_prompt": "系统提示词",
   "context_label_meta_user_context": "元用户上下文",

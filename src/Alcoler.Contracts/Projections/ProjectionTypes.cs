@@ -43,7 +43,9 @@ public sealed record ContextUsageState(
     IReadOnlyList<ContextUsageCategory> Breakdown,
     long CacheReadTokens = 0,
     long CacheInputTokens = 0,
-    TokenUsage? LastUsage = null);
+    TokenUsage? LastUsage = null,
+    long OutputTokens = 0,
+    long GenerationDurationMs = 0);
 
 public sealed record ConversationState(
     string Title,

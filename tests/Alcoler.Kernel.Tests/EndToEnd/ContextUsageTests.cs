@@ -1,12 +1,17 @@
+using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Alcoler.Adapters.Models;
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Context;
 using Alcoler.Kernel.Runtime;
+using Alcoler.Kernel.Tests.Models;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.EndToEnd;
@@ -77,12 +82,12 @@ public class ContextUsageTests
     }
 
     [Fact]
-    public async Task Compaction_ResetsProviderAnchorAndCacheTotals()
+    public async Task Compaction_ResetsProviderAnchorButPreservesCacheTotals()
     {
         await using var harness = TestHarness.Create(
             Reply("answer", new TokenUsage(ContextUsageTokens: 5000, CacheReadTokens: 4500)),
             new ScriptStep.Events(new ModelTextDelta("summary"), new ModelTextEnded(), new ModelStreamFinished(ModelFinishReason.Stop)),
-            Reply("after compact"));
+            Reply("after compact", new TokenUsage(ContextUsageTokens: 1000, CacheReadTokens: 500)));
         await using var runtime = harness.BuildRuntime();
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
@@ -92,10 +97,16 @@ public class ContextUsageTests
         using var compactedProjection = runtime.Subscribe(session.Id);
         var compacted = Assert.IsType<ContextUsageState>(compactedProjection.Snapshot().State.ContextUsage);
         Assert.Equal(TokenEstimator.EstimateSource, compacted.TokenSource);
-        Assert.Equal(0, compacted.CacheReadTokens);
-        Assert.Equal(0, compacted.CacheInputTokens);
+        Assert.Equal(4500, compacted.CacheReadTokens);
+        Assert.Equal(5000, compacted.CacheInputTokens);
+        Assert.Equal(.9, (double)compacted.CacheReadTokens / compacted.CacheInputTokens);
         Assert.Null(compacted.LastUsage);
         Assert.NotEqual(5000, compacted.UsedTokens);
+
+        await SendAndWaitAsync(runtime, compactedProjection, session.Id, "continue", 2);
+        var continued = Assert.IsType<ContextUsageState>(compactedProjection.Snapshot().State.ContextUsage);
+        Assert.Equal(5000, continued.CacheReadTokens);
+        Assert.Equal(6000, continued.CacheInputTokens);
     }
 
     [Fact]
@@ -179,6 +190,135 @@ public class ContextUsageTests
             await SendAndWaitAsync(runtime, projection, session.Id, $"question {round}", round + 1);
             var ack = await runtime.SubmitAsync(new CompactCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
             Assert.True(ack.Accepted);
+        }
+    }
+
+    [Fact]
+    public async Task OutputSpeed_ExcludesToolTimeAndSurvivesResume()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "alcoler-speed-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new ManualTimeProvider();
+            var store = new SqliteSessionStore(Path.Combine(root, "db.sqlite"));
+            var tool = new ClockAdvanceTool(clock);
+            SessionId sessionId;
+            await using (var runtime = TestHarness.BuildRuntimeFor(new TimedModel(clock), root, store,
+                             options => options with { Clock = clock }, tool))
+            {
+                var session = await runtime.CreateSessionAsync(
+                    new Contracts.Sessions.SessionOptions(root), CancellationToken.None);
+                sessionId = session.Id;
+                var sessionRuntime = runtime.GetSession(session.Id);
+                Assert.NotNull(sessionRuntime);
+                var turnFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                sessionRuntime.TurnFinished += (_, _) =>
+                {
+                    turnFinished.TrySetResult();
+                    return ValueTask.CompletedTask;
+                };
+                using var projection = runtime.Subscribe(session.Id);
+                await SendAndWaitAsync(runtime, projection, session.Id, "go", 2);
+                await turnFinished.Task.WaitAsync(TimeSpan.FromSeconds(20));
+
+                var usage = Assert.IsType<ContextUsageState>(projection.Snapshot().State.ContextUsage);
+                Assert.Equal(150, usage.OutputTokens);
+                Assert.Equal(3000, usage.GenerationDurationMs);
+
+                var compactAck = await runtime.SubmitAsync(
+                    new CompactCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+                Assert.True(compactAck.Accepted, compactAck.RejectionReason);
+                using var compactedProjection = runtime.Subscribe(session.Id);
+                var compacted = Assert.IsType<ContextUsageState>(compactedProjection.Snapshot().State.ContextUsage);
+                Assert.Equal(150, compacted.OutputTokens);
+                Assert.Equal(3000, compacted.GenerationDurationMs);
+            }
+
+            await using (var resumed = TestHarness.BuildRuntimeFor(new TimedModel(clock), root, store,
+                             options => options with { Clock = clock }, tool))
+            {
+                await resumed.ResumeSessionAsync(sessionId, CancellationToken.None);
+                using var projection = resumed.Subscribe(sessionId);
+                var usage = Assert.IsType<ContextUsageState>(projection.Snapshot().State.ContextUsage);
+                Assert.Equal(150, usage.OutputTokens);
+                Assert.Equal(3000, usage.GenerationDurationMs);
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    private sealed class TimedModel(ManualTimeProvider clock) : IChatModel
+    {
+        private static readonly ToolCallId ToolCallId = new("clock-call");
+        private int _calls;
+
+        public ModelDescriptor Descriptor { get; } = new(
+            "scripted", "timed-model", "Timed Model",
+            new ModelProperties(ContextWindowTokens: 200_000));
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
+            ModelRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                clock.Advance(TimeSpan.FromSeconds(2));
+                yield return new ModelTextStarted();
+                yield return new ModelTextDelta("Working on it.");
+                yield return new ModelTextEnded();
+                yield return new ModelToolInputStarted(ToolCallId, ClockAdvanceTool.ToolName);
+                yield return new ModelToolInputDelta(ToolCallId, "{}");
+                yield return new ModelToolInputEnded(ToolCallId);
+                yield return new ModelToolCallReady(new ToolCall(ToolCallId, ClockAdvanceTool.ToolName,
+                    JsonSerializer.SerializeToElement(new { })));
+                yield return new ModelStreamFinished(ModelFinishReason.ToolCalls, new TokenUsage(OutputTokens: 100));
+                yield break;
+            }
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            yield return new ModelTextStarted();
+            yield return new ModelTextDelta("done");
+            yield return new ModelTextEnded();
+            yield return new ModelStreamFinished(ModelFinishReason.Stop, new TokenUsage(OutputTokens: 50));
+        }
+    }
+
+    private sealed class ClockAdvanceTool(ManualTimeProvider clock) : ITool
+    {
+        public const string ToolName = "ClockAdvance";
+
+        public ToolContract Contract { get; } = new(
+            ToolName,
+            "Test-only tool that advances the manual clock.",
+            JsonDocument.Parse("""{"type":"object","properties":{},"additionalProperties":false}""")
+                .RootElement.Clone());
+
+        public ToolMetadata Metadata { get; } = new(
+            ReadOnly: true, Destructive: false, ConcurrentSafe: false, RequiresUserInteraction: false,
+            SideEffectScope: SideEffectScope.None, RiskLevel: RiskLevel.Low, NeedsApproval: false,
+            AllowedInPlanMode: true);
+
+        public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<ToolInputIssue?>(null);
+
+        public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(input);
+
+        public ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
+        {
+            clock.Advance(TimeSpan.FromSeconds(10));
+            return ValueTask.FromResult(ToolExecutionResult.Text("advanced"));
         }
     }
 

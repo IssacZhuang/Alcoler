@@ -62,4 +62,30 @@ public class ContextUsageViewModelTests
         var model = new ContextUsageViewModel(new ContextUsageState(1000, 200000, "provider_usage", [], read, input));
         Assert.Equal(visible, model.HasCacheHitRate);
     }
+
+    [Fact]
+    public void OutputSpeed_UsesAccumulatedTokensAndGenerationDuration()
+    {
+        var model = new ContextUsageViewModel(new ContextUsageState(1000, 200000, "provider_usage", [],
+            OutputTokens: 900, GenerationDurationMs: 3000), CultureInfo.GetCultureInfo("en-US"));
+
+        Assert.Equal(300, model.OutputTokensPerSecond);
+        Assert.Equal("300.0 tps", model.OutputSpeedText);
+        Assert.True(model.HasOutputSpeed);
+        Assert.True(model.HasFooterStats);
+    }
+
+    [Theory]
+    [InlineData(0, 3000)]
+    [InlineData(900, 0)]
+    public void OutputSpeed_IsHiddenWithoutBothTotals(long outputTokens, long durationMs)
+    {
+        var model = new ContextUsageViewModel(new ContextUsageState(1000, 200000, "provider_usage", [],
+            OutputTokens: outputTokens, GenerationDurationMs: durationMs));
+
+        Assert.Null(model.OutputTokensPerSecond);
+        Assert.Null(model.OutputSpeedText);
+        Assert.False(model.HasOutputSpeed);
+        Assert.False(model.HasFooterStats);
+    }
 }
