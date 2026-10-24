@@ -298,12 +298,11 @@ internal static class EditMatchers
         var candidates = new List<string>();
         for (var index = 0; index <= contentLines.Length - searchLines.Length; index++)
         {
-            var block = contentLines[index..(index + searchLines.Length)];
-            if (block[0].Trim() != first || block[^1].Trim() != last)
+            if (contentLines[index].Trim() != first || contentLines[index + searchLines.Length - 1].Trim() != last)
                 continue;
-            if (AverageMiddleSimilarity(block, searchLines) < BlockAnchorMinSimilarity)
+            if (AverageMiddleSimilarity(contentLines, index, searchLines.Length, searchLines) < BlockAnchorMinSimilarity)
                 continue;
-            candidates.Add(string.Join("\n", block));
+            candidates.Add(string.Join("\n", contentLines, index, searchLines.Length));
         }
         return candidates;
     }
@@ -366,18 +365,18 @@ internal static class EditMatchers
         return length;
     }
 
-    private static double AverageMiddleSimilarity(string[] actual, string[] expected)
+    private static double AverageMiddleSimilarity(string[] contentLines, int start, int count, string[] expected)
     {
-        if (actual.Length <= 2)
+        if (count <= 2)
             return 1;
         var total = 0.0;
-        var count = 0;
-        for (var index = 1; index < actual.Length - 1; index++)
+        var compared = 0;
+        for (var offset = 1; offset < count - 1; offset++)
         {
-            total += LineSimilarity(actual[index].Trim(), expected[index].Trim());
-            count++;
+            total += LineSimilarity(contentLines[start + offset].Trim(), expected[offset].Trim());
+            compared++;
         }
-        return count == 0 ? 1 : total / count;
+        return compared == 0 ? 1 : total / compared;
     }
 
     private static double LineSimilarity(string left, string right)

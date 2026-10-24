@@ -67,7 +67,26 @@ internal sealed class SseParser : IDisposable
     public IReadOnlyList<SseFrame> FeedLine(string line)
     {
         _frames.Clear();
-        FeedLine(Encoding.UTF8.GetBytes(line));
+        var byteCount = Encoding.UTF8.GetByteCount(line);
+        if (byteCount <= 512)
+        {
+            Span<byte> encoded = stackalloc byte[byteCount];
+            Encoding.UTF8.GetBytes(line, encoded);
+            FeedLine(encoded);
+        }
+        else
+        {
+            var rented = ArrayPool<byte>.Shared.Rent(byteCount);
+            try
+            {
+                var written = Encoding.UTF8.GetBytes(line, rented);
+                FeedLine(rented.AsSpan(0, written));
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
         return _frames;
     }
 

@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Collections.Concurrent;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -172,7 +171,7 @@ internal sealed class McpServerConnection : IAsyncDisposable
             JsonSerializer.Serialize(writer, parameters, typeof(T), McpJsonContext.Default);
             writer.WriteEndObject();
         }
-        var payload = Encoding.UTF8.GetString(buffer.WrittenSpan);
+        var payload = buffer.WrittenMemory;
         try
         {
             await _transport.SendAsync(payload, cancellationToken).ConfigureAwait(false);

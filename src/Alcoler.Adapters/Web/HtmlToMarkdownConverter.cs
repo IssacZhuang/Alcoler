@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Alcoler.Adapters.Web;
@@ -19,7 +20,6 @@ public static class HtmlToMarkdownConverter
     private static readonly Regex LineBreaks = Compile("<br\\s*/?>");
     private static readonly Regex BlockClosers = Compile("</(?:p|div|section|article|header|footer|tr|table|ul|ol)>");
     private static readonly Regex AnyTag = Compile("<[^>]+>");
-    private static readonly Regex CollapsibleSpaces = Compile("[ \\t]+");
     private static readonly Regex HexEntities = Compile("&#x([0-9a-f]+);");
     private static readonly Regex DecimalEntities = Compile("&#(\\d+);");
 
@@ -89,17 +89,52 @@ public static class HtmlToMarkdownConverter
         }
     }
 
+    // Single-pass equivalent of split + CollapsibleSpaces.Replace(raw, " ").Trim() per line + join:
+    // space/tab runs collapse to one space, then leading/trailing whitespace drops; a blank line is
+    // skipped when nothing was kept yet or the previous kept line is already blank.
     private static string CollapseBlankLines(string content)
     {
-        var kept = new List<string>();
-        foreach (var raw in content.Split('\n'))
+        var builder = new StringBuilder(content.Length);
+        var hasKept = false;
+        var lastKeptBlank = false;
+        var start = 0;
+        while (true)
         {
-            var line = CollapsibleSpaces.Replace(raw, " ").Trim();
-            if (line.Length == 0 && (kept.Count == 0 || kept[^1].Length == 0))
-                continue;
-            kept.Add(line);
+            var newline = content.IndexOf('\n', start);
+            var end = newline < 0 ? content.Length : newline;
+            var first = start;
+            while (first < end && char.IsWhiteSpace(content[first]))
+                first++;
+            var last = end - 1;
+            while (last >= first && char.IsWhiteSpace(content[last]))
+                last--;
+            var blank = last < first;
+            if (!blank || (hasKept && !lastKeptBlank))
+            {
+                if (hasKept)
+                    builder.Append('\n');
+                for (var index = first; index <= last; index++)
+                {
+                    var current = content[index];
+                    if (current is ' ' or '\t')
+                    {
+                        if (index > first && content[index - 1] is ' ' or '\t')
+                            continue;
+                        builder.Append(' ');
+                    }
+                    else
+                    {
+                        builder.Append(current);
+                    }
+                }
+                hasKept = true;
+                lastKeptBlank = blank;
+            }
+            if (newline < 0)
+                break;
+            start = newline + 1;
         }
-        return string.Join("\n", kept);
+        return builder.ToString();
     }
 
     private static Regex Compile(string pattern) =>

@@ -43,6 +43,9 @@ public sealed record AssistantMarkdownChunk(string Text);
 
 public sealed partial class AssistantMessageItemViewModel : TimelineItemViewModel
 {
+    private readonly StringBuilder _textBuilder = new();
+    private readonly List<string> _reasoning = [];
+    private IReadOnlyList<MessagePart>? _lastParts;
     private int _chunkStart;
     private int _scanOffset;
     private int _candidateBoundary = -1;
@@ -89,8 +92,18 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
 
     public void UpdateFrom(AssistantMessageRow row)
     {
-        var textBuilder = new StringBuilder();
-        var reasoning = new List<string>();
+        // Reference-equal parts plus unchanged streaming/fork flags imply this call
+        // would rebuild identical state; parts are immutable records, so the list
+        // instance pins its content.
+        if (ReferenceEquals(row.Parts, _lastParts) && row.IsStreaming == IsStreaming && row.CanFork == CanFork)
+        {
+            return;
+        }
+        _lastParts = row.Parts;
+        var textBuilder = _textBuilder;
+        textBuilder.Clear();
+        var reasoning = _reasoning;
+        reasoning.Clear();
         var firstText = true;
         foreach (var part in row.Parts)
         {
@@ -431,12 +444,12 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
             PlanTitle = plan.Length == 0
                 ? string.Empty
                 : PlanDocumentViewModel.ResolveTitle(ReadText(row.Input, "summary"), plan);
+            Summary = GetSummary(row.Input);
         }
 
         var statusChanged = row.Status != Status;
         Status = row.Status;
         StatusText = StatusKey(row.Status);
-        Summary = GetSummary(row.Input);
         FileChange = row.FileChange;
         IsError = row.IsError;
         DurationText = row.Duration is { } duration

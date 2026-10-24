@@ -64,7 +64,7 @@ public sealed partial class ChatGptAccountViewModel : ObservableObject
     private async Task SignInAsync()
     {
         if (_transaction is not null) return;
-        var transaction = _service.StartSignIn();
+        var transaction = await _service.StartSignInAsync();
         _transaction = transaction;
         State = ChatGptPanelState.Waiting;
         Message = null;

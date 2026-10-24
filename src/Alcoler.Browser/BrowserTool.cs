@@ -166,15 +166,14 @@ public sealed class BrowserTool : ITool
             issue = new("input_too_large", "Browser input must not exceed 256000 serialized characters.");
             return false;
         }
-        var propertyIndex = 0;
+        var seenProperties = new HashSet<string>(StringComparer.Ordinal);
         foreach (var property in input.EnumerateObject())
         {
-            if (IsDuplicateProperty(input, propertyIndex, property.Name))
+            if (!seenProperties.Add(property.Name))
             {
                 issue = new("duplicate_property", $"Duplicate property '{Truncate(property.Name, 128)}'.");
                 return false;
             }
-            propertyIndex++;
             if (!spec.Allowed.Contains(property.Name))
             {
                 issue = new("unexpected_property", $"'{Truncate(property.Name, 128)}' is not allowed for '{verb}'.");

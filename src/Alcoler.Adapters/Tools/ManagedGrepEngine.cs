@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Collections.Concurrent;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Alcoler.Adapters.Tools;
@@ -14,6 +16,9 @@ internal sealed class ManagedGrepEngine : IGrepEngine
     private const byte MatchedLineFlag = 1;
     private const byte ContextLineFlag = 2;
 
+    // Regex instances are thread-safe; compiling per search dominates the cost of repeated patterns.
+    private static readonly ConcurrentDictionary<(string Pattern, RegexOptions Options), Regex> RegexCache = new();
+
     public GrepEngineResult Search(GrepEngineRequest request, CancellationToken cancellationToken)
     {
         var regexOptions = RegexOptions.CultureInvariant;
@@ -24,7 +29,8 @@ internal sealed class ManagedGrepEngine : IGrepEngine
         Regex regex;
         try
         {
-            regex = new Regex(request.Pattern, regexOptions);
+            regex = RegexCache.GetOrAdd((request.Pattern, regexOptions),
+                static key => new Regex(key.Pattern, key.Options));
         }
         catch (ArgumentException)
         {
@@ -49,18 +55,8 @@ internal sealed class ManagedGrepEngine : IGrepEngine
             }
             if (typeFilter is { } typeMatcher && !typeMatcher.Matches(file))
                 continue;
-            if (LooksBinary(file))
+            if (!TryReadNonBinaryText(file, out var content))
                 continue;
-
-            string content;
-            try
-            {
-                content = File.ReadAllText(file);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                continue;
-            }
 
             var search = request.Multiline
                 ? SearchMultilineContent(file, content, regex, request.OnlyMatching, request.BeforeContext, request.AfterContext)
@@ -283,25 +279,35 @@ internal sealed class ManagedGrepEngine : IGrepEngine
     private static int LineNumberForIndex(string content, int index) =>
         1 + content.AsSpan(0, index).Count('\n');
 
-    private static bool LooksBinary(string path)
+    // A single open serves both the binary probe and the text decode; the probe reads exactly the
+    // first BinaryProbeBytes bytes, and the decode matches File.ReadAllText (UTF-8 with BOM detection).
+    private static bool TryReadNonBinaryText(string file, out string content)
     {
+        content = "";
         try
         {
-            using var stream = File.OpenRead(path);
-            var buffer = ArrayPool<byte>.Shared.Rent(BinaryProbeBytes);
+            using var stream = File.OpenRead(file);
+            var probe = ArrayPool<byte>.Shared.Rent(BinaryProbeBytes);
+            bool binary;
             try
             {
-                var read = stream.Read(buffer, 0, BinaryProbeBytes);
-                return buffer.AsSpan(0, read).Contains((byte)0);
+                var read = stream.Read(probe, 0, BinaryProbeBytes);
+                binary = probe.AsSpan(0, read).Contains((byte)0);
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(probe);
             }
+            if (binary)
+                return false;
+            stream.Seek(0, SeekOrigin.Begin);
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            content = reader.ReadToEnd();
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return true;
+            return false;
         }
     }
 }

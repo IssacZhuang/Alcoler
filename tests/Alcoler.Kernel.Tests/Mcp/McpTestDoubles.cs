@@ -185,6 +185,8 @@ internal sealed class FailingTransport : IMcpTransport
 {
     public Task SendAsync(string message, CancellationToken cancellationToken) => Task.CompletedTask;
 
+    public Task SendAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken) => Task.CompletedTask;
+
     public Task<string?> ReceiveAsync(CancellationToken cancellationToken) =>
         throw new IOException("pipe broken");
 

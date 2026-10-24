@@ -84,6 +84,7 @@ public sealed partial class CdpBrowserAutomation
     {
         var clock = Stopwatch.StartNew();
         using var frameTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var frameTimer = new Timer(_ => { try { frameTimeout.Cancel(); } catch (ObjectDisposedException) { } });
         try
         {
             while (clock.ElapsedMilliseconds < duration && !_recordingStop)
@@ -94,13 +95,13 @@ public sealed partial class CdpBrowserAutomation
                 try
                 {
                     if (!_contexts.TryGetValue(context.FrameId, out var current) || current.Id != context.Id) throw new InvalidOperationException("Recording was interrupted by page navigation.");
-                    frameTimeout.CancelAfter(10000);
+                    frameTimer.Change(10000, Timeout.Infinite);
                     var frame = await SendAsync("Page.captureScreenshot", D(("format", "jpeg"), ("quality", 65), ("fromSurface", true), ("captureBeyondViewport", false)), frameTimeout.Token);
                     var data = RequiredString(frame, "data");
                     if (data.Length > MaxMedia) throw new InvalidOperationException("Recording frame exceeds size limit.");
                     await CallAsync(context, "async function(data){const s=globalThis.__alcolerRecording;if(!s || s.error)throw Error(s?.error || 'Recording context lost');if(s.done)throw Error('Recording stopped unexpectedly');const image=new Image();image.src='data:image/jpeg;base64,'+data;await image.decode();s.canvas.getContext('2d').drawImage(image,0,0,s.canvas.width,s.canvas.height);return true;}", [D("value", data)], frameTimeout.Token, true);
                 }
-                finally { frameTimeout.CancelAfter(Timeout.Infinite); _gate.Release(); }
+                finally { frameTimer.Change(Timeout.Infinite, Timeout.Infinite); _gate.Release(); }
                 Interlocked.Exchange(ref _recordedMilliseconds, clock.ElapsedMilliseconds);
                 var delay = 1000 / fps - (int)(clock.ElapsedMilliseconds - frameStart);
                 if (delay > 0) await Task.Delay(delay, ct);

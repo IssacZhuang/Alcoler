@@ -443,7 +443,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         }
         var runtime = await SessionRuntime.CreateAsync(record, new SessionRuntimeDeps(
             _options.Store,
-            ResolveModel,
+            ResolveModelAsync,
             tools,
             _options.WorkspaceFactory(record.WorkspaceRoot),
             _options.PermissionRules,
@@ -532,17 +532,21 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         _modelCache.Clear();
     }
 
-    internal IChatModel ResolveModel(ModelSelection? selection)
+    internal async Task<IChatModel> ResolveModelAsync(ModelSelection? selection)
     {
         selection ??= Volatile.Read(ref _defaultModel) ?? throw new InvalidOperationException("No model configured.");
         var generation = Volatile.Read(ref _providerGeneration);
-        return _modelCache.GetOrAdd((generation, selection.ProviderId, selection.ModelId), static (key, state) =>
+        var key = (generation, selection.ProviderId, selection.ModelId);
+        if (_modelCache.TryGetValue(key, out var cached))
         {
-            var (self, sel) = state;
-            var provider = self.CurrentProviders.FirstOrDefault(p => string.Equals(p.Id, sel.ProviderId, StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException($"No provider registered for '{sel.ProviderId}'.");
-            return provider.BindAsync(sel, CancellationToken.None).AsTask().GetAwaiter().GetResult();
-        }, (this, selection));
+            return cached;
+        }
+        var provider = CurrentProviders.FirstOrDefault(p => string.Equals(p.Id, selection.ProviderId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"No provider registered for '{selection.ProviderId}'.");
+        var bound = await provider.BindAsync(selection, CancellationToken.None).ConfigureAwait(false);
+        // Concurrent first binds may both run, like GetOrAdd's factory; every caller still
+        // observes the first instance that landed in the cache.
+        return _modelCache.GetOrAdd(key, bound);
     }
 
     public async ValueTask DisposeAsync()

@@ -96,8 +96,26 @@ public sealed class TaskOutputTool : ITool
             {
                 if (context.Clock.GetUtcNow() >= deadline)
                     return ToolExecutionResult.Text(FormatResult("timeout", job));
-                await Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken)
-                    .ConfigureAwait(false);
+                var completion = (context.BackgroundJobs as BackgroundJobService)
+                    ?.TryGetCompletion(new BackgroundJobId(taskId));
+                if (completion is not null)
+                {
+                    // Signal wait; the timeout arm still runs on the session clock, so the
+                    // deadline, cancellation, and timeout/error output match the poll loop.
+                    var remaining = deadline - context.Clock.GetUtcNow();
+                    if (remaining <= TimeSpan.Zero)
+                        continue;
+                    var finished = await Task.WhenAny(
+                        completion,
+                        Task.Delay(remaining, context.Clock, cancellationToken)).ConfigureAwait(false);
+                    if (finished != completion)
+                        continue;
+                }
+                else
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
                 if (job is null)
                     return ToolExecutionResult.Text(FormatResult("timeout", null));
@@ -227,8 +245,18 @@ public sealed class TaskOutputTool : ITool
             return string.Empty;
         try
         {
-            var output = File.ReadAllText(job.OutputPath, Encoding.UTF8);
-            return TruncateTail(output, job.OutputPath);
+            // 3 bytes is the widest UTF-8 encoding of a single char, and the slack absorbs
+            // the partial sequence the window start can cut; TruncateTail keeps only the
+            // final DefaultOutputLength chars, so the head never reaches the result.
+            using var stream = new FileStream(job.OutputPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var start = Math.Max(0L, stream.Length - (DefaultOutputLength * 3L + 512));
+            var buffer = new byte[stream.Length - start];
+            stream.Seek(start, SeekOrigin.Begin);
+            stream.ReadExactly(buffer);
+            var text = Encoding.UTF8.GetString(buffer);
+            if (start == 0 && text.StartsWith('\uFEFF'))
+                text = text[1..];
+            return TruncateTail(text, job.OutputPath);
         }
         catch (IOException)
         {

@@ -9,7 +9,7 @@ using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Adapters.Tools;
 
-public sealed class WebFetchTool : ITool, IDisposable
+public sealed partial class WebFetchTool : ITool, IDisposable
 {
     private const int MaxUrlChars = 2_000;
     private const int MaxResponseBytes = 10 * 1024 * 1024;
@@ -388,10 +388,13 @@ public sealed class WebFetchTool : ITool, IDisposable
             "huggingface.co" or "www.kaggle.com" or "vercel.com" => "/docs",
             _ => null,
         };
-        if (prefix is null || Regex.IsMatch(url.AbsolutePath, @"%(25)*(2f|5c|2e)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        if (prefix is null || EncodedPathEscapes().IsMatch(url.AbsolutePath))
             return false;
         return url.AbsolutePath == prefix || url.AbsolutePath.StartsWith(prefix + "/", StringComparison.Ordinal);
     }
+
+    [GeneratedRegex("%(25)*(2f|5c|2e)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex EncodedPathEscapes();
 
     private static bool IsRedirect(HttpStatusCode status) =>
         status is HttpStatusCode.MovedPermanently

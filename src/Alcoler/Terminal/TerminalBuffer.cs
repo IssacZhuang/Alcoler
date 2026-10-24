@@ -66,7 +66,17 @@ public sealed class TerminalBuffer
     public readonly record struct Cell(char Char, TerminalColor? Foreground);
 
     private Cell[][] _grid;
-    private readonly List<Cell[]> _scrollback = [];
+    // Ring buffer of frozen lines: push+trim on a List cost an O(Max) shift per
+    // scrolled line once full; the ring overwrites the head in O(1).
+    private Cell[][] _scrollbackItems = new Cell[16][];
+    private int _scrollbackHead;
+    private int _scrollbackCount;
+    private readonly ScrollbackView _scrollbackView;
+
+    // Monotonic per-row stamps; any path that changes a row's visible cells must
+    // bump the affected rows so renderers can skip rebuilding unchanged rows.
+    private int _rowVersionCounter;
+    private int[] _rowVersions;
 
     private TerminalColor? _foreground;
     private bool _bold;
@@ -77,6 +87,8 @@ public sealed class TerminalBuffer
         Cols = Math.Max(1, cols);
         Rows = Math.Max(1, rows);
         _grid = NewGrid(Cols, Rows);
+        _rowVersions = NewRowVersions(Rows);
+        _scrollbackView = new ScrollbackView(this);
     }
 
     public int Cols { get; private set; }
@@ -89,7 +101,9 @@ public sealed class TerminalBuffer
 
     public bool CursorVisible { get; private set; } = true;
 
-    public IReadOnlyList<Cell[]> Scrollback => _scrollback;
+    public IReadOnlyList<Cell[]> Scrollback => _scrollbackView;
+
+    public int GetRowVersion(int screenRow) => _rowVersions[screenRow];
 
     public static Cell BlankCell => new(' ', null);
 
@@ -234,12 +248,15 @@ public sealed class TerminalBuffer
         {
             row[col] = BlankCell;
         }
+        BumpRow(CursorRow);
     }
 
     public void Clear()
     {
         _grid = NewGrid(Cols, Rows);
-        _scrollback.Clear();
+        _rowVersions = NewRowVersions(Rows);
+        _scrollbackHead = 0;
+        _scrollbackCount = 0;
         CursorRow = 0;
         CursorCol = 0;
         _wrapPending = false;
@@ -264,8 +281,7 @@ public sealed class TerminalBuffer
         {
             if (row < rowOffset)
             {
-                _scrollback.Add(_grid[row]);
-                TrimScrollback();
+                PushScrollback(_grid[row]);
                 continue;
             }
             var target = row - rowOffset;
@@ -277,6 +293,7 @@ public sealed class TerminalBuffer
         }
 
         _grid = grid;
+        _rowVersions = NewRowVersions(rows);
         Cols = cols;
         Rows = rows;
         CursorRow = Math.Clamp(CursorRow - rowOffset, 0, rows - 1);
@@ -286,7 +303,7 @@ public sealed class TerminalBuffer
 
     public string GetRowText(int screenRow) => RowText(_grid[screenRow]);
 
-    public string GetScrollbackText(int index) => RowText(_scrollback[index]);
+    public string GetScrollbackText(int index) => RowText(Scrollback[index]);
 
     private static string RowText(Cell[] row) => new string(row.Select(c => c.Char).ToArray()).TrimEnd();
 
@@ -299,6 +316,7 @@ public sealed class TerminalBuffer
             AdvanceRow();
         }
         _grid[CursorRow][CursorCol] = new Cell(c, _foreground);
+        BumpRow(CursorRow);
         if (CursorCol == Cols - 1)
         {
             // Deferred wrap: xterm keeps the cursor on the last column until the
@@ -325,24 +343,79 @@ public sealed class TerminalBuffer
 
     private void ScrollUp()
     {
-        _scrollback.Add(_grid[0]);
-        TrimScrollback();
+        PushScrollback(_grid[0]);
         for (var row = 1; row < Rows; row++)
         {
             _grid[row - 1] = _grid[row];
         }
         _grid[Rows - 1] = NewRow(Cols);
-    }
-
-    private void TrimScrollback()
-    {
-        if (_scrollback.Count > MaxScrollbackLines)
+        // Every screen row now shows different content after the shift.
+        for (var row = 0; row < Rows; row++)
         {
-            _scrollback.RemoveAt(0);
+            BumpRow(row);
         }
     }
 
-    private void ClearRow(int row) => Array.Fill(_grid[row], BlankCell);
+    private void PushScrollback(Cell[] line)
+    {
+        if (_scrollbackCount == MaxScrollbackLines)
+        {
+            _scrollbackItems[_scrollbackHead] = line;
+            _scrollbackHead = (_scrollbackHead + 1) % _scrollbackItems.Length;
+            return;
+        }
+        if (_scrollbackCount == _scrollbackItems.Length)
+        {
+            var capacity = Math.Min(MaxScrollbackLines, _scrollbackItems.Length * 2);
+            var grown = new Cell[capacity][];
+            for (var index = 0; index < _scrollbackCount; index++)
+            {
+                grown[index] = _scrollbackItems[(_scrollbackHead + index) % _scrollbackItems.Length];
+            }
+            _scrollbackItems = grown;
+            _scrollbackHead = 0;
+        }
+        _scrollbackItems[(_scrollbackHead + _scrollbackCount) % _scrollbackItems.Length] = line;
+        _scrollbackCount++;
+    }
+
+    private void ClearRow(int row)
+    {
+        Array.Fill(_grid[row], BlankCell);
+        BumpRow(row);
+    }
+
+    private void BumpRow(int row) => _rowVersions[row] = ++_rowVersionCounter;
+
+    private int[] NewRowVersions(int rows)
+    {
+        var versions = new int[rows];
+        for (var row = 0; row < rows; row++)
+        {
+            versions[row] = ++_rowVersionCounter;
+        }
+        return versions;
+    }
+
+    private sealed class ScrollbackView(TerminalBuffer owner) : IReadOnlyList<Cell[]>
+    {
+        public int Count => owner._scrollbackCount;
+
+        public Cell[] this[int index] =>
+            index >= 0 && index < owner._scrollbackCount
+                ? owner._scrollbackItems[(owner._scrollbackHead + index) % owner._scrollbackItems.Length]
+                : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<Cell[]> GetEnumerator()
+        {
+            for (var index = 0; index < owner._scrollbackCount; index++)
+            {
+                yield return this[index];
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 
     private static Cell[][] NewGrid(int cols, int rows) =>
         Enumerable.Range(0, rows).Select(_ => NewRow(cols)).ToArray();

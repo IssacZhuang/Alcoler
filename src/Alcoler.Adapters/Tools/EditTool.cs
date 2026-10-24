@@ -121,8 +121,15 @@ public sealed class EditTool : ITool
         var matched = (EditMatch.Matched)match;
 
         var actualOldString = matched.ActualString;
-        if (!replaceAll && CountOccurrences(content, actualOldString) is > 1 and var matchCount)
-            return ToolExecutionResult.Text(AmbiguousMessage(matchCount, oldStringInput), isError: true);
+        if (!replaceAll)
+        {
+            // For an exact match the candidate count already counted these identical occurrences.
+            var matchCount = matched.Strategy == EditMatchStrategy.Exact
+                ? matched.CandidateCount
+                : CountOccurrences(content, actualOldString);
+            if (matchCount > 1)
+                return ToolExecutionResult.Text(AmbiguousMessage(matchCount, oldStringInput), isError: true);
+        }
 
         var normalizedNewString = EditMatchers.NormalizeReplacementForMatch(matched.Strategy, requestedNewString);
         var actualNewString = EditMatchers.PreserveQuoteStyle(oldString, actualOldString, normalizedNewString);

@@ -28,8 +28,8 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
         Id = id;
         _title = title;
         WorkspaceRoot = workspaceRoot;
-        UpdatedAt = updatedAt;
-        IsArchived = isArchived;
+        _updatedAt = updatedAt;
+        _isArchived = isArchived;
     }
 
     public SessionId Id { get; }
@@ -40,9 +40,36 @@ public sealed partial class SessionSummaryViewModel : ObservableObject
 
     public string WorkspaceRoot { get; }
 
-    public DateTimeOffset UpdatedAt { get; }
+    // Mutable so refreshes can update a reused instance in place instead of
+    // rebuilding every summary view model.
+    public DateTimeOffset UpdatedAt
+    {
+        get => _updatedAt;
+        set
+        {
+            if (_updatedAt == value)
+                return;
+            _updatedAt = value;
+            OnPropertyChanged(nameof(UpdatedAt));
+            OnPropertyChanged(nameof(UpdatedAtText));
+        }
+    }
 
-    public bool IsArchived { get; }
+    private DateTimeOffset _updatedAt;
+
+    public bool IsArchived
+    {
+        get => _isArchived;
+        set
+        {
+            if (_isArchived == value)
+                return;
+            _isArchived = value;
+            OnPropertyChanged(nameof(IsArchived));
+        }
+    }
+
+    private bool _isArchived;
 
     public string DisplayTitle => string.IsNullOrWhiteSpace(Title) ? Loc.Get("sidebar_untitled_session") : Title;
 
@@ -237,36 +264,90 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
                 _indicators.Remove(stale.Key);
             }
         }
-        var expansion = Groups.ToDictionary(
-            g => g.WorkspaceRoot,
-            g => (g.IsExpanded, VisibleCount: g.VisibleSessions.Count),
-            StringComparer.OrdinalIgnoreCase);
-        Groups.Clear();
+
+        // Same grouping, key order and per-group ordering a full rebuild produces.
+        var desired = summaries
+            .GroupBy(s => s.WorkspaceRoot, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Root: g.Key, Ordered: g.OrderByDescending(s => s.UpdatedAt).ToArray()))
+            .ToArray();
+        var previousById = new Dictionary<SessionId, SessionSummaryViewModel>(_sessionsById);
+        var resolvedById = new Dictionary<SessionId, SessionSummaryViewModel>();
+        var existingGroups = new Dictionary<string, SessionGroupViewModel>(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in Groups)
+            existingGroups[group.WorkspaceRoot] = group;
+
         _sessionsById.Clear();
-        foreach (var group in summaries
-                     .GroupBy(s => s.WorkspaceRoot, StringComparer.OrdinalIgnoreCase)
-                     .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        var desiredGroups = new List<SessionGroupViewModel>(desired.Length);
+        foreach (var (root, ordered) in desired)
         {
-            var (isExpanded, visibleCount) = expansion.TryGetValue(group.Key, out var state)
-                ? state
-                : (true, SessionGroupViewModel.SessionPageSize);
-            var groupVm = new SessionGroupViewModel(group.Key)
+            existingGroups.TryGetValue(root, out var groupVm);
+            var existingSessions = groupVm is null ? [] : groupVm.Sessions;
+            var resolved = new SessionSummaryViewModel[ordered.Length];
+            var sessionsUnchanged = existingSessions.Count == ordered.Length;
+            for (var index = 0; index < ordered.Length; index++)
             {
-                IsExpanded = isExpanded,
-            };
-            foreach (var session in group.OrderByDescending(s => s.UpdatedAt))
-            {
-                session.IsActive = session.Id == ActiveSessionId;
-                if (session.IsActive && _indicators.GetValueOrDefault(session.Id) == SessionActivityIndicator.Completed)
+                var incoming = ordered[index];
+                SessionSummaryViewModel vm;
+                if (!resolvedById.ContainsKey(incoming.Id)
+                    && previousById.TryGetValue(incoming.Id, out var cached)
+                    && string.Equals(cached.WorkspaceRoot, incoming.WorkspaceRoot, StringComparison.Ordinal))
                 {
-                    _indicators.Remove(session.Id);
+                    cached.Title = incoming.Title;
+                    cached.UpdatedAt = incoming.UpdatedAt;
+                    cached.IsArchived = incoming.IsArchived;
+                    vm = cached;
                 }
-                session.Indicator = _indicators.GetValueOrDefault(session.Id);
-                _sessionsById[session.Id] = session;
-                groupVm.AddSession(session);
+                else
+                {
+                    vm = incoming;
+                }
+                resolvedById[incoming.Id] = vm;
+                resolved[index] = vm;
+                var isActive = incoming.Id == ActiveSessionId;
+                if (isActive && _indicators.GetValueOrDefault(incoming.Id) == SessionActivityIndicator.Completed)
+                    _indicators.Remove(incoming.Id);
+                var indicator = _indicators.GetValueOrDefault(incoming.Id);
+                vm.IsActive = isActive;
+                vm.Indicator = indicator;
+                // Callers keep handing freshly built instances; keep their state in
+                // sync too so refreshes observed through them behave as before.
+                incoming.IsActive = isActive;
+                incoming.Indicator = indicator;
+                _sessionsById[vm.Id] = vm;
+                if (sessionsUnchanged && !ReferenceEquals(existingSessions[index], vm))
+                    sessionsUnchanged = false;
             }
-            groupVm.SetVisibleSessionCount(visibleCount);
-            Groups.Add(groupVm);
+            if (groupVm is null)
+            {
+                groupVm = new SessionGroupViewModel(root);
+            }
+            if (sessionsUnchanged)
+            {
+                groupVm.SetVisibleSessionCount(groupVm.VisibleSessions.Count);
+            }
+            else
+            {
+                var visibleCount = groupVm.VisibleSessions.Count;
+                groupVm.Sessions.Clear();
+                groupVm.VisibleSessions.Clear();
+                foreach (var vm in resolved)
+                    groupVm.AddSession(vm);
+                // A rebuilt group restarts from one visible page, then restores the
+                // previous window size, exactly like the old full rebuild did.
+                groupVm.SetVisibleSessionCount(Math.Max(visibleCount, SessionGroupViewModel.SessionPageSize));
+            }
+            desiredGroups.Add(groupVm);
+        }
+
+        var groupsUnchanged = Groups.Count == desiredGroups.Count;
+        for (var index = 0; groupsUnchanged && index < desiredGroups.Count; index++)
+            groupsUnchanged = ReferenceEquals(Groups[index], desiredGroups[index]);
+        if (!groupsUnchanged)
+        {
+            Groups.Clear();
+            foreach (var group in desiredGroups)
+                Groups.Add(group);
         }
     }
 

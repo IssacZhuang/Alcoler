@@ -10,6 +10,9 @@ internal sealed class BashProcessSession : IDisposable
     internal const string CwdMarker = "__ALCOLER_CWD__";
     internal const long MaxPersistedBytes = 5L * 1024 * 1024 * 1024;
 
+    // The console codepage cannot change within the process, so the chcp probe runs at most once.
+    private static readonly Lazy<Encoding?> LegacyEncodingCache = new(BashOutputDecoder.ResolveWindowsLegacyEncoding);
+
     private readonly Process _process;
     private readonly object _sync = new();
     private const int CwdTailChars = 32_768;
@@ -37,7 +40,7 @@ internal sealed class BashProcessSession : IDisposable
         _captureCwd = captureCwd;
         InlineLimit = inlineLimit;
         _persistedLimit = persistedLimit;
-        _openOutput = openOutput ?? (path => new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 4096));
+        _openOutput = openOutput ?? (path => new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 32_768));
     }
 
     public string? OutputPath { get; private set; }
@@ -70,7 +73,7 @@ internal sealed class BashProcessSession : IDisposable
             StandardErrorEncoding = Encoding.UTF8,
         };
         var posix = isPosix ?? IsPosixShell(shell);
-        legacyEncoding ??= BashOutputDecoder.ResolveWindowsLegacyEncoding();
+        legacyEncoding ??= LegacyEncodingCache.Value;
         var session = new BashProcessSession(new Process { StartInfo = startInfo }, captureCwd,
             ResolveInlineLimit(Environment.GetEnvironmentVariable("BASH_MAX_OUTPUT_LENGTH")), persistedLimit, openOutput);
         try
@@ -173,7 +176,7 @@ internal sealed class BashProcessSession : IDisposable
 
     private async Task PumpAsync(Stream reader, bool stdout, Encoding? legacyEncoding)
     {
-        var buffer = new byte[4096];
+        var buffer = ArrayPool<byte>.Shared.Rent(32 * 1024);
         var decoder = new BashOutputDecoder(legacyEncoding);
         var capturePending = stdout && _captureCwd ? ArrayPool<char>.Shared.Rent(CwdTailChars + 16_384) : null;
         var combined = capturePending is null ? ArrayPool<char>.Shared.Rent(8_192) : null;
@@ -240,6 +243,7 @@ internal sealed class BashProcessSession : IDisposable
         }
         finally
         {
+            ArrayPool<byte>.Shared.Return(buffer);
             if (capturePending is not null)
                 ArrayPool<char>.Shared.Return(capturePending);
             if (combined is not null)
@@ -277,7 +281,8 @@ internal sealed class BashProcessSession : IDisposable
             while (chars < text.Length)
             {
                 var size = chars + 1 < text.Length && char.IsSurrogatePair(text[chars], text[chars + 1]) ? 2 : 1;
-                var cost = Encoding.UTF8.GetByteCount(text.Slice(chars, size));
+                // Non-ASCII single chars keep GetByteCount: a lone surrogate counts via the encoder's replacement fallback.
+                var cost = size == 2 ? 4 : text[chars] <= 0x7F ? 1 : Encoding.UTF8.GetByteCount(text.Slice(chars, 1));
                 if (cost > remaining)
                     break;
                 remaining -= cost;
@@ -441,20 +446,18 @@ internal sealed class BashOutputDecoder(Encoding? legacyEncoding)
     {
         if (_decoder is null)
         {
-            var combined = new byte[_pending.Length + bytes.Length];
-            _pending.CopyTo(combined, 0);
-            bytes.CopyTo(combined.AsSpan(_pending.Length));
+            var combined = CombinePending(bytes);
             var offset = 0;
             var nonAscii = false;
             while (offset < combined.Length)
             {
-                var status = Rune.DecodeFromUtf8(combined.AsSpan(offset), out var rune, out var consumed);
+                var status = Rune.DecodeFromUtf8(combined[offset..], out var rune, out var consumed);
                 if (status == OperationStatus.NeedMoreData && !flush)
                 {
                     if (!nonAscii)
                     {
-                        _pending = combined[offset..];
-                        return Encoding.UTF8.GetString(combined.AsSpan(0, offset));
+                        _pending = combined[offset..].ToArray();
+                        return Encoding.UTF8.GetString(combined[..offset]);
                     }
                     _encoding = Encoding.UTF8;
                     _decoder = _encoding.GetDecoder();
@@ -480,6 +483,17 @@ internal sealed class BashOutputDecoder(Encoding? legacyEncoding)
             return Convert(combined, flush);
         }
         return Convert(bytes, flush);
+    }
+
+    // With no pending bytes the caller's span is already the combined buffer, so nothing is copied.
+    private ReadOnlySpan<byte> CombinePending(ReadOnlySpan<byte> bytes)
+    {
+        if (_pending.Length == 0)
+            return bytes;
+        var copy = new byte[_pending.Length + bytes.Length];
+        _pending.CopyTo(copy, 0);
+        bytes.CopyTo(copy.AsSpan(_pending.Length));
+        return copy;
     }
 
     private string Convert(ReadOnlySpan<byte> bytes, bool flush)

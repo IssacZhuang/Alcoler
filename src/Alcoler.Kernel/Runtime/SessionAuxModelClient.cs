@@ -12,7 +12,7 @@ namespace Alcoler.Kernel.Runtime;
 /// capped output budget, mirroring ZCode's auxiliary-model behavior. Native search is
 /// the only request that carries a tool.
 /// </summary>
-internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelection, Func<ModelSelection, IChatModel> resolveModel) : IAuxModelClient, IProviderWebSearch
+internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelection, Func<ModelSelection, Task<IChatModel>> resolveModel) : IAuxModelClient, IProviderWebSearch
 {
     private const int MaxOutputTokensCap = 5_000;
     private const int WebSearchMaxOutputTokens = 4_096;
@@ -26,7 +26,10 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
             try
             {
                 var selection = resolveSelection();
-                return selection is not null && resolveModel(selection).Descriptor.Properties.SupportsNativeWebSearch;
+                // IAuxModelClient exposes availability as a sync property; the bound model
+                // is cached after first use, so this only blocks on a cache miss.
+                return selection is not null
+                    && resolveModel(selection).GetAwaiter().GetResult().Descriptor.Properties.SupportsNativeWebSearch;
             }
             catch (Exception)
             {
@@ -41,7 +44,7 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
     {
         var selection = resolveSelection()
             ?? throw new InvalidOperationException("No model configured for the session.");
-        var model = resolveModel(selection);
+        var model = await resolveModel(selection).ConfigureAwait(false);
         if (!model.Descriptor.Properties.SupportsNativeWebSearch)
             throw new InvalidOperationException("Current model does not support native WebSearch.");
 
@@ -114,7 +117,7 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
     {
         var selection = resolveSelection()
             ?? throw new InvalidOperationException("No model configured for the session.");
-        var model = resolveModel(selection);
+        var model = await resolveModel(selection).ConfigureAwait(false);
         var baseOptions = selection.Options ?? new ModelCallOptions();
         var maxOutput = Math.Min(
             Math.Min(request.MaxOutputTokens, MaxOutputTokensCap),

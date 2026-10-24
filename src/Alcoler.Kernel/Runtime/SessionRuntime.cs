@@ -1,4 +1,5 @@
 using System.Buffers.Text;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Commands;
@@ -62,7 +63,7 @@ public sealed class SessionRuntimeOptions
 
 public sealed record SessionRuntimeDeps(
     ISessionStore Store,
-    Func<ModelSelection, IChatModel> ResolveModel,
+    Func<ModelSelection, Task<IChatModel>> ResolveModel,
     ToolRegistry Tools,
     IToolWorkspace Workspace,
     PermissionRuleset PermissionRules,
@@ -134,6 +135,13 @@ public sealed class SessionRuntime : IAsyncDisposable
     private int _streamRecoveriesThisTurn;
     private ToolCallAnomalyTracker _toolAnomalyThisTurn = new();
     private readonly TurnRequestEntries _turnLocalRequestMessages = new();
+    // Derived-history caches: appends can only extend the lists these are keyed against, so
+    // only history rewrites (ReplaceAll) and workflow changes must reset them.
+    private readonly ConcurrentDictionary<string, MediaPayload> _mediaPayloadCache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<MessageId, int> _messageTokenEstimates = new();
+    private (int HistoryCount, string[] WorkflowIds, HistoryReminderCounts Counts)? _reminderCountsCache;
+    private IReadOnlyList<SkillInfo>? _skillsListingSource;
+    private string? _skillsListingRendered;
     // -1 means no turn has finished yet in this session runtime.
     private int _lastTurnOutcome = -1;
     private bool _disposed;
@@ -318,7 +326,8 @@ public sealed class SessionRuntime : IAsyncDisposable
             case SwitchModelCommand switchModel:
                 try
                 {
-                    _deps.ResolveModel(switchModel.Selection).ValidateOptions(switchModel.Selection.Options ?? new ModelCallOptions());
+                    (await _deps.ResolveModel(switchModel.Selection).ConfigureAwait(false))
+                        .ValidateOptions(switchModel.Selection.Options ?? new ModelCallOptions());
                 }
                 catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
                 {
@@ -396,6 +405,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         }).ConfigureAwait(false);
 
         _history.ReplaceAll(kept);
+        ResetHistoryDerivedCaches();
         _history.ClearRecentReads();
         _fileReads.Clear();
         _lastProviderUsage = null;
@@ -579,13 +589,19 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private bool TryRemovePendingInput(CommandId commandId)
     {
-        if (!_pendingInputs.Any(input => input.Command?.CommandId == commandId))
-            return false;
-        var retained = _pendingInputs.Where(input => input.Command?.CommandId != commandId).ToArray();
-        _pendingInputs.Clear();
-        foreach (var input in retained)
+        var removed = false;
+        var count = _pendingInputs.Count;
+        for (var index = 0; index < count; index++)
+        {
+            var input = _pendingInputs.Dequeue();
+            if (input.Command?.CommandId == commandId)
+            {
+                removed = true;
+                continue;
+            }
             _pendingInputs.Enqueue(input);
-        return true;
+        }
+        return removed;
     }
 
     private PendingTurnInput? DequeueOldestInput()
@@ -695,7 +711,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 await ApplyInputIntentAsync(command).ConfigureAwait(false);
             var selection = command?.ModelSelection ?? _record.ModelSelection ?? _deps.Options.DefaultModel
                 ?? throw new InvalidOperationException("No model configured for session.");
-            var model = _deps.ResolveModel(selection);
+            var model = await _deps.ResolveModel(selection).ConfigureAwait(false);
             var options = selection.Options ?? new ModelCallOptions();
             model.ValidateOptions(options);
             await EnsureShellAsync(turnCt).ConfigureAwait(false);
@@ -721,7 +737,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
                 if (_consumedGuideSelection is { } guideSelection)
                 {
-                    model = _deps.ResolveModel(guideSelection);
+                    model = await _deps.ResolveModel(guideSelection).ConfigureAwait(false);
                     options = guideSelection.Options ?? new ModelCallOptions();
                     _consumedGuideSelection = null;
                 }
@@ -974,7 +990,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
         if (command.ModelSelection is { } selection)
         {
-            _deps.ResolveModel(selection).ValidateOptions(selection.Options ?? new ModelCallOptions());
+            (await _deps.ResolveModel(selection).ConfigureAwait(false))
+                .ValidateOptions(selection.Options ?? new ModelCallOptions());
             await PersistRecordAsync(_sessionCts.Token, record => record with { ModelSelection = selection }).ConfigureAwait(false);
             await EmitModelChangedAsync(selection).ConfigureAwait(false);
         }
@@ -1062,11 +1079,11 @@ public sealed class SessionRuntime : IAsyncDisposable
         var (effectiveTokens, _) = EstimateContextTokens(initialRequest, history);
 
         var now = _deps.Clock.GetUtcNow();
-        var historyTokens = TokenEstimator.EstimateHistoryTokens(history);
-        var micro = MicroCompactor.Apply(history, _lastActivityUtc, now, threshold, historyTokens);
+        var micro = MicroCompactor.Apply(history, _lastActivityUtc, now, threshold, EstimateHistoryTokensCached(history));
         if (micro.ClearedParts.Count > 0)
         {
             _history.ReplaceAll(micro.Messages);
+            ResetHistoryDerivedCaches();
             history.Clear();
             history.AddRange(micro.Messages);
             _lastProviderUsage = null;
@@ -1349,7 +1366,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     // Mode reminders live in canonical memory; only todo reminders are durable.
     private async Task CommitRuntimeRemindersAsync(List<ConversationMessage> history)
     {
-        var counts = ScanHistoryReminders(history, ActiveWorkflowIds());
+        var counts = GetHistoryReminderCounts(history);
         if (_planModeExitReminderPending)
         {
             _planModeExitReminderPending = false;
@@ -1402,6 +1419,34 @@ public sealed class SessionRuntime : IAsyncDisposable
             history.Add(await CommitSyntheticReminderAsync(
                 TodoReminderPolicy.BuildReminderBody(_deps.TodoStore?.Get(_record.Id))).ConfigureAwait(false));
         }
+    }
+
+    // Counts can only change when messages are appended or the active workflow set changes;
+    // ResetHistoryDerivedCaches forces a full rescan after any history rewrite.
+    private HistoryReminderCounts GetHistoryReminderCounts(IReadOnlyList<ConversationMessage> history)
+    {
+        var workflowIds = ActiveWorkflowIds();
+        if (_reminderCountsCache is { } cached
+            && cached.HistoryCount == history.Count
+            && cached.WorkflowIds.Length == workflowIds.Count)
+        {
+            var sameWorkflows = true;
+            for (var i = 0; i < workflowIds.Count; i++)
+            {
+                if (!string.Equals(cached.WorkflowIds[i], workflowIds[i], StringComparison.Ordinal))
+                {
+                    sameWorkflows = false;
+                    break;
+                }
+            }
+            if (sameWorkflows)
+            {
+                return cached.Counts;
+            }
+        }
+        var counts = ScanHistoryReminders(history, workflowIds);
+        _reminderCountsCache = (history.Count, [.. workflowIds], counts);
+        return counts;
     }
 
     // ZCode derives both counters from persisted history (committed assistant entries
@@ -1565,12 +1610,29 @@ public sealed class SessionRuntime : IAsyncDisposable
         return count;
     }
 
-    internal static bool IsRealUserTurn(ConversationMessage message) =>
-        message.Role == MessageRole.User
-        && (message.Source == MessageSource.RealUser
-            || message.Source is null
-            && !message.Parts.Any(p => p is ToolResultPart or AttachmentPart)
-            && message.Parts.OfType<TextPart>().Any());
+    internal static bool IsRealUserTurn(ConversationMessage message)
+    {
+        if (message.Role != MessageRole.User)
+            return false;
+        if (message.Source == MessageSource.RealUser)
+            return true;
+        if (message.Source is not null)
+            return false;
+        var hasText = false;
+        foreach (var part in message.Parts)
+        {
+            switch (part)
+            {
+                case ToolResultPart:
+                case AttachmentPart:
+                    return false;
+                case TextPart:
+                    hasText = true;
+                    break;
+            }
+        }
+        return hasText;
+    }
 
     private ToolExecutionContext CreateToolExecutionContext(ToolCall call) =>
         new(_record.Id, _record.WorkspaceRoot, call.Input, _deps.Workspace, _deps.Clock,
@@ -1646,8 +1708,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         IChatModel? frozenModel, ModelCallOptions? frozenOptions, int? declaredTokenGap)
     {
         var selection = _record.ModelSelection ?? _deps.Options.DefaultModel;
-        var model = frozenModel ?? _deps.ResolveModel(selection
-            ?? throw new InvalidOperationException("No model configured."));
+        var model = frozenModel ?? await _deps.ResolveModel(selection
+            ?? throw new InvalidOperationException("No model configured.")).ConfigureAwait(false);
         var options = frozenOptions ?? selection?.Options ?? new ModelCallOptions();
         var contextWindow = model.Descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens;
         var (effectiveTokens, _) = EstimateContextTokens(
@@ -1793,6 +1855,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             UpdatedAt = _deps.Clock.GetUtcNow(),
         }).ConfigureAwait(false);
         _history.ReplaceAll(postCompact.Messages);
+        ResetHistoryDerivedCaches();
         if (historySink is not null)
         {
             historySink.Clear();
@@ -1900,10 +1963,24 @@ public sealed class SessionRuntime : IAsyncDisposable
         var media = await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
         var visibleContracts = _deps.Tools.VisibleContractsFor(model?.Descriptor.Properties);
         var skillToolAvailable = ContractListContains(visibleContracts, "Skill");
-        var skillsListing = skillToolAvailable
-            ? _deps.Options.SkillsListing ?? SkillsListing.Render(new SkillsCatalog(_deps.Options.UserSkillsBase)
-                .Load(_record.WorkspaceRoot, _deps.Options.DisabledSkillPathsProvider?.Invoke()))
-            : null;
+        string? skillsListing = null;
+        if (skillToolAvailable && _deps.Options.SkillsListing is { } configuredListing)
+        {
+            skillsListing = configuredListing;
+        }
+        else if (skillToolAvailable)
+        {
+            // Load still runs every assembly so its IsCurrent() freshness check keeps its
+            // cadence; only the rendered string is cached per loaded catalog instance.
+            var skills = new SkillsCatalog(_deps.Options.UserSkillsBase)
+                .Load(_record.WorkspaceRoot, _deps.Options.DisabledSkillPathsProvider?.Invoke());
+            if (!ReferenceEquals(skills, _skillsListingSource))
+            {
+                _skillsListingSource = skills;
+                _skillsListingRendered = SkillsListing.Render(skills);
+            }
+            skillsListing = _skillsListingRendered;
+        }
         return ContextBuilder.Assemble(new ContextAssemblyInput(
             CliPrefix: PromptTexts.CliPrefix,
             SystemStable: custom is { Length: > 0 } body ? "\n" + body.Trim() : _deps.Options.SystemPromptStable,
@@ -1921,7 +1998,9 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     // Stored history references media by artifact URI so sessions stay light in memory;
     // image payloads are hydrated per request, and models without image support get the
-    // adapter-level downgrade instead of a hydration skip.
+    // adapter-level downgrade instead of a hydration skip. Artifacts are content-addressed
+    // and never mutate, so decoded payloads are cached per URI for the session lifetime;
+    // a (mime, filename) mismatch recomputes to keep first-wins assembly behavior exact.
     private async Task<Dictionary<string, MediaPayload>?> LoadSessionMediaAsync(
         IReadOnlyList<ConversationMessage> history, CancellationToken cancellationToken)
     {
@@ -1957,11 +2036,21 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 return;
             }
+            if (_mediaPayloadCache.TryGetValue(uri, out var cached)
+                && cached.MimeType == mimeType
+                && cached.FileName == fileName)
+            {
+                media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
+                media[uri] = cached;
+                return;
+            }
             var bytes = await _deps.Artifacts.TryLoadAsync(uri, cancellationToken).ConfigureAwait(false);
             if (bytes is not { } data)
                 return;
+            var payload = new MediaPayload(mimeType, Convert.ToBase64String(data.Span), fileName);
+            _mediaPayloadCache[uri] = payload;
             media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
-            media[uri] = new MediaPayload(mimeType, Convert.ToBase64String(data.Span), fileName);
+            media[uri] = payload;
         }
     }
 
@@ -2011,8 +2100,30 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private (int Tokens, string Source) EstimateContextTokens(AssembledContext context, IReadOnlyList<ConversationMessage> history) =>
         _lastProviderUsage?.ContextUsageTokens is not null || _lastProviderUsage?.InputTokens is not null
-            ? TokenEstimator.EstimateCurrentInputTokens(history, _usageAnchorIndex, _lastProviderUsage)
+            ? TokenEstimator.EstimateCurrentInputTokens(history, _usageAnchorIndex, _lastProviderUsage, EstimateMessageTokensCached)
             : (context.EstimatedRequestTokens, TokenEstimator.EstimateSource);
+
+    // Committed messages are immutable, so per-message estimates are memoized by id and stay
+    // bit-identical to TokenEstimator's direct results.
+    private int EstimateMessageTokensCached(ConversationMessage message) =>
+        _messageTokenEstimates.GetOrAdd(message.Id, static (_, m) => TokenEstimator.EstimateMessageTokens(m), message);
+
+    private int EstimateHistoryTokensCached(IReadOnlyList<ConversationMessage> history)
+    {
+        var total = 0;
+        foreach (var message in history)
+        {
+            total += EstimateMessageTokensCached(message);
+        }
+        return total;
+    }
+
+    private void ResetHistoryDerivedCaches()
+    {
+        _mediaPayloadCache.Clear();
+        _messageTokenEstimates.Clear();
+        _reminderCountsCache = null;
+    }
 
     private async ValueTask PublishContextUsageAsync(
         AssembledContext context, int used, int max, string source, TokenUsage? usage = null)
@@ -2058,7 +2169,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private async Task EmitModelChangedAsync(ModelSelection selection)
     {
-        var descriptor = _deps.ResolveModel(selection).Descriptor;
+        var descriptor = (await _deps.ResolveModel(selection).ConfigureAwait(false)).Descriptor;
         var window = descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens;
         await EmitAsync(new SessionModelChangedEvent(selection, window), persist: true).ConfigureAwait(false);
     }
@@ -2161,7 +2272,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         if (_record.ModelSelection is { } selection)
         {
-            var descriptor = _deps.ResolveModel(selection).Descriptor;
+            var descriptor = (await _deps.ResolveModel(selection).ConfigureAwait(false)).Descriptor;
             var modelChanged = new SessionModelChangedEvent(
                 selection,
                 descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens);
@@ -2223,7 +2334,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             var resumedSelection = _record.ModelSelection ?? _deps.Options.DefaultModel;
             if (resumedSelection is not null)
             {
-                var resumedModel = _deps.ResolveModel(resumedSelection);
+                var resumedModel = await _deps.ResolveModel(resumedSelection).ConfigureAwait(false);
                 var descriptor = resumedModel.Descriptor;
                 _contextModelId = descriptor.FullId;
                 var resumed = await AssembleContextAsync(
@@ -2352,19 +2463,36 @@ public sealed class SessionRuntime : IAsyncDisposable
     // interrupted work; a synthesized result keeps provider replay free of dangling tool_use.
     private async Task RepairDanglingToolCallsAsync(IReadOnlyList<StoredMessage> messages)
     {
+        // Single right-to-left sweep: a call is dangling only when no result appears in a
+        // strictly later message, so a result seen before its call still counts as dangling.
+        List<ToolCallPart>?[] danglingByIndex = new List<ToolCallPart>[messages.Count];
+        HashSet<ToolCallId> laterResultIds = [];
+        for (var i = messages.Count - 1; i >= 0; i--)
+        {
+            foreach (var part in messages[i].Message.Parts)
+            {
+                if (part is ToolCallPart call && !laterResultIds.Contains(call.ToolCallId))
+                    (danglingByIndex[i] ??= []).Add(call);
+            }
+            foreach (var part in messages[i].Message.Parts)
+            {
+                if (part is ToolResultPart result)
+                    laterResultIds.Add(result.ToolCallId);
+            }
+        }
+
         List<ToolResultPart>? repairs = null;
         for (var i = 0; i < messages.Count; i++)
         {
-            foreach (var call in messages[i].Message.Parts.OfType<ToolCallPart>())
+            if (danglingByIndex[i] is not { } calls)
+                continue;
+            foreach (var call in calls)
             {
-                if (!HasLaterToolResult(messages, i + 1, call.ToolCallId))
-                {
-                    (repairs ??= []).Add(new ToolResultPart(
-                        StrongId.NewPartId(),
-                        call.ToolCallId,
-                        [new ToolResultText(InterruptedToolResultText)],
-                        IsError: false));
-                }
+                (repairs ??= []).Add(new ToolResultPart(
+                    StrongId.NewPartId(),
+                    call.ToolCallId,
+                    [new ToolResultText(InterruptedToolResultText)],
+                    IsError: false));
             }
         }
 
@@ -2382,19 +2510,6 @@ public sealed class SessionRuntime : IAsyncDisposable
         var sequence = await _deps.Store.GetNextMessageSequenceAsync(_record.Id, CancellationToken.None).ConfigureAwait(false);
         await _deps.Store.AppendMessagesAsync(_record.Id, [repairMessage], sequence, CancellationToken.None).ConfigureAwait(false);
         await EmitAsync(new UserMessageCommittedEvent(repairMessage), persist: true).ConfigureAwait(false);
-    }
-
-    private static bool HasLaterToolResult(IReadOnlyList<StoredMessage> messages, int fromIndex, ToolCallId toolCallId)
-    {
-        for (var i = fromIndex; i < messages.Count; i++)
-        {
-            foreach (var part in messages[i].Message.Parts)
-            {
-                if (part is ToolResultPart result && result.ToolCallId == toolCallId)
-                    return true;
-            }
-        }
-        return false;
     }
 
     public async ValueTask DisposeAsync()

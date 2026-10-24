@@ -30,6 +30,9 @@ public sealed class MessageHistory
     private readonly object _sync = new();
     private List<ConversationMessage> _messages = [];
     private readonly List<RecentFileRead> _recentReads = [];
+    // Handed to a single caller that mutates it only after the history write that nulled
+    // this field, so the same frozen copy can be returned between writes.
+    private List<ConversationMessage>? _frozenSnapshotList;
 
     public int Count { get { lock (_sync) return _messages.Count; } }
 
@@ -38,6 +41,7 @@ public sealed class MessageHistory
         lock (_sync)
         {
             _messages.Add(message);
+            _frozenSnapshotList = null;
         }
     }
 
@@ -46,6 +50,7 @@ public sealed class MessageHistory
         lock (_sync)
         {
             _messages.AddRange(messages);
+            _frozenSnapshotList = null;
         }
     }
 
@@ -61,7 +66,8 @@ public sealed class MessageHistory
     {
         lock (_sync)
         {
-            return [.. _messages];
+            _frozenSnapshotList ??= [.. _messages];
+            return _frozenSnapshotList;
         }
     }
 
@@ -70,6 +76,7 @@ public sealed class MessageHistory
         lock (_sync)
         {
             _messages = [.. messages];
+            _frozenSnapshotList = null;
         }
     }
 
@@ -81,6 +88,7 @@ public sealed class MessageHistory
             if (index >= 0)
             {
                 _messages.RemoveRange(index, _messages.Count - index);
+                _frozenSnapshotList = null;
             }
         }
     }

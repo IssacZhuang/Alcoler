@@ -116,14 +116,20 @@ public sealed class AskUserQuestionTool : ITool
         }
         """));
 
+    private static JsonElement? _runtimeInputSchemaCache;
+
     public JsonElement RuntimeInputSchema
     {
         get
         {
-            var schema = JsonNode.Parse(Contract.InputSchema.GetRawText())!;
-            schema["properties"]!["questions"]!["items"]!["required"] =
-                new JsonArray("question", "header", "options");
-            return JsonSerializer.SerializeToElement(schema);
+            if (_runtimeInputSchemaCache is null)
+            {
+                var schema = JsonNode.Parse(Contract.InputSchema.GetRawText())!;
+                schema["properties"]!["questions"]!["items"]!["required"] =
+                    new JsonArray("question", "header", "options");
+                _runtimeInputSchemaCache = JsonSerializer.SerializeToElement(schema);
+            }
+            return _runtimeInputSchemaCache.Value;
         }
     }
 

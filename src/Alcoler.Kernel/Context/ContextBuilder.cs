@@ -209,8 +209,7 @@ public static class ContextBuilder
             {
                 Role = MessageRole.User,
                 Parts = [new TextPart(message.Parts[0].Id, SystemReminder.Wrap(
-                    System.Text.RegularExpressions.Regex.Replace(ReminderBody(message), @"</?system-reminder\b", match => "&lt;" + match.Value[1..],
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase)))],
+                    SystemReminder.EscapeNestedTags(ReminderBody(message))))],
                 Source = MessageSource.LegacySynthetic,
                 Presentation = null,
             };
@@ -292,12 +291,22 @@ public static class ContextBuilder
 
     private static string ReminderBody(ConversationMessage message)
     {
-        var body = string.Join("\n", message.Parts.Select(part => part switch
+        var builder = new System.Text.StringBuilder();
+        var first = true;
+        foreach (var part in message.Parts)
         {
-            TextPart text => text.Text,
-            AttachmentPart attachment => attachment.Content,
-            _ => "",
-        }));
+            var text = part switch
+            {
+                TextPart textPart => textPart.Text,
+                AttachmentPart attachment => attachment.Content,
+                _ => "",
+            };
+            if (!first)
+                builder.Append('\n');
+            first = false;
+            builder.Append(text);
+        }
+        var body = builder.ToString();
         if (message.Presentation == MessagePresentation.UserSteer)
             body = Steering.FormatUserSteer(body);
         const string opening = "<system-reminder>\n";

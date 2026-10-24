@@ -9,7 +9,7 @@ namespace Alcoler.ViewModel;
 
 public sealed partial class ComposerViewModel : ObservableObject
 {
-    private static readonly ComposerPromptHistory SharedHistory = new();
+    private static readonly ComposerPromptHistory SharedHistory = new(backgroundSave: true);
     private bool _restoringMode;
     private readonly ComposerPromptHistory _history;
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<InputImageBlock, ComposerImageAttachment> _imageSnapshots = new();

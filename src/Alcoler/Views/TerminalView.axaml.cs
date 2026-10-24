@@ -29,6 +29,9 @@ public sealed class TerminalSurface : Control
     private IBrush? _cursorBrush;
     private bool _themeBrushesValid;
     private char[] _runBuffer = [];
+    private readonly Dictionary<int, RowRuns> _rowRuns = [];
+    private TerminalBuffer? _rowRunsBuffer;
+    private int _rowRunsRows = -1;
 
     static TerminalSurface() => FocusableProperty.OverrideDefaultValue<TerminalSurface>(true);
 
@@ -101,9 +104,11 @@ public sealed class TerminalSurface : Control
         {
             return;
         }
+        var themeChanged = !_themeBrushesValid;
+        var metricsChanged = !_metricsValid;
         GetMetrics(out var cellWidth, out var lineHeight);
         var typeface = CurrentTypeface();
-        if (!_themeBrushesValid)
+        if (themeChanged)
         {
             var defaultForeground = ResolveColor("AlcolerTerminalForeground", Color.FromRgb(0xD4, 0xD4, 0xD4));
             var accent = ResolveColor("AlcolerAccent", Color.FromRgb(0x4C, 0x8D, 0xFF));
@@ -113,47 +118,79 @@ public sealed class TerminalSurface : Control
         }
         var defaultBrush = _defaultForegroundBrush!;
         var cursorBrush = _cursorBrush!;
+        var buffer = Buffer;
 
-        for (var row = 0; row < Buffer.Rows; row++)
+        // Cached runs embed the theme-dependent default brush and the metrics, so
+        // any of those changing invalidates every row's cache entry.
+        if (themeChanged || metricsChanged || !ReferenceEquals(_rowRunsBuffer, buffer) || _rowRunsRows != buffer.Rows)
         {
-            var cells = Buffer.GetRow(row);
-            var runStart = 0;
-            TerminalColor? runColor = cells[0].Foreground;
-            for (var col = 1; col <= Buffer.Cols; col++)
+            _rowRuns.Clear();
+            _rowRunsBuffer = buffer;
+            _rowRunsRows = buffer.Rows;
+        }
+
+        for (var row = 0; row < buffer.Rows; row++)
+        {
+            if (!_rowRuns.TryGetValue(row, out var cache) || cache.Version != buffer.GetRowVersion(row))
             {
-                TerminalColor? color = col < Buffer.Cols ? cells[col].Foreground : null;
-                if (col < Buffer.Cols && cells[col].Foreground == runColor)
-                {
-                    continue;
-                }
-                if (runStart < col)
-                {
-                    var length = col - runStart;
-                    if (_runBuffer.Length < length)
-                        _runBuffer = new char[length];
-                    for (var index = 0; index < length; index++)
-                        _runBuffer[index] = cells[runStart + index].Char;
-                    var text = new string(_runBuffer, 0, length);
-                    var foreground = runColor is { } rgb ? BrushFor(rgb) : defaultBrush;
-                    var formatted = new FormattedText(
-                        text,
-                        CultureInfo.InvariantCulture,
-                        FlowDirection.LeftToRight,
-                        typeface,
-                        FontSize,
-                        foreground);
-                    context.DrawText(formatted, new Point(runStart * cellWidth, row * lineHeight));
-                }
-                runStart = col;
-                runColor = color;
+                cache = BuildRowRuns(row, buffer.GetRowVersion(row), buffer.GetRow(row), typeface, defaultBrush, cellWidth);
+                _rowRuns[row] = cache;
+            }
+            var y = row * lineHeight;
+            for (var run = 0; run < cache.Texts.Count; run++)
+            {
+                context.DrawText(cache.Texts[run], new Point(cache.Positions[run], y));
             }
         }
 
-        if (Buffer.CursorVisible)
+        if (buffer.CursorVisible)
         {
-            var cursor = new Rect(Buffer.CursorCol * cellWidth, Buffer.CursorRow * lineHeight, cellWidth, lineHeight);
+            var cursor = new Rect(buffer.CursorCol * cellWidth, buffer.CursorRow * lineHeight, cellWidth, lineHeight);
             context.FillRectangle(cursorBrush, cursor);
         }
+    }
+
+    private RowRuns BuildRowRuns(int row, int version, TerminalBuffer.Cell[] cells, Typeface typeface, IBrush defaultBrush, double cellWidth)
+    {
+        var cache = new RowRuns { Version = version };
+        var runStart = 0;
+        TerminalColor? runColor = cells[0].Foreground;
+        for (var col = 1; col <= cells.Length; col++)
+        {
+            TerminalColor? color = col < cells.Length ? cells[col].Foreground : null;
+            if (col < cells.Length && cells[col].Foreground == runColor)
+            {
+                continue;
+            }
+            if (runStart < col)
+            {
+                var length = col - runStart;
+                if (_runBuffer.Length < length)
+                    _runBuffer = new char[length];
+                for (var index = 0; index < length; index++)
+                    _runBuffer[index] = cells[runStart + index].Char;
+                var text = new string(_runBuffer, 0, length);
+                var foreground = runColor is { } rgb ? BrushFor(rgb) : defaultBrush;
+                cache.Texts.Add(new FormattedText(
+                    text,
+                    CultureInfo.InvariantCulture,
+                    FlowDirection.LeftToRight,
+                    typeface,
+                    FontSize,
+                    foreground));
+                cache.Positions.Add(runStart * cellWidth);
+            }
+            runStart = col;
+            runColor = color;
+        }
+        return cache;
+    }
+
+    private sealed class RowRuns
+    {
+        public int Version;
+        public readonly List<FormattedText> Texts = [];
+        public readonly List<double> Positions = [];
     }
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)

@@ -46,7 +46,7 @@ public class ChatGptAccountServiceTests : IDisposable
                 return RecordingHandler.Json("""{"models":[{"slug":"gpt-plan-a","visibility":"list"},{"slug":"gpt-hidden","visibility":"hidden"}]}""");
             throw new InvalidOperationException($"unexpected {url}");
         });
-        var transaction = service.StartSignIn();
+        var transaction = await service.StartSignInAsync();
         var query = ParseQuery(new Uri(transaction.AuthorizeUrl));
         Assert.Equal(DynamicClientId, query["client_id"]);
         Assert.Equal("Alcoler", query["agent_name_hint"]);
@@ -71,7 +71,7 @@ public class ChatGptAccountServiceTests : IDisposable
     public async Task SignIn_IgnoresUnmatchedStateAndServesDenied()
     {
         using var service = CreateService(_ => throw new InvalidOperationException("no network expected"));
-        var transaction = service.StartSignIn();
+        var transaction = await service.StartSignInAsync();
         var query = ParseQuery(new Uri(transaction.AuthorizeUrl));
         using var http = new HttpClient();
         await HitCallbackAsync(query["redirect_uri"], "code=x&state=wrong-state");
@@ -86,7 +86,7 @@ public class ChatGptAccountServiceTests : IDisposable
     public async Task SignIn_CancelSettlesAsCancelled()
     {
         using var service = CreateService(_ => throw new InvalidOperationException("no network expected"));
-        var transaction = service.StartSignIn();
+        var transaction = await service.StartSignInAsync();
         transaction.Cancel();
         var outcome = await transaction.Completion.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(ChatGptSignInFailure.Cancelled, outcome.Failure);
@@ -112,7 +112,7 @@ public class ChatGptAccountServiceTests : IDisposable
             if (url == Resource + "/models") return RecordingHandler.Json("""{"models":[{"slug":"gpt-plan-a","visibility":"list"}]}""");
             throw new InvalidOperationException($"unexpected {url}");
         });
-        var transaction = service.StartSignIn();
+        var transaction = await service.StartSignInAsync();
         var query = ParseQuery(new Uri(transaction.AuthorizeUrl));
         Assert.Equal("oaiapp_1", query["client_id"]);
         Assert.Equal("user@example.com", query["login_hint"]);

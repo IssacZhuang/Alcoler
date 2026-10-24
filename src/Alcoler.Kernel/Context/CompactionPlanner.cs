@@ -119,8 +119,7 @@ public static class CompactionPlanner
                 : $"Note: {file.Path} was read before the last conversation was summarized, but the contents are too large to include. Use Read tool if you need to access it.";
             messages.Add(new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
                 [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.ResumeReferencedContext,
-                    SystemReminder.Wrap(System.Text.RegularExpressions.Regex.Replace(content, @"</?system-reminder\b",
-                        match => "&lt;" + match.Value[1..], System.Text.RegularExpressions.RegexOptions.IgnoreCase)), ProviderVisible: true)],
+                    SystemReminder.Wrap(SystemReminder.EscapeNestedTags(content)), ProviderVisible: true)],
                 DateTimeOffset.UtcNow, Source: MessageSource.ResumeReferencedContext));
         }
         return messages;
@@ -145,11 +144,7 @@ public static class CompactionPlanner
             [new AttachmentPart(
                 StrongId.NewPartId(),
                 AttachmentKind.ResumeReferencedContext,
-                SystemReminder.Wrap(System.Text.RegularExpressions.Regex.Replace(
-                    content,
-                    @"</?system-reminder\b",
-                    match => "&lt;" + match.Value[1..],
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)),
+                SystemReminder.Wrap(SystemReminder.EscapeNestedTags(content)),
                 ProviderVisible: true)],
             DateTimeOffset.UtcNow,
             Source: MessageSource.ResumeReferencedContext);

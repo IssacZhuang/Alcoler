@@ -272,10 +272,13 @@ public sealed class WebViewBrowserController : IBrowserController
             await automation.InitializeAsync(ct).ConfigureAwait(false);
             var entry = new TabEntry(page, automation);
             EventHandler changed = (_, _) => Publish(sessionId, session);
+            EventHandler downloadsChanged = (_, _) => PublishDownloadsCoalesced(sessionId, session);
             EventHandler<BrowserProtocolEvent> protocol = (_, e) => OnProtocolEvent(sessionId, session, entry, e);
             entry.StateChanged = changed;
+            entry.DownloadsChanged = downloadsChanged;
             entry.ProtocolEvent = protocol;
             automation.StateChanged += changed;
+            automation.DownloadsChanged += downloadsChanged;
             page.ProtocolEvent += protocol;
             lock (_sync)
             {
@@ -391,6 +394,25 @@ public sealed class WebViewBrowserController : IBrowserController
         }
     }
 
+    // Download progress changes no published field, so its events coalesce into one trailing publish per burst; the staleness bound keeps UpdatedAt live during long downloads.
+    private static readonly TimeSpan DownloadsCoalesceInterval = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan DownloadsStalenessBound = TimeSpan.FromSeconds(1);
+
+    private void PublishDownloadsCoalesced(SessionId id, SessionEntry session)
+    {
+        lock (_sync)
+        {
+            if (_disposed) return;
+            var due = DateTimeOffset.UtcNow - session.Status.UpdatedAt >= DownloadsStalenessBound
+                ? TimeSpan.Zero
+                : DownloadsCoalesceInterval;
+            if (session.DownloadsTimer is null)
+                session.DownloadsTimer = new Timer(_ => Publish(id, session), null, due, Timeout.InfiniteTimeSpan);
+            else
+                session.DownloadsTimer.Change(due, Timeout.InfiniteTimeSpan);
+        }
+    }
+
     private void Publish(SessionId id, SessionEntry session)
     {
         BrowserSessionStatus status;
@@ -414,6 +436,8 @@ public sealed class WebViewBrowserController : IBrowserController
                 active?.Url, active?.Title, UpdatedAt: DateTimeOffset.UtcNow, Tabs: tabs,
                 ActiveTabId: session.ActiveTabId, IsUserControlled: session.UserControlled, Error: session.Error);
             session.Status = status;
+            // An immediate publish already reflects everything a pending progress debounce would publish.
+            session.DownloadsTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
         StatusChanged?.Invoke(this, new(id, status));
     }
@@ -460,6 +484,7 @@ public sealed class WebViewBrowserController : IBrowserController
     private static void Detach(TabEntry entry)
     {
         entry.Automation.StateChanged -= entry.StateChanged;
+        entry.Automation.DownloadsChanged -= entry.DownloadsChanged;
         entry.Page.ProtocolEvent -= entry.ProtocolEvent;
         entry.Automation.Dispose();
     }
@@ -467,6 +492,7 @@ public sealed class WebViewBrowserController : IBrowserController
     public void Dispose()
     {
         TabEntry[] tabs;
+        Timer?[] timers;
         lock (_sync)
         {
             if (_disposed) return;
@@ -474,9 +500,11 @@ public sealed class WebViewBrowserController : IBrowserController
             _shutdown.Cancel();
             foreach (var session in _sessions.Values) session.Inflight?.Cancel();
             tabs = _sessions.Values.SelectMany(session => session.Tabs.Values).ToArray();
+            timers = _sessions.Values.Select(session => session.DownloadsTimer).Where(timer => timer is not null).ToArray();
             _sessions.Clear();
             _reservedTabs = 0;
         }
+        foreach (var timer in timers) timer!.Dispose();
         foreach (var tab in tabs) Detach(tab);
         _host.Dispose();
     }
@@ -496,6 +524,7 @@ public sealed class WebViewBrowserController : IBrowserController
         public bool Busy { get; set; }
         public string? Error { get; set; }
         public CancellationTokenSource? Inflight { get; set; }
+        public Timer? DownloadsTimer { get; set; }
         public BrowserSessionStatus Status { get; set; } = new(BrowserSessionState.Idle);
     }
 
@@ -506,6 +535,7 @@ public sealed class WebViewBrowserController : IBrowserController
         public bool Keep { get; set; }
         public bool Loading { get; set; }
         public EventHandler? StateChanged { get; set; }
+        public EventHandler? DownloadsChanged { get; set; }
         public EventHandler<BrowserProtocolEvent>? ProtocolEvent { get; set; }
     }
 }

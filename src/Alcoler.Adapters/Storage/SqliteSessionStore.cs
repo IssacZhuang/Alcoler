@@ -496,11 +496,13 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 """;
             command.Parameters.AddWithValue("$session_id", sessionId.Value);
             using var reader = command.ExecuteReader();
+            var sequenceOrdinal = reader.GetOrdinal("sequence");
+            var payloadOrdinal = reader.GetOrdinal("payload_json");
             var messages = new List<StoredMessage>();
             while (reader.Read())
             {
-                var sequence = reader.GetInt64(reader.GetOrdinal("sequence"));
-                var payload = reader.GetString(reader.GetOrdinal("payload_json"));
+                var sequence = reader.GetInt64(sequenceOrdinal);
+                var payload = reader.GetString(payloadOrdinal);
                 var message = AlcolerJson.Deserialize<ConversationMessage>(payload)
                     ?? throw new InvalidOperationException($"Corrupt message payload at sequence {sequence}.");
                 messages.Add(new StoredMessage(sequence, message));
@@ -555,12 +557,15 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
                 """;
             command.Parameters.AddWithValue("$session_id", sessionId.Value);
             using var reader = command.ExecuteReader();
+            var sequenceOrdinal = reader.GetOrdinal("sequence");
+            var occurredOrdinal = reader.GetOrdinal("occurred_at");
+            var payloadOrdinal = reader.GetOrdinal("payload_json");
             var events = new List<SequencedEvent>();
             while (reader.Read())
             {
-                var sequence = reader.GetInt64(reader.GetOrdinal("sequence"));
-                var occurredAt = ParseUtcIso(reader.GetString(reader.GetOrdinal("occurred_at")));
-                var payload = reader.GetString(reader.GetOrdinal("payload_json"));
+                var sequence = reader.GetInt64(sequenceOrdinal);
+                var occurredAt = ParseUtcIso(reader.GetString(occurredOrdinal));
+                var payload = reader.GetString(payloadOrdinal);
                 var sessionEvent = AlcolerJson.Deserialize<SessionEvent>(payload)
                     ?? throw new InvalidOperationException($"Corrupt durable event payload at sequence {sequence}.");
                 events.Add(new SequencedEvent(sequence, sessionId, occurredAt, sessionEvent));
@@ -1025,6 +1030,8 @@ public sealed class SqliteSessionStore : ISessionStore, IAsyncDisposable, IDispo
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // The work must stay inline on the caller's context: offloading it to the thread pool
+            // widens the turn-start window that phase-polling end-to-end tests race against.
             return operation(connection);
         }
         finally

@@ -120,7 +120,7 @@ public sealed class ChatGptAccountService : IDisposable
         _time = timeProvider ?? TimeProvider.System;
     }
 
-    public ChatGptSignInTransaction StartSignIn()
+    public async Task<ChatGptSignInTransaction> StartSignInAsync()
     {
         ChatGptSignInTransaction? previous;
         lock (_gate)
@@ -134,7 +134,7 @@ public sealed class ChatGptAccountService : IDisposable
         var pkce = SiwcProtocol.CreatePkce();
         var state = SiwcProtocol.CreateState();
         var nonce = SiwcProtocol.CreateNonce();
-        var listener = LoopbackCallbackListener.StartAsync(SiwcProtocol.CallbackPath, state, CancellationToken.None).GetAwaiter().GetResult();
+        var listener = await LoopbackCallbackListener.StartAsync(SiwcProtocol.CallbackPath, state, CancellationToken.None);
         var authorizeUrl = SiwcProtocol.BuildAuthorizeUrl(new SiwcAuthorizeInput(
             listener.CallbackUrl, hostId, nonce, pkce, state,
             saved?.IssuedClientId,

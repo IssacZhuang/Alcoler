@@ -15,7 +15,7 @@ public sealed class ProjectionBuilder
     private readonly object _sync = new();
     private readonly List<ConversationRow> _rows = [];
     private readonly Dictionary<string, int> _rowIndex = [];
-    private readonly Dictionary<string, StringBuilder> _streamingText = [];
+    private readonly Dictionary<string, (string RowId, StringBuilder Text)> _streamingText = [];
     private ConversationState _state = ConversationState.Initial(string.Empty, PermissionMode.Build, null, 200_000);
     private readonly List<QueuedInput> _queue = [];
     private IReadOnlyList<QueuedInput> _queueSnapshot = Array.Empty<QueuedInput>();
@@ -313,15 +313,15 @@ public sealed class ProjectionBuilder
 
                 case ModelStreamingTextEvent streaming:
                     {
-                        var rowId = $"stream:{streaming.TurnId.Value}";
-                        if (!_streamingText.TryGetValue(rowId, out var accumulated))
+                        if (!_streamingText.TryGetValue(streaming.TurnId.Value, out var entry))
                         {
-                            accumulated = new StringBuilder();
-                            _streamingText[rowId] = accumulated;
+                            entry = ($"stream:{streaming.TurnId.Value}", new StringBuilder());
+                            _streamingText[streaming.TurnId.Value] = entry;
                         }
+                        var accumulated = entry.Text;
                         accumulated.Append(streaming.Delta);
                         Upsert(new AssistantMessageRow(
-                            rowId,
+                            entry.RowId,
                             Id: default,
                             [new TextPart(default, accumulated.ToString())],
                             IsStreaming: true,
@@ -463,11 +463,14 @@ public sealed class ProjectionBuilder
 
     private void ApplyAssistantMessage(ConversationMessage message, List<RowOp> ops)
     {
-        var streamingRowId = _state.ActiveTurn is { } turn ? $"stream:{turn.Value}" : null;
-        if (streamingRowId is not null && _rowIndex.ContainsKey(streamingRowId))
+        if (_state.ActiveTurn is { } turn)
         {
-            Remove(streamingRowId, ops);
-            _streamingText.Remove(streamingRowId);
+            var streamingRowId = $"stream:{turn.Value}";
+            if (_rowIndex.ContainsKey(streamingRowId))
+            {
+                Remove(streamingRowId, ops);
+                _streamingText.Remove(turn.Value);
+            }
         }
 
         Append(new AssistantMessageRow(

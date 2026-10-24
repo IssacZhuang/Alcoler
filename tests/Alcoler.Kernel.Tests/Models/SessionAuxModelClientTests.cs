@@ -19,7 +19,7 @@ public sealed class SessionAuxModelClientTests
         var client = new SessionAuxModelClient(
             () => new ModelSelection("test", "model",
                 new ModelCallOptions(ReasoningLevel: "high", MaxOutputTokens: 1_234)),
-            _ => model);
+            _ => Task.FromResult<IChatModel>(model));
 
         var response = await client.SearchAsync(
             new ProviderWebSearchRequest("dotnet", ["example.com"], ["blocked.example"]),
@@ -53,10 +53,10 @@ public sealed class SessionAuxModelClientTests
     {
         var native = new SessionAuxModelClient(
             () => new ModelSelection("test", "model"),
-            _ => new RecordingChatModel(new ModelProperties(SupportsNativeWebSearch: true)));
+            _ => Task.FromResult<IChatModel>(new RecordingChatModel(new ModelProperties(SupportsNativeWebSearch: true))));
         var plain = new SessionAuxModelClient(
             () => new ModelSelection("test", "model"),
-            _ => new RecordingChatModel(new ModelProperties()));
+            _ => Task.FromResult<IChatModel>(new RecordingChatModel(new ModelProperties())));
 
         Assert.True(native.IsAvailable);
         Assert.False(plain.IsAvailable);
@@ -67,7 +67,7 @@ public sealed class SessionAuxModelClientTests
     {
         var client = new SessionAuxModelClient(
             () => new ModelSelection("test", "model"),
-            _ => new RecordingChatModel(new ModelProperties()));
+            _ => Task.FromResult<IChatModel>(new RecordingChatModel(new ModelProperties())));
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             client.SearchAsync(new ProviderWebSearchRequest("x", [], []), CancellationToken.None).AsTask());

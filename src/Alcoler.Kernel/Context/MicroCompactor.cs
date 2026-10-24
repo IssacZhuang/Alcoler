@@ -48,7 +48,7 @@ public static class MicroCompactor
         var kept = 0;
         for (var i = groups.Count - 1; i >= 0 && kept < CompactPolicy.MicroCompactKeepRecentGroups; i--)
         {
-            if (groups[i].Any(message => message.Parts.OfType<ToolResultPart>().Any(part => IsClearable(part, toolNames))))
+            if (GroupHasClearableResult(groups[i], toolNames))
             {
                 protectedGroups.Add(i);
                 kept++;
@@ -91,6 +91,19 @@ public static class MicroCompactor
             return new MicrocompactResult(messages, [], 0);
 
         return new MicrocompactResult(result, clearedParts, savedTokens);
+    }
+
+    private static bool GroupHasClearableResult(List<ConversationMessage> group, Dictionary<ToolCallId, string> toolNames)
+    {
+        foreach (var message in group)
+        {
+            foreach (var part in message.Parts)
+            {
+                if (part is ToolResultPart toolResult && IsClearable(toolResult, toolNames))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static bool IsClearable(ToolResultPart part, Dictionary<ToolCallId, string> toolNames) =>

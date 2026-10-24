@@ -34,6 +34,9 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     // Workflows requested by a parsed "/orchestrator <prompt>" command, consumed by the send below.
     private IReadOnlyList<string>? _pendingWorkflows;
     private readonly Dictionary<string, TimelineItemViewModel> _itemsByRowId = [];
+    // Mirrors the exact instance membership of Items so hot reconcile paths can
+    // answer Contains without scanning the collection.
+    private readonly HashSet<TimelineItemViewModel> _itemsInCollection = [];
     private readonly Dictionary<string, SystemNoticeRow> _agentRows = [];
     private readonly List<string> _rowOrder = [];
     private readonly Dictionary<string, int> _rowOrderIndex = new(StringComparer.Ordinal);
@@ -258,6 +261,13 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             {
                 continue;
             }
+            // Past the end every earlier position already matched, so the item is
+            // new; the row-order map confirms it belongs exactly here.
+            if (index == Items.Count && _rowOrderIndex.GetValueOrDefault(item.RowId, -1) == index)
+            {
+                Items.Add(item);
+                continue;
+            }
             var oldIndex = Items.IndexOf(item);
             if (oldIndex >= 0)
             {
@@ -268,6 +278,9 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 Items.Insert(index, item);
             }
         }
+        _itemsInCollection.Clear();
+        foreach (var item in items)
+            _itemsInCollection.Add(item);
         ReconcileAgents();
     }
 
@@ -309,15 +322,17 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
         for (var index = Items.Count - 1; index >= 0; index--)
         {
-            if (_pairedAgentRows.Contains(Items[index].RowId))
-                Items.RemoveAt(index);
+            if (!_pairedAgentRows.Contains(Items[index].RowId))
+                continue;
+            _itemsInCollection.Remove(Items[index]);
+            Items.RemoveAt(index);
         }
         foreach (var row in _agentRows.Values)
         {
             if (_pairedAgentRows.Contains(row.RowId))
                 continue;
             var item = _itemsByRowId[row.RowId];
-            if (Items.Contains(item))
+            if (_itemsInCollection.Contains(item))
                 continue;
             var rowIndex = _rowOrderIndex.GetValueOrDefault(row.RowId, -1);
             var index = 0;
@@ -327,6 +342,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 index++;
             }
             Items.Insert(index, item);
+            _itemsInCollection.Add(item);
         }
     }
 
@@ -379,6 +395,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             case RowAppended appended when TimelineItemFactory.Create(appended.Row) is { } item:
                 _itemsByRowId[item.RowId] = item;
                 Items.Add(item);
+                _itemsInCollection.Add(item);
                 return true;
 
             case RowUpserted upserted:
@@ -394,9 +411,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                     if (index >= 0)
                     {
                         Items[index] = replacement;
+                        _itemsInCollection.Remove(existing!);
+                        _itemsInCollection.Add(replacement);
                         return false;
                     }
                     Items.Add(replacement);
+                    _itemsInCollection.Add(replacement);
                     return true;
                 }
                 return false;
@@ -412,6 +432,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 if (_itemsByRowId.Remove(removed.RowId, out var removedItem))
                 {
                     Items.Remove(removedItem);
+                    _itemsInCollection.Remove(removedItem);
                 }
                 return false;
 

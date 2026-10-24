@@ -62,7 +62,8 @@ public static class AlcolerJson
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             TypeInfoResolver = AlcolerJsonContext.Default,
         };
-        options.Converters.Add(new JsonStringEnumConverter());
+        // Enum-as-string handling comes from the source generator's
+        // UseStringEnumConverter; adding a runtime converter here would shadow it.
         options.Converters.Add(new StrongIdJsonConverterFactory());
         return options;
     }

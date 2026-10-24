@@ -33,11 +33,30 @@ public sealed class ToolRegistry
             .Select(static tool => tool.Contract)
             .ToArray();
 
-    public IReadOnlyList<ToolContract> VisibleContractsFor(ModelProperties? properties) =>
-        Tools.Where(static tool => tool.Metadata.ProviderVisible)
+    private ModelProperties? _cachedContractsProperties;
+    private IReadOnlyList<ToolContract>? _cachedContractsFor;
+
+    // The tool set is fixed at construction; the properties instance comes from cached model
+    // descriptors, so reference identity is a sufficient cache key.
+    public IReadOnlyList<ToolContract> VisibleContractsFor(ModelProperties? properties)
+    {
+        if (properties is not null
+            && ReferenceEquals(properties, Volatile.Read(ref _cachedContractsProperties))
+            && Volatile.Read(ref _cachedContractsFor) is { } cached)
+        {
+            return cached;
+        }
+        var contracts = Tools.Where(static tool => tool.Metadata.ProviderVisible)
             .Where(tool => properties is null || tool is not IModelGatedTool gated || gated.IsAvailable(properties))
             .Select(static tool => tool.Contract)
             .ToArray();
+        if (properties is not null)
+        {
+            Volatile.Write(ref _cachedContractsFor, contracts);
+            Volatile.Write(ref _cachedContractsProperties, properties);
+        }
+        return contracts;
+    }
 
     public ITool? TryFind(string name) =>
         _toolsByName.TryGetValue(CanonicalKey(name), out var tool) ? tool : null;

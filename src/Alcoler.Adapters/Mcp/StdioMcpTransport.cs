@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
@@ -46,7 +47,8 @@ internal sealed class StdioMcpTransport : IMcpTransport
         // MCP stdio requires UTF-8 without BOM; Process's own StandardInput encoding is not configurable.
         _stdin = new StreamWriter(
             _process.StandardInput.BaseStream,
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 4096);
         _stderrPump = Task.Run(PumpStandardErrorAsync);
     }
 
@@ -54,11 +56,48 @@ internal sealed class StdioMcpTransport : IMcpTransport
     {
         if (Volatile.Read(ref _disposed) == 1)
             throw new ObjectDisposedException(nameof(StdioMcpTransport));
+        var line = ArrayPool<char>.Shared.Rent(message.Length + 1);
         try
         {
-            await _stdin.WriteAsync(message.AsMemory(), cancellationToken).ConfigureAwait(false);
-            await _stdin.WriteAsync("\n".AsMemory(), cancellationToken).ConfigureAwait(false);
+            message.CopyTo(line);
+            line[message.Length] = '\n';
+            try
+            {
+                await _stdin.WriteAsync(line.AsMemory(0, message.Length + 1), cancellationToken).ConfigureAwait(false);
+                await _stdin.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+            {
+                throw new IOException($"MCP server '{_serverName}' is no longer accepting input: {ex.Message}", ex);
+            }
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(line);
+        }
+    }
+
+    public async Task SendAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _disposed) == 1)
+            throw new ObjectDisposedException(nameof(StdioMcpTransport));
+        try
+        {
+            // BaseStream writes must stay ordered behind anything the StreamWriter still buffers.
             await _stdin.FlushAsync(cancellationToken).ConfigureAwait(false);
+            var line = ArrayPool<byte>.Shared.Rent(payload.Length + 1);
+            try
+            {
+                payload.Span.CopyTo(line);
+                line[payload.Length] = (byte)'\n';
+                var stream = _stdin.BaseStream;
+                await stream.WriteAsync(line.AsMemory(0, payload.Length + 1), cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(line);
+            }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {

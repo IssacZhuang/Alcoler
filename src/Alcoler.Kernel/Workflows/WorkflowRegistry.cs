@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace Alcoler.Kernel.Workflows;
 
 /// <summary>
@@ -40,7 +42,12 @@ public sealed class WorkflowRegistry
     // Marker line prefixed to cadence reminders so history scans can attribute a reminder
     // to its workflow regardless of the definition's wording. Exit reminders omit it: an
     // exit marker would otherwise suppress the first cadence attachment on re-activation.
-    public static string ReminderMarker(string id) => $"<workflow:{id}>";
+    // Called per attachment part per workflow during history scans; markers are tiny and
+    // stable per id, so they are memoized instead of re-interpolated.
+    private static readonly ConcurrentDictionary<string, string> MarkerCache = new(StringComparer.Ordinal);
+
+    public static string ReminderMarker(string id) =>
+        MarkerCache.GetOrAdd(id, static value => $"<workflow:{value}>");
 
     public static bool IsReminderFor(string text, string id) =>
         text.Contains(ReminderMarker(id), StringComparison.Ordinal);

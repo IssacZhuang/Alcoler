@@ -15,13 +15,27 @@ public sealed class ComposerPromptHistory
     private readonly object _gate = new();
     private readonly Dictionary<string, List<string>> _entries = new(WorkspaceComparer);
     private readonly Dictionary<string, string[]> _snapshots = new(WorkspaceComparer);
+    private readonly bool _backgroundSave;
+    private bool _saveQueued;
 
     public static string DefaultPath => Path.Combine(WorkbenchDataPaths.Root, "prompt-history.json");
 
-    public ComposerPromptHistory(string? path = null)
+    public ComposerPromptHistory(string? path = null, bool backgroundSave = false)
     {
         _path = Path.GetFullPath(path ?? DefaultPath);
+        _backgroundSave = backgroundSave;
         Load();
+        if (backgroundSave)
+        {
+            // One writer thread keeps saves serialized and off the UI thread; the
+            // gate is only ever held for the in-memory snapshot, never for I/O.
+            var worker = new Thread(SaveWorkerLoop)
+            {
+                IsBackground = true,
+                Name = "Alcoler prompt history save",
+            };
+            worker.Start();
+        }
     }
 
     public IReadOnlyList<string> GetEntries(string workspaceRoot)
@@ -61,7 +75,15 @@ public sealed class ComposerPromptHistory
                 return;
             }
             _snapshots.Remove(key);
-            Save();
+            if (_backgroundSave)
+            {
+                _saveQueued = true;
+                Monitor.Pulse(_gate);
+            }
+            else
+            {
+                Save();
+            }
         }
     }
 
@@ -135,7 +157,29 @@ public sealed class ComposerPromptHistory
         }
     }
 
+    private void SaveWorkerLoop()
+    {
+        while (true)
+        {
+            Dictionary<string, string[]> stored;
+            lock (_gate)
+            {
+                while (!_saveQueued)
+                    Monitor.Wait(_gate);
+                _saveQueued = false;
+                stored = _entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), WorkspaceComparer);
+            }
+            WriteStored(stored);
+        }
+    }
+
     private void Save()
+    {
+        var stored = _entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), WorkspaceComparer);
+        WriteStored(stored);
+    }
+
+    private void WriteStored(Dictionary<string, string[]> stored)
     {
         string? tempPath = null;
         try
@@ -143,7 +187,6 @@ public sealed class ComposerPromptHistory
             var directory = Path.GetDirectoryName(_path)!;
             Directory.CreateDirectory(directory);
             tempPath = Path.Combine(directory, Path.GetRandomFileName());
-            var stored = _entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), WorkspaceComparer);
             File.WriteAllText(tempPath, JsonSerializer.Serialize(stored, ComposerPromptHistoryJsonContext.Default.DictionaryStringStringArray));
             File.Move(tempPath, _path, overwrite: true);
         }

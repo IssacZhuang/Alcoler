@@ -12,10 +12,17 @@ public sealed class LiveConversationProjection : IConversationProjection
     private readonly Task _pump;
     private readonly Func<long> _revisionSource;
     private readonly object _waitLock = new();
-    private readonly List<(long Sequence, TaskCompletionSource Completion)> _waiters = [];
+    private readonly List<Waiter> _waiters = [];
     private long _appliedSequence;
     private long _lastSequence;
     private bool _disposed;
+
+    private sealed class Waiter(long sequence)
+    {
+        public long Sequence { get; } = sequence;
+        public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationTokenRegistration Registration { get; set; }
+    }
 
     public LiveConversationProjection(SessionEventStore store, long fromSequence, Func<long> revisionSource)
     {
@@ -58,20 +65,23 @@ public sealed class LiveConversationProjection : IConversationProjection
             {
                 return Task.CompletedTask;
             }
-            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _waiters.Add((sequence, completion));
+            var waiter = new Waiter(sequence);
+            _waiters.Add(waiter);
             if (cancellationToken.CanBeCanceled)
             {
-                cancellationToken.Register(() =>
+                waiter.Registration = cancellationToken.Register(() =>
                 {
+                    // Dispose runs after TrySetCanceled; disposing under _waitLock could
+                    // deadlock if the registration's callback is blocked on that lock.
+                    waiter.Registration.Dispose();
                     lock (_waitLock)
                     {
-                        _waiters.Remove((sequence, completion));
+                        _waiters.Remove(waiter);
                     }
-                    completion.TrySetCanceled(cancellationToken);
+                    waiter.Completion.TrySetCanceled(cancellationToken);
                 });
             }
-            return completion.Task;
+            return waiter.Completion.Task;
         }
     }
 
@@ -117,6 +127,7 @@ public sealed class LiveConversationProjection : IConversationProjection
         var ops = _builder.Apply(sequenced);
         // Advance only after the builder applied the event, so a completed wait always
         // observes the event's effect in the next Snapshot.
+        List<Waiter>? completed = null;
         lock (_waitLock)
         {
             if (sequenced.Sequence > _appliedSequence)
@@ -124,12 +135,24 @@ public sealed class LiveConversationProjection : IConversationProjection
                 _appliedSequence = sequenced.Sequence;
                 for (var index = _waiters.Count - 1; index >= 0; index--)
                 {
-                    if (_waiters[index].Sequence <= sequenced.Sequence)
+                    var waiter = _waiters[index];
+                    if (waiter.Sequence <= sequenced.Sequence)
                     {
-                        _waiters[index].Completion.TrySetResult();
+                        completed ??= [];
+                        completed.Add(waiter);
                         _waiters.RemoveAt(index);
                     }
                 }
+            }
+        }
+        if (completed is not null)
+        {
+            // Disposed outside _waitLock: a cancel callback blocked on that lock could
+            // otherwise stall Dispose, which waits on in-flight callbacks.
+            foreach (var waiter in completed)
+            {
+                waiter.Registration.Dispose();
+                waiter.Completion.TrySetResult();
             }
         }
         return ops;

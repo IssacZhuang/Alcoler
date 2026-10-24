@@ -209,10 +209,29 @@ public sealed partial class CdpBrowserAutomation
     private async Task<bool> FrameHitTestAsync(string frameId, Point point, CancellationToken ct)
     {
         if (frameId == _mainFrame) return true;
-        foreach (var (frame, owner) in await FrameAncestorsAsync(frameId, ct))
+        var ancestors = await FrameAncestorsAsync(frameId, ct);
+        // Parent-chain offsets accumulate outer-to-inner in one pass; per-ancestor FrameOffsetAsync calls re-walk the chain (O(N^2) round trips).
+        var offsets = new Dictionary<string, Point> { [_mainFrame!] = new(0, 0) };
+        for (var level = ancestors.Count - 1; level >= 1; level--)
+        {
+            var (frame, owner) = ancestors[level];
+            var context = await ContextAsync(owner.ParentId, ct);
+            var backendId = owner.BackendId ?? (await SendAsync("DOM.getFrameOwner", D("frameId", frame), ct, context.Session)).GetProperty("backendNodeId").GetInt32();
+            var resolved = await SendAsync("DOM.resolveNode", D("backendNodeId", backendId, "executionContextId", context.Id), ct, context.Session);
+            var objectId = RequiredString(resolved.GetProperty("object"), "objectId");
+            try
+            {
+                var box = RemoteValue(await CallObjectAsync(context, objectId, FrameOffsetFunction, [], ct, true));
+                ValidateFrameTranslation(box);
+                var parentOffset = offsets[owner.ParentId];
+                offsets[frame] = new(parentOffset.X + Number(box, "x"), parentOffset.Y + Number(box, "y"));
+            }
+            finally { await ReleaseAsync(objectId, context.Session, ct); }
+        }
+        foreach (var (frame, owner) in ancestors)
         {
             var context = await ContextAsync(owner.ParentId, ct);
-            var offset = await FrameOffsetAsync(owner.ParentId, ct);
+            var offset = offsets[owner.ParentId];
             var backendId = owner.BackendId ?? (await SendAsync("DOM.getFrameOwner", D("frameId", frame), ct, context.Session)).GetProperty("backendNodeId").GetInt32();
             var resolved = await SendAsync("DOM.resolveNode", D("backendNodeId", backendId, "executionContextId", context.Id), ct, context.Session);
             var objectId = RequiredString(resolved.GetProperty("object"), "objectId");

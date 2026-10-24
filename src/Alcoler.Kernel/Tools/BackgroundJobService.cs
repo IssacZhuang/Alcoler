@@ -91,6 +91,8 @@ public sealed class BackgroundJobService : IBackgroundJobService
             ExitCode = result.ExitCode,
             Error = result.Error,
         };
+        // Latest is terminal before the signal fires, so a woken waiter always observes it.
+        entry.Completion.TrySetResult();
         try
         {
             await _onCompleted(entry.Latest).ConfigureAwait(false);
@@ -101,10 +103,17 @@ public sealed class BackgroundJobService : IBackgroundJobService
         }
     }
 
+    // TaskOutputTool's blocking read awaits this instead of polling; jobs are never removed,
+    // so the task exists for as long as Find can still see the job.
+    internal Task? TryGetCompletion(BackgroundJobId id) =>
+        _jobs.TryGetValue(id, out var entry) ? entry.Completion.Task : null;
+
     private sealed class JobEntry(CancellationTokenSource cts, BackgroundJobInfo initial)
     {
         public CancellationTokenSource Cts { get; } = cts;
 
         public BackgroundJobInfo Latest { get; set; } = initial;
+
+        public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

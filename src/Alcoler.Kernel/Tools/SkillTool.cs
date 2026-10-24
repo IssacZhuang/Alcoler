@@ -141,8 +141,9 @@ public sealed class SkillTool : ITool
 
     internal static string Render(SkillDocument document)
     {
-        var truncated = document.Truncated || Encoding.UTF8.GetByteCount(document.Content) > MaxSkillBytes;
-        var content = Encoding.UTF8.GetByteCount(document.Content) > MaxSkillBytes
+        var contentBytes = Encoding.UTF8.GetByteCount(document.Content);
+        var truncated = document.Truncated || contentBytes > MaxSkillBytes;
+        var content = contentBytes > MaxSkillBytes
             ? Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(document.Content).AsSpan(0, MaxSkillBytes))
             : document.Content;
         content = Regex.Replace(content, @"\$\{(?:CLAUDE_SKILL_DIR|ZCODE_SKILL_DIR)\}", _ => document.BaseDirectory);

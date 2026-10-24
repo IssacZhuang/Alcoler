@@ -363,7 +363,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         BrowserPane?.Dispose();
         if (_ownedResource is not null)
         {
-            _ownedResource.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            // Shutdown-time async disposal can marshal through the UI thread it is
+            // blocking, so it runs on the pool with a bounded wait instead.
+            Task.Run(() => _ownedResource.DisposeAsync().AsTask()).Wait(TimeSpan.FromSeconds(30));
         }
     }
 

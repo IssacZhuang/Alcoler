@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
@@ -19,9 +20,11 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     private readonly ConcurrentDictionary<string, string> _frameSessions = new();
     private readonly ConcurrentDictionary<string, FrameOwner> _frameOwners = new();
     private readonly ConcurrentDictionary<string, ElementReference> _references = new();
-    private readonly ConcurrentDictionary<string, JsonObject> _downloads = new();
+    private readonly Dictionary<string, JsonObject> _downloads = new();
+    private readonly Queue<string> _downloadOrder = new();
     private readonly Lock _downloadsLock = new();
     private readonly ConcurrentDictionary<string, string> _loadStates = new();
+    private TaskCompletionSource _documentChanged = NewDocumentSignal();
     private JsonElement? _dialog;
     private string? _mainFrame;
     private int _generation;
@@ -43,6 +46,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     public string? Url { get; private set; }
     public string? Title { get; private set; }
     public event EventHandler? StateChanged;
+    public event EventHandler? DownloadsChanged;
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -158,7 +162,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 await SendAsync("Emulation.setDeviceMetricsOverride", D(("width", _viewportWidth), ("height", _viewportHeight), ("deviceScaleFactor", 1), ("mobile", false)), ct);
                 return new(true);
             case "dialog": return await DialogAsync(input, ct);
-            case "downloads": return Structured(DownloadsElement());
+            case "downloads": return Structured(DownloadsJson());
             case "download_media": return await DownloadMediaAsync(input, ct);
             case "record_start": case "record_status": case "record_cancel": case "record_stop": return await RecordingAsync(command, input, ct);
             default: throw new NotSupportedException($"Unsupported browser page action '{command}'.");
@@ -212,11 +216,25 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         if (state is not ("load" or "domcontentloaded" or "commit")) throw new ArgumentException("Invalid page load state.");
     }
 
+    private static TaskCompletionSource NewDocumentSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private void SignalDocumentChanged()
+    {
+        var pending = _documentChanged;
+        _documentChanged = NewDocumentSignal();
+        pending.TrySetResult();
+    }
+
+    // Load/locator predicates can change without any consumed protocol event, so the poll stays as the fallback bound.
+    private static Task NextChangeAsync(Task changed, int pollMs, CancellationToken ct) =>
+        Task.WhenAny(changed, Task.Delay(pollMs, ct));
+
     private async Task WaitLoadAsync(string? frameId, string state, CancellationToken ct)
     {
         while (true)
         {
             ct.ThrowIfCancellationRequested();
+            var changed = _documentChanged.Task;
             if (frameId is not null && _loadStates.TryGetValue(frameId, out var loaded) && (loaded == "load" || loaded == state)) return;
             try
             {
@@ -225,7 +243,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 if (ready.ValueKind == JsonValueKind.String && (ready.GetString() == "complete" || state == "domcontentloaded" && ready.GetString() == "interactive")) return;
             }
             catch (Exception ex) when (ex is not OperationCanceledException && IsContextLost(ex)) { _contexts.Clear(); }
-            await Task.Delay(50, ct);
+            await NextChangeAsync(changed, 50, ct);
         }
     }
 
@@ -240,9 +258,13 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             return new(true);
         }
         if (String(input, "url") is null && state is not ("attached" or "detached" or "visible" or "hidden")) throw new ArgumentException("Invalid locator wait state.");
+        // Ref targets must re-bind every pass so stale references still throw mid-wait; other locator specs are constant.
+        var constantLocator = GetReference(input) is null;
+        string? locator = null;
         while (true)
         {
             ct.ThrowIfCancellationRequested();
+            var changed = _documentChanged.Task;
             if (String(input, "url") is { } target)
             {
                 await UpdateMetadataAsync(ct);
@@ -253,7 +275,8 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 try
                 {
                     var context = await ContextForInputAsync(input, ct);
-                    var locator = await RuntimeLocatorAsync(input, context, ct);
+                    if (constantLocator) locator ??= await RuntimeLocatorAsync(input, context, ct);
+                    else locator = await RuntimeLocatorAsync(input, context, ct);
                     var value = RemoteValue(await CallAsync(context, WaitForCheckFunction, [D("value", locator)], ct, true));
                     var count = value.GetProperty("count").GetInt32();
                     var visible = value.GetProperty("visible").GetBoolean();
@@ -261,7 +284,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException && IsContextLost(ex)) { _contexts.Clear(); }
             }
-            await Task.Delay(50, ct);
+            await NextChangeAsync(changed, 50, ct);
         }
     }
 
@@ -364,7 +387,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("matched 0 elements", StringComparison.Ordinal) && GetReference(input) is null)
             {
-                await Task.Delay(50, ct);
+                await NextChangeAsync(_documentChanged.Task, 50, ct);
             }
         }
     }
@@ -517,17 +540,36 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                     {
                         if (_downloads.TryGetValue(guid, out var merged))
                         {
-                            foreach (var property in p.EnumerateObject())
-                                merged[property.Name] = JsonNode.Parse(property.Value.GetRawText());
+                            var fresh = JsonNode.Parse(p.GetRawText())!.AsObject();
+                            // Detached nodes re-parent without cloning; overwriting in place keeps first-seen key order.
+                            foreach (var key in fresh.Select(property => property.Key).ToArray())
+                            {
+                                fresh.Remove(key, out var node);
+                                merged[key] = node!;
+                            }
                         }
-                        else _downloads[guid] = JsonNode.Parse(p.GetRawText())!.AsObject();
-                        while (_downloads.Count > 100 && _downloads.Keys.FirstOrDefault() is { } oldest) _downloads.TryRemove(oldest, out _);
+                        else
+                        {
+                            _downloads[guid] = JsonNode.Parse(p.GetRawText())!.AsObject();
+                            _downloadOrder.Enqueue(guid);
+                        }
+                        while (_downloads.Count > 100 && _downloadOrder.TryPeek(out var oldest))
+                        {
+                            _downloads.Remove(oldest);
+                            _downloadOrder.Dequeue();
+                        }
                     }
                 }
                 break;
         }
-        if (e.Method is "Page.frameNavigated" or "Page.navigatedWithinDocument" or "Page.frameDetached" or "Host.titleChanged" or "Host.loadingChanged" or "Page.javascriptDialogOpening" or "Page.javascriptDialogClosed" || e.Method.Contains("download", StringComparison.Ordinal) || e.Method == "Page.lifecycleEvent" && String(p, "name") is "load" or "DOMContentLoaded")
-            StateChanged?.Invoke(this, EventArgs.Empty);
+        var download = e.Method.Contains("download", StringComparison.Ordinal);
+        if (e.Method is "Page.frameNavigated" or "Page.navigatedWithinDocument" or "Page.frameDetached" or "Host.titleChanged" or "Host.loadingChanged" or "Page.javascriptDialogOpening" or "Page.javascriptDialogClosed" || download || e.Method == "Page.lifecycleEvent" && String(p, "name") is "load" or "DOMContentLoaded")
+        {
+            SignalDocumentChanged();
+            // Download storms change no published status field; the controller coalesces them, other causes publish per event.
+            if (download) DownloadsChanged?.Invoke(this, EventArgs.Empty);
+            else StateChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void InvalidateDocument()
@@ -600,15 +642,25 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     }
     private static string Truncate(string value, int max) => value.Length > max ? value[..max] : value;
 
-    private JsonElement DownloadsElement()
+    private string DownloadsJson()
     {
         lock (_downloadsLock)
         {
-            var array = new JsonArray();
-            foreach (var download in _downloads.Values) array.Add(download.DeepClone());
-            using var document = JsonDocument.Parse(array.ToJsonString());
-            return document.RootElement.Clone();
+            var buffer = new ArrayBufferWriter<byte>();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartArray();
+                foreach (var download in _downloads.Values) download.WriteTo(writer);
+                writer.WriteEndArray();
+                writer.Flush();
+            }
+            return Encoding.UTF8.GetString(buffer.WrittenSpan);
         }
+    }
+    private static BrowserActionResult Structured(string json)
+    {
+        if (json.Length > MaxText) throw new InvalidOperationException($"Structured browser result exceeds {MaxText} characters; narrow the locator or evaluate a smaller result.");
+        return new(true, Text: json, StructuredOutput: json);
     }
     private static BrowserActionResult Structured(JsonElement value)
     {
@@ -629,7 +681,11 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         _contexts.Clear();
         _frameOwners.Clear();
         _frameSessions.Clear();
-        lock (_downloadsLock) _downloads.Clear();
+        lock (_downloadsLock)
+        {
+            _downloads.Clear();
+            _downloadOrder.Clear();
+        }
     }
 
     private sealed record FrameContext(string FrameId, int Id, string? Session);

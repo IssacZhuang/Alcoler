@@ -71,9 +71,11 @@ public sealed class SessionEventStore
         lock (_sync)
         {
             _subscribers.Add(channel.Writer);
-            foreach (var evt in _events.Where(e => e.Sequence > afterSequence))
+            // Replay must interleave with live appends under the lock, or a concurrent append
+            // could reach the channel ahead of older replayed events.
+            for (var index = FirstIndexAfter(afterSequence); index < _events.Count; index++)
             {
-                channel.Writer.TryWrite(evt);
+                channel.Writer.TryWrite(_events[index]);
             }
         }
 
@@ -91,7 +93,8 @@ public sealed class SessionEventStore
     {
         lock (_sync)
         {
-            return _events.Where(e => e.Sequence > afterSequence).ToList();
+            var start = FirstIndexAfter(afterSequence);
+            return _events.GetRange(start, _events.Count - start);
         }
     }
 
@@ -108,10 +111,21 @@ public sealed class SessionEventStore
     {
         lock (_sync)
         {
-            _events.RemoveAll(e =>
-                e.Sequence < beforeSequence
-                && e.OccurredAt < cutoffUtc
-                && SessionEventRetention.IsTransient(e.Event));
+            // Sequences below beforeSequence occupy a prefix of the list, so the scan can
+            // stop at that bound instead of walking the whole log.
+            var bound = FirstIndexAtOrAbove(beforeSequence);
+            var write = 0;
+            for (var read = 0; read < bound; read++)
+            {
+                var evt = _events[read];
+                if (evt.OccurredAt < cutoffUtc && SessionEventRetention.IsTransient(evt.Event))
+                    continue;
+                if (write != read)
+                    _events[write] = evt;
+                write++;
+            }
+            if (write < bound)
+                _events.RemoveRange(write, bound - write);
         }
     }
 
@@ -126,5 +140,24 @@ public sealed class SessionEventStore
             }
             _subscribers.Clear();
         }
+    }
+
+    // Sequences are appended strictly ascending, but transient eviction can leave gaps, so
+    // slicing goes through a binary search instead of index arithmetic.
+    private int FirstIndexAfter(long sequence) => FirstIndexAtOrAbove(sequence + 1);
+
+    private int FirstIndexAtOrAbove(long sequence)
+    {
+        var low = 0;
+        var high = _events.Count;
+        while (low < high)
+        {
+            var middle = (low + high) / 2;
+            if (_events[middle].Sequence < sequence)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+        return low;
     }
 }

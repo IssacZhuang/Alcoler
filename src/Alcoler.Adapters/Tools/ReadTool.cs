@@ -300,12 +300,15 @@ public sealed class ReadTool : ITool
 
     private static string? ImageMimeFromPath(string path)
     {
-        var lower = path.ToLowerInvariant();
-        if (lower.EndsWith(".jpg") || lower.EndsWith(".jpeg")) return "image/jpeg";
-        if (lower.EndsWith(".png")) return "image/png";
-        if (lower.EndsWith(".gif")) return "image/gif";
-        if (lower.EndsWith(".webp")) return "image/webp";
+        var extension = Path.GetExtension(path.AsSpan());
+        if (Matches(extension, ".jpg") || Matches(extension, ".jpeg")) return "image/jpeg";
+        if (Matches(extension, ".png")) return "image/png";
+        if (Matches(extension, ".gif")) return "image/gif";
+        if (Matches(extension, ".webp")) return "image/webp";
         return null;
+
+        static bool Matches(ReadOnlySpan<char> extension, string candidate) =>
+            extension.Equals(candidate, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? BinaryExtension(string path)

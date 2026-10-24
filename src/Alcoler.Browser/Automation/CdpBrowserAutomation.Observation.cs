@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Browser;
@@ -21,16 +22,23 @@ public sealed partial class CdpBrowserAutomation
             _references.Clear();
             foreach (var item in value.EnumerateArray())
                 if (String(item, "ref") is { } reference) _references[reference] = new(generation, context.FrameId, null);
-            var nodes = new List<JsonElement>();
-            var used = 2;
-            foreach (var item in value.EnumerateArray())
+            // The budget counts source raw lengths; the array text must be writer-normalized, not raw-concatenated.
+            var buffer = new ArrayBufferWriter<byte>();
+            using (var writer = new Utf8JsonWriter(buffer))
             {
-                var rawLength = item.GetRawText().Length;
-                if (used + rawLength + 1 > maxChars) break;
-                nodes.Add(item);
-                used += rawLength + 1;
+                writer.WriteStartArray();
+                var used = 2;
+                foreach (var item in value.EnumerateArray())
+                {
+                    var rawLength = item.GetRawText().Length;
+                    if (used + rawLength + 1 > maxChars) break;
+                    item.WriteTo(writer);
+                    used += rawLength + 1;
+                }
+                writer.WriteEndArray();
+                writer.Flush();
             }
-            return Structured(BrowserJson.Element(nodes));
+            return Structured(Encoding.UTF8.GetString(buffer.WrittenSpan));
         }
         var frames = new List<string> { context.FrameId };
         var scoped = Locator(input, false) is not null;
@@ -50,14 +58,15 @@ public sealed partial class CdpBrowserAutomation
         foreach (var frame in frames.Take(64))
         {
             var frameContext = frame == context.FrameId ? context : await ContextAsync(frame, ct);
-            JsonElement tree;
+            // SendAsync results are standalone clones, so scoped nodes can be iterated without re-wrapping through a new document.
+            IEnumerable<JsonElement> nodes;
             if (scoped)
             {
                 var id = await ResolveObjectAsync(input, frameContext, ct);
                 try
                 {
                     var description = await SendAsync("DOM.describeNode", D("objectId", id), ct, frameContext.Session);
-                    tree = await SendAsync("Accessibility.getFullAXTree", D("depth", maxDepth, "frameId", frame), ct, frameContext.Session);
+                    var tree = await SendAsync("Accessibility.getFullAXTree", D("depth", maxDepth, "frameId", frame), ct, frameContext.Session);
                     var backend = description.GetProperty("node").GetProperty("backendNodeId").GetInt32();
                     var selected = default(JsonElement);
                     foreach (var candidate in tree.GetProperty("nodes").EnumerateArray())
@@ -77,12 +86,12 @@ public sealed partial class CdpBrowserAutomation
                     Visit(selected);
                     var selectedNodes = new List<JsonElement>(reachable.Count);
                     foreach (var pair in all) if (reachable.Contains(pair.Key)) selectedNodes.Add(pair.Value);
-                    tree = BrowserJson.Element(D("nodes", selectedNodes));
+                    nodes = selectedNodes;
                 }
                 finally { await ReleaseAsync(id, frameContext.Session, ct); }
             }
-            else tree = await SendAsync("Accessibility.getFullAXTree", D("depth", maxDepth, "frameId", frame), ct, frameContext.Session);
-            foreach (var node in tree.GetProperty("nodes").EnumerateArray())
+            else nodes = (await SendAsync("Accessibility.getFullAXTree", D("depth", maxDepth, "frameId", frame), ct, frameContext.Session)).GetProperty("nodes").EnumerateArray();
+            foreach (var node in nodes)
             {
                 var key = (frame, RequiredString(node, "nodeId"));
                 nodesById[key] = node;
@@ -98,6 +107,7 @@ public sealed partial class CdpBrowserAutomation
         var structuredLength = 100;
         var truncated = false;
         var index = 0;
+        var entryBuffer = new ArrayBufferWriter<byte>();
         void Append((string Frame, string NodeId) key, JsonElement node, int depth)
         {
             var nodeFrame = key.Frame;
@@ -118,22 +128,43 @@ public sealed partial class CdpBrowserAutomation
                         (states ??= new Dictionary<string, object?>())[stateName] = stateValue;
                 }
                 var value = AxValue(node, "value");
-                var entry = new Dictionary<string, object?>(6)
+                var shortName = Truncate(name, 1000);
+                var shortValue = Truncate(value, 1000);
+                // Key order and escaping must match BrowserJson's writer defaults; entryJson feeds both budgets and the structured text.
+                entryBuffer.Clear();
+                using (var entryWriter = new Utf8JsonWriter(entryBuffer))
                 {
-                    ["ref"] = reference, ["role"] = role, ["name"] = Truncate(name, 1000),
-                    ["value"] = Truncate(value, 1000), ["depth"] = depth, ["states"] = states ?? EmptyStates,
-                };
-                var entryJson = BrowserJson.Serialize(entry);
+                    entryWriter.WriteStartObject();
+                    if (reference is null) entryWriter.WriteNull("ref");
+                    else entryWriter.WriteString("ref", reference);
+                    entryWriter.WriteString("role", role);
+                    entryWriter.WriteString("name", shortName);
+                    entryWriter.WriteString("value", shortValue);
+                    entryWriter.WriteNumber("depth", depth);
+                    entryWriter.WritePropertyName("states");
+                    entryWriter.WriteStartObject();
+                    if (states is not null)
+                        foreach (var state in states)
+                        {
+                            entryWriter.WritePropertyName(state.Key);
+                            if (state.Value is JsonElement element) element.WriteTo(entryWriter);
+                            else entryWriter.WriteNullValue();
+                        }
+                    entryWriter.WriteEndObject();
+                    entryWriter.WriteEndObject();
+                    entryWriter.Flush();
+                }
+                var entryJson = Encoding.UTF8.GetString(entryBuffer.WrittenSpan);
                 var entryLength = entryJson.Length + 1;
                 var checkpoint = text.Length;
                 text.Append(' ', Math.Min(depth, 100) * 2).Append(role);
-                if (name.Length > 0) text.Append(' ').Append(BrowserJson.Serialize(Truncate(name, 1000)));
+                if (name.Length > 0) text.Append(' ').Append(BrowserJson.Serialize(shortName));
                 if (reference is not null) text.Append(" [ref=").Append(reference).Append(']');
                 if (states is not null)
                     foreach (var state in states)
                         if (state.Key is "checked" or "disabled" or "expanded" or "selected" or "focused" or "required" or "level" or "readonly" or "pressed")
                             text.Append(' ').Append(state.Key).Append('=').Append(state.Value);
-                if (value.Length > 0) text.Append(" value=").Append(BrowserJson.Serialize(Truncate(value, 1000)));
+                if (value.Length > 0) text.Append(" value=").Append(BrowserJson.Serialize(shortValue));
                 if (text.Length + 1 > maxChars || structuredLength + entryLength > MaxText)
                 {
                     truncated = true;
@@ -156,8 +187,6 @@ public sealed partial class CdpBrowserAutomation
         structured.Append("],\"truncated\":").Append(truncated ? "true" : "false").Append('}');
         return new(true, Text: Truncate(text.ToString(), maxChars), StructuredOutput: structured.ToString());
     }
-
-    private static readonly IReadOnlyDictionary<string, object?> EmptyStates = new Dictionary<string, object?>();
 
     private static string AxValue(JsonElement node, string property)
     {

@@ -18,7 +18,7 @@ public sealed class PermissionService : IPermissionGate
     private readonly ILogger? _logger;
     private readonly IReadOnlyList<string> _disallowedTools;
     private readonly object _sync = new();
-    private readonly List<PermissionRule> _sessionRules = [];
+    private PermissionRule[] _sessionRulesSnapshot = [];
 
     private PermissionRuleset _projectRules;
     private PermissionMode _mode;
@@ -62,7 +62,15 @@ public sealed class PermissionService : IPermissionGate
 
     public void GrantSessionPermission(PermissionRule rule)
     {
-        lock (_sync) _sessionRules.Add(rule);
+        lock (_sync)
+        {
+            // Readers never lock; publication is a swap onto a fully built array.
+            var current = _sessionRulesSnapshot;
+            var next = new PermissionRule[current.Length + 1];
+            current.AsSpan().CopyTo(next);
+            next[^1] = rule;
+            Volatile.Write(ref _sessionRulesSnapshot, next);
+        }
     }
 
     public void UpdateProjectRules(PermissionRuleset ruleset) => _projectRules = ruleset;
@@ -107,16 +115,10 @@ public sealed class PermissionService : IPermissionGate
 
     private (PermissionVerdict? Verdict, string? Reason) EvaluateAlwaysAskGate(PermissionCheckRequest request)
     {
-        PermissionRule[]? sessionRules = null;
-        PermissionRuleset projectRules;
-        lock (_sync)
-        {
-            if (_sessionRules.Count > 0)
-                sessionRules = [.. _sessionRules];
-            projectRules = _projectRules;
-        }
+        var sessionRules = Volatile.Read(ref _sessionRulesSnapshot);
+        var projectRules = _projectRules;
 
-        if (sessionRules is not null)
+        if (sessionRules.Length > 0)
         {
             foreach (var rule in sessionRules)
                 if (rule.Verdict == PermissionVerdict.Ask && Matches(rule, request))
@@ -126,7 +128,7 @@ public sealed class PermissionService : IPermissionGate
         if (FirstMatch(projectRules.Deny, request) is not null)
             return (PermissionVerdict.Deny, null);
 
-        if (sessionRules is not null)
+        if (sessionRules.Length > 0)
         {
             foreach (var rule in sessionRules)
                 if (rule.Verdict == PermissionVerdict.Deny && Matches(rule, request))

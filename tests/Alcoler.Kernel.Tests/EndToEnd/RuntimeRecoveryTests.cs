@@ -613,7 +613,7 @@ public class RuntimeRecoveryTests
                 }, .. fixture.Original.Skip(1)];
             }
             await fixture.Store.AppendMessagesAsync(fixture.Id, fixture.Original, 0, CancellationToken.None);
-            fixture._runtime = await SessionRuntime.CreateAsync(record, new SessionRuntimeDeps(fixture.Failing, _ => model,
+            fixture._runtime = await SessionRuntime.CreateAsync(record, new SessionRuntimeDeps(fixture.Failing, _ => Task.FromResult<IChatModel>(model),
                 new ToolRegistry([]), new WorkspaceToolEnvironment(fixture._root, artifacts), PermissionRuleset.Empty,
                 TimeProvider.System, NullLogger<SessionRuntime>.Instance, new SessionRuntimeOptions(), artifacts), CancellationToken.None);
             return fixture;

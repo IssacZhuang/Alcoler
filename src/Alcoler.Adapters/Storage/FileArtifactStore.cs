@@ -109,15 +109,17 @@ public sealed class FileArtifactStore : IArtifactStore
         return value;
     }
 
+    // Path.GetInvalidFileNameChars() allocates a fresh array per call.
+    private static readonly char[] InvalidFileNameChars = Path.GetInvalidFileNameChars();
+
     private static bool IsSafeSegment(string segment) =>
-        segment is not ("." or "..") && segment.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
+        segment is not ("." or "..") && segment.IndexOfAny(InvalidFileNameChars) < 0;
 
     private static string SanitizeFileName(string fileName)
     {
-        var invalid = Path.GetInvalidFileNameChars();
         var sanitized = new char[fileName.Length];
         for (var index = 0; index < fileName.Length; index++)
-            sanitized[index] = Array.IndexOf(invalid, fileName[index]) >= 0 ? '_' : fileName[index];
+            sanitized[index] = Array.IndexOf(InvalidFileNameChars, fileName[index]) >= 0 ? '_' : fileName[index];
         var length = sanitized.Length;
         while (length > 0 && sanitized[length - 1] is ' ' or '.')
             length--;

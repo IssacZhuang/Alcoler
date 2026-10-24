@@ -1,3 +1,4 @@
+using System.Text;
 using System.Threading.Channels;
 
 namespace Alcoler.Adapters.Mcp;
@@ -28,6 +29,9 @@ internal static class MemoryMcpTransport
                 return Task.CompletedTask;
             throw new IOException($"The memory transport '{name}' can no longer send because the peer was disposed.");
         }
+
+        public Task SendAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken) =>
+            SendAsync(Encoding.UTF8.GetString(payload.Span), cancellationToken);
 
         public async Task<string?> ReceiveAsync(CancellationToken cancellationToken)
         {

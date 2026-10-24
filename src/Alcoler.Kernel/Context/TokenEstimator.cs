@@ -45,7 +45,7 @@ public static class TokenEstimator
                     break;
                 case ToolCallPart call:
                     blockCount++;
-                    toolCharacters += call.ToolName.Length + CompactJson(call.Input).Length;
+                    toolCharacters += call.ToolName.Length + CompactJsonLength(call.Input);
                     break;
                 case ToolResultPart result:
                     blockCount++;
@@ -79,7 +79,7 @@ public static class TokenEstimator
         {
             if (block is InputToolCallBlock call)
             {
-                toolCharacters += call.Name.Length + CompactJson(call.Input).Length;
+                toolCharacters += call.Name.Length + CompactJsonLength(call.Input);
                 continue;
             }
 
@@ -122,16 +122,23 @@ public static class TokenEstimator
     public static (int Tokens, string Source) EstimateCurrentInputTokens(
         IReadOnlyList<ConversationMessage> history,
         int anchorIndex,
-        TokenUsage? usage)
+        TokenUsage? usage,
+        Func<ConversationMessage, int>? estimateMessage = null)
     {
+        var estimator = estimateMessage ?? EstimateMessageTokens;
         var anchor = usage?.ContextUsageTokens ?? usage?.InputTokens;
         if (anchor is null)
-            return (EstimateHistoryTokens(history), EstimateSource);
+        {
+            var total = 0;
+            foreach (var message in history)
+                total += estimator(message);
+            return (total, EstimateSource);
+        }
 
         var tail = 0;
         var startIndex = usage?.ContextUsageTokens is null ? anchorIndex : anchorIndex + 1;
         for (var i = Math.Max(0, startIndex); i < history.Count; i++)
-            tail += EstimateMessageTokens(history[i]);
+            tail += estimator(history[i]);
         return (anchor.Value + tail, ProviderUsageSource);
     }
 
@@ -210,8 +217,6 @@ public static class TokenEstimator
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
-
-    private static readonly JsonSerializerOptions CompactJsonOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private static void WriteTool(Utf8JsonWriter writer, ToolContract tool)
     {
@@ -344,6 +349,24 @@ public static class TokenEstimator
 
     private static bool IsDoubleWeight(int value) => value is >= 0x4E00 and <= 0x9FFF;
 
-    private static string CompactJson(JsonElement element) =>
-        element.ValueKind == JsonValueKind.Undefined ? "{}" : JsonSerializer.Serialize(element, CompactJsonOptions);
+    // JsonSerializer.Serialize(element, options) is exactly element.WriteTo through a
+    // Utf8JsonWriter with the same options, so GetCharCount over the written bytes equals
+    // the serialized string's Length without allocating it.
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? _compactJsonBuffer;
+    [ThreadStatic]
+    private static Utf8JsonWriter? _compactJsonWriter;
+
+    private static int CompactJsonLength(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Undefined)
+            return 2;
+        var buffer = _compactJsonBuffer ??= new ArrayBufferWriter<byte>();
+        var writer = _compactJsonWriter ??= new Utf8JsonWriter(buffer, RelaxedWriterOptions);
+        buffer.Clear();
+        writer.Reset(buffer);
+        element.WriteTo(writer);
+        writer.Flush();
+        return Encoding.UTF8.GetCharCount(buffer.WrittenSpan);
+    }
 }
