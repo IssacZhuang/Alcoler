@@ -516,7 +516,7 @@ internal sealed class BashOutputDecoder(Encoding? legacyEncoding)
         if (!OperatingSystem.IsWindows())
             return null;
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-        var configured = Environment.GetEnvironmentVariable("ZCODE_WINDOWS_OUTPUT_ENCODING")?.Trim();
+        var configured = Environment.GetEnvironmentVariable("ALCOLER_WINDOWS_OUTPUT_ENCODING")?.Trim();
         if (!string.IsNullOrEmpty(configured))
             return Find(configured);
         try
