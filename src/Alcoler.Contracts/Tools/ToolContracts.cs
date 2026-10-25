@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
@@ -67,6 +68,14 @@ public sealed record ToolContract(
 public interface IModelGatedTool
 {
     bool IsAvailable(ModelProperties properties);
+}
+
+/// <summary>
+/// Hides a tool on platforms that cannot run any of its backends.
+/// </summary>
+public interface IPlatformGatedTool
+{
+    bool IsAvailable(OSPlatform platform);
 }
 
 public sealed record ToolInputIssue(string Code, string Message);

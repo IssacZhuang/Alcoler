@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -8,7 +9,7 @@ using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Browser;
 
-public sealed class BrowserTool : ITool
+public sealed class BrowserTool : ITool, IPlatformGatedTool
 {
     private const int MaxOutputLength = 24_000;
     private const int MaxScreenshotBytes = 20 * 1024 * 1024;
@@ -27,6 +28,8 @@ public sealed class BrowserTool : ITool
     private readonly IBrowserController _controller;
 
     public BrowserTool(IBrowserController controller) => _controller = controller;
+
+    public bool IsAvailable(OSPlatform platform) => platform == OSPlatform.Windows;
 
     public ToolContract Contract { get; } = new(
         "Browser",

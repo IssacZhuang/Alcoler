@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Alcoler.Contracts.Browser;
 using Alcoler.Contracts.Conversation;
@@ -18,6 +19,14 @@ public class BrowserToolTests
     private readonly BrowserTool _tool;
 
     public BrowserToolTests() => _tool = new BrowserTool(_controller);
+
+    [Fact]
+    public void PlatformSupport_IsWindowsOnly()
+    {
+        Assert.True(_tool.IsAvailable(OSPlatform.Windows));
+        Assert.False(_tool.IsAvailable(OSPlatform.Linux));
+        Assert.False(_tool.IsAvailable(OSPlatform.OSX));
+    }
 
     [Fact]
     public async Task UnknownVerb_IsRejected()
