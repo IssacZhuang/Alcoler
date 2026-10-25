@@ -419,7 +419,6 @@ public class ReadToolTests
     public async Task InvalidImage_ReturnsDecodeError()
     {
         using var workspace = new TempWorkspace();
-        // 4 MB of raw bytes encode past the 5 MB base64 budget.
         await File.WriteAllBytesAsync(Path.Combine(workspace.Root, "big.png"), new byte[4 * 1024 * 1024 + 1]);
         var tool = new ReadTool();
 
@@ -434,9 +433,62 @@ public class ReadToolTests
     [Theory]
     [InlineData(3_000, 1_200, false)]
     [InlineData(1_000, 1_000, true)]
-    public async Task OversizedImage_IsResizedAndRecompressedWithinModelBudget(int width, int height, bool noise)
+    public async Task ImageWithinUniversalCaps_IsPassedThroughUnchanged(int width, int height, bool noise)
     {
         using var workspace = new TempWorkspace();
+        var original = EncodeTestImage(width, height, noise);
+        await File.WriteAllBytesAsync(Path.Combine(workspace.Root, "large.png"), original);
+
+        var result = await new ReadTool().ExecuteAsync(workspace.ContextFor("""{"file_path":"large.png"}"""), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var media = Assert.IsType<Alcoler.Contracts.Conversation.ToolResultMedia>(Assert.Single(result.Content));
+        Assert.Equal("image/png", media.MimeType);
+        Assert.Equal("large.png", media.FileName);
+        var output = await File.ReadAllBytesAsync(Path.Combine(workspace.Root, ".alcoler", "artifacts", "sess_test", media.FileName!));
+        Assert.Equal(original, output);
+    }
+
+    [Fact]
+    public async Task ImageBeyondPixelCap_IsDownscaledLosslessly()
+    {
+        using var workspace = new TempWorkspace();
+        var original = EncodeTestImage(8_400, 2_560, noise: false);
+        await File.WriteAllBytesAsync(Path.Combine(workspace.Root, "wide.png"), original);
+
+        var result = await new ReadTool().ExecuteAsync(workspace.ContextFor("""{"file_path":"wide.png"}"""), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var media = Assert.IsType<Alcoler.Contracts.Conversation.ToolResultMedia>(Assert.Single(result.Content));
+        Assert.Equal("image/png", media.MimeType);
+        var output = await File.ReadAllBytesAsync(Path.Combine(workspace.Root, ".alcoler", "artifacts", "sess_test", media.FileName!));
+        using var decoded = SKBitmap.Decode(output);
+        Assert.InRange(Math.Max(decoded.Width, decoded.Height), 1, 8_192);
+        Assert.True((long)decoded.Width * decoded.Height <= 16_777_216);
+    }
+
+    [Fact]
+    public async Task OversizePayload_FallsBackToJpegWithinBudget()
+    {
+        using var workspace = new TempWorkspace();
+        var original = EncodeTestImage(2_000, 2_000, noise: true);
+        Assert.True(original.Length > 5 * 1024 * 1024);
+        await File.WriteAllBytesAsync(Path.Combine(workspace.Root, "noise.png"), original);
+
+        var result = await new ReadTool().ExecuteAsync(workspace.ContextFor("""{"file_path":"noise.png"}"""), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var media = Assert.IsType<Alcoler.Contracts.Conversation.ToolResultMedia>(Assert.Single(result.Content));
+        Assert.Equal("image/jpeg", media.MimeType);
+        Assert.Equal("noise.jpg", media.FileName);
+        var output = await File.ReadAllBytesAsync(Path.Combine(workspace.Root, ".alcoler", "artifacts", "sess_test", media.FileName!));
+        Assert.InRange(output.Length, 1, 5 * 1024 * 1024);
+        using var decoded = SKBitmap.Decode(output);
+        Assert.InRange(Math.Max(decoded.Width, decoded.Height), 1, 2_000);
+    }
+
+    private static byte[] EncodeTestImage(int width, int height, bool noise)
+    {
         using var bitmap = new SKBitmap(width, height);
         if (noise)
         {
@@ -452,19 +504,7 @@ public class ReadToolTests
         }
         using var image = SKImage.FromBitmap(bitmap);
         using var png = image.Encode(SKEncodedImageFormat.Png, 100);
-        await File.WriteAllBytesAsync(Path.Combine(workspace.Root, "large.png"), png.ToArray());
-
-        var result = await new ReadTool().ExecuteAsync(workspace.ContextFor("""{"file_path":"large.png"}"""), CancellationToken.None);
-
-        Assert.False(result.IsError);
-        var media = Assert.IsType<Alcoler.Contracts.Conversation.ToolResultMedia>(Assert.Single(result.Content));
-        Assert.Equal("image/jpeg", media.MimeType);
-        var output = await File.ReadAllBytesAsync(Path.Combine(workspace.Root, ".alcoler", "artifacts", "sess_test", media.FileName!));
-        using var decoded = SKBitmap.Decode(output);
-        Assert.InRange(Math.Max(decoded.Width, decoded.Height), 1, 2_000);
-        Assert.True(Math.Ceiling(Convert.ToBase64String(output).Length * 0.125) <= 25_000);
-        if (noise)
-            Assert.True(output.Length < png.Size);
+        return png.ToArray();
     }
 
     [Theory]

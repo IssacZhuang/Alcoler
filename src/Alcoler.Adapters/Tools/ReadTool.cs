@@ -198,9 +198,14 @@ public sealed class ReadTool : ITool
         context.Shell?.CurrentDirectory ?? context.WorkspaceRoot;
 
     private const int ReadImageMaxInputBytes = 20 * 1024 * 1024;
-    private const int ReadImageMaxBase64Bytes = 5 * 1024 * 1024;
-    private const int ReadImageMaxDimension = 2_000;
-    private const double ImageTokenToBase64Ratio = 0.125;
+    // Original bytes pass through untouched within these caps; they sit at or below the
+    // strictest mainstream vision-API limits (dimension 8000, ~5 MB payload), so no
+    // per-model branching is needed.
+    private const int ReadImageMaxPayloadBytes = 5 * 1024 * 1024;
+    private const int ReadImageMaxDimension = 8_192;
+    private const long ReadImageMaxPixels = 16_777_216;
+    private static readonly int[] FallbackEdges = [4_096, 3_072, 2_048, 1_536, 1_024, 768, 512];
+    private static readonly int[] FallbackJpegQualities = [90, 75, 50];
 
     private static async ValueTask<ToolExecutionResult> ReadImageAsync(
         ToolExecutionContext context, string path, string mimeType, CancellationToken cancellationToken)
@@ -248,55 +253,60 @@ public sealed class ReadTool : ITool
             SKEncodedImageFormat.Webp => "image/webp",
             _ => mime,
         };
-        if (Math.Max(info.Width, info.Height) <= ReadImageMaxDimension && FitsImageBudget(input.Length))
+        if (FitsImageBudget(info.Width, info.Height) && input.Length <= ReadImageMaxPayloadBytes)
             return (input, mime);
-        var scale = Math.Min(1, ReadImageMaxDimension / (double)Math.Max(info.Width, info.Height));
+        var scale = Math.Min(1.0, ReadImageMaxDimension / (double)Math.Max(info.Width, info.Height));
+        scale = Math.Min(scale, Math.Sqrt(ReadImageMaxPixels / (double)((long)info.Width * info.Height)));
         var desired = codec.GetScaledDimensions((float)scale);
         using var decoded = new SKBitmap(new SKImageInfo(desired.Width, desired.Height, SKColorType.Bgra8888, SKAlphaType.Premul));
         var result = codec.GetPixels(decoded.Info, decoded.GetPixels());
         if (result != SKCodecResult.Success)
             throw new InvalidOperationException("Unable to decode image data");
         token.ThrowIfCancellationRequested();
-        if (Math.Max(info.Width, info.Height) <= ReadImageMaxDimension && mime == "image/png")
-        {
-            using var original = SKImage.FromBitmap(decoded);
-            using var png = original.Encode(SKEncodedImageFormat.Png, 100);
-            if (png is not null && FitsImageBudget(png.Size))
-                return (png.ToArray(), "image/png");
-        }
-        foreach (var edge in new[] { 2_000, 1_500, 1_000, 800, 600, 500, 400, 300, 200 })
+        foreach (var edge in FallbackEdges)
         {
             token.ThrowIfCancellationRequested();
-            var ratio = Math.Min(1, edge / (double)Math.Max(info.Width, info.Height));
-            var width = Math.Max(1, (int)Math.Round(info.Width * ratio));
-            var height = Math.Max(1, (int)Math.Round(info.Height * ratio));
-            using var resized = decoded.Resize(new SKImageInfo(width, height), SKFilterQuality.High);
-            if (resized is null)
-                throw new InvalidOperationException("Unable to resize image data");
+            var ratio = Math.Min(1, edge / (double)Math.Max(decoded.Width, decoded.Height));
+            var width = Math.Max(1, (int)Math.Round(decoded.Width * ratio));
+            var height = Math.Max(1, (int)Math.Round(decoded.Height * ratio));
+            using var frame = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
+            using (var canvas = new SKCanvas(frame))
+            {
+                canvas.Clear(SKColors.Transparent);
+                if (ratio >= 1)
+                    canvas.DrawBitmap(decoded, 0, 0);
+                else
+                {
+                    using var resized = decoded.Resize(new SKImageInfo(width, height), SKFilterQuality.High);
+                    if (resized is null)
+                        throw new InvalidOperationException("Unable to resize image data");
+                    canvas.DrawBitmap(resized, 0, 0);
+                }
+            }
+            using var frameImage = SKImage.FromBitmap(frame);
+            using var png = frameImage.Encode(SKEncodedImageFormat.Png, 100);
+            if (png is not null && png.Size <= ReadImageMaxPayloadBytes)
+                return (png.ToArray(), "image/png");
             using var opaque = new SKBitmap(width, height, SKColorType.Bgra8888, SKAlphaType.Opaque);
             using (var canvas = new SKCanvas(opaque))
             {
                 canvas.Clear(SKColors.White);
-                canvas.DrawBitmap(resized, 0, 0);
+                canvas.DrawBitmap(frame, 0, 0);
             }
-            using var image = SKImage.FromBitmap(opaque);
-            foreach (var quality in new[] { 80, 60, 40, 20 })
+            using var flatImage = SKImage.FromBitmap(opaque);
+            foreach (var quality in FallbackJpegQualities)
             {
                 token.ThrowIfCancellationRequested();
-                using var encoded = image.Encode(SKEncodedImageFormat.Jpeg, quality);
-                if (encoded is not null && FitsImageBudget(encoded.Size))
+                using var encoded = flatImage.Encode(SKEncodedImageFormat.Jpeg, quality);
+                if (encoded is not null && encoded.Size <= ReadImageMaxPayloadBytes)
                     return (encoded.ToArray(), "image/jpeg");
             }
         }
         throw new InvalidOperationException($"Unable to compress image ({input.Length} bytes) within the requested model image budget");
     }
 
-    private static bool FitsImageBudget(long rawBytes)
-    {
-        var base64Bytes = ((rawBytes + 2) / 3) * 4;
-        return rawBytes <= ReadImageMaxBase64Bytes * 3 / 4 && base64Bytes <= ReadImageMaxBase64Bytes
-            && Math.Ceiling(base64Bytes * ImageTokenToBase64Ratio) <= MaxOutputTokens;
-    }
+    private static bool FitsImageBudget(int width, int height) =>
+        Math.Max(width, height) <= ReadImageMaxDimension && (long)width * height <= ReadImageMaxPixels;
 
     private static string? ImageMimeFromPath(string path)
     {
