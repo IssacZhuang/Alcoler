@@ -16,8 +16,8 @@ using Xunit;
 
 namespace Alcoler.Kernel.Tests.EndToEnd;
 
-// Turn-loop semantics aligned with the ZCode reference: steering pacing, queue hold,
-// notification channel, partial-commit on cancel, stream recovery, and reminder cadence.
+// Turn-loop semantics: steering pacing, queue hold, notification channel,
+// partial-commit on cancel, stream recovery, and reminder cadence.
 public class TurnSemanticsTests
 {
     private static readonly ToolCallId ToolCallId = new("call-1");

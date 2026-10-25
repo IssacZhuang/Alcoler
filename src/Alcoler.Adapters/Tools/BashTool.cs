@@ -6,7 +6,7 @@ using Alcoler.Kernel.Tools;
 namespace Alcoler.Adapters.Tools;
 
 /// <summary>
-/// Shell execution with ZCode-compatible semantics: persistent session cwd, semantic
+/// Shell execution semantics: persistent session cwd, semantic
 /// exit-code interpretation, oversized-output persistence, read-state invalidation hints,
 /// and foreground-to-background conversion on timeout. The tool manages its own timeout
 /// (Metadata.DefaultTimeoutMs stays null) because conversion must not be cut short.

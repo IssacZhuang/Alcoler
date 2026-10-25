@@ -4,9 +4,9 @@ using System.Text.Json;
 namespace Alcoler.Kernel.Runtime;
 
 /// <summary>
-/// Detects repeated identical tool calls within a turn, mirroring ZCode model-anomaly.ts:
-/// a reminder fires on the 3rd consecutive call with the same name and canonical input,
-/// at most 3 reminders per turn; any different call resets the streak.
+/// Detects repeated identical tool calls within a turn: a reminder fires on the 3rd
+/// consecutive call with the same name and canonical input, at most 3 reminders per turn;
+/// any different call resets the streak.
 /// </summary>
 public sealed class ToolCallAnomalyTracker
 {

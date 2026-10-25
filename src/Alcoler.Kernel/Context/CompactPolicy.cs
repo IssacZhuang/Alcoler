@@ -36,7 +36,6 @@ public static class CompactPolicy
     public static int MicroCompactTriggerTokens(int autoCompactThreshold) =>
         Math.Max(0, Math.Min(autoCompactThreshold * 9 / 10, autoCompactThreshold - 2_000));
 
-    // ZCode createCompactRapidRefillError message, verbatim.
     public static string RapidRefillBreakerMessage(int toolTurnThreshold, int maxConsecutiveRapidRefills) =>
         $"Autocompact stopped because the context refilled within fewer than {toolTurnThreshold} tool turns after compaction {maxConsecutiveRapidRefills} times in a row. A file or tool output may be too large. Read it in smaller chunks, or start a new session.";
 

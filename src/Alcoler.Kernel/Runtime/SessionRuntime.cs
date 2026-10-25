@@ -80,9 +80,9 @@ public sealed class SessionRuntime : IAsyncDisposable
     private const int MaxInputImages = 8;
     private const int MaxInputImageBytes = 20 * 1024 * 1024;
     private const int MaxInputImageBase64Characters = (MaxInputImageBytes + 2) / 3 * 4;
-    // ZCode DEFAULT_NORMAL_REQUEST_MAX_OUTPUT_TOKENS; only used when the model declares none.
+    // Default request output cap; only used when the model declares none.
     private const int DefaultRequestMaxOutputTokens = 32_000;
-    // ZCode session-history-hydrator INTERRUPTED_TOOL_RESULT.
+    // Result text for tool calls interrupted before resume.
     private const string InterruptedToolResultText = "[Tool execution was interrupted before resume]";
 
     private readonly SessionRuntimeDeps _deps;
@@ -793,7 +793,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                     if (rapidRefill >= CompactPolicy.MaxConsecutiveRapidRefills)
                     {
                         // The throw surfaces as a durable TurnFailedEvent carrying the exact
-                        // breaker message, mirroring ZCode's structured compaction error.
+                        // breaker message.
                         throw new InvalidOperationException(CompactPolicy.RapidRefillBreakerMessage(
                             CompactPolicy.RapidRefillToolTurnThreshold,
                             CompactPolicy.MaxConsecutiveRapidRefills));
@@ -1087,8 +1087,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     private ValueTask NotifyBackgroundJobCompletedAsync(BackgroundJobInfo job) =>
         EnqueueTaskNotificationAsync(BackgroundJobNotifications.FormatCompleted(job));
 
-    // ZCode evaluateRapidRefill: a compact that fires before enough tool turns elapsed is a
-    // rapid refill and extends the streak; otherwise the streak resets.
+    // A compact that fires before enough tool turns elapsed is a rapid refill and
+    // extends the streak; otherwise the streak resets.
     private int NextRapidRefillCount() =>
         _toolRoundsSinceCompact < CompactPolicy.RapidRefillToolTurnThreshold
             ? _consecutiveRapidRefills + 1
@@ -1229,7 +1229,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         };
 
         // Output-limit truncation classifies first: even an empty truncated body continues,
-        // and the empty body itself is never committed (ZCode includeEmptyAssistant: false).
+        // and the empty body itself is never committed.
         if (accumulator.FinishReason == ModelFinishReason.Length
             && accumulator.ToolCalls.Count == 0)
         {
@@ -1267,8 +1267,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             if (!IsSuspiciousEmptyCompletion(accumulator))
             {
-                // ZCode commits an empty assistant for a stop-finish empty completion
-                // and completes the turn normally.
+                // A stop-finish empty completion commits an empty assistant and completes
+                // the turn normally.
                 await CommitMessageAsync(assistant).ConfigureAwait(false);
                 _toolRoundsSinceCompact = 0;
                 _turnMachine.TryTransition(TurnPhase.Completing);
@@ -1385,8 +1385,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
     }
 
-    // ZCode isSuspiciousEmptyModelResult: empty text and tool calls with a non-stop
-    // finish and zero reported usage; a stop finish is a normal empty completion.
+    // A suspicious empty result has empty text and tool calls with a non-stop finish
+    // and zero reported usage; a stop finish is a normal empty completion.
     private static bool IsSuspiciousEmptyCompletion(ModelStepAccumulator accumulator)
     {
         if (accumulator.FinishReason is ModelFinishReason.Stop or ModelFinishReason.ToolCalls)
@@ -1482,9 +1482,9 @@ public sealed class SessionRuntime : IAsyncDisposable
         return counts;
     }
 
-    // ZCode derives both counters from persisted history (committed assistant entries
-    // after the last TodoWrite call / after the last committed reminder), so the cadence
-    // survives restarts; the fallback is the total assistant count.
+    // Both counters derive from persisted history (committed assistant entries after the
+    // last TodoWrite call / after the last committed reminder), so the cadence survives
+    // restarts; the fallback is the total assistant count.
     private static HistoryReminderCounts ScanHistoryReminders(
         IReadOnlyList<ConversationMessage> history, IReadOnlyList<string> activeWorkflows)
     {
@@ -2359,8 +2359,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         _history.AppendRange(activeMessages.Select(m => m.Message).ToList());
         _titleAttempted = activeMessages.Any(message => IsRealUserTurn(message.Message));
         await RepairDanglingToolCallsAsync(activeMessages).ConfigureAwait(false);
-        // ZCode cold resume: a crash leaves TurnStarted without a terminal event; closing it
-        // in the replay stream keeps the projection idle and hides stop/running controls.
+        // Cold resume: a crash leaves TurnStarted without a terminal event; closing it in
+        // the replay stream keeps the projection idle and hides stop/running controls.
         if (FindInterruptedTurn(replayDurable) is { } interruptedTurn)
         {
             EmitForReplay(new TurnCompletedEvent(interruptedTurn, TurnOutcome.Cancelled));
@@ -2501,8 +2501,8 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private void EmitForReplay(SessionEvent sessionEvent) => _events.Append(sessionEvent);
 
-    // ZCode session-history-hydrator: a persisted tool call without a later tool result is
-    // interrupted work; a synthesized result keeps provider replay free of dangling tool_use.
+    // A persisted tool call without a later tool result is interrupted work; a synthesized
+    // result keeps provider replay free of dangling tool_use.
     private async Task RepairDanglingToolCallsAsync(IReadOnlyList<StoredMessage> messages)
     {
         // Single right-to-left sweep: a call is dangling only when no result appears in a

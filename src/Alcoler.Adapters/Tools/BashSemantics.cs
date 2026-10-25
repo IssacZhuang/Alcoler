@@ -22,9 +22,9 @@ public sealed record BashReadonlyCommandPolicy(
     Func<IReadOnlyList<string>, bool>? DangerousArgs = null);
 
 /// <summary>
-/// Ports ZCode's bash-semantics readonly command classifier and the friendly
-/// interpretations for exit code 1 of search/diff/test commands. The classifier is
-/// deliberately conservative: any syntax the analyzer cannot model, any expansion,
+/// Readonly command classifier plus friendly interpretations for exit code 1 of
+/// search/diff/test commands. The classifier is deliberately conservative: any
+/// syntax the analyzer cannot model, any expansion,
 /// and any non-whitelisted option makes the command non-readonly.
 /// </summary>
 public static partial class BashSemantics

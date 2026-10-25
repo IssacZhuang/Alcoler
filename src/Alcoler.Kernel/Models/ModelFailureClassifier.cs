@@ -82,8 +82,8 @@ public static partial class ModelFailureClassifier
         return null;
     }
 
-    // Mirrors ZCode parseRetryAfterMs: retry-after-ms wins over retry-after, and a
-    // x-should-retry of false/0 demotes any retry-after to diagnostics only.
+    // retry-after-ms wins over retry-after, and an x-should-retry of false/0 demotes
+    // any retry-after to diagnostics only.
     public static TimeSpan? ParseRetryAfterMs(
         string? retryAfterMsHeader, string? retryAfterHeader, string? shouldRetryHeader)
     {

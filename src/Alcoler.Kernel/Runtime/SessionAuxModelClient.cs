@@ -9,8 +9,7 @@ namespace Alcoler.Kernel.Runtime;
 
 /// <summary>
 /// Runs one-shot requests on the session model with the lowest reasoning level and a
-/// capped output budget, mirroring ZCode's auxiliary-model behavior. Native search is
-/// the only request that carries a tool.
+/// capped output budget. Native search is the only request that carries a tool.
 /// </summary>
 internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelection, Func<ModelSelection, Task<IChatModel>> resolveModel) : IAuxModelClient, IProviderWebSearch
 {

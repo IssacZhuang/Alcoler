@@ -58,7 +58,7 @@ public class TodoReminderTests
         for (var i = 1; i <= 21; i++)
             await SendAndWaitIdleAsync(runtime, projection, session.Id, $"message {i}", expectedReplies: i);
 
-        // ZCode counts committed assistants, so the 11th request is the first to see 10.
+        // Reminder counting uses committed assistants, so the 11th request first sees 10.
         // The committed reminder rides along in later requests; the counter recycles and
         // fires again on the 21st request, which therefore carries two copies.
         Assert.Equal(21, harness.Model.Requests.Count);

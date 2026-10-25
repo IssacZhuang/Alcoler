@@ -29,7 +29,7 @@ public class RuntimeRecoveryTests
     private static IReadOnlyList<ModelStreamEvent> EmptyFinish() =>
         [new ModelStreamFinished(ModelFinishReason.Stop)];
 
-    // ZCode isSuspiciousEmptyModelResult shape: non-stop finish, zero usage, no content.
+    // Suspicious empty result shape: non-stop finish, zero usage, no content.
     private static IReadOnlyList<ModelStreamEvent> SuspiciousEmptyFinish() =>
         [new ModelStreamFinished(ModelFinishReason.Other)];
 

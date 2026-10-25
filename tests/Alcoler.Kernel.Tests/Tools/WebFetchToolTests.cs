@@ -306,7 +306,7 @@ public sealed class WebFetchToolTests : IDisposable
         Assert.StartsWith("\nWeb page content:\n---\n", userPrompt);
         Assert.Contains("[WebFetch content truncated before prompt processing]", userPrompt);
         Assert.EndsWith("Never produce or reproduce exact song lyrics.\n", userPrompt);
-        // ZCode caps the page content at 100k chars; the surrounding template adds its own
+        // The page content is capped at 100k chars; the surrounding template adds its own
         // fixed overhead on top, so the final prompt runs slightly past the cap.
         Assert.InRange(userPrompt.Length, 100_000, 100_600);
     }

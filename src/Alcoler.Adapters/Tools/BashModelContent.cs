@@ -5,7 +5,6 @@ namespace Alcoler.Adapters.Tools;
 /// <summary>
 /// Assembles the model-visible Bash result: exit-code header, stdout/stderr normalization,
 /// persisted-output envelope for oversized output, and background start announcements.
-/// All strings are ported from ZCode's bash-model-content / result-persistence-format.
 /// </summary>
 public static partial class BashModelContent
 {

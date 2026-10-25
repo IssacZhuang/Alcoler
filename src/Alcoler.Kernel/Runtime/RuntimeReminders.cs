@@ -3,10 +3,9 @@ using Alcoler.Kernel.Subagents;
 namespace Alcoler.Kernel.Runtime;
 
 /// <summary>
-/// Plan-mode runtime reminder texts, ported verbatim from ZCode runtime-reminders.ts: the
-/// full Plan Workflow on the 1st, 6th, ... attachment and the sparse form otherwise, with at
-/// most one attachment per 5 human turns; plus the one-shot body after ExitPlanMode approval.
-/// The exit reminder diverges from ZCode: approved plans execute via subagents.
+/// Plan-mode runtime reminder texts: the full Plan Workflow on the 1st, 6th, ... attachment
+/// and the sparse form otherwise, with at most one attachment per 5 human turns; plus the
+/// one-shot body after ExitPlanMode approval. Approved plans execute via subagents.
 /// </summary>
 public static class RuntimeReminders
 {

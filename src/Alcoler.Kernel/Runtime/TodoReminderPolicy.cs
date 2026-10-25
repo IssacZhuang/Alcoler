@@ -6,9 +6,9 @@ using Alcoler.Kernel.Tools;
 
 namespace Alcoler.Kernel.Runtime;
 
-// Mirrors ZCode runtime-reminders todo throttling: after enough model steps without a
-// TodoWrite call and enough steps since the last reminder, a one-shot user reminder is
-// appended to the outgoing request, including the current todo list when non-empty.
+// Todo reminder throttling: after enough model steps without a TodoWrite call and enough
+// steps since the last reminder, a one-shot user reminder is appended to the outgoing
+// request, including the current todo list when non-empty.
 public static class TodoReminderPolicy
 {
     public const string TodoWriteToolName = "TodoWrite";

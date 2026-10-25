@@ -13,7 +13,7 @@ using Xunit;
 namespace Alcoler.Kernel.Tests.EndToEnd;
 
 // Tool results reference images by artifact URI in stored history; the runtime hydrates
-// them into image blocks on the followup request, mirroring ZCode's media replay.
+// them into image blocks on the followup request.
 public class MediaHydrationTests
 {
     private const string TinyPngBase64 =

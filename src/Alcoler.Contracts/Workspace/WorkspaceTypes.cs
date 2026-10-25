@@ -19,8 +19,8 @@ public enum TodoPriority
 public sealed record TodoItem(string Content, TodoItemStatus Status, TodoPriority Priority);
 
 /// <summary>
-/// Per-session todo list state. The model submits the complete list on every write
-/// (ZCode contract style), so Replace is wholesale and returns the stored list.
+/// Per-session todo list state. The model submits the complete list on every write,
+/// so Replace is wholesale and returns the stored list.
 /// </summary>
 public interface ITodoStore
 {

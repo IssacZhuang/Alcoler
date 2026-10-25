@@ -9,10 +9,10 @@ public sealed record ModelRunnerOptions
     public bool CommitOnFirstEvent { get; init; }
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromSeconds(2);
     public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(60);
-    // ZCode jitters the capped delay uniformly into [50%, 100%]; the factor is the
-    // shrink span so 0.5 reproduces that distribution exactly and 0 disables it.
+    // Jitter is uniform in [50%, 100%] of the capped delay; the factor is the shrink
+    // span, so 0.5 produces that distribution exactly and 0 disables it.
     public double JitterFactor { get; init; } = 0.5;
-    // Mirrors ZCode DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS; grows by IdleTimeoutGrowthPerRetry per retry.
+    // Grows by IdleTimeoutGrowthPerRetry per retry.
     public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromSeconds(600);
     public TimeSpan IdleTimeoutGrowthPerRetry { get; init; } = TimeSpan.FromSeconds(30);
     public Func<int, TimeSpan, ValueTask>? RetryDelayObserver { get; init; }
@@ -173,9 +173,8 @@ public static class ModelStreamRunner
         }
     }
 
-    // Mirrors ZCode calculateRetryDelay: a reasonable retry-after replaces the backoff
-    // entirely (reasonableness is judged against the uncapped exponential delay), and
-    // jitter only ever shrinks the capped delay.
+    // A reasonable retry-after replaces the backoff entirely (reasonableness is judged
+    // against the uncapped exponential delay), and jitter only ever shrinks the capped delay.
     private static readonly TimeSpan s_maxReasonableRetryAfter = TimeSpan.FromMinutes(5);
 
     private static TimeSpan ComputeDelay(ModelRunnerOptions options, int attempt, ModelFailure failure)

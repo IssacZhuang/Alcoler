@@ -4,8 +4,8 @@ namespace Alcoler.Kernel.Tools;
 
 /// <summary>
 /// Renders the system-notification text delivered to the session when a background
-/// job finishes. The prefix and wrapper mirror ZCode's incoming-message
-/// task_notification presentation and formatTaskNotification (local_bash shape).
+/// job finishes. The prefix and wrapper follow the task_notification presentation
+/// (local_bash shape).
 /// </summary>
 public static class BackgroundJobNotifications
 {
@@ -35,8 +35,8 @@ public static class BackgroundJobNotifications
     }
 
     /// <summary>
-    /// local_agent task notification per ZCode runtime-task/notification.ts (formatLocalAgentTaskNotification):
-    /// output-file follows tool-use-id when a transcript path is supplied, summary
+    /// local_agent task notification: output-file follows tool-use-id when a transcript
+    /// path is supplied, summary
     /// "Agent {type} task \"{desc}\" {status}.", usage carries tool_uses and duration_ms when available.
     /// </summary>
     public static string FormatLocalAgentCompleted(
@@ -115,7 +115,7 @@ public static class BackgroundJobNotifications
             .Replace("<", "&lt;", StringComparison.Ordinal)
             .Replace(">", "&gt;", StringComparison.Ordinal);
 
-    // ZCode escapeXml escapes all five XML specials for local_agent notifications.
+    // local_agent notifications escape all five XML specials.
     private static string EscapeXml(string value) =>
         value.Replace("&", "&amp;", StringComparison.Ordinal)
             .Replace("<", "&lt;", StringComparison.Ordinal)

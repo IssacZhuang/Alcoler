@@ -4,9 +4,9 @@ namespace Alcoler.Kernel.Runtime;
 
 /// <summary>
 /// Mid-turn user input is committed into the running turn (not a new one), wrapped so the
-/// model can tell it apart from the turn's original request; text follows ZCode's
-/// user_steer presentation. Admission mirrors the reference steer limits: inputs must be
-/// non-empty and at most MAX_TURN_STEER_INPUT_BYTES UTF-8 bytes.
+/// model can tell it apart from the turn's original request and uses the user_steer
+/// presentation. Admission requires non-empty input of at most MAX_TURN_STEER_INPUT_BYTES
+/// UTF-8 bytes.
 /// </summary>
 internal static class Steering
 {
