@@ -264,14 +264,22 @@ public sealed class OpenAiResponsesChatModel(
                 ["parameters"] = ModelRequestOptions.ToolSchema(t.InputSchema, Descriptor.Properties),
             }).ToArray();
         var body = ModelRequestOptions.Encode(payload, _requestProperties, request.Options, "max_output_tokens", DefaultMaxTokens);
+        (string? SessionId, string? ThreadId) affinityHeaders = (null, null);
         if (IsAccount)
-            body = OpenAiResponsesAccountShaping.Shape(body);
+        {
+            affinityHeaders = OpenAiResponsesAccountShaping.CacheAffinityHeaders(request.CacheAffinity);
+            body = OpenAiResponsesAccountShaping.Shape(body, affinityHeaders.SessionId);
+        }
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, options.ResponsesUrl)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? options.ApiKey);
         httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
+        if (affinityHeaders.SessionId is { } sessionId)
+            httpRequest.Headers.TryAddWithoutValidation(OpenAiResponsesAccountShaping.SessionIdHeader, sessionId);
+        if (affinityHeaders.ThreadId is { } threadId)
+            httpRequest.Headers.TryAddWithoutValidation(OpenAiResponsesAccountShaping.ThreadIdHeader, threadId);
         return httpRequest;
     }
 

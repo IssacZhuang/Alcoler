@@ -11,7 +11,10 @@ namespace Alcoler.Kernel.Runtime;
 /// Runs one-shot requests on the session model with the lowest reasoning level and a
 /// capped output budget. Native search is the only request that carries a tool.
 /// </summary>
-internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelection, Func<ModelSelection, Task<IChatModel>> resolveModel) : IAuxModelClient, IProviderWebSearch
+internal sealed class SessionAuxModelClient(
+    Func<ModelSelection?> resolveSelection,
+    Func<ModelSelection, Task<IChatModel>> resolveModel,
+    ModelCacheAffinity? cacheAffinity = null) : IAuxModelClient, IProviderWebSearch
 {
     private const int MaxOutputTokensCap = 5_000;
     private const int WebSearchMaxOutputTokens = 4_096;
@@ -78,7 +81,7 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
                 [new InputTextBlock("You are an assistant for performing a web search tool use.")]),
             new(MessageRole.User, [new InputTextBlock($"Perform a web search for the query: {request.Query}")]),
         ];
-        var modelRequest = new ModelRequest(messages, [tool], options);
+        var modelRequest = new ModelRequest(messages, [tool], options, cacheAffinity);
 
         var text = new StringBuilder();
         var sources = new List<ProviderWebSearchSource>();
@@ -138,7 +141,7 @@ internal sealed class SessionAuxModelClient(Func<ModelSelection?> resolveSelecti
                         : $"{request.SystemPrompt}\n\n{request.UserPrompt}"),
                 ]),
             ];
-        var modelRequest = new ModelRequest(messages, [], options);
+        var modelRequest = new ModelRequest(messages, [], options, cacheAffinity);
 
         var text = new StringBuilder();
         await foreach (var streamEvent in ModelStreamRunner.RunAsync(

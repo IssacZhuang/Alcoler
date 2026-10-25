@@ -47,7 +47,14 @@ public sealed record ModelInputMessage(
     string? ProviderId = null,
     string? ModelId = null);
 
+/// <summary>
+/// Session identity for providers that route prefix caching per conversation; the
+/// parent id marks subagent sessions so sibling requests can share a cache route.
+/// </summary>
+public sealed record ModelCacheAffinity(string SessionId, string? ParentSessionId = null);
+
 public sealed record ModelRequest(
     IReadOnlyList<ModelInputMessage> Messages,
     IReadOnlyList<ToolContract> Tools,
-    ModelCallOptions Options);
+    ModelCallOptions Options,
+    ModelCacheAffinity? CacheAffinity = null);

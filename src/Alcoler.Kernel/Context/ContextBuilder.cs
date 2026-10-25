@@ -21,7 +21,8 @@ public sealed record ContextAssemblyInput(
     string? ToolPrompt = null,
     IReadOnlyDictionary<string, MediaPayload>? Media = null,
     bool InlineToolResultImages = false,
-    bool UseMidConversationSystem = false);
+    bool UseMidConversationSystem = false,
+    ModelCacheAffinity? CacheAffinity = null);
 
 /// <summary>An artifact hydrated for provider replay, keyed by artifact URI.</summary>
 public sealed record MediaPayload(string MimeType, string Base64Data, string? FileName = null);
@@ -123,7 +124,7 @@ public static class ContextBuilder
 
         AddCategory(ContextUsageSources.Messages, historyCharacters);
         requestTokens = (int)Math.Min(int.MaxValue, totalTokens);
-        return new AssembledContext(new ModelRequest(messages, input.Tools, input.Options), prefixCount, breakdown)
+        return new AssembledContext(new ModelRequest(messages, input.Tools, input.Options, input.CacheAffinity), prefixCount, breakdown)
         {
             EstimatedRequestTokens = requestTokens,
         };

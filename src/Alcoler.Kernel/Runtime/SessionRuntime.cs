@@ -165,7 +165,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         _shell = new ShellSessionState(record.WorkspaceRoot, record.Shell);
         _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync);
         _subagentTasks = deps.Tools.Tools.OfType<ISubagentTasks>().FirstOrDefault();
-        _auxModel = new SessionAuxModelClient(() => _record.ModelSelection ?? deps.Options.DefaultModel, deps.ResolveModel);
+        _auxModel = new SessionAuxModelClient(() => _record.ModelSelection ?? deps.Options.DefaultModel, deps.ResolveModel,
+            new ModelCacheAffinity(record.Id.Value, record.ParentSessionId?.Value));
         _skills = new SkillContentProvider(
             record.WorkspaceRoot, deps.Options.UserSkillsBase, deps.Options.DisabledSkillPathsProvider);
         _lastActivityUtc = deps.Clock.GetUtcNow();
@@ -1826,6 +1827,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 Messages = [.. summaryContext.Request.Messages, rawRequest.Messages[^1]],
                 Options = summaryOptions,
+                CacheAffinity = summaryContext.Request.CacheAffinity,
             };
             if (stripMediaForSummary)
                 summaryRequest = CompactSummaryModelRunner.ProjectMediaForRetry(summaryRequest);
@@ -2027,7 +2029,8 @@ public sealed class SessionRuntime : IAsyncDisposable
             CurrentDate: currentDate,
             Media: media,
             InlineToolResultImages: model?.InlineToolResultImages ?? false,
-            UseMidConversationSystem: model?.Descriptor.Properties.SupportsMidConversationSystem ?? false));
+            UseMidConversationSystem: model?.Descriptor.Properties.SupportsMidConversationSystem ?? false,
+            CacheAffinity: new ModelCacheAffinity(_record.Id.Value, _record.ParentSessionId?.Value)));
     }
 
     // Stored history references media by artifact URI so sessions stay light in memory;
