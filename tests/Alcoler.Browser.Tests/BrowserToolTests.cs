@@ -21,11 +21,11 @@ public class BrowserToolTests
     public BrowserToolTests() => _tool = new BrowserTool(_controller);
 
     [Fact]
-    public void PlatformSupport_IsWindowsOnly()
+    public void PlatformSupport_IsAllPlatforms()
     {
         Assert.True(_tool.IsAvailable(OSPlatform.Windows));
-        Assert.False(_tool.IsAvailable(OSPlatform.Linux));
-        Assert.False(_tool.IsAvailable(OSPlatform.OSX));
+        Assert.True(_tool.IsAvailable(OSPlatform.Linux));
+        Assert.True(_tool.IsAvailable(OSPlatform.OSX));
     }
 
     [Fact]

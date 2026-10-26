@@ -18,13 +18,14 @@ The project is not a stable product. Interfaces, persistence formats, and behavi
 | `src/Alcoler.Kernel` | Agent runtime, turn machine, tools, prompts, compaction, subagents, sessions |
 | `src/Alcoler.Contracts` | Shared types, events, commands, projections, and interfaces |
 | `src/Alcoler.Adapters` | Model providers, storage, shell and file tools, MCP, web access |
-| `src/Alcoler.Browser` | Playwright-driven browser automation |
-| `src/Alcoler` | Avalonia desktop workbench |
+| `src/Alcoler.Browser` | Engine-agnostic browser automation (CDP core, controller, Browser tool) |
+| `src/Alcoler.Browser.Chromium` | Cross-platform external Chromium backend (real browser process over loopback CDP) |
+| `src/Alcoler` | Avalonia desktop workbench (embeds WebView2 as the Windows browser backend) |
 | `tests/` | Kernel, workbench, and browser test suites |
 
 ## Build and Run
 
-Alcoler targets .NET 10 and currently uses Windows as its primary platform. Avalonia keeps macOS and Linux technically reachable, but they are not validated.
+Alcoler targets .NET 10. The workbench runs on Windows; the browser tool additionally covers Linux and macOS through the external Chromium backend, which resolves an installed Chrome/Chromium/Edge or downloads a Chrome-for-Testing build on first use.
 
 ```sh
 dotnet build Alcoler.slnx
@@ -37,7 +38,7 @@ Run the test suites with:
 dotnet test Alcoler.slnx
 ```
 
-Some browser tests require the Playwright browser binaries to be installed. Native search support is provided by the `alco-grep` library and a platform ripgrep binary; both are optional and degrade gracefully when unavailable.
+The browser integration suites launch a real browser (`tests/Alcoler.Browser.IntegrationTests` uses the WebView2 runtime on Windows; `tests/Alcoler.Browser.Chromium.IntegrationTests` uses any installed Chromium-family browser). Native search support is provided by the `alco-grep` library and a platform ripgrep binary; both are optional and degrade gracefully when unavailable.
 
 ## Credit
 

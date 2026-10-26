@@ -11,14 +11,6 @@ using Avalonia.VisualTree;
 
 namespace Alcoler.Browser;
 
-public sealed class BrowserNewTabRequestedEventArgs(SessionId sessionId, string openerTabId, string url, bool isUserInitiated = false) : EventArgs
-{
-    public SessionId SessionId { get; } = sessionId;
-    public string OpenerTabId { get; } = openerTabId;
-    public string Url { get; } = url;
-    public bool IsUserInitiated { get; } = isUserInitiated;
-}
-
 public sealed class WebViewBrowserHost : IBrowserHost
 {
     private readonly string _userDataFolder;
@@ -38,7 +30,7 @@ public sealed class WebViewBrowserHost : IBrowserHost
     public event EventHandler? PagesChanged;
     public event EventHandler<BrowserNewTabRequestedEventArgs>? NewTabRequested;
 
-    public async Task<IBrowserPage> CreatePageAsync(SessionId sessionId, string tabId, CancellationToken cancellationToken)
+    public async Task<IBrowserPage> CreatePageAsync(SessionId sessionId, string tabId, CancellationToken cancellationToken, string? adoptTargetId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tabId);
         WebViewBrowserPage page = await OnUiAsync(() =>

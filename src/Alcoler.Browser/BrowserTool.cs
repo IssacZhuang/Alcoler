@@ -29,11 +29,11 @@ public sealed class BrowserTool : ITool, IPlatformGatedTool
 
     public BrowserTool(IBrowserController controller) => _controller = controller;
 
-    public bool IsAvailable(OSPlatform platform) => platform == OSPlatform.Windows;
+    public bool IsAvailable(OSPlatform platform) => true;
 
     public ToolContract Contract { get; } = new(
         "Browser",
-        "Use the session-owned WebView browser. Discover actual platform support with capabilities; inspect tabs and snapshot before acting. " +
+        "Use the session-owned browser. Discover actual platform support with capabilities; inspect tabs and snapshot before acting. " +
         "Navigation: navigate/new_tab/back/forward/reload. Observe: snapshot/dom_snapshot/read_text/screenshot and locator queries. " +
         "Interact: click/dblclick/hover/fill/type/press/scroll/drag/check/uncheck/select_option. " +
         "Manage: dialog/downloads/download_media/viewport/visibility, bounded recording, takeover/resume/finalize. " +

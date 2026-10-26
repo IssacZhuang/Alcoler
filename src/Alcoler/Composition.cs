@@ -2,6 +2,7 @@ using Alcoler.Adapters.Models;
 using Alcoler.Adapters.Storage;
 using Alcoler.Adapters.Tools;
 using Alcoler.Browser;
+using Alcoler.Browser.Chromium;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
@@ -20,14 +21,41 @@ public static class Composition
     public static async Task<WorkbenchViewModel> BuildWorkbenchAsync(WorkbenchConfig config, CancellationToken ct)
     {
         var mcpTools = new McpToolSource(config.McpServers);
-        var browserHost = new WebViewBrowserHost(Path.Combine(WorkbenchDataPaths.Root, "browser"));
-        var browser = new WebViewBrowserController(browserHost);
+        const string ChromiumCapabilitiesText =
+            "External Chromium-family browser launched as a separate OS process, with the Chromium sandbox enabled by default. "
+            + "Each session uses an isolated profile persisted on disk, and downloads land in that profile's downloads directory. "
+            + "The browser window is external, shown on visibility or takeover, not embedded in the app pane. "
+            + "Tabs and control ownership are session-scoped. Use snapshot to discover elements; refs expire on navigation. "
+            + "File upload and external browser attachment are not supported.";
+        var backend = ResolveBrowserBackend(config.Browser?.Backend);
+        IBrowserHost browserHost;
+        if (backend == "webview2")
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                throw new PlatformNotSupportedException(
+                    $"The '{backend}' browser backend requires Windows. Configure browser.backend 'chromium' instead.");
+            }
+            browserHost = new WebViewBrowserHost(Path.Combine(WorkbenchDataPaths.Root, "browser"));
+        }
+        else
+        {
+            browserHost = new ChromiumBrowserHost(
+                Path.Combine(WorkbenchDataPaths.Root, "browser"),
+                new ChromiumBrowserOptions
+                {
+                    ExecutablePath = config.Browser?.ExecutablePath,
+                    Headless = config.Browser?.Headless,
+                });
+        }
+        var browser = new BrowserController(browserHost, backendName: backend,
+            capabilitiesText: backend == "chromium" ? ChromiumCapabilitiesText : null);
         browserHost.NewTabRequested += async (_, request) =>
         {
             try
             {
                 await browser.OpenPopupAsync(request.SessionId, request.OpenerTabId, request.Url,
-                    CancellationToken.None, request.IsUserInitiated);
+                    CancellationToken.None, request.IsUserInitiated, request.TargetId);
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
             {
@@ -68,7 +96,7 @@ public static class Composition
                 })),
             chatGptAccount: chatGptAccount,
             browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance,
-                pagePresenterFactory: browserHost.CreatePagePresenter),
+                pagePresenterFactory: browserHost is WebViewBrowserHost webViewHost ? webViewHost.CreatePagePresenter : null),
             saveComposer: composer => (WorkbenchConfig.LoadOrDefault() with { Composer = composer }).Save(),
             applySettings: saved =>
             {
@@ -174,6 +202,18 @@ public static class Composition
 
     internal static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config, ChatGptAccountService? chatGptAccount = null) =>
         [.. config.Providers.Where(provider => provider.Enabled).Select(provider => BuildProvider(provider, chatGptAccount))];
+
+    private static string ResolveBrowserBackend(string? configured)
+    {
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var backend = configured.Trim().ToLowerInvariant();
+            if (backend is "webview2" or "chromium") return backend;
+            throw new InvalidOperationException(
+                $"Unknown browser backend '{configured}'. Valid options are 'webview2' and 'chromium'.");
+        }
+        return OperatingSystem.IsWindows() ? "webview2" : "chromium";
+    }
 
     private static IModelProvider BuildProvider(WorkbenchProviderConfig provider, ChatGptAccountService? chatGptAccount) =>
         provider.Kind.ToLowerInvariant() switch

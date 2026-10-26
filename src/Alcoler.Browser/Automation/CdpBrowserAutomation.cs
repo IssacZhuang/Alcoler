@@ -513,14 +513,29 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 if (String(p, "frameId") is { } detached)
                 {
                     _contexts.TryRemove(detached, out _);
-                    _frameSessions.TryRemove(detached, out _);
-                    if (String(p, "reason") != "swap") _frameOwners.TryRemove(detached, out _);
+                    // An OOPIF swap can deliver Target.attachedToTarget for the replacement before this
+                    // event; the fresh route must survive and the stale one is retired by
+                    // Target.detachedFromTarget.
+                    if (String(p, "reason") != "swap")
+                    {
+                        _frameSessions.TryRemove(detached, out _);
+                        _frameOwners.TryRemove(detached, out _);
+                    }
                 }
                 _references.Clear();
                 break;
             case "Target.attachedToTarget":
                 if (p.TryGetProperty("targetInfo", out var info) && String(info, "type") == "iframe" && String(info, "targetId") is { } target && String(p, "sessionId") is { } session)
                     _frameSessions[target] = session;
+                break;
+            case "Target.detachedFromTarget":
+                if (String(p, "sessionId") is { } retired)
+                    foreach (var (mappedFrame, mappedSession) in _frameSessions)
+                        if (mappedSession == retired)
+                        {
+                            _frameSessions.TryRemove(mappedFrame, out _);
+                            _contexts.TryRemove(mappedFrame, out _);
+                        }
                 break;
             case "Page.lifecycleEvent":
                 if (String(p, "frameId") is { } loadFrame && String(p, "name") is { } name)

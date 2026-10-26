@@ -41,5 +41,6 @@
     <ProjectReference Include="..\Alcoler.Adapters\Alcoler.Adapters.csproj"
                       AdditionalProperties="AlcoGrepTargetRid=$(RuntimeIdentifier)" />
     <ProjectReference Include="..\Alcoler.Browser\Alcoler.Browser.csproj" />
+    <ProjectReference Include="..\Alcoler.Browser.Chromium\Alcoler.Browser.Chromium.csproj" />
   </ItemGroup>
 </Project>

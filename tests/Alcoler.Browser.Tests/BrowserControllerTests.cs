@@ -5,7 +5,7 @@ using Xunit;
 
 namespace Alcoler.Browser.Tests;
 
-public sealed class WebViewBrowserControllerTests
+public sealed class BrowserControllerTests
 {
     private static readonly SessionId First = new("session_first");
     private static readonly SessionId Second = new("session_second");
@@ -14,7 +14,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task Tabs_AreOwnedByTheirSession()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var first = await controller.ExecuteAsync(First, Command("new_tab"), default);
         var second = await controller.ExecuteAsync(Second, Command("new_tab"), default);
         Assert.True(first.Ok, first.Error);
@@ -31,7 +31,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task ClosingSelectedTab_SelectsRemainingTab_AndClosesNativePage()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var first = await controller.ExecuteAsync(First, Command("new_tab"), default);
         var second = await controller.ExecuteAsync(First, Command("new_tab"), default);
         var closed = await controller.ExecuteAsync(First, Command("close_tab", second.TabId), default);
@@ -42,10 +42,26 @@ public sealed class WebViewBrowserControllerTests
     }
 
     [Fact]
+    public async Task OpenPopupAsync_ForwardsTheHostTargetIdForAdoption()
+    {
+        using var host = new TestHost();
+        using var controller = new BrowserController(host);
+        var opener = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        Assert.True(opener.Ok, opener.Error);
+        var popup = await controller.OpenPopupAsync(First, opener.TabId!, "about:blank", default, adoptTargetId: "POP9");
+        Assert.True(popup.Ok, popup.Error);
+        Assert.Equal((popup.TabId!, "POP9"), Assert.Single(host.Adoptions));
+        Assert.Equal(2, host.Pages.Count);
+        var plain = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        Assert.True(plain.Ok, plain.Error);
+        Assert.Single(host.Adoptions);
+    }
+
+    [Fact]
     public async Task Takeover_BlocksAutomatedInputAndResume_ButAllowsObservationAndUserResume()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var tab = await controller.ExecuteAsync(First, Command("new_tab"), default);
         await controller.TakeoverAsync(First, default);
         Assert.True(controller.GetStatus(First)!.IsUserControlled);
@@ -70,7 +86,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task TakeoverAction_DoesNotCancelItsOwnResult()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         await controller.ExecuteAsync(First, Command("new_tab"), default);
         var result = await controller.ExecuteAsync(First, Command("takeover"), default);
         Assert.True(result.Ok, result.Error);
@@ -81,7 +97,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task Takeover_WaitsForCanceledCommandCleanupBeforeShowingPage()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var tab = await controller.ExecuteAsync(First, Command("new_tab"), default);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -116,7 +132,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task Cap_IsAtomicAcrossSessions_AndClosingReleasesSlot()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var results = await Task.WhenAll(Enumerable.Range(0, 40).Select(index => controller.ExecuteAsync(
             new SessionId($"session_{index}"), Command("new_tab"), default)));
         Assert.Equal(32, results.Count(result => result.Ok));
@@ -131,7 +147,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task Finalize_KeepsUnlistedTabs_AndCanReleaseOwnership()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var first = await controller.ExecuteAsync(First, Command("new_tab"), default);
         await controller.ExecuteAsync(First, Command("new_tab"), default);
         var input = BrowserJson.Element(new Dictionary<string, object?> { ["keep"] = new[] { first.TabId }, ["release"] = true });
@@ -146,7 +162,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task FailedCreation_ReleasesReservedSlotAndDoesNotLeaveTab()
     {
         using var host = new TestHost { FailCreation = true };
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var failure = await controller.ExecuteAsync(First, Command("new_tab"), default);
         Assert.False(failure.Ok);
         Assert.Empty(controller.GetStatus(First)!.Tabs!);
@@ -161,7 +177,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task NativeClose_UpdatesStatus_AndRejectsStaleTab()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var tab = await controller.ExecuteAsync(First, Command("new_tab"), default);
         host.Pages[tab.TabId!].Raise("Host.closed");
         Assert.Empty(controller.GetStatus(First)!.Tabs!);
@@ -175,7 +191,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task Popup_RequiresLiveOpener_AndRejectsExternalProtocols()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var tab = await controller.ExecuteAsync(First, Command("new_tab"), default);
         Assert.False((await controller.OpenPopupAsync(Second, tab.TabId!, "https://example.com", default)).Ok);
         var invalid = await controller.OpenPopupAsync(First, tab.TabId!, "file:///C:/secret", default);
@@ -187,7 +203,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task Observation_UnderHumanControlDoesNotCreateTab()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         await controller.TakeoverAsync(First, default);
         var screenshot = await controller.ExecuteAsync(First, new BrowserScreenshotAction(), default);
         Assert.False(screenshot.Ok);
@@ -198,7 +214,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task Popup_DoesNotElevateScriptToHumanInteraction()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var tab = await controller.ExecuteAsync(First, Command("new_tab"), default);
         await controller.TakeoverAsync(First, default);
         var scriptPopup = await controller.OpenPopupAsync(First, tab.TabId!, "https://example.com", default);
@@ -213,7 +229,7 @@ public sealed class WebViewBrowserControllerTests
     public async Task VisibilityFalse_ParksNativePage()
     {
         using var host = new TestHost();
-        using var controller = new WebViewBrowserController(host);
+        using var controller = new BrowserController(host);
         var tab = await controller.ExecuteAsync(First, Command("new_tab"), default);
         var result = await controller.ExecuteAsync(First, new BrowserCommandAction("visibility",
             BrowserJson.Element(new Dictionary<string, object?> { ["visible"] = false })) { TabId = tab.TabId }, default);
@@ -244,13 +260,20 @@ public sealed class WebViewBrowserControllerTests
         public List<string> Closed { get; } = [];
         public List<string> Shown { get; } = [];
         public List<string> Hidden { get; } = [];
+        public List<(string TabId, string AdoptTargetId)> Adoptions { get; } = [];
         public bool FailCreation { get; set; }
         public TaskCompletionSource CloseCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task<IBrowserPage> CreatePageAsync(SessionId sessionId, string tabId, CancellationToken cancellationToken)
+        public event EventHandler<BrowserNewTabRequestedEventArgs>? NewTabRequested
+        {
+            add { }
+            remove { }
+        }
+        public Task<IBrowserPage> CreatePageAsync(SessionId sessionId, string tabId, CancellationToken cancellationToken, string? adoptTargetId = null)
         {
             if (FailCreation) throw new InvalidOperationException("Native creation failed.");
             lock (_sync)
             {
+                if (adoptTargetId is not null) Adoptions.Add((tabId, adoptTargetId));
                 var page = new TestPage(tabId);
                 Pages.Add(tabId, page);
                 Owners.Add(tabId, sessionId);

@@ -13,6 +13,15 @@ Alcoler is a from-scratch coding agent harness, built kernel-first. This file is
 - Report every test failure; you may suspect a failure is unrelated to your change, but you must verify before concluding so.
 - Never commit unless explicitly asked; when asked, never add yourself as co-author.
 
+## Browser Backends
+
+The Browser tool is engine-agnostic: `src/Alcoler.Browser` (BrowserTool, BrowserController, CdpBrowserAutomation) drives any `IBrowserHost`/`IBrowserPage` implementation. Two backends ship:
+
+- `src/Alcoler/Browser` — embedded WebView2, Windows default. In-app pane embedding; native download/dialog interception.
+- `src/Alcoler.Browser.Chromium` — external Chromium-family browser process over loopback CDP WebSocket, default on Linux/macOS. Never launches with `--no-sandbox`; one process per browser session with a persisted per-session profile; the browser window is external (visibility/takeover map to window bounds over CDP).
+
+Selection: `browser.backend` in `~/.alcoler/config.json` (`webview2` | `chromium`), defaulting to webview2 on Windows and chromium elsewhere. Binary resolution for chromium: `browser.executablePath` → `ALCOLER_BROWSER_EXECUTABLE` → installed Chrome/Chromium/Edge → Chrome-for-Testing download into `~/.alcoler`. Verification: `tests/Alcoler.Browser.Tests` + `tests/Alcoler.Browser.Chromium.Tests` (unit, no browser), `tests/Alcoler.Browser.IntegrationTests` (WebView2, Windows) and `tests/Alcoler.Browser.Chromium.IntegrationTests` (real browser, any OS).
+
 ## Memory Budget
 
 Baseline from the kernel memory probe (`tests/Alcoler.Kernel.Tests/EndToEnd/MemorySpikeProbe.cs`): 10 resident sessions holding 850 scripted turns cost 7 MB managed / +21 MB working set over the process floor; the desktop process floor is Avalonia-dominated (~135 MB). No fixed working-set cap is enforced: memory and performance must be weighed together, with session residency and event retention kept bounded.

@@ -7,21 +7,26 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Alcoler.Browser;
 
-public sealed class WebViewBrowserController : IBrowserController
+public sealed class BrowserController : IBrowserController
 {
     private const int MaxTabs = 32;
     private readonly IBrowserHost _host;
     private readonly ILogger _logger;
+    private readonly string _backendName;
+    private readonly string? _capabilitiesText;
     private readonly Lock _sync = new();
     private readonly Dictionary<SessionId, SessionEntry> _sessions = [];
     private readonly CancellationTokenSource _shutdown = new();
     private int _reservedTabs;
     private bool _disposed;
 
-    public WebViewBrowserController(IBrowserHost host, ILogger<WebViewBrowserController>? logger = null)
+    public BrowserController(IBrowserHost host, ILogger<BrowserController>? logger = null,
+        string backendName = "webview2", string? capabilitiesText = null)
     {
         _host = host;
-        _logger = logger ?? NullLogger<WebViewBrowserController>.Instance;
+        _logger = logger ?? NullLogger<BrowserController>.Instance;
+        _backendName = backendName;
+        _capabilitiesText = capabilitiesText;
     }
 
     public event EventHandler<BrowserStatusChangedEventArgs>? StatusChanged;
@@ -142,14 +147,14 @@ public sealed class WebViewBrowserController : IBrowserController
 
     public Task<BrowserActionResult> OpenPopupAsync(
         SessionId sessionId, string openerTabId, string url, CancellationToken cancellationToken,
-        bool isUserInitiated = false)
+        bool isUserInitiated = false, string? adoptTargetId = null)
     {
         PopupAction action;
         lock (_sync)
         {
             if (_disposed || !_sessions.TryGetValue(sessionId, out var session))
                 return Task.FromResult(Failure("The popup opener is no longer available."));
-            action = new PopupAction(openerTabId, url, session.ControlGeneration)
+            action = new PopupAction(openerTabId, url, session.ControlGeneration, adoptTargetId)
             {
                 UserInitiated = isUserInitiated && session.UserControlled && session.Inflight is null,
             };
@@ -164,10 +169,10 @@ public sealed class WebViewBrowserController : IBrowserController
         switch (action.Verb)
         {
             case "capabilities":
-                return new(true, Text: "Embedded WebView browser. Windows WebView2 runtime is required for automation. Tabs and control ownership are session-scoped; browser data persists in an application profile. Use snapshot to discover elements; refs expire on navigation. File upload and external Chrome attachment are not supported.",
+                return new(true, Text: _capabilitiesText ?? "Embedded WebView browser. Windows WebView2 runtime is required for automation. Tabs and control ownership are session-scoped; browser data persists in an application profile. Use snapshot to discover elements; refs expire on navigation. File upload and external Chrome attachment are not supported.",
                     StructuredOutput: BrowserJson.Serialize(new Dictionary<string, object?>
                     {
-                        ["backend"] = "webview2", ["platform"] = "windows", ["maxTabs"] = MaxTabs,
+                        ["backend"] = _backendName, ["platform"] = PlatformName(), ["maxTabs"] = MaxTabs,
                         ["observations"] = new[] { "snapshot", "dom_snapshot", "screenshot", "element_info", "evaluate" },
                         ["interactions"] = new[] { "navigate", "click", "dblclick", "hover", "fill", "type", "press", "scroll", "drag", "check", "uncheck", "select_option" },
                         ["lifecycle"] = new[] { "tabs", "new_tab", "select_tab", "close_tab", "back", "forward", "reload", "takeover", "resume", "finalize" },
@@ -209,7 +214,7 @@ public sealed class WebViewBrowserController : IBrowserController
                 }
                 var url = action is PopupAction requested ? requested.Url : GetString(input, "url") ?? "about:blank";
                 ValidateUrl(url);
-                var created = await CreateTabAsync(sessionId, session, ct).ConfigureAwait(false);
+                var created = await CreateTabAsync(sessionId, session, ct, action is PopupAction adopt ? adopt.AdoptTargetId : null).ConfigureAwait(false);
                 if (url != "about:blank")
                 {
                     var navigated = await created.Automation.ExecuteAsync(new BrowserNavigateAction(url), ct).ConfigureAwait(false);
@@ -254,7 +259,7 @@ public sealed class WebViewBrowserController : IBrowserController
         return result with { TabId = current.Page.Id };
     }
 
-    private async Task<TabEntry> CreateTabAsync(SessionId sessionId, SessionEntry session, CancellationToken ct)
+    private async Task<TabEntry> CreateTabAsync(SessionId sessionId, SessionEntry session, CancellationToken ct, string? adoptTargetId = null)
     {
         lock (_sync)
         {
@@ -267,7 +272,7 @@ public sealed class WebViewBrowserController : IBrowserController
         CdpBrowserAutomation? automation = null;
         try
         {
-            page = await _host.CreatePageAsync(sessionId, id, ct).ConfigureAwait(false);
+            page = await _host.CreatePageAsync(sessionId, id, ct, adoptTargetId).ConfigureAwait(false);
             automation = new CdpBrowserAutomation(page);
             await automation.InitializeAsync(ct).ConfigureAwait(false);
             var entry = new TabEntry(page, automation);
@@ -471,6 +476,9 @@ public sealed class WebViewBrowserController : IBrowserController
         input.ValueKind == JsonValueKind.Object && input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() : null;
 
+    private static string PlatformName() => OperatingSystem.IsWindows() ? "windows"
+        : OperatingSystem.IsLinux() ? "linux" : OperatingSystem.IsMacOS() ? "macos" : "other";
+
     private static void ValidateUrl(string url)
     {
         if (url == "about:blank") return;
@@ -509,7 +517,7 @@ public sealed class WebViewBrowserController : IBrowserController
         _host.Dispose();
     }
 
-    private sealed record PopupAction(string OpenerTabId, string Url, int ControlGeneration) : BrowserAction
+    private sealed record PopupAction(string OpenerTabId, string Url, int ControlGeneration, string? AdoptTargetId = null) : BrowserAction
     {
         public override string Verb => "popup";
     }

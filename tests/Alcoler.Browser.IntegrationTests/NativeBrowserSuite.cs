@@ -31,7 +31,7 @@ internal sealed class NativeBrowserSuite
     private readonly Window _window;
     private readonly LoopbackFixture _fixture;
     private readonly WebViewBrowserHost _host;
-    private readonly WebViewBrowserController _nativeController;
+    private readonly BrowserController _nativeController;
     private readonly IBrowserController _controller;
     private readonly CancellationToken _ct;
     private readonly string _profileDirectory;
@@ -46,7 +46,7 @@ internal sealed class NativeBrowserSuite
     private int _passed;
 
     private NativeBrowserSuite(Window window, LoopbackFixture fixture, WebViewBrowserHost host,
-        WebViewBrowserController controller, string profileDirectory, CancellationToken ct)
+        BrowserController controller, string profileDirectory, CancellationToken ct)
     {
         _window = window;
         _fixture = fixture;
@@ -69,7 +69,7 @@ internal sealed class NativeBrowserSuite
             await using var fixture = new LoopbackFixture();
             var profileDirectory = Path.Combine(directory, "profile");
             var host = new WebViewBrowserHost(profileDirectory);
-            var controller = new WebViewBrowserController(host);
+            var controller = new BrowserController(host);
             var suite = new NativeBrowserSuite(window, fixture, host, controller, profileDirectory, ct);
             try
             {

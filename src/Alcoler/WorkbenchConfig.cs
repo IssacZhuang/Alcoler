@@ -63,6 +63,11 @@ public sealed record WorkbenchMcpServerConfig(
     IReadOnlyList<string>? Args = null,
     IReadOnlyDictionary<string, string>? Env = null);
 
+public sealed record WorkbenchBrowserConfig(
+    string? Backend = null,
+    string? ExecutablePath = null,
+    bool? Headless = null);
+
 public sealed record WorkbenchConfig(
     IReadOnlyList<WorkbenchProviderConfig> Providers,
     WorkbenchDefaultModelConfig? DefaultModel = null,
@@ -74,7 +79,8 @@ public sealed record WorkbenchConfig(
     ShellEnvironment? IntegratedTerminalShell = null,
     IReadOnlyList<string>? DisabledSkillPaths = null,
     bool AutoArchiveSessions = false,
-    int AutoArchiveOlderThanDays = 7)
+    int AutoArchiveOlderThanDays = 7,
+    WorkbenchBrowserConfig? Browser = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

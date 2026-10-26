@@ -13,13 +13,14 @@ namespace Alcoler.Browser;
 internal sealed partial class WebViewBrowserPage : IBrowserPage
 {
     // Methods any ProtocolEvent subscriber acts on: the union of
-    // CdpBrowserAutomation.OnProtocolEvent and WebViewBrowserController.OnProtocolEvent.
+    // CdpBrowserAutomation.OnProtocolEvent and BrowserController.OnProtocolEvent.
     // Everything else (DOM mutation storms, console output, targetInfo churn) is
     // never parsed; a test pins that DOM mutations stay unparsed.
     private static readonly FrozenSet<string> ConsumedProtocolMethods = new string[]
     {
         "Page.frameNavigated", "Page.navigatedWithinDocument", "DOM.documentUpdated",
         "Runtime.executionContextsCleared", "Page.frameDetached", "Target.attachedToTarget",
+        "Target.detachedFromTarget",
         "Page.lifecycleEvent", "Host.titleChanged", "Host.loadingChanged",
         "Page.javascriptDialogOpening", "Page.javascriptDialogClosed",
         "Browser.downloadWillBegin", "Page.downloadWillBegin",

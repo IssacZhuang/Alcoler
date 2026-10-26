@@ -120,6 +120,45 @@ public sealed class CdpBrowserAutomationTests
         }
     }
 
+    [Fact]
+    public async Task OopifSwapDetachKeepsFreshlyAttachedFrameSession()
+    {
+        using var page = new FakePage { FrameTransforms = [Transform(1, 1)] };
+        using var engine = new CdpBrowserAutomation(page);
+        page.Emit("Target.attachedToTarget", "{\"sessionId\":\"swap-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
+        page.Emit("Page.frameDetached", "{\"frameId\":\"child\",\"reason\":\"swap\"}");
+        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"},\"timeoutMs\":200}");
+        Assert.True(result.Ok, result.Error);
+        var world = Assert.Single(page.Calls, c => c.Method == "Page.createIsolatedWorld" && c.Parameters.GetProperty("frameId").GetString() == "child");
+        Assert.Equal("swap-session", world.Session);
+    }
+
+    [Fact]
+    public async Task TargetDetachedFromTargetRetiresFrameSessionRoute()
+    {
+        using var page = new FakePage { FrameTransforms = [Transform(1, 1)] };
+        using var engine = new CdpBrowserAutomation(page);
+        page.Emit("Target.attachedToTarget", "{\"sessionId\":\"doomed-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
+        page.Emit("Target.detachedFromTarget", "{\"sessionId\":\"doomed-session\"}");
+        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"},\"timeoutMs\":200}");
+        Assert.True(result.Ok, result.Error);
+        var world = Assert.Single(page.Calls, c => c.Method == "Page.createIsolatedWorld" && c.Parameters.GetProperty("frameId").GetString() == "child");
+        Assert.Null(world.Session);
+    }
+
+    [Fact]
+    public async Task NonSwapFrameDetachedRemovesFrameSession()
+    {
+        using var page = new FakePage { FrameTransforms = [Transform(1, 1)] };
+        using var engine = new CdpBrowserAutomation(page);
+        page.Emit("Target.attachedToTarget", "{\"sessionId\":\"old-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
+        page.Emit("Page.frameDetached", "{\"frameId\":\"child\",\"reason\":\"replace\"}");
+        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"},\"timeoutMs\":200}");
+        Assert.True(result.Ok, result.Error);
+        var world = Assert.Single(page.Calls, c => c.Method == "Page.createIsolatedWorld" && c.Parameters.GetProperty("frameId").GetString() == "child");
+        Assert.Null(world.Session);
+    }
+
     private static JsonElement Transform(double scaleX, double scaleY, double x = 0, double y = 0) => BrowserJson.Element(new Dictionary<string, object?>
     {
         ["matrix"] = new double[] { scaleX, 0, 0, 0, 0, scaleY, 0, 0, 0, 0, 1, 0, x, y, 0, 1 },

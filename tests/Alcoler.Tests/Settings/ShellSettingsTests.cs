@@ -50,6 +50,28 @@ public sealed class ShellSettingsTests
     }
 
     [Fact]
+    public void BrowserSection_RoundTripsThroughLoadOrDefault()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-browser-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            var config = new WorkbenchConfig([], Browser: new WorkbenchBrowserConfig("chromium", "/opt/chrome", true));
+            config.Save(path);
+            var loaded = WorkbenchConfig.LoadOrDefault(path);
+            Assert.Equal(config.Browser, loaded.Browser);
+            using var json = JsonDocument.Parse(File.ReadAllText(path));
+            var browser = json.RootElement.GetProperty("browser");
+            Assert.Equal("chromium", browser.GetProperty("backend").GetString());
+            Assert.Equal("/opt/chrome", browser.GetProperty("executablePath").GetString());
+            Assert.True(browser.GetProperty("headless").GetBoolean());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void LegacyConfig_DefaultsToAuto_AndInstalledShellsAreListed()
     {
         using var settings = new SettingsViewModel(new WorkbenchConfig([]), [Cmd, GitBash], isWindows: true);
