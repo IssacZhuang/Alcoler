@@ -357,9 +357,9 @@
                           </DataTemplate>
                         </ItemsControl.ItemTemplate>
                       </ItemsControl>
-                      <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
-                                           FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
-                                           IsVisible="{Binding !!Text}" Foreground="{DynamicResource AlcolerTextPrimary}" />
+                      <controls:ConversationSelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                                                                FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
+                                                                IsVisible="{Binding !!Text}" Foreground="{DynamicResource AlcolerTextPrimary}" />
                     </StackPanel>
                   </Border>
                   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="2">

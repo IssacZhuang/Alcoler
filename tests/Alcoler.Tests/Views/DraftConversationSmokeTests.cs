@@ -9,6 +9,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Media.TextFormatting;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Xunit;
@@ -95,6 +96,12 @@ public sealed class DraftConversationSmokeTests
 
             Assert.Equal(root, workbench.Draft!.WorkspaceRoot);
             Assert.Equal("alcoler-headless-project", workbench.Draft.WorkspaceName);
+            window.UpdateLayout();
+            var workspaceLabel = Assert.Single(window.FindControl<Button>("WorkspaceChooser")!
+                .GetVisualDescendants().OfType<TextBlock>(), block => block.Text == workbench.Draft.WorkspaceName);
+            Assert.True(workspaceLabel.Bounds.Width > 0);
+            Assert.Equal(workbench.Draft.WorkspaceName, string.Concat(workspaceLabel.TextLayout.TextLines
+                .SelectMany(line => line.TextRuns).OfType<ShapedTextRun>().Select(run => run.Text.ToString())));
             Assert.NotNull(window.FindControl<Button>("WorkspaceChooser")!.Flyout);
             Assert.Equal("Open Folder...", window.FindControl<Button>("OpenFolderButton")!.Content);
             Assert.Equal("Work outside project", window.FindControl<Button>("OutsideProjectButton")!.Content);

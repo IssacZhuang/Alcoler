@@ -1,8 +1,11 @@
 using Alcoler.Adapters.Models;
 using Alcoler.Adapters.Storage;
 using Alcoler.Adapters.Tools;
+using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Ui;
@@ -108,6 +111,106 @@ public sealed class WorkspaceRemovalTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoveWorkspace_KeepsActiveConversationUntilSidebarRefreshCompletes()
+    {
+        var alpha = Directory.CreateDirectory(Path.Combine(_root, "alpha")).FullName;
+        var beta = Directory.CreateDirectory(Path.Combine(_root, "beta")).FullName;
+        var runtime = new WorkspaceRuntime();
+        var alphaSession = runtime.AddSession(alpha, "Alpha");
+        var betaSession = runtime.AddSession(beta, "Beta");
+        using var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(alphaSession.Id);
+        var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
+        conversation.Composer.Draft = "Keep this session draft";
+        var refresh = runtime.DelayNextList();
+
+        var removing = workbench.RemoveWorkspaceAsync(alpha);
+        try
+        {
+            Assert.False(removing.IsCompleted);
+            Assert.Same(conversation, workbench.Active);
+            Assert.Same(conversation, workbench.ComposerHost);
+            Assert.False(workbench.IsDraft);
+            Assert.Equal(alpha, workbench.CurrentWorkspaceRoot);
+            Assert.Equal("Keep this session draft", workbench.ComposerHost!.Composer.Draft);
+        }
+        finally
+        {
+            refresh.TrySetResult([alphaSession, betaSession]);
+            await removing;
+        }
+
+        Assert.Null(workbench.Active);
+        var draft = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
+        Assert.Same(draft, workbench.ComposerHost);
+        Assert.Equal(beta, draft.WorkspaceRoot);
+        Assert.Equal("beta", draft.WorkspaceName);
+        Assert.Equal(beta, Assert.Single(workbench.Sidebar.Groups).WorkspaceRoot);
+        await workbench.OpenSessionAsync(alphaSession.Id);
+        Assert.Equal("Keep this session draft", workbench.Active!.Composer.Draft);
+    }
+
+    [Fact]
+    public async Task RemoveWorkspace_FailedSidebarRefreshKeepsActiveConversationAndPropagatesFailure()
+    {
+        var alpha = Directory.CreateDirectory(Path.Combine(_root, "alpha")).FullName;
+        var runtime = new WorkspaceRuntime();
+        var session = runtime.AddSession(alpha, "Alpha");
+        using var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(session.Id);
+        var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
+        conversation.Composer.Draft = "Keep this session draft";
+        var refresh = runtime.DelayNextList();
+
+        var removing = workbench.RemoveWorkspaceAsync(alpha);
+        refresh.SetException(new IOException("Session list unavailable"));
+
+        var exception = await Assert.ThrowsAsync<IOException>(() => removing);
+        Assert.Equal("Session list unavailable", exception.Message);
+        Assert.Same(conversation, workbench.Active);
+        Assert.Same(conversation, workbench.ComposerHost);
+        Assert.False(workbench.IsDraft);
+        Assert.Equal(alpha, workbench.CurrentWorkspaceRoot);
+        Assert.Equal("Keep this session draft", workbench.ComposerHost!.Composer.Draft);
+        Assert.False(workbench.Sidebar.IsLoading);
+    }
+
+    [Fact]
+    public async Task RemoveWorkspace_DoesNotSupersedeNewerPendingSessionNavigation()
+    {
+        var alpha = Directory.CreateDirectory(Path.Combine(_root, "alpha")).FullName;
+        var beta = Directory.CreateDirectory(Path.Combine(_root, "beta")).FullName;
+        var runtime = new WorkspaceRuntime();
+        var alphaSession = runtime.AddSession(alpha, "Alpha");
+        using var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(alphaSession.Id);
+        var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
+        var betaSession = runtime.AddSession(beta, "Beta");
+        var removalRefresh = runtime.DelayNextList();
+        var removing = workbench.RemoveWorkspaceAsync(alpha);
+        var navigationRefresh = runtime.DelayNextList();
+        var opening = workbench.OpenSessionAsync(betaSession.Id);
+
+        removalRefresh.SetResult([alphaSession, betaSession]);
+        try
+        {
+            Assert.False(opening.IsCompleted);
+            await removing;
+            Assert.Same(conversation, workbench.Active);
+            Assert.Same(conversation, workbench.ComposerHost);
+        }
+        finally
+        {
+            navigationRefresh.TrySetResult([alphaSession, betaSession]);
+            await opening;
+        }
+
+        Assert.Equal(betaSession.Id, workbench.Active!.SessionId);
+        Assert.Same(workbench.Active, workbench.ComposerHost);
+        Assert.Equal(beta, workbench.CurrentWorkspaceRoot);
+    }
+
+    [Fact]
     public async Task RemoveWorkspace_AlsoHidesArchivedSessionsOfThatWorkspace()
     {
         var alpha = Directory.CreateDirectory(Path.Combine(_root, "alpha")).FullName;
@@ -209,6 +312,49 @@ public sealed class WorkspaceRemovalTests : IDisposable
     }
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
+
+    private sealed class WorkspaceRuntime : IAgentRuntime
+    {
+        private readonly FakeAgentRuntime _inner = new();
+        private readonly List<SessionSummary> _summaries = [];
+        private readonly Queue<Task<IReadOnlyList<SessionSummary>>> _pendingLists = [];
+
+        public SessionSummary AddSession(string root, string title)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var summary = new SessionSummary(StrongId.NewSessionId(), title, root, PermissionMode.Build, null, now, now);
+            _summaries.Add(summary);
+            _inner.RegisterSession(summary.Id, new ConversationSnapshot(0, 0, [], TestSnapshots.State() with { Title = title }));
+            return summary;
+        }
+
+        public TaskCompletionSource<IReadOnlyList<SessionSummary>> DelayNextList()
+        {
+            var result = new TaskCompletionSource<IReadOnlyList<SessionSummary>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingLists.Enqueue(result.Task);
+            return result;
+        }
+
+        public ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken) =>
+            _inner.CreateSessionAsync(options, cancellationToken);
+
+        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
+            _inner.ResumeSessionAsync(sessionId, cancellationToken);
+
+        public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken) =>
+            _pendingLists.TryDequeue(out var pending)
+                ? new ValueTask<IReadOnlyList<SessionSummary>>(pending)
+                : ValueTask.FromResult<IReadOnlyList<SessionSummary>>(_summaries.ToArray());
+
+        public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
+            _inner.SubmitAsync(command, cancellationToken);
+
+        public IConversationProjection Subscribe(SessionId sessionId) => _inner.Subscribe(sessionId);
+
+        public IConversationProjection? TryObserve(SessionId sessionId) => _inner.TryObserve(sessionId);
+
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+    }
 
     private AgentRuntime CreateRuntime(SqliteSessionStore store)
     {

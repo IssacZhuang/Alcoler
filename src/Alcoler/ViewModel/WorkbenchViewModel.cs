@@ -934,6 +934,13 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             root,
         };
         SaveComposerConfig(_composerConfig with { RemovedWorkspaceRoots = [.. removed] });
+        var navigation = _navigationVersion;
+        var current = ComposerHost;
+        await Sidebar.RefreshAsync();
+        if (_disposed || navigation != _navigationVersion || !ReferenceEquals(ComposerHost, current))
+        {
+            return;
+        }
         if (Active is { } active
             && _sessionRoots.TryGetValue(active.SessionId, out var activeRoot)
             && string.Equals(DocumentViewModel.NormalizeWorkspaceRoot(activeRoot), root, StringComparison.OrdinalIgnoreCase))
@@ -945,7 +952,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         {
             _focusedWorkspaceRoot = null;
         }
-        await Sidebar.RefreshAsync();
         if ((Draft is { } draft && string.Equals(DocumentViewModel.NormalizeWorkspaceRoot(draft.WorkspaceRoot), root, StringComparison.OrdinalIgnoreCase))
             || (Active is null && Draft is null))
         {

@@ -21,6 +21,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.LogicalTree;
 using Avalonia.Media;
+using Avalonia.Media.TextFormatting;
 using Avalonia.Rendering.Composition;
 using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
@@ -78,6 +79,79 @@ public class TimelineSmokeTests
             var caret = Assert.Single(descendants.OfType<Rectangle>(),
                 r => r.Classes.Contains("streamingCaret"));
             Assert.True(caret.IsVisible);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(420)]
+    [InlineData(900)]
+    [InlineData(1280)]
+    public void UserMessage_MixedCjkAndLatinKeepsEveryCharacter(double width)
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, width, 600);
+        try
+        {
+            const string text = "实现这个方案，对齐zcode";
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(new UserMessageRow("u1", text, DateTimeOffset.UtcNow))], Reset: false));
+            Pump();
+
+            foreach (var nextWidth in new[] { width, 620, 900, width })
+            {
+                window.Width = nextWidth;
+                Pump();
+
+                var block = Assert.Single(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                    control => control.Text == text);
+                var line = Assert.Single(block.TextLayout.TextLines);
+                Assert.Equal(text, string.Concat(line.TextRuns.OfType<ShapedTextRun>().Select(run => run.Text.ToString())));
+                Assert.True(block.TextLayout.Height <= block.Bounds.Height);
+                block.SelectionStart = 0;
+                block.SelectionEnd = text.Length;
+                Assert.Equal(text, block.SelectedText);
+            }
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public void UserMessage_WrappedTextRemainsCompleteAfterResize()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 420, 900);
+        try
+        {
+            var text = string.Join(" ", Enumerable.Repeat("实现这个方案，对齐zcode", 12));
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(new UserMessageRow("u1", text, DateTimeOffset.UtcNow))], Reset: false));
+            Pump();
+
+            foreach (var width in new[] { 420, 900, 620, 420 })
+            {
+                window.Width = width;
+                Pump();
+
+                var block = Assert.Single(view.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                    control => control.Text == text);
+                Assert.True(block.TextLayout.TextLines.Count > 1);
+                Assert.Equal(text, string.Concat(block.TextLayout.TextLines
+                    .SelectMany(line => line.TextRuns).OfType<ShapedTextRun>().Select(run => run.Text.ToString())));
+                Assert.True(block.TextLayout.Height <= block.Bounds.Height);
+            }
         }
         finally
         {
