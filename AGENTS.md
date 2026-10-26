@@ -15,7 +15,7 @@ Alcoler is a from-scratch coding agent harness, built kernel-first. This file is
 
 ## Memory Budget
 
-Baseline from the kernel memory probe (`tests/Alcoler.Kernel.Tests/EndToEnd/MemorySpikeProbe.cs`): 10 resident sessions holding 850 scripted turns cost 7 MB managed / +21 MB working set over the process floor. Steady state must stay under 200 MB working set with one active session; the desktop process floor is Avalonia-dominated (~135 MB).
+Baseline from the kernel memory probe (`tests/Alcoler.Kernel.Tests/EndToEnd/MemorySpikeProbe.cs`): 10 resident sessions holding 850 scripted turns cost 7 MB managed / +21 MB working set over the process floor; the desktop process floor is Avalonia-dominated (~135 MB). No fixed working-set cap is enforced: memory and performance must be weighed together, with session residency and event retention kept bounded.
 
 ## Changelog
 

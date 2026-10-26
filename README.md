@@ -8,7 +8,7 @@ The project is not a stable product. Interfaces, persistence formats, and behavi
 
 - **Engineering quality.** A small set of focused projects with explicit contracts, predictable failure handling, and tests at the kernel boundary.
 - **High performance.** In-process calls between the workbench and the kernel, streaming model responses, and no IPC or serialization hop on the hot path.
-- **Low memory.** Session residency and event retention are bounded. In the kernel memory probe, 10 resident sessions holding 850 scripted turns add about 7 MB of managed memory and 21 MB of working set over the process floor; steady state remains under 200 MB working set with one active session.
+- **Low memory.** Session residency and event retention are bounded. In the kernel memory probe, 10 resident sessions holding 850 scripted turns add about 7 MB of managed memory and 21 MB of working set over the process floor; the footprint is balanced against performance rather than capped at a fixed working-set limit.
 - **Kernel-first.** The agent loop, tools, providers, context management, and session persistence live in a UI-independent class library. The Avalonia workbench is a consumer of that library, not the place where behavior is defined.
 
 ## Project Layout
