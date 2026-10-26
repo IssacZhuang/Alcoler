@@ -98,6 +98,65 @@ public class ConversationMarkdownTests
         Assert.True(copy.IsEffectivelyVisible);
     }
 
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Images_KeepFullHeightAndScaleWithViewport(bool fragment)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-markdown-image-{Guid.NewGuid():N}.png");
+        using (var bitmap = new SkiaSharp.SKBitmap(798, 264))
+        {
+            bitmap.Erase(SkiaSharp.SKColors.CornflowerBlue);
+            using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
+            using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+            File.WriteAllBytes(path, data.ToArray());
+        }
+        try
+        {
+            var imageMarkdown = $"![Preview]({path.Replace('\\', '/')})";
+            var markdown = $"Before\n\n{imageMarkdown}\n\n[{imageMarkdown}](https://example.com)\n\nAfter";
+            Control view = fragment
+                ? new ConversationMarkdownFragment { Markdown = markdown }
+                : new ConversationMarkdown { Markdown = markdown };
+            using var host = new Harness(view);
+            var images = view.GetLogicalDescendants().OfType<CImage>().ToArray();
+            Assert.Equal(2, images.Length);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (images.Any(image => image.Image?.Size != new Size(798, 264)))
+            {
+                await Task.Delay(10, timeout.Token);
+                host.Pump();
+            }
+            var blocks = view.GetVisualDescendants().OfType<CTextBlock>().ToArray();
+            var imageBlocks = blocks.Where(block => block.GetLogicalDescendants().OfType<CImage>().Any()).ToArray();
+            Assert.Equal(2, imageBlocks.Length);
+            var before = Assert.Single(blocks, block => block.Text == "Before");
+            var after = Assert.Single(blocks, block => block.Text == "After");
+            Assert.Equal(24.5, before.LineHeight);
+            Assert.Equal(24.5, after.LineHeight);
+            foreach (var width in new[] { 900d, 400d, 900d })
+            {
+                host.Window.Width = width;
+                host.Pump();
+                var previousBottom = before.TranslatePoint(default, view)!.Value.Y + before.Bounds.Height;
+                foreach (var block in imageBlocks)
+                {
+                    Assert.InRange(block.Bounds.Width, 1, width);
+                    var expectedHeight = 264 * Math.Min(1, block.Bounds.Width / 798);
+                    Assert.InRange(block.Bounds.Height, expectedHeight, Math.Ceiling(expectedHeight));
+                    var top = block.TranslatePoint(default, view)!.Value.Y;
+                    Assert.True(top >= previousBottom);
+                    previousBottom = top + block.Bounds.Height;
+                }
+                Assert.True(after.TranslatePoint(default, view)!.Value.Y >= previousBottom);
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [AvaloniaFact]
     public void ListsQuotesTablesAndRules_KeepNeutralScopedAppearance()
     {

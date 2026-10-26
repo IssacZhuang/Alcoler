@@ -55,6 +55,10 @@ internal static class ConversationMarkdownRendering
 
             switch (element)
             {
+                case CTextBlockElement when element.Control is CTextBlock text
+                    && text.GetLogicalDescendants().OfType<CImage>().Any():
+                    text.LineHeight = double.NaN;
+                    break;
                 case ListBlockElement when element.Control is Grid list:
                     list.Margin = new Thickness(20, nestedList ? 6 : 12, 0, nestedList ? 6 : 12);
                     foreach (var marker in list.Children.OfType<CTextBlock>().ToArray())
