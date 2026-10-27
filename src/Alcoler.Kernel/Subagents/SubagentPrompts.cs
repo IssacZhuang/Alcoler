@@ -142,7 +142,8 @@ public static class SubagentPrompts
                 "",
                 "- The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.",
                 "- A new Agent call starts fresh, so the prompt must be self-contained.",
-                "- `run_in_background: true` runs the agent asynchronously; you'll be notified when it completes.",
+                "- Foreground runs block this conversation until the agent finishes; reserve them for quick subtasks (a couple of minutes).",
+                "- Anything longer: set `run_in_background: true`, then keep working on non-overlapping tasks or end your turn — a <task-notification> wakes you when the agent finishes. If you must block anyway, call TaskOutput once with a long timeout; never re-call it in a loop.",
                 "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently.",
             ]);
 }

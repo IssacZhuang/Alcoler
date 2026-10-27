@@ -2,6 +2,7 @@ using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
 using Xunit;
@@ -245,18 +246,24 @@ public class TaskOutputToolTests
     }
 
     [Fact]
-    public void Contract_DescriptionCarriesDeprecatedPreamble_AndAllParamsRequired()
+    public void Contract_DescribesInterruptibleWait_AndAllParamsRequired()
     {
         var contract = new TaskOutputTool().Contract;
 
         Assert.Equal("TaskOutput", contract.Name);
-        Assert.StartsWith("DEPRECATED: Background tasks return their output file path in the tool result", contract.Description);
+        Assert.StartsWith("Waits for a background task", contract.Description);
+        Assert.Contains("returns its result", contract.Description);
+        Assert.DoesNotContain("not how you read results", contract.Description);
         Assert.Contains("Task IDs can be found using the /tasks command", contract.Description);
+        Assert.Contains("Do NOT Read local_agent .output files", contract.Description);
+        Assert.DoesNotContain("DEPRECATED", contract.Description);
 
         var schema = contract.InputSchema.GetRawText();
         Assert.Contains("\"required\": [\"task_id\", \"block\", \"timeout\"]", schema);
         Assert.Contains("\"default\": true", schema);
-        Assert.Contains("\"default\": 30000", schema);
+        Assert.Contains("\"default\": 600000", schema);
+        Assert.Contains("never re-call in a loop", contract.Description);
+        Assert.Contains("interrupted", contract.Description);
     }
 
     [Fact]
@@ -476,6 +483,92 @@ public class TaskOutputToolTests
     }
 
     [Fact]
+    public async Task Subagent_BlockTrue_IsInterruptedByTurnInputSignal_WithoutNotifying()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var signal = new TurnInputSignal();
+        var tool = new TaskOutputTool();
+        var query = tool.ExecuteAsync(
+            Context(workspace, null, """{"task_id": "sub_agent", "block": true, "timeout": 600000}""", registry, signal),
+            CancellationToken.None).AsTask();
+
+        await Task.Delay(200);
+        Assert.False(query.IsCompleted);
+        signal.Pulse();
+        var result = await query.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var text = result.SingleText();
+        Assert.Contains("<retrieval_status>interrupted</retrieval_status>", text);
+        Assert.Contains("<status>running</status>", text);
+        Assert.Contains("End your turn now", text);
+        Assert.False(registry.Find(info.Id.Value)!.Notified);
+    }
+
+    [Fact]
+    public async Task Block_True_IsInterruptedByTurnInputSignal_BeforeTimeout()
+    {
+        using var workspace = new TempWorkspace();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var jobs = new BackgroundJobService(TimeProvider.System, static _ => ValueTask.CompletedTask);
+        var started = jobs.Start("busy", null, ct => release.Task.WaitAsync(ct).ContinueWith(_ => new BackgroundJobResult(0)));
+        var signal = new TurnInputSignal();
+        var tool = new TaskOutputTool();
+        var query = tool.ExecuteAsync(
+            Context(workspace, jobs, $$"""{"task_id": "{{started.Id.Value}}", "block": true, "timeout": 600000}""", signal: signal),
+            CancellationToken.None).AsTask();
+
+        await Task.Delay(200);
+        Assert.False(query.IsCompleted);
+        signal.Pulse();
+        var result = await query.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var text = result.SingleText();
+        Assert.Contains("<retrieval_status>interrupted</retrieval_status>", text);
+        Assert.Contains("<status>running</status>", text);
+        Assert.Contains("End your turn now", text);
+
+        release.SetResult();
+    }
+
+    [Fact]
+    public async Task SubagentRegistry_CompletionResetsWhenResumed()
+    {
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+
+        var first = registry.TryGetCompletion(info.Id);
+        Assert.NotNull(first);
+        Assert.False(first!.IsCompleted);
+
+        registry.Update(info.Id, current => current with
+        {
+            Status = SubagentStatus.Completed,
+            EndedAt = DateTimeOffset.UtcNow,
+        });
+        Assert.True(first.IsCompleted);
+
+        registry.Update(info.Id, current => current with
+        {
+            Status = SubagentStatus.Running,
+            EndedAt = null,
+        }, resetNotified: true);
+        var second = registry.TryGetCompletion(info.Id);
+        Assert.NotNull(second);
+        Assert.False(second!.IsCompleted);
+
+        registry.Update(info.Id, current => current with
+        {
+            Status = SubagentStatus.Completed,
+            EndedAt = DateTimeOffset.UtcNow,
+        });
+        Assert.True(second.IsCompleted);
+    }
+
+    [Fact]
     public async Task NoServiceConfigured_ReportsConfigurationError()
     {
         using var workspace = new TempWorkspace();
@@ -511,7 +604,8 @@ public class TaskOutputToolTests
         TempWorkspace workspace,
         BackgroundJobService? jobs,
         string json,
-        ISubagentTasks? subagents = null) =>
+        ISubagentTasks? subagents = null,
+        ITurnInputSignal? signal = null) =>
         new(
             new SessionId("sess_test"),
             workspace.Root,
@@ -519,7 +613,8 @@ public class TaskOutputToolTests
             workspace.Workspace,
             TimeProvider.System,
             BackgroundJobs: jobs,
-            Subagents: subagents);
+            Subagents: subagents,
+            TurnInputSignal: signal);
 
     private static async Task WaitForStatusAsync(BackgroundJobService jobs, BackgroundJobId id, BackgroundJobStatus status)
     {

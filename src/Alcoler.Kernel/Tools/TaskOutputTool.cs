@@ -3,6 +3,7 @@ using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Subagents;
 
 namespace Alcoler.Kernel.Tools;
 
@@ -12,29 +13,25 @@ namespace Alcoler.Kernel.Tools;
 /// </summary>
 public sealed class TaskOutputTool : ITool
 {
-    internal const int DefaultTimeoutMs = 30_000;
+    internal const int DefaultTimeoutMs = 600_000;
     internal const int MaxTimeoutMs = 600_000;
     internal const int DefaultOutputLength = 32_000;
     private const int PollIntervalMs = 100;
     private const int MaxOutputFileBytes = 8 * 1024 * 1024;
     private const string TaskType = "local_bash";
     private const string SubagentTaskType = "local_agent";
+    private const string InterruptedHint =
+        "\n\nA message, task notification, or user input arrived while you were waiting; it is queued and will start your next turn. End your turn now to process it instead of waiting again.";
 
     public ToolContract Contract { get; } = new(
         "TaskOutput",
         """
-        DEPRECATED: Background tasks return their output file path in the tool result, and you receive a <task-notification> with the same path when the task completes.
-        - For bash tasks: prefer using the Read tool on that output file path — it contains stdout/stderr.
-        - For local_agent tasks: use the Agent tool result directly. Do NOT Read the .output file — it is a symlink to the full subagent conversation transcript (JSONL) and will overflow your context window.
-        - For remote_agent tasks: prefer using the Read tool on the output file path — it contains the streamed remote session output (same as bash).
+        Waits for a background task (shell or agent) to finish and returns its result, or checks its current status without waiting. When you are not blocked on a result, prefer ending your turn: completed tasks also deliver a <task-notification> on their own.
 
-        - Retrieves output from a running or completed task (background shell, agent, or remote session)
-        - Takes a task_id parameter identifying the task
-        - Returns the task output along with status information
-        - Use block=true (default) to wait for task completion
-        - Use block=false for non-blocking check of current status
-        - Task IDs can be found using the /tasks command
-        - Works with all task types: background shells, async agents, and remote sessions
+        - block=true (default): event-driven wait. It ends the moment the task finishes (returning the result inline) OR any message, task notification, or user input arrives (retrieval_status "interrupted" — end your turn so the queued input can be processed). One call with a long timeout replaces any polling loop; never re-call in a loop.
+        - block=false: instant status check (running/completed/failed, exit code when finished).
+        - Task IDs can be found using the /tasks command.
+        - Do NOT Read local_agent .output files — they are full conversation transcripts.
         """,
         ParseSchema("""
         {
@@ -43,7 +40,7 @@ public sealed class TaskOutputTool : ITool
           "properties": {
             "task_id": { "type": "string", "description": "The task ID to get output from" },
             "block": { "type": "boolean", "default": true, "description": "Whether to wait for completion" },
-            "timeout": { "type": "number", "minimum": 0, "maximum": 600000, "default": 30000, "description": "Max wait time in ms" }
+            "timeout": { "type": "number", "minimum": 0, "maximum": 600000, "default": 600000, "description": "Max wait time in ms; the wait returns early on completion or incoming activity, so prefer the maximum." }
           },
           "required": ["task_id", "block", "timeout"],
           "additionalProperties": false
@@ -98,28 +95,23 @@ public sealed class TaskOutputTool : ITool
                     return ToolExecutionResult.Text(FormatResult("timeout", job));
                 var completion = (context.BackgroundJobs as BackgroundJobService)
                     ?.TryGetCompletion(new BackgroundJobId(taskId));
-                if (completion is not null)
+                switch (await AwaitWakeAsync(completion, context, deadline, cancellationToken).ConfigureAwait(false))
                 {
-                    var remaining = deadline - context.Clock.GetUtcNow();
-                    if (remaining <= TimeSpan.Zero)
-                        continue;
-                    try
-                    {
-                        await completion.WaitAsync(remaining, context.Clock, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (TimeoutException)
-                    {
-                        continue;
-                    }
+                    case WakeReason.Deadline:
+                        return ToolExecutionResult.Text(FormatResult("timeout", job));
+                    case WakeReason.Interrupted:
+                        job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
+                        if (job is null)
+                            return ToolExecutionResult.Text(FormatResult("timeout", null));
+                        if (job.Status == BackgroundJobStatus.Running)
+                            return ToolExecutionResult.Text(FormatResult("interrupted", job) + InterruptedHint);
+                        break;
+                    case WakeReason.TargetCompleted:
+                        job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
+                        if (job is null)
+                            return ToolExecutionResult.Text(FormatResult("timeout", null));
+                        break;
                 }
-                else
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
-                if (job is null)
-                    return ToolExecutionResult.Text(FormatResult("timeout", null));
             }
         }
 
@@ -147,11 +139,25 @@ public sealed class TaskOutputTool : ITool
             {
                 if (context.Clock.GetUtcNow() >= deadline)
                     return ToolExecutionResult.Text(FormatSubagentResult("timeout", task));
-                await Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken)
-                    .ConfigureAwait(false);
-                task = subagents.Find(taskId);
-                if (task is null)
-                    return ToolExecutionResult.Text(FormatSubagentResult("timeout", null));
+                var completion = (subagents as SubagentTaskRegistry)?.TryGetCompletion(task.Id);
+                switch (await AwaitWakeAsync(completion, context, deadline, cancellationToken).ConfigureAwait(false))
+                {
+                    case WakeReason.Deadline:
+                        return ToolExecutionResult.Text(FormatSubagentResult("timeout", task));
+                    case WakeReason.Interrupted:
+                        task = subagents.Find(taskId);
+                        if (task is null)
+                            return ToolExecutionResult.Text(FormatSubagentResult("timeout", null));
+                        if (task.Status == SubagentStatus.Running)
+                            return ToolExecutionResult.Text(
+                                FormatSubagentResult("interrupted", task) + InterruptedHint);
+                        break;
+                    case WakeReason.TargetCompleted:
+                        task = subagents.Find(taskId);
+                        if (task is null)
+                            return ToolExecutionResult.Text(FormatSubagentResult("timeout", null));
+                        break;
+                }
             }
         }
 
@@ -160,6 +166,43 @@ public sealed class TaskOutputTool : ITool
         var text = FormatSubagentResult("success", task);
         subagents.TryMarkNotified(taskId);
         return ToolExecutionResult.Text(text);
+    }
+
+    private enum WakeReason
+    {
+        TargetCompleted,
+        Interrupted,
+        Deadline,
+    }
+
+    // Wakes on target completion, queued turn input, or the deadline — whichever comes first.
+    // Without a completion signal, a short poll substitutes so terminal transitions are still
+    // observed; without a turn-input signal, only completion/deadline can end the wait.
+    private static async Task<WakeReason> AwaitWakeAsync(
+        Task? completion,
+        ToolExecutionContext context,
+        DateTimeOffset deadline,
+        CancellationToken cancellationToken)
+    {
+        var remaining = deadline - context.Clock.GetUtcNow();
+        if (remaining <= TimeSpan.Zero)
+            return WakeReason.Deadline;
+
+        // (wait, reason): a poll wake means "recheck status", so it shares the completion reason.
+        var waits = new List<(Task Wait, WakeReason Reason)>
+        {
+            (Task.Delay(remaining, context.Clock, cancellationToken), WakeReason.Deadline),
+        };
+        if (completion is not null)
+            waits.Add((completion, WakeReason.TargetCompleted));
+        else
+            waits.Add((Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken), WakeReason.TargetCompleted));
+        if (context.TurnInputSignal is { } signal)
+            waits.Add((signal.WaitAsync(signal.Version, cancellationToken), WakeReason.Interrupted));
+
+        var done = await Task.WhenAny(waits.Select(static wait => wait.Wait)).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return waits.First(wait => wait.Wait == done).Reason;
     }
 
     internal static string FormatSubagentResult(string retrievalStatus, SubagentTaskInfo? task)

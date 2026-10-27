@@ -37,6 +37,7 @@ public sealed record ToolExecutionContext(
     IUserInteractionPort? Interactions = null,
     ToolCallId? ToolCallId = null,
     ISubagentTasks? Subagents = null,
+    ITurnInputSignal? TurnInputSignal = null,
     string? ToolOutputRoot = null,
     IProviderWebSearch? ProviderSearch = null);
 

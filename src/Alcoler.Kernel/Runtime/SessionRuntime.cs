@@ -103,6 +103,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly SkillContentProvider _skills;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private readonly SemaphoreSlim _recordLock = new(1, 1);
+    private readonly TurnInputSignal _turnInputSignal = new();
     private readonly CancellationTokenSource _sessionCts = new();
     private readonly HashSet<InteractionId> _pendingPermissions = [];
     private readonly HashSet<InteractionId> _pendingInteractions = [];
@@ -548,6 +549,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         if (_turnMachine.IsBusy)
         {
             await EnqueueInputAsync(input).ConfigureAwait(false);
+            _turnInputSignal.Pulse();
             BumpRevision();
             return CommandAck.AcceptedAt(sendText.CommandId, Revision);
         }
@@ -696,6 +698,9 @@ public sealed class SessionRuntime : IAsyncDisposable
             if (_turnMachine.IsBusy || _pendingInputs.Count > 0)
             {
                 _pendingInputs.Enqueue(new PendingTurnInput(null, prefixedBody));
+                // A blocking TaskOutput wait must end early so the model can yield the turn
+                // and let the queued input start the next one.
+                _turnInputSignal.Pulse();
                 return;
             }
 
@@ -1355,6 +1360,11 @@ public sealed class SessionRuntime : IAsyncDisposable
             return ModelStepOutcome.Finished;
         }
 
+        _toolRoundsSinceCompact++;
+        _turnMachine.TryTransition(TurnPhase.ExecutingTools);
+        var toolBatch = await streamingTools.CompleteAsync(accumulator.ToolCalls).ConfigureAwait(false);
+        await CommitToolBatchAsync(toolBatch).ConfigureAwait(false);
+
         foreach (var call in accumulator.ToolCalls)
         {
             if (_toolAnomalyThisTurn.Track(call.Name, call.Input) is { } warning)
@@ -1362,11 +1372,6 @@ public sealed class SessionRuntime : IAsyncDisposable
                 AppendInMemoryReminder(warning, MessageSource.ModelAnomaly);
             }
         }
-
-        _toolRoundsSinceCompact++;
-        _turnMachine.TryTransition(TurnPhase.ExecutingTools);
-        var toolBatch = await streamingTools.CompleteAsync(accumulator.ToolCalls).ConfigureAwait(false);
-        await CommitToolBatchAsync(toolBatch).ConfigureAwait(false);
 
         if (turnCt.IsCancellationRequested)
         {
@@ -1732,8 +1737,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     private ToolExecutionContext CreateToolExecutionContext(ToolCall call) =>
         new(_record.Id, _record.WorkspaceRoot, call.Input, _deps.Workspace, _deps.Clock,
             _sessionCommands, _fileReads, _shell, _backgroundJobs, _auxModel, _skills, _broker,
-            call.Id, Subagents: _subagentTasks, ToolOutputRoot: _deps.Options.ToolOutputRoot,
-            ProviderSearch: _auxModel);
+            call.Id, Subagents: _subagentTasks, TurnInputSignal: _turnInputSignal,
+            ToolOutputRoot: _deps.Options.ToolOutputRoot, ProviderSearch: _auxModel);
 
     private async ValueTask HandleToolNotificationAsync(TurnId turnId, ToolExecutionNotification notification)
     {

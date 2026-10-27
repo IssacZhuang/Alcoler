@@ -110,6 +110,20 @@ public sealed record SubagentTaskInfo(
 }
 
 /// <summary>
+/// Signals that new turn input (user input or a task notification) was queued while a
+/// turn was active. Blocking tool waits observe it to end early instead of parking for
+/// their full timeout; the queued input itself starts the next turn.
+/// </summary>
+public interface ITurnInputSignal
+{
+    /// <summary>Monotonic count of queued-input pulses; callers snapshot it before waiting.</summary>
+    long Version { get; }
+
+    /// <summary>Completes when <see cref="Version"/> moves past <paramref name="seenVersion"/>.</summary>
+    Task WaitAsync(long seenVersion, CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// Runtime view of local_agent tasks so TaskOutput/TaskStop can address foreground and
 /// background subagent runs by agent id, and a consumed terminal result can suppress the
 /// duplicate background completion notification.

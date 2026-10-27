@@ -12,6 +12,7 @@ using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
+using Alcoler.Kernel.Tests.Models;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.EndToEnd;
@@ -1185,15 +1186,26 @@ public class TurnSemanticsTests
             .Any(p => p.Text == OutputContinuation.ContinuePromptText));
     }
 
-    [Fact]
-    public async Task RepeatedIdenticalToolCall_WarnsOnThirdConsecutive_RequestLocalOnly()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RepeatedIdenticalToolCall_WarnsOnThirdConsecutive_AfterAllToolResults_RequestLocalOnly(bool withAdditionalTool)
     {
         var todoInput = new { todos = new[] { new { content = "same", status = "pending", priority = "medium" } } };
+        var thirdCall = ToolCall("TodoWrite", todoInput, new ToolCallId("call-c"));
+        if (withAdditionalTool)
+        {
+            thirdCall =
+            [
+                .. thirdCall.Take(thirdCall.Count - 1),
+                .. ToolCall("TodoRead", new { }, new ToolCallId("call-d")).Skip(1),
+            ];
+        }
         List<IReadOnlyList<ModelStreamEvent>> calls =
         [
             ToolCall("TodoWrite", todoInput, new ToolCallId("call-a")),
             ToolCall("TodoWrite", todoInput, new ToolCallId("call-b")),
-            ToolCall("TodoWrite", todoInput, new ToolCallId("call-c")),
+            thirdCall,
             Text("done"),
         ];
         await using var harness = new ScriptedCallHarness(calls);
@@ -1204,9 +1216,34 @@ public class TurnSemanticsTests
         await SendAndWaitIdleAsync(runtime, projection, session.Id, "same calls", expectedReplies: 4);
 
         Assert.DoesNotContain("You have called TodoWrite", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
-        var warned = RequestTexts(harness.Model.Requests[3]);
+        var request = harness.Model.Requests[3];
+        var warned = RequestTexts(request);
         Assert.Contains("You have called TodoWrite with the same input 3 times in a row.", warned, StringComparison.Ordinal);
         Assert.Contains("Do not repeat the exact same tool call again", warned, StringComparison.Ordinal);
+
+        var handler = new RecordingHandler((_, _) => SegmentedStream.ToResponse(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+        using var client = new HttpClient(handler);
+        var model = new OpenAiCompatibleChatModel(client, new("deepseek-flash", "sk-test", "https://unit.test/api"));
+        await foreach (var streamEvent in model.StreamAsync(request, CancellationToken.None))
+            Assert.IsNotType<ModelStreamFailed>(streamEvent);
+
+        using var body = JsonDocument.Parse(Assert.Single(handler.RequestBodies)!);
+        var replay = body.RootElement.GetProperty("messages").EnumerateArray().ToArray();
+        var callIndex = Array.FindIndex(replay, message =>
+            message.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.EnumerateArray()
+                .Any(call => call.GetProperty("id").GetString() == "call-c"));
+        Assert.True(callIndex >= 0);
+        string[] resultIds = withAdditionalTool ? ["call-c", "call-d"] : ["call-c"];
+        for (var index = 0; index < resultIds.Length; index++)
+        {
+            var result = replay[callIndex + index + 1];
+            Assert.Equal("tool", result.GetProperty("role").GetString());
+            Assert.Equal(resultIds[index], result.GetProperty("tool_call_id").GetString());
+        }
+        var reminder = replay[callIndex + resultIds.Length + 1];
+        Assert.Equal("user", reminder.GetProperty("role").GetString());
+        Assert.Contains("You have called TodoWrite", reminder.GetProperty("content").GetString(), StringComparison.Ordinal);
 
         await using var store = harness.OpenStore();
         var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);

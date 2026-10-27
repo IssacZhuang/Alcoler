@@ -44,6 +44,20 @@ public sealed class WorkbenchModelCatalogTests
     }
 
     [Fact]
+    public void Defaults_Gpt61TerraUsesGpt6Catalog()
+    {
+        var provider = new WorkbenchProviderConfig("openai-responses", "https://api.openai.com/v1", null, []);
+        var properties = WorkbenchModelCatalog.Defaults(provider, "gpt-6.1-terra");
+
+        Assert.Equal(1_050_000, properties.ContextWindowTokens);
+        Assert.Equal(128_000, properties.DefaultMaxOutputTokens);
+        Assert.True(properties.SupportsImage);
+        Assert.True(properties.SupportsPdf);
+        Assert.True(properties.SupportsJsonSchemaOutput);
+        Assert.Equal(["low", "medium", "high", "xhigh", "max"], properties.ReasoningLevels);
+    }
+
+    [Fact]
     public void Defaults_SiteOverridesLegacyOutputAndReasoningMappings()
     {
         var provider = new WorkbenchProviderConfig("openai-compatible", "https://opencode.ai/zen/go/v1", null, []);
