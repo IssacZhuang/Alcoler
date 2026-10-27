@@ -117,18 +117,6 @@
       <Setter Property="Margin" Value="0,0,0,20" />
       <Setter Property="Spacing" Value="2" />
     </Style>
-    <Style Selector="StackPanel.userMessage Button.messageAction">
-      <Setter Property="Opacity" Value="0" />
-    </Style>
-    <Style Selector="StackPanel.userMessage:pointerover Button.messageAction">
-      <Setter Property="Opacity" Value="1" />
-    </Style>
-    <Style Selector="StackPanel.assistantRow Button.messageAction">
-      <Setter Property="Opacity" Value="0" />
-    </Style>
-    <Style Selector="StackPanel.assistantRow:pointerover Button.messageAction">
-      <Setter Property="Opacity" Value="1" />
-    </Style>
     <Style Selector="Button.messageAction">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
@@ -147,9 +135,6 @@
     </Style>
     <Style Selector="Button.messageAction:pointerover /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
-    </Style>
-    <Style Selector="Button.messageAction:focus-visible">
-      <Setter Property="Opacity" Value="1" />
     </Style>
     <Style Selector="SelectableTextBlock.mono">
       <Setter Property="FontFamily" Value="{DynamicResource AlcolerFontMonospace}" />
