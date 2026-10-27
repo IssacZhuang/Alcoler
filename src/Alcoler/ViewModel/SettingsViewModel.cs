@@ -192,6 +192,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private int _autoArchiveOlderThanDays = 7;
 
+    [ObservableProperty]
+    private bool _embeddedBrowserView;
+
+    private bool _initialEmbeddedBrowserView;
+
     public SettingsViewModel(WorkbenchConfig config)
         : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows())
     {
@@ -211,6 +216,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _config = config;
         _archivedSessions = archivedSessions;
         SupportsShellSelection = isWindows;
+        SupportsEmbeddedBrowserView = isWindows;
+        EmbeddedBrowserView = config.Browser?.EmbeddedView ?? isWindows;
+        _initialEmbeddedBrowserView = EmbeddedBrowserView;
         ChatGpt = chatGptAccount is null ? null : new ChatGptAccountViewModel(chatGptAccount, ApplyChatGptModels);
         var choices = new List<ShellChoice> { new(Loc.Get("settings_shell_auto")) };
         choices.AddRange(shells.Select(shell => new ShellChoice(
@@ -289,6 +297,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     ];
 
     public bool SupportsShellSelection { get; }
+
+    public bool SupportsEmbeddedBrowserView { get; }
 
     public IReadOnlyList<ShellChoice> ShellChoices { get; }
 
@@ -494,7 +504,18 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         DisabledSkillPaths = BuildDisabledSkillPaths(),
         AutoArchiveSessions = AutoArchiveSessions,
         AutoArchiveOlderThanDays = Math.Clamp(AutoArchiveOlderThanDays, 1, 365),
+        Browser = BuildBrowserConfig(),
     };
+
+    // The switch exists only where WebView2 can; elsewhere the file keeps whatever it says.
+    // Saving persists the delta from the construction snapshot: returning the switch to the
+    // platform default collapses the section away, which selects the same backend.
+    private WorkbenchBrowserConfig? BuildBrowserConfig()
+    {
+        if (!SupportsEmbeddedBrowserView) return _config.Browser;
+        if (EmbeddedBrowserView == _initialEmbeddedBrowserView && _config.Browser is null) return null;
+        return (_config.Browser ?? new WorkbenchBrowserConfig()) with { EmbeddedView = EmbeddedBrowserView };
+    }
 
     private void LoadUserSkills(SkillsCatalog catalog)
     {

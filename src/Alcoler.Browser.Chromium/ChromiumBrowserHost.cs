@@ -15,16 +15,9 @@ public sealed class ChromiumBrowserOptions
     public bool? Headless { get; init; }
     public string? BinaryCacheRoot { get; init; }
 
-    public bool EffectiveHeadless => Headless ?? DetectHeadless();
-
-    // Only Linux can lose its display server: elsewhere the absence of DISPLAY says nothing.
-    public static bool DetectHeadless(Func<string, string?>? environment = null)
-    {
-        if (!OperatingSystem.IsLinux()) return false;
-        environment ??= Environment.GetEnvironmentVariable;
-        return string.IsNullOrWhiteSpace(environment("DISPLAY"))
-            && string.IsNullOrWhiteSpace(environment("WAYLAND_DISPLAY"));
-    }
+    // Headless is the operating mode: a visible browser window must never appear unless
+    // explicitly requested for diagnostics.
+    public bool EffectiveHeadless => Headless ?? true;
 }
 
 public sealed class ChromiumBrowserHost : IBrowserHost

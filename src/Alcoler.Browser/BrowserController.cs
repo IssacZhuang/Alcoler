@@ -136,7 +136,13 @@ public sealed class BrowserController : IBrowserController
                 await tab.Automation.SuspendAsync(pending.Token).ConfigureAwait(false);
             string? active;
             lock (_sync) active = session.ActiveTabId;
-            if (active is not null) await _host.ShowPageAsync(active, pending.Token).ConfigureAwait(false);
+            // Showing the page is a best-effort handover affordance: a headless backend has
+            // no window to raise, but control is still gated by UserControlled.
+            if (active is not null)
+            {
+                try { await _host.ShowPageAsync(active, pending.Token).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException) { }
+            }
         }
         finally
         {
@@ -232,7 +238,12 @@ public sealed class BrowserController : IBrowserController
             {
                 var tab = RequireTab(session, action.TabId ?? GetString(input, "tabId"));
                 lock (_sync) session.ActiveTabId = tab.Page.Id;
-                if (action.UserInitiated) await _host.ShowPageAsync(tab.Page.Id, ct).ConfigureAwait(false);
+                // A user tab click implies focus, but a headless backend has no window to raise.
+                if (action.UserInitiated)
+                {
+                    try { await _host.ShowPageAsync(tab.Page.Id, ct).ConfigureAwait(false); }
+                    catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException) { }
+                }
                 return TabList(session) with { TabId = tab.Page.Id };
             }
         }

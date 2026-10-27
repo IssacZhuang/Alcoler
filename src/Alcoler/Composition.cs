@@ -22,19 +22,20 @@ public static class Composition
     {
         var mcpTools = new McpToolSource(config.McpServers);
         const string ChromiumCapabilitiesText =
-            "External Chromium-family browser launched as a separate OS process, with the Chromium sandbox enabled by default. "
+            "Headless Chromium-family browser running as a separate OS process, with the Chromium sandbox enabled by default. "
             + "Each session uses an isolated profile persisted on disk, and downloads land in that profile's downloads directory. "
-            + "The browser window is external, shown on visibility or takeover, not embedded in the app pane. "
+            + "There is no visible browser window: observe pages through snapshots and screenshots. Visibility and window control "
+            + "are unavailable in headless mode; takeover still pauses automated input until the user resumes it. "
             + "Tabs and control ownership are session-scoped. Use snapshot to discover elements; refs expire on navigation. "
             + "File upload and external browser attachment are not supported.";
-        var backend = ResolveBrowserBackend(config.Browser?.Backend);
+        var embedded = config.Browser?.EmbeddedView ?? OperatingSystem.IsWindows();
         IBrowserHost browserHost;
-        if (backend == "webview2")
+        if (embedded)
         {
             if (!OperatingSystem.IsWindows())
             {
                 throw new PlatformNotSupportedException(
-                    $"The '{backend}' browser backend requires Windows. Configure browser.backend 'chromium' instead.");
+                    "The embedded browser view requires Windows. Remove browser.embeddedView from the configuration to use the headless Chromium backend.");
             }
             browserHost = new WebViewBrowserHost(Path.Combine(WorkbenchDataPaths.Root, "browser"));
         }
@@ -48,6 +49,7 @@ public static class Composition
                     Headless = config.Browser?.Headless,
                 });
         }
+        var backend = embedded ? "webview2" : "chromium";
         var browser = new BrowserController(browserHost, backendName: backend,
             capabilitiesText: backend == "chromium" ? ChromiumCapabilitiesText : null);
         browserHost.NewTabRequested += async (_, request) =>
@@ -202,18 +204,6 @@ public static class Composition
 
     internal static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config, ChatGptAccountService? chatGptAccount = null) =>
         [.. config.Providers.Where(provider => provider.Enabled).Select(provider => BuildProvider(provider, chatGptAccount))];
-
-    private static string ResolveBrowserBackend(string? configured)
-    {
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            var backend = configured.Trim().ToLowerInvariant();
-            if (backend is "webview2" or "chromium") return backend;
-            throw new InvalidOperationException(
-                $"Unknown browser backend '{configured}'. Valid options are 'webview2' and 'chromium'.");
-        }
-        return OperatingSystem.IsWindows() ? "webview2" : "chromium";
-    }
 
     private static IModelProvider BuildProvider(WorkbenchProviderConfig provider, ChatGptAccountService? chatGptAccount) =>
         provider.Kind.ToLowerInvariant() switch

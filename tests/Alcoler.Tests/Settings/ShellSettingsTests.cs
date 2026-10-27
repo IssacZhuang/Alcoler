@@ -55,13 +55,13 @@ public sealed class ShellSettingsTests
         var path = Path.Combine(Path.GetTempPath(), $"alcoler-browser-settings-{Guid.NewGuid():N}.json");
         try
         {
-            var config = new WorkbenchConfig([], Browser: new WorkbenchBrowserConfig("chromium", "/opt/chrome", true));
+            var config = new WorkbenchConfig([], Browser: new WorkbenchBrowserConfig(EmbeddedView: false, ExecutablePath: "/opt/chrome", Headless: true));
             config.Save(path);
             var loaded = WorkbenchConfig.LoadOrDefault(path);
             Assert.Equal(config.Browser, loaded.Browser);
             using var json = JsonDocument.Parse(File.ReadAllText(path));
             var browser = json.RootElement.GetProperty("browser");
-            Assert.Equal("chromium", browser.GetProperty("backend").GetString());
+            Assert.False(browser.GetProperty("embeddedView").GetBoolean());
             Assert.Equal("/opt/chrome", browser.GetProperty("executablePath").GetString());
             Assert.True(browser.GetProperty("headless").GetBoolean());
         }
@@ -121,6 +121,49 @@ public sealed class ShellSettingsTests
     }
 
     [Fact]
+    public async Task EmbeddedBrowserToggle_DefaultsOnAndWritesOnlyWhenTurnedOff()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-shell-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            using var settings = new SettingsViewModel(new WorkbenchConfig([]), [], isWindows: true);
+            Assert.True(settings.SupportsEmbeddedBrowserView);
+            Assert.True(settings.EmbeddedBrowserView);
+            Assert.Null((await settings.SaveAsync(path))!.Browser);
+            settings.EmbeddedBrowserView = false;
+            Assert.False((await settings.SaveAsync(path))!.Browser!.EmbeddedView);
+            settings.EmbeddedBrowserView = true;
+            Assert.Null((await settings.SaveAsync(path))!.Browser);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task NonWindows_HasNoBrowserToggleAndPreservesConfiguredSection()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"alcoler-shell-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            using var settings = new SettingsViewModel(
+                new WorkbenchConfig([], Browser: new WorkbenchBrowserConfig(EmbeddedView: false, ExecutablePath: "/opt/chrome")),
+                [], isWindows: false);
+            Assert.False(settings.SupportsEmbeddedBrowserView);
+            settings.EmbeddedBrowserView = true;
+            var saved = (await settings.SaveAsync(path))!.Browser;
+            Assert.NotNull(saved);
+            Assert.False(saved.EmbeddedView);
+            Assert.Equal("/opt/chrome", saved.ExecutablePath);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void AppliedSettingsBanner_IgnoresSkillAndThemeChanges()
     {
         var config = new WorkbenchConfig([]);
@@ -133,6 +176,8 @@ public sealed class ShellSettingsTests
             McpServers = [new WorkbenchMcpServerConfig("server", "command")],
         }));
         Assert.Contains("Shell", SidebarView.AppliedSettingsBanner(config, config with { IntegratedTerminalShell = Cmd }));
+        Assert.Contains("Restart", SidebarView.AppliedSettingsBanner(config,
+            config with { Browser = new WorkbenchBrowserConfig(EmbeddedView: false) }));
     }
 
     [Fact]

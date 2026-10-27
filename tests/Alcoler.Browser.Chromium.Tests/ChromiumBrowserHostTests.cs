@@ -282,19 +282,11 @@ public sealed class ChromiumBrowserHostTests
     }
 
     [Fact]
-    public void ExplicitHeadlessOverridesEnvironmentDetection()
+    public void HeadlessIsTheDefaultUnlessExplicitlyDisabled()
     {
+        Assert.True(new ChromiumBrowserOptions().EffectiveHeadless);
         Assert.True(new ChromiumBrowserOptions { Headless = true }.EffectiveHeadless);
         Assert.False(new ChromiumBrowserOptions { Headless = false }.EffectiveHeadless);
-    }
-
-    [Fact]
-    public void HeadlessAutoDetectionRequiresLinuxAndNoDisplayServer()
-    {
-        Assert.Equal(OperatingSystem.IsLinux(), ChromiumBrowserOptions.DetectHeadless(_ => null));
-        Assert.Equal(OperatingSystem.IsLinux(), ChromiumBrowserOptions.DetectHeadless(_ => string.Empty));
-        Assert.False(ChromiumBrowserOptions.DetectHeadless(name => name == "DISPLAY" ? ":0" : null));
-        Assert.False(ChromiumBrowserOptions.DetectHeadless(name => name == "WAYLAND_DISPLAY" ? "wayland-0" : null));
     }
 
     private static (ChromiumBrowserHost Host, ScriptedWire Wire, FakeProcess Process) CreateHost(bool headless = false)

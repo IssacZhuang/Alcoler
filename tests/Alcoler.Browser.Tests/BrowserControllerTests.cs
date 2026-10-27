@@ -83,6 +83,23 @@ public sealed class BrowserControllerTests
     }
 
     [Fact]
+    public async Task Takeover_StillGatesControlWhenBackendHasNoWindow()
+    {
+        var host = new TestHost { ShowThrows = true };
+        using var controller = new BrowserController(host);
+        var tab = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        Assert.True(tab.Ok, tab.Error);
+        await controller.TakeoverAsync(First, default);
+        Assert.True(controller.GetStatus(First)!.IsUserControlled);
+        Assert.Empty(host.Shown);
+        var blocked = await controller.ExecuteAsync(First, new BrowserNavigateAction("https://example.com"), default);
+        Assert.False(blocked.Ok);
+        Assert.Contains("human control", blocked.Error);
+        var resumed = await controller.ExecuteAsync(First, Command("resume") with { UserInitiated = true }, default);
+        Assert.True(resumed.Ok, resumed.Error);
+    }
+
+    [Fact]
     public async Task TakeoverAction_DoesNotCancelItsOwnResult()
     {
         using var host = new TestHost();
@@ -262,6 +279,7 @@ public sealed class BrowserControllerTests
         public List<string> Hidden { get; } = [];
         public List<(string TabId, string AdoptTargetId)> Adoptions { get; } = [];
         public bool FailCreation { get; set; }
+        public bool ShowThrows { get; set; }
         public TaskCompletionSource CloseCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public event EventHandler<BrowserNewTabRequestedEventArgs>? NewTabRequested
         {
@@ -288,6 +306,7 @@ public sealed class BrowserControllerTests
         }
         public Task ShowPageAsync(string tabId, CancellationToken cancellationToken)
         {
+            if (ShowThrows) throw new InvalidOperationException("Showing a browser page is not available in headless mode.");
             Shown.Add(tabId);
             return Task.CompletedTask;
         }

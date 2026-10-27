@@ -17,10 +17,10 @@ Alcoler is a from-scratch coding agent harness, built kernel-first. This file is
 
 The Browser tool is engine-agnostic: `src/Alcoler.Browser` (BrowserTool, BrowserController, CdpBrowserAutomation) drives any `IBrowserHost`/`IBrowserPage` implementation. Two backends ship:
 
-- `src/Alcoler/Browser` — embedded WebView2, Windows default. In-app pane embedding; native download/dialog interception.
-- `src/Alcoler.Browser.Chromium` — external Chromium-family browser process over loopback CDP WebSocket, default on Linux/macOS. Never launches with `--no-sandbox`; one process per browser session with a persisted per-session profile; the browser window is external (visibility/takeover map to window bounds over CDP).
+- `src/Alcoler/Browser` — embedded WebView2, selected by the Windows "embedded browser view" setting. In-app pane embedding; native download/dialog interception.
+- `src/Alcoler.Browser.Chromium` — headless Chromium-family browser process over loopback CDP WebSocket, the default everywhere except Windows-embedded. Never launches with `--no-sandbox`; one process per browser session with a persisted per-session profile; there is no visible browser window (window control actions report unsupported; takeover still gates control).
 
-Selection: `browser.backend` in `~/.alcoler/config.json` (`webview2` | `chromium`), defaulting to webview2 on Windows and chromium elsewhere. Binary resolution for chromium: `browser.executablePath` → `ALCOLER_BROWSER_EXECUTABLE` → installed Chrome/Chromium/Edge → Chrome-for-Testing download into `~/.alcoler`. Verification: `tests/Alcoler.Browser.Tests` + `tests/Alcoler.Browser.Chromium.Tests` (unit, no browser), `tests/Alcoler.Browser.IntegrationTests` (WebView2, Windows) and `tests/Alcoler.Browser.Chromium.IntegrationTests` (real browser, any OS).
+Selection: `browser.embeddedView` in `~/.alcoler/config.json` (Windows-only meaning; default true there, false elsewhere) picks WebView2 vs Chromium. `browser.headless: false` is a diagnostics escape hatch to run Chromium headed. Binary resolution for chromium: `browser.executablePath` → `ALCOLER_BROWSER_EXECUTABLE` → installed Chrome/Chromium/Edge → Chrome-for-Testing download into `~/.alcoler`. Verification: `tests/Alcoler.Browser.Tests` + `tests/Alcoler.Browser.Chromium.Tests` (unit, no browser), `tests/Alcoler.Browser.IntegrationTests` (WebView2, Windows) and `tests/Alcoler.Browser.Chromium.IntegrationTests` (real browser, any OS).
 
 ## Memory Budget
 

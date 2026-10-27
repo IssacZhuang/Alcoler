@@ -538,6 +538,19 @@
                   </ComboBox>
                 </Grid>
               </Border>
+              <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
+                      CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16"
+                      IsVisible="{Binding SupportsEmbeddedBrowserView}">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                  <StackPanel Spacing="4" VerticalAlignment="Center">
+                    <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_browser_embedded}" />
+                    <TextBlock Classes="description"
+                               Text="{loc:Loc settings_browser_embedded_description}" />
+                  </StackPanel>
+                  <ToggleSwitch Grid.Column="1" IsChecked="{Binding EmbeddedBrowserView, Mode=TwoWay}"
+                                VerticalAlignment="Center" AutomationProperties.Name="{loc:Loc settings_browser_embedded}" />
+                </Grid>
+              </Border>
             </StackPanel>
           </ScrollViewer>
 

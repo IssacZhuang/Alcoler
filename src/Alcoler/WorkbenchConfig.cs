@@ -63,8 +63,10 @@ public sealed record WorkbenchMcpServerConfig(
     IReadOnlyList<string>? Args = null,
     IReadOnlyDictionary<string, string>? Env = null);
 
+// EmbeddedView selects the Windows browser backend: true embeds WebView2 in the app pane,
+// false (and every non-Windows platform) runs the headless external Chromium backend.
 public sealed record WorkbenchBrowserConfig(
-    string? Backend = null,
+    bool? EmbeddedView = null,
     string? ExecutablePath = null,
     bool? Headless = null);
 

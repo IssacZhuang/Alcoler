@@ -164,6 +164,10 @@ public partial class SidebarView : UserControl
         {
             return Loc.Get("sidebar_shell_banner");
         }
+        if (before.Browser?.EmbeddedView != after.Browser?.EmbeddedView)
+        {
+            return Loc.Get("sidebar_browser_banner");
+        }
         return null;
     }
 

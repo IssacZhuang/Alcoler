@@ -67,7 +67,7 @@ internal sealed class ChromiumSuite : IDisposable
         new("download_media returns exact fixture bytes", false, DownloadMediaAsync),
         new("bounded WebM recording completes with EBML media", false, RecordingAsync),
         new("target=_blank popup is adopted as a new session tab", true, PopupAsync),
-        new("takeover blocks model input until user resume", true, TakeoverAsync),
+        new("takeover blocks model input until user resume", false, TakeoverAsync),
         new("per-session profile isolation for cookies and localStorage", false, SessionIsolationAsync),
         new("visibility show restores the window and screenshots keep working", true, VisibilityShowAsync),
         new("close_tab auto-creates the next tab and finalize keeps listed tabs", false, CloseAndFinalizeAsync),

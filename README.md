@@ -25,7 +25,7 @@ The project is not a stable product. Interfaces, persistence formats, and behavi
 
 ## Build and Run
 
-Alcoler targets .NET 10. The workbench runs on Windows; the browser tool additionally covers Linux and macOS through the external Chromium backend, which resolves an installed Chrome/Chromium/Edge or downloads a Chrome-for-Testing build on first use.
+Alcoler targets .NET 10. The workbench runs on Windows; the browser tool additionally covers Linux and macOS through the headless external Chromium backend, which resolves an installed Chrome/Chromium/Edge or downloads a Chrome-for-Testing build on first use. On Windows, the settings dialog toggles between the embedded WebView2 view and the headless Chromium backend.
 
 ```sh
 dotnet build Alcoler.slnx
