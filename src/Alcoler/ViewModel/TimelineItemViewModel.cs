@@ -16,17 +16,21 @@ public abstract partial class TimelineItemViewModel : ObservableObject
     protected TimelineItemViewModel(string rowId) => RowId = rowId;
 
     public string RowId { get; }
+
+    [ObservableProperty]
+    private bool _isFolded;
 }
 
 public sealed partial class UserMessageItemViewModel : TimelineItemViewModel
 {
     public UserMessageItemViewModel(string rowId, string text, IReadOnlyList<FilePart>? images = null,
-        MessageId id = default, bool canRewind = false) : base(rowId)
+        MessageId id = default, bool canRewind = false, DateTimeOffset at = default) : base(rowId)
     {
         Id = id;
         Text = text;
         Images = images ?? [];
         CanRewind = canRewind;
+        At = at;
     }
 
     public MessageId Id { get; }
@@ -35,9 +39,20 @@ public sealed partial class UserMessageItemViewModel : TimelineItemViewModel
 
     public bool CanRewind { get; }
 
+    public DateTimeOffset At { get; }
+
     public IReadOnlyList<FilePart> Images { get; }
 
     public bool HasImages => Images.Count > 0;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasTurnSummary))]
+    private string _turnSummaryText = string.Empty;
+
+    [ObservableProperty]
+    private bool _isTurnExpanded = true;
+
+    public bool HasTurnSummary => TurnSummaryText.Length > 0;
 }
 
 public sealed record AssistantMarkdownChunk(string Text);
@@ -58,11 +73,20 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
 
     public MessageId Id { get; }
 
+    public DateTimeOffset At { get; private set; }
+
     [ObservableProperty]
     private string _markdownText = string.Empty;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasReasoning))]
     private IReadOnlyList<string> _reasoningBlocks = [];
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasReasoning))]
+    private bool _isReasoningSuppressed;
+
+    public bool HasReasoning => ReasoningBlocks.Count > 0 && !IsReasoningSuppressed;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasStreamingTail), nameof(HasFinalMarkdown))]
@@ -93,6 +117,7 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
 
     public void UpdateFrom(AssistantMessageRow row)
     {
+        At = row.At;
         // Reference-equal parts plus unchanged streaming/fork flags imply this call
         // would rebuild identical state; parts are immutable records, so the list
         // instance pins its content.
@@ -339,6 +364,10 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
 
     public string ToolName { get; }
 
+    public DateTimeOffset StartedAt { get; private set; }
+
+    public TimeSpan? Duration { get; private set; }
+
     public string DisplayName { get; }
 
     public string IconPath { get; }
@@ -454,6 +483,8 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         StatusText = StatusKey(row.Status);
         FileChange = row.FileChange;
         IsError = row.IsError;
+        StartedAt = row.StartedAt;
+        Duration = row.Duration;
         DurationText = row.Duration is { } duration
             ? duration.TotalMilliseconds < 1000
                 ? $"{duration.TotalMilliseconds:F0}ms"
@@ -653,7 +684,7 @@ public static class TimelineItemFactory
     public static TimelineItemViewModel? Create(ConversationRow row) => row switch
     {
         UserMessageRow user => new UserMessageItemViewModel(
-            user.RowId, user.Text, user.Images, new MessageId(user.RowId), user.CanRewind),
+            user.RowId, user.Text, user.Images, new MessageId(user.RowId), user.CanRewind, user.At),
         AssistantMessageRow assistant => CreateAssistant(assistant),
         ToolCallRow tool when AgentCallItemViewModel.IsAgentTool(tool.ToolName) => new AgentCallItemViewModel(tool),
         ToolCallRow tool => CreateTool(tool),

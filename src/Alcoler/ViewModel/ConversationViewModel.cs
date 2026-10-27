@@ -52,6 +52,11 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private IReadOnlyList<ModelChoice>? _modelChoices;
     private ModelSelection? _defaultSelection;
     private bool _hasLocalSelection;
+    private readonly Dictionary<string, bool> _turnExpansion = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, TimeSpan> _turnDurations = new(StringComparer.Ordinal);
+    private TurnPhase _lastPhase = TurnPhase.Idle;
+    private DateTimeOffset? _turnStartedAt;
+    private bool _turnLayoutDirty;
 
     public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store, ComposerViewModel? composer = null,
         IReadOnlyList<ModelChoice>? modelChoices = null, ModelSelection? defaultSelection = null,
@@ -172,7 +177,13 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         if (update.Reset)
         {
             ReconcileRows(update.ResetRows ?? []);
+            // A reload re-derives turn boundaries from row order, so live timing
+            // tracked before the reset no longer applies.
+            _lastPhase = TurnPhase.Idle;
+            _turnStartedAt = null;
             ApplyState(update.State);
+            RebuildTurnLayout();
+            _turnLayoutDirty = false;
             if (Items.Count > 0)
             {
                 TimelineAppended?.Invoke();
@@ -181,12 +192,14 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
 
         var appendedDelta = false;
+        var rowUpserted = false;
         var reconcileAgents = false;
         var rowsRemoved = false;
         var statePatched = false;
         foreach (var op in update.Ops)
         {
             appendedDelta |= ApplyOp(op);
+            rowUpserted |= op is RowUpserted;
             switch (op)
             {
                 case RowAppended { Row: SystemNoticeRow { Subagent: not null } }:
@@ -212,6 +225,18 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         if (statePatched)
         {
             ApplyState(update.State);
+        }
+        // A coalesced flush can deliver a turn start and completion as one terminal
+        // state patch; row activity plus a terminal phase still marks the turn done.
+        if (rowsRemoved || reconcileAgents ||
+            (statePatched && (appendedDelta || rowUpserted) &&
+             update.State.Phase is TurnPhase.Idle or TurnPhase.Error))
+            _turnLayoutDirty = true;
+        if (_turnLayoutDirty)
+        {
+            _turnLayoutDirty = false;
+            RebuildTurnLayout();
+            appendedDelta = true;
         }
         if (appendedDelta)
         {
@@ -507,6 +532,118 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             OnPropertyChanged(nameof(HasPendingInteraction));
             OnPropertyChanged(nameof(HasPendingQuestion));
         }
+
+        var previousPhase = _lastPhase;
+        _lastPhase = state.Phase;
+        if (state.Phase is not (TurnPhase.Idle or TurnPhase.Error))
+        {
+            _turnStartedAt ??= DateTimeOffset.UtcNow;
+        }
+        else if (previousPhase is not (TurnPhase.Idle or TurnPhase.Error))
+        {
+            if (_turnStartedAt is { } startedAt && FindLastTurnAnchor() is { } anchor)
+                _turnDurations[anchor.RowId] = DateTimeOffset.UtcNow - startedAt;
+            _turnStartedAt = null;
+            _turnLayoutDirty = true;
+        }
+    }
+
+    private UserMessageItemViewModel? FindLastTurnAnchor()
+    {
+        for (var index = Items.Count - 1; index >= 0; index--)
+        {
+            if (Items[index] is UserMessageItemViewModel anchor)
+                return anchor;
+        }
+        return null;
+    }
+
+    private void RebuildTurnLayout()
+    {
+        List<(UserMessageItemViewModel Anchor, int Index)> anchors = [];
+        for (var index = 0; index < Items.Count; index++)
+        {
+            var item = Items[index];
+            item.IsFolded = false;
+            switch (item)
+            {
+                case AssistantMessageItemViewModel assistant:
+                    assistant.IsReasoningSuppressed = false;
+                    break;
+                case UserMessageItemViewModel anchor:
+                    anchor.TurnSummaryText = string.Empty;
+                    anchor.IsTurnExpanded = true;
+                    anchors.Add((anchor, index));
+                    break;
+            }
+        }
+
+        var turnActive = _lastPhase is not (TurnPhase.Idle or TurnPhase.Error);
+        for (var index = 0; index < anchors.Count; index++)
+        {
+            if (turnActive && index == anchors.Count - 1)
+                continue;
+            var (anchor, start) = anchors[index];
+            var end = index + 1 < anchors.Count ? anchors[index + 1].Index : Items.Count;
+            ApplyTurnFold(anchor, start, end);
+        }
+    }
+
+    private void ApplyTurnFold(UserMessageItemViewModel anchor, int start, int end)
+    {
+        var finalIndex = FindFinalAssistantIndex(start, end);
+        if (finalIndex <= start + 1)
+            return;
+        var duration = ResolveTurnDuration(anchor, start, end);
+        anchor.TurnSummaryText = Loc.Get("timeline_turn_worked", FormatTurnDuration(duration));
+        var expanded = _turnExpansion.GetValueOrDefault(anchor.RowId);
+        anchor.IsTurnExpanded = expanded;
+        if (expanded)
+            return;
+        for (var index = start + 1; index < finalIndex; index++)
+            Items[index].IsFolded = true;
+        if (Items[finalIndex] is AssistantMessageItemViewModel assistant)
+            assistant.IsReasoningSuppressed = true;
+    }
+
+    private int FindFinalAssistantIndex(int start, int end)
+    {
+        for (var index = end - 1; index > start; index--)
+        {
+            if (Items[index] is AssistantMessageItemViewModel { MarkdownText.Length: > 0 })
+                return index;
+        }
+        return -1;
+    }
+
+    private TimeSpan ResolveTurnDuration(UserMessageItemViewModel anchor, int start, int end)
+    {
+        if (_turnDurations.TryGetValue(anchor.RowId, out var measured))
+            return measured;
+        var finish = anchor.At;
+        for (var index = start + 1; index < end; index++)
+        {
+            var candidate = Items[index] switch
+            {
+                AssistantMessageItemViewModel assistant => assistant.At,
+                ToolCallItemViewModel tool => tool.StartedAt + (tool.Duration ?? TimeSpan.Zero),
+                _ => finish,
+            };
+            if (candidate > finish)
+                finish = candidate;
+        }
+        return finish > anchor.At ? finish - anchor.At : TimeSpan.Zero;
+    }
+
+    private static string FormatTurnDuration(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero)
+            elapsed = TimeSpan.Zero;
+        if (elapsed.TotalHours >= 1)
+            return Loc.Get("duration_hours_minutes", (int)elapsed.TotalHours, elapsed.Minutes);
+        if (elapsed.TotalMinutes >= 1)
+            return Loc.Get("duration_minutes_seconds", (int)elapsed.TotalMinutes, elapsed.Seconds);
+        return Loc.Get("duration_seconds", (int)elapsed.TotalSeconds);
     }
 
     public async Task SendAsync()
@@ -701,6 +838,32 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             _forkOperations.Remove(item.Id);
         }
+    }
+
+    public void ToggleTurnSummary(UserMessageItemViewModel anchor)
+    {
+        var start = Items.IndexOf(anchor);
+        if (start < 0)
+            return;
+        var end = Items.Count;
+        for (var index = start + 1; index < Items.Count; index++)
+        {
+            if (Items[index] is UserMessageItemViewModel)
+            {
+                end = index;
+                break;
+            }
+        }
+        var finalIndex = FindFinalAssistantIndex(start, end);
+        if (finalIndex < 0)
+            return;
+        var expanded = !anchor.IsTurnExpanded;
+        _turnExpansion[anchor.RowId] = expanded;
+        anchor.IsTurnExpanded = expanded;
+        for (var index = start + 1; index < finalIndex; index++)
+            Items[index].IsFolded = !expanded;
+        if (Items[finalIndex] is AssistantMessageItemViewModel assistant)
+            assistant.IsReasoningSuppressed = !expanded;
     }
 
     public async Task DeleteQueuedInputAsync(QueuedInput input)

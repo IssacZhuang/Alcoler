@@ -221,6 +221,11 @@
     <Style Selector="Button.fileSummaryOpen:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.fileSummaryOpen:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerHover}" />
     </Style>
+    <Style Selector="Button.fileSummaryMore">
+      <Setter Property="MinWidth" Value="26" />
+      <Setter Property="Padding" Value="6,3" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+    </Style>
     <Style Selector="TextBlock.agentType">
       <Setter Property="Foreground" Value="{DynamicResource AlcolerAgentGeneral}" />
     </Style>
@@ -327,45 +332,62 @@
             </ItemsControl.ItemsPanel>
             <ItemsControl.DataTemplates>
               <DataTemplate x:DataType="vm:UserMessageItemViewModel">
-                <StackPanel Classes="userMessage">
-                  <Border Classes="userRow" CornerRadius="12,2,12,12" Padding="16,12" BorderThickness="0"
-                          HorizontalAlignment="Right" Background="{DynamicResource AlcolerSurface}">
-                    <StackPanel Spacing="8">
-                      <ItemsControl ItemsSource="{Binding Images}" IsVisible="{Binding HasImages}">
-                        <ItemsControl.ItemsPanel>
-                          <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="parts:FilePart">
-                            <controls:ConversationImage ArtifactUri="{Binding ArtifactUri}" MimeType="{Binding MimeType}" FileName="{Binding FileName}"
-                                                        ToolTip.Tip="{Binding FileName}" Margin="0,0,6,0" />
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                      <controls:ConversationSelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
-                                                                FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
-                                                                IsVisible="{Binding !!Text}" Foreground="{DynamicResource AlcolerTextPrimary}" />
+                <StackPanel Classes="userMessage" HorizontalAlignment="Stretch">
+                  <StackPanel HorizontalAlignment="Right" Spacing="2">
+                    <Border Classes="userRow" CornerRadius="12,2,12,12" Padding="16,12" BorderThickness="0"
+                            HorizontalAlignment="Right" Background="{DynamicResource AlcolerSurface}">
+                      <StackPanel Spacing="8">
+                        <ItemsControl ItemsSource="{Binding Images}" IsVisible="{Binding HasImages}">
+                          <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                          </ItemsControl.ItemsPanel>
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="parts:FilePart">
+                              <controls:ConversationImage ArtifactUri="{Binding ArtifactUri}" MimeType="{Binding MimeType}" FileName="{Binding FileName}"
+                                                          ToolTip.Tip="{Binding FileName}" Margin="0,0,6,0" />
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <controls:ConversationSelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
+                                                                  FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
+                                                                  IsVisible="{Binding !!Text}" Foreground="{DynamicResource AlcolerTextPrimary}" />
+                      </StackPanel>
+                    </Border>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="2">
+                      <Button Classes="messageAction" IsVisible="{Binding CanRewind}" Click="OnRewindUserMessageClick"
+                              ToolTip.Tip="{loc:Loc timeline_edit_from_here}" AutomationProperties.Name="{loc:Loc timeline_rewind_a11y}">
+                        <controls:Icon Data="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+                      </Button>
+                      <Button Classes="messageAction" Click="OnCopyUserMessageClick"
+                              ToolTip.Tip="{loc:Loc timeline_copy_message}" AutomationProperties.Name="{loc:Loc timeline_copy_message}">
+                        <controls:Icon Data="M8 8V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
+                      </Button>
                     </StackPanel>
-                  </Border>
-                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="2">
-                    <Button Classes="messageAction" IsVisible="{Binding CanRewind}" Click="OnRewindUserMessageClick"
-                            ToolTip.Tip="{loc:Loc timeline_edit_from_here}" AutomationProperties.Name="{loc:Loc timeline_rewind_a11y}">
-                      <controls:Icon Data="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
-                    </Button>
-                    <Button Classes="messageAction" Click="OnCopyUserMessageClick"
-                            ToolTip.Tip="{loc:Loc timeline_copy_message}" AutomationProperties.Name="{loc:Loc timeline_copy_message}">
-                      <controls:Icon Data="M8 8V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
-                    </Button>
                   </StackPanel>
+                  <Button Classes="toolRow turnSummaryRow" Margin="0,4,0,16" Click="OnTurnSummaryClick"
+                          IsVisible="{Binding HasTurnSummary}" ToolTip.Tip="{loc:Loc timeline_turn_toggle}"
+                          AutomationProperties.Name="{Binding TurnSummaryText}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Grid Width="14" Height="14" VerticalAlignment="Center">
+                        <controls:Icon Classes="conversationIcon" Width="14" Height="14"
+                                       Data="{StaticResource AlcolerIconChevronRight}" IsVisible="{Binding !IsTurnExpanded}" />
+                        <controls:Icon Classes="conversationIcon" Width="14" Height="14"
+                                       Data="{StaticResource AlcolerIconChevronDown}" IsVisible="{Binding IsTurnExpanded}" />
+                      </Grid>
+                      <TextBlock Text="{Binding TurnSummaryText}" FontSize="14" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource AlcolerTextTertiary}" />
+                    </StackPanel>
+                  </Button>
                 </StackPanel>
               </DataTemplate>
 
               <DataTemplate x:DataType="vm:AssistantMessageItemViewModel">
                 <StackPanel Classes="assistantRow"
                             Classes.hasText="{Binding MarkdownText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                            Spacing="12" MinWidth="0" HorizontalAlignment="Stretch">
+                            Spacing="12" MinWidth="0" HorizontalAlignment="Stretch"
+                            IsVisible="{Binding !IsFolded}">
                   <Expander Classes="thinkingBlock" IsExpanded="{Binding IsReasoningExpanded, Mode=TwoWay}" HorizontalAlignment="Stretch"
-                            IsVisible="{Binding ReasoningBlocks, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
+                            IsVisible="{Binding HasReasoning}">
                     <Expander.Header>
                       <TextBlock Text="{loc:Loc timeline_thinking}" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource AlcolerTextTertiary}" />
                     </Expander.Header>
@@ -408,7 +430,8 @@
               <DataTemplate x:DataType="vm:AgentCallItemViewModel">
                 <Button Classes="toolRow agentRow" Classes.running="{Binding IsRunning}" Margin="0,0,0,4"
                         Click="OnAgentRowClick" ToolTip.Tip="{Binding ToolTipText}"
-                        AutomationProperties.Name="{Binding AccessibleText}">
+                        AutomationProperties.Name="{Binding AccessibleText}"
+                        IsVisible="{Binding !IsFolded}">
                   <Grid ColumnDefinitions="16,Auto,Auto,Auto,*,Auto" ColumnSpacing="8" MinWidth="0">
                     <controls:Icon Classes="conversationIcon"
                                    Data="M12 8V4H8M5 8h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2ZM9 13v2M15 13v2M1 13v4M23 13v4M9 18h6" />
@@ -427,7 +450,7 @@
               </DataTemplate>
 
               <DataTemplate x:DataType="vm:ToolCallItemViewModel">
-                <StackPanel Margin="0,0,0,4" MinWidth="0" ClipToBounds="True">
+                <StackPanel Margin="0,0,0,4" MinWidth="0" ClipToBounds="True" IsVisible="{Binding !IsFolded}">
                   <Button Classes="toolRow" Click="OnToolRowClick" ToolTip.Tip="{Binding ToolName}">
                     <Grid ColumnDefinitions="16,Auto,*,Auto" ColumnSpacing="8" MinWidth="0">
                       <controls:Icon Grid.Column="0" Classes="conversationIcon" Data="{Binding IconPath, Converter={StaticResource ConversationIcon}}" />
@@ -517,7 +540,8 @@
               <DataTemplate x:DataType="vm:FileChangeSummaryItemViewModel">
                 <Border Margin="0,8,0,20" CornerRadius="10" BorderThickness="1" ClipToBounds="True"
                         BorderBrush="{DynamicResource AlcolerSurfaceHigh}"
-                        Background="{DynamicResource AlcolerCard}">
+                        Background="{DynamicResource AlcolerCard}"
+                        IsVisible="{Binding !IsFolded}">
                   <StackPanel>
                     <Button Classes="fileSummaryHeader" Click="OnFileSummaryHeaderClick"
                             AutomationProperties.Name="{loc:Loc timeline_toggle_changed_files}">
@@ -566,9 +590,17 @@
                                            FontFamily="{DynamicResource AlcolerFontMonospace}" FontSize="{DynamicResource AlcolerFontSmall}"
                                            VerticalAlignment="Center" Foreground="{DynamicResource AlcolerDiffRemoved}" />
                               </StackPanel>
-                              <Button Grid.Column="3" Classes="fileSummaryOpen" Content="{loc:Loc timeline_open}"
-                                      Click="OnOpenChangedFileClick" ToolTip.Tip="{loc:Loc timeline_open_file}"
-                                      AutomationProperties.Name="{loc:Loc timeline_open_file}" />
+                              <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                                <Button Classes="fileSummaryOpen" Content="{loc:Loc timeline_open}"
+                                        Click="OnOpenChangedFileClick" ToolTip.Tip="{loc:Loc timeline_open_file}"
+                                        AutomationProperties.Name="{loc:Loc timeline_open_file}" />
+                                <Button Classes="fileSummaryOpen fileSummaryMore"
+                                        Click="OnOpenChangedFileMenuClick" ToolTip.Tip="{loc:Loc timeline_open_with}"
+                                        AutomationProperties.Name="{loc:Loc timeline_open_with}">
+                                  <controls:Icon Width="12" Height="12" Data="{StaticResource AlcolerIconChevronDown}"
+                                                 Stroke="{DynamicResource AlcolerTextSecondary}" />
+                                </Button>
+                              </StackPanel>
                             </Grid>
                           </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -580,7 +612,7 @@
 
               <DataTemplate x:DataType="vm:SystemNoticeItemViewModel">
                 <Border Classes="noticeRow" Classes.error="{Binding IsError}" Margin="0,0,0,16" Padding="0,8,0,0"
-                        BorderThickness="0">
+                        BorderThickness="0" IsVisible="{Binding !IsFolded}">
                   <WrapPanel Orientation="Horizontal">
                     <TextBlock Classes="caption" Text="{Binding DisplayKind}" FontWeight="Medium" ToolTip.Tip="{Binding Kind}" />
                     <TextBlock Classes="caption" Text=": " />

@@ -124,6 +124,146 @@ public class ConversationViewModelTests
         store.Dispose();
     }
 
+    [Fact]
+    public void TurnCompletion_FoldsIntermediateRowsAndKeepsFinalAnswerVisible()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var started = DateTimeOffset.UtcNow.AddSeconds(-6);
+            var busy = TestSnapshots.State(TurnPhase.Streaming);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, busy,
+            [
+                new RowAppended(new UserMessageRow("u1", "do the thing", started)),
+                new RowAppended(new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), "checking")], false, started.AddSeconds(1))),
+                new RowAppended(ToolRow("t1") with
+                {
+                    Status = ToolCallStatus.Succeeded,
+                    Duration = TimeSpan.FromSeconds(1),
+                    StartedAt = started.AddSeconds(1),
+                }),
+                new RowAppended(new AssistantMessageRow("a2", StrongId.NewMessageId(),
+                    [new ReasoningPart(StrongId.NewPartId(), "reasoning"), new TextPart(StrongId.NewPartId(), "done")],
+                    false, started.AddSeconds(4))),
+                new StatePatched(busy),
+            ], Reset: false));
+
+            var idle = TestSnapshots.State();
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, idle, [new StatePatched(idle)], Reset: false));
+
+            var anchor = Assert.IsType<UserMessageItemViewModel>(viewModel.Items[0]);
+            var intermediate = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[1]);
+            var tool = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[2]);
+            var final = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[3]);
+            Assert.True(anchor.HasTurnSummary);
+            Assert.False(anchor.IsTurnExpanded);
+            Assert.NotEmpty(anchor.TurnSummaryText);
+            Assert.True(intermediate.IsFolded);
+            Assert.True(tool.IsFolded);
+            Assert.False(final.IsFolded);
+            Assert.True(final.IsReasoningSuppressed);
+            Assert.False(final.HasReasoning);
+
+            viewModel.ToggleTurnSummary(anchor);
+
+            Assert.True(anchor.IsTurnExpanded);
+            Assert.False(intermediate.IsFolded);
+            Assert.False(tool.IsFolded);
+            Assert.False(final.IsReasoningSuppressed);
+            Assert.True(final.HasReasoning);
+
+            viewModel.ToggleTurnSummary(anchor);
+
+            Assert.False(anchor.IsTurnExpanded);
+            Assert.True(intermediate.IsFolded);
+            Assert.True(tool.IsFolded);
+            Assert.True(final.IsReasoningSuppressed);
+        }
+    }
+
+    [Fact]
+    public void CoalescedTurnCompletion_WithoutObservedBusyPhase_StillFolds()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var started = DateTimeOffset.UtcNow.AddSeconds(-4);
+            var idle = TestSnapshots.State();
+            var final = new AssistantMessageRow("a2", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), "done")], false, started.AddSeconds(4));
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, idle,
+            [
+                new RowAppended(new UserMessageRow("u1", "do the thing", started)),
+                new RowAppended(new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), "checking")], false, started.AddSeconds(1))),
+                new RowAppended(final),
+                new RowUpserted(final with { CanFork = true }),
+                new StatePatched(idle),
+            ], Reset: false));
+
+            var anchor = Assert.IsType<UserMessageItemViewModel>(viewModel.Items[0]);
+            Assert.True(anchor.HasTurnSummary);
+            Assert.False(anchor.IsTurnExpanded);
+            Assert.True(viewModel.Items[1].IsFolded);
+            Assert.False(viewModel.Items[2].IsFolded);
+        }
+    }
+
+    [Fact]
+    public void Reset_FoldsCompletedTurnsAndLeavesActiveTurnOpen()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var started = DateTimeOffset.UtcNow.AddMinutes(-2);
+            var rows = new ConversationRow[]
+            {
+                new UserMessageRow("u1", "first", started),
+                new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), "working")], false, started.AddSeconds(1)),
+                new ToolCallRow("t1", StrongId.NewToolCallId(), "Bash",
+                    JsonSerializer.SerializeToElement(new { command = "ls" }), ToolCallStatus.Succeeded,
+                    null, false, TimeSpan.FromSeconds(1), started.AddSeconds(1)),
+                new AssistantMessageRow("a2", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), "first answer")], false, started.AddSeconds(4)),
+                new FileChangeSummaryRow("f1", [new FileChangeSummaryItem("a.cs", 2, 1)], 2, 1),
+                new UserMessageRow("u2", "second", started.AddMinutes(1)),
+                new ToolCallRow("t2", StrongId.NewToolCallId(), "Bash",
+                    JsonSerializer.SerializeToElement(new { command = "pwd" }), ToolCallStatus.Running,
+                    null, false, null, started.AddMinutes(1)),
+                new AssistantMessageRow("a3", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), "second answer")], false, started.AddMinutes(1).AddSeconds(2)),
+            };
+            var streaming = TestSnapshots.State(TurnPhase.Streaming);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, streaming, [], Reset: true, ResetRows: rows));
+
+            var firstAnchor = Assert.IsType<UserMessageItemViewModel>(viewModel.Items[0]);
+            var firstIntermediate = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[1]);
+            var firstTool = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[2]);
+            var firstFinal = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[3]);
+            var fileSummary = Assert.IsType<FileChangeSummaryItemViewModel>(viewModel.Items[4]);
+            var activeAnchor = Assert.IsType<UserMessageItemViewModel>(viewModel.Items[5]);
+            var activeTool = Assert.IsType<ToolCallItemViewModel>(viewModel.Items[6]);
+            var activeFinal = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[7]);
+
+            Assert.True(firstAnchor.HasTurnSummary);
+            Assert.False(firstAnchor.IsTurnExpanded);
+            Assert.Contains('4', firstAnchor.TurnSummaryText);
+            Assert.True(firstIntermediate.IsFolded);
+            Assert.True(firstTool.IsFolded);
+            Assert.False(firstFinal.IsFolded);
+            Assert.False(fileSummary.IsFolded);
+
+            Assert.False(activeAnchor.HasTurnSummary);
+            Assert.False(activeTool.IsFolded);
+            Assert.False(activeFinal.IsFolded);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

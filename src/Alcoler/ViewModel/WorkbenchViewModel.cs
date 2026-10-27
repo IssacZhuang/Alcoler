@@ -41,6 +41,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
 {
     private readonly IAgentRuntime _runtime;
     private readonly SessionProjectionHub _hub;
+    private readonly IExternalEditorLauncher _externalEditorLauncher;
     private WorkbenchConfig _config;
     private readonly Action<WorkbenchComposerConfig>? _saveComposer;
     private readonly Action<WorkbenchConfig>? _applySettings;
@@ -85,10 +86,12 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         BrowserPaneViewModel? browserPane = null,
         Action<WorkbenchComposerConfig>? saveComposer = null,
         Action<WorkbenchConfig>? applySettings = null,
-        ChatGptAccountService? chatGptAccount = null)
+        ChatGptAccountService? chatGptAccount = null,
+        IExternalEditorLauncher? externalEditorLauncher = null)
     {
         _runtime = runtime;
         _config = config;
+        _externalEditorLauncher = externalEditorLauncher ?? new ExternalEditorLauncher();
         _saveComposer = saveComposer;
         _applySettings = applySettings;
         _shellPreference = config.IntegratedTerminalShell;

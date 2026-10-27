@@ -88,6 +88,62 @@ public class TimelineSmokeTests
         }
     }
 
+    [AvaloniaFact]
+    public void CompletedTurn_FoldsBehindSummaryHeaderAndExpands()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 800);
+        try
+        {
+            var started = DateTimeOffset.UtcNow.AddSeconds(-5);
+            var rows = new ConversationRow[]
+            {
+                new UserMessageRow("u1", "do the thing", started),
+                new ToolCallRow("t1", StrongId.NewToolCallId(), "Bash",
+                    JsonSerializer.SerializeToElement(new { command = "ls" }), ToolCallStatus.Succeeded,
+                    null, false, TimeSpan.FromSeconds(1), started.AddSeconds(1)),
+                new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), "final answer")], false, started.AddSeconds(3)),
+            };
+            var streaming = TestSnapshots.State(TurnPhase.Streaming);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, streaming, [], Reset: true, ResetRows: rows));
+            var idle = TestSnapshots.State();
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, idle, [new StatePatched(idle)], Reset: false));
+            Pump();
+
+            var anchor = Assert.IsType<UserMessageItemViewModel>(viewModel.Items[0]);
+            Assert.True(anchor.HasTurnSummary);
+            var header = Assert.Single(view.GetVisualDescendants().OfType<Button>(),
+                button => ReferenceEquals(button.DataContext, anchor) && button.Classes.Contains("turnSummaryRow"));
+            Assert.True(header.IsEffectivelyVisible);
+            Assert.Contains(header.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == anchor.TurnSummaryText);
+            var final = Assert.Single(view.GetVisualDescendants().OfType<ConversationMarkdown>());
+            Assert.True(final.IsEffectivelyVisible);
+            Assert.Equal("final answer", final.Markdown);
+            Assert.DoesNotContain(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "ls");
+
+            var point = header.TranslatePoint(new Point(header.Bounds.Width / 2, header.Bounds.Height / 2), window)!.Value;
+            window.MouseMove(point);
+            window.MouseDown(point, MouseButton.Left);
+            window.MouseUp(point, MouseButton.Left);
+            Pump();
+
+            Assert.True(anchor.IsTurnExpanded);
+            Assert.False(viewModel.Items[1].IsFolded);
+            Assert.Contains(view.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.IsEffectivelyVisible && block.Text == "ls");
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
     [AvaloniaTheory]
     [InlineData(420)]
     [InlineData(900)]
@@ -472,11 +528,21 @@ public class TimelineSmokeTests
             Assert.Contains(view.GetVisualDescendants().OfType<TextBlock>(),
                 block => block.IsEffectivelyVisible && block.Text == "-5");
             var openButtons = view.GetVisualDescendants().OfType<Button>()
-                .Where(button => button.Classes.Contains("fileSummaryOpen"))
+                .Where(button => button.Classes.Contains("fileSummaryOpen") && !button.Classes.Contains("fileSummaryMore"))
                 .ToArray();
             Assert.Equal(2, openButtons.Length);
             Assert.All(openButtons, button => Assert.Contains(button.GetVisualDescendants().OfType<TextBlock>(),
                 block => block.IsEffectivelyVisible && block.Text == "Open"));
+            var openWithButtons = view.GetVisualDescendants().OfType<Button>()
+                .Where(button => button.Classes.Contains("fileSummaryMore"))
+                .ToArray();
+            Assert.Equal(2, openWithButtons.Length);
+            Assert.All(openWithButtons, button =>
+            {
+                Assert.True(button.IsEffectivelyVisible);
+                Assert.Equal("Open with external app", Avalonia.Automation.AutomationProperties.GetName(button));
+                Assert.Single(button.GetVisualDescendants().OfType<Icon>());
+            });
 
             window.Width = 360;
             Pump();

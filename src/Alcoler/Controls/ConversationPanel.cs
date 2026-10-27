@@ -648,10 +648,13 @@ public sealed class ConversationPanel : VirtualizingPanel
             or nameof(AssistantMessageItemViewModel.ReasoningBlocks)
             or nameof(AssistantMessageItemViewModel.IsStreaming)
             or nameof(AssistantMessageItemViewModel.IsReasoningExpanded)
+            or nameof(AssistantMessageItemViewModel.IsReasoningSuppressed)
             or nameof(AssistantMessageItemViewModel.StreamingTail)
             or nameof(AssistantMessageItemViewModel.StreamingTailIsCode)
-            or nameof(AssistantMessageItemViewModel.FinalMarkdown),
-        ToolCallItemViewModel tool => propertyName is nameof(ToolCallItemViewModel.IsExpanded) or nameof(ToolCallItemViewModel.ImageMedia) ||
+            or nameof(AssistantMessageItemViewModel.FinalMarkdown)
+            or nameof(TimelineItemViewModel.IsFolded),
+        ToolCallItemViewModel tool => propertyName is nameof(ToolCallItemViewModel.IsExpanded)
+            or nameof(TimelineItemViewModel.IsFolded) or nameof(ToolCallItemViewModel.ImageMedia) ||
             tool.IsExpanded && propertyName is nameof(ToolCallItemViewModel.InputJson) or nameof(ToolCallItemViewModel.OutputText),
         _ => true,
     };
@@ -673,6 +676,7 @@ public sealed class ConversationPanel : VirtualizingPanel
 
     private double EstimateHeight(object? item) => item switch
     {
+        TimelineItemViewModel { IsFolded: true } => 0,
         AgentCallItemViewModel => 32,
         ToolCallItemViewModel tool => (tool.IsExpanded ? 48 : 32) + EstimateImageHeight(tool.ImageMedia.Count),
         AssistantMessageItemViewModel { IsReasoningExpanded: false, MarkdownText.Length: 0 } => 32,

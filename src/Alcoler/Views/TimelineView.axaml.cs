@@ -274,6 +274,15 @@ public partial class TimelineView : UserControl
         }
     }
 
+    private void OnTurnSummaryClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: UserMessageItemViewModel item } && _conversation is not null)
+        {
+            _conversation.ToggleTurnSummary(item);
+            e.Handled = true;
+        }
+    }
+
     private void OnFileSummaryHeaderClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: FileChangeSummaryItemViewModel item })
@@ -305,6 +314,45 @@ public partial class TimelineView : UserControl
                 _conversation.Banner = Loc.Get("timeline_open_failed", file.FileName, exception.Message);
             }
         }
+    }
+
+    private void OnOpenChangedFileMenuClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: ChangedFileItemViewModel file } button)
+        {
+            return;
+        }
+        e.Handled = true;
+        if (TopLevel.GetTopLevel(this) is not MainWindow { DataContext: WorkbenchViewModel workbench })
+        {
+            return;
+        }
+
+        var workspaceRoot = _conversation?.WorkspaceRoot;
+        var flyout = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedRight };
+        foreach (var editor in workbench.ExternalEditors)
+        {
+            var item = new MenuItem { Header = editor.Name, MinWidth = 160 };
+            item.Click += (_, _) =>
+            {
+                flyout.Hide();
+                workbench.OpenFileExternally(file.Path, editor, workspaceRoot);
+            };
+            flyout.Items.Add(item);
+        }
+        if (flyout.Items.Count > 0)
+        {
+            flyout.Items.Add(new Separator());
+        }
+
+        var defaultItem = new MenuItem { Header = Loc.Get("timeline_open_with_default"), MinWidth = 160 };
+        defaultItem.Click += (_, _) =>
+        {
+            flyout.Hide();
+            workbench.OpenFileWithDefaultApp(file.Path, workspaceRoot);
+        };
+        flyout.Items.Add(defaultItem);
+        flyout.ShowAt(button);
     }
 
     private async void OnCopyUserMessageClick(object? sender, RoutedEventArgs e)
