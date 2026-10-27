@@ -615,7 +615,7 @@
         }
       },
       {
-        "modelMatch": ".*gpt-(?:6-astra|6\\.1-sol)(?:[.\\-:/\\[].*)?",
+        "modelMatch": ".*gpt-(?:6-astra|6\\.1-(?:sol|terra))(?:[.\\-:/\\[].*)?",
         "config": {
           "properties": {
             "contextWindow": 1050000,
