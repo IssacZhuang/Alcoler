@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Projections;
@@ -419,6 +420,7 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         TypeInfoResolver = JsonElementContext.Default,
     };
 
