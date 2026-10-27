@@ -889,6 +889,10 @@ public sealed class ConversationStatusViewModelTests
         public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
             Inner.SubmitAsync(command, cancellationToken);
 
+        public ValueTask<int> UnloadIdleSessionsAsync(
+            TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(0);
+
         public IConversationProjection Subscribe(SessionId sessionId) => Inner.Subscribe(sessionId);
         public IConversationProjection? TryObserve(SessionId sessionId) => Inner.TryObserve(sessionId);
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

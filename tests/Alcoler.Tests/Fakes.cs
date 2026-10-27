@@ -102,6 +102,10 @@ public sealed class FakeAgentRuntime : IAgentRuntime
         return ValueTask.FromResult(ack);
     }
 
+    public ValueTask<int> UnloadIdleSessionsAsync(
+        TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(0);
+
     public IConversationProjection Subscribe(SessionId sessionId) => _projections[sessionId];
 
     public IConversationProjection? TryObserve(SessionId sessionId) =>

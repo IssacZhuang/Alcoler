@@ -26,6 +26,8 @@ Selection: `browser.embeddedView` in `~/.alcoler/config.json` (Windows-only mean
 
 Baseline from the kernel memory probe (`tests/Alcoler.Kernel.Tests/EndToEnd/MemorySpikeProbe.cs`): 10 resident sessions holding 850 scripted turns cost 7 MB managed / +21 MB working set over the process floor; the desktop process floor is Avalonia-dominated (~135 MB). No fixed working-set cap is enforced: memory and performance must be weighed together, with session residency and event retention kept bounded.
 
+Bounded retention is enforced at four points: `SessionEventStore` caps resident transient events (2048, halved on overflow) so a turn that never seals cannot accumulate streaming events without end; a one-shot timer re-armed at each turn end sweeps the sealed-turn grace tail once a session idles; `AgentRuntime.UnloadIdleSessionsAsync` disposes sessions fully idle past 1 hour (never with an active turn, queued input, pending interaction, running job, running subagent, or a resident parent), driven by the desktop app's 5-minute maintenance tick, with durable state reloading on the next resume; and the desktop app compacts the large object heap once after a session stays busy 10+ minutes and then goes idle (30-minute cooldown).
+
 ## Changelog
 
 No CHANGELOG and no standalone documents are maintained; this file is the only long-term maintained document.

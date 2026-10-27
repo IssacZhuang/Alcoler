@@ -115,6 +115,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private bool _titleAttempted;
     private bool _shellInitialized;
     private CancellationTokenSource? _turnCts;
+    private ITimer? _transientSweepTimer;
     private readonly Queue<PendingTurnInput> _pendingInputs = new();
     private TokenUsage? _lastProviderUsage;
     private int _usageAnchorIndex = -1;
@@ -232,6 +233,33 @@ public sealed class SessionRuntime : IAsyncDisposable
         return new SessionActivitySnapshot(phase, outcome < 0 ? null : (TurnOutcome)outcome);
     }
 
+    internal DateTimeOffset LastActivityUtc => _lastActivityUtc;
+
+    internal SessionId? ParentSessionId => _record.ParentSessionId;
+
+    // Queued inputs and pending interactions exist only in memory, so dropping them would
+    // lose user work; durable state reloads on resume.
+    internal bool IsSafeToUnload
+    {
+        get
+        {
+            if (IsTurnActive || _pendingInputs.Count > 0)
+            {
+                return false;
+            }
+            lock (_pendingSync)
+            {
+                if (_pendingPermissions.Count > 0 || _pendingInteractions.Count > 0)
+                {
+                    return false;
+                }
+            }
+            return !_backgroundJobs.List().Any(job => job.Status == BackgroundJobStatus.Running)
+                && !(_subagentTasks?.List().Any(task => task.Status == SubagentStatus.Running
+                    && task.ParentSessionId == _record.Id) == true);
+        }
+    }
+
     internal Task SetArchivedAsync(bool archived, CancellationToken cancellationToken) =>
         PersistRecordAsync(cancellationToken,
             record => record.IsArchived == archived ? record : record with { IsArchived = archived });
@@ -266,6 +294,11 @@ public sealed class SessionRuntime : IAsyncDisposable
         try
         {
             var ack = await DispatchAsync(command, ct).ConfigureAwait(false);
+            if (ack.Accepted)
+            {
+                // Idle unloading measures from the last meaningful work.
+                _lastActivityUtc = _deps.Clock.GetUtcNow();
+            }
             // The store tail captured under the lock is a causality token: every event the
             // command caused is at or below it, so a projection can await exactly it.
             return ack with { LastEventSequence = _events.LastSequence };
@@ -714,6 +747,8 @@ public sealed class SessionRuntime : IAsyncDisposable
             return;
         }
 
+        _transientSweepTimer?.Dispose();
+        _transientSweepTimer = null;
         _turnCts = CancellationTokenSource.CreateLinkedTokenSource(_sessionCts.Token);
         var turnCts = _turnCts;
         TurnStarted?.Invoke(this);
@@ -891,9 +926,18 @@ public sealed class SessionRuntime : IAsyncDisposable
             _turnLocalRequestMessages.Clear();
             _turnCts?.Dispose();
             _turnCts = null;
+            // Idle unloading measures from the last meaningful work, so the clock restarts
+            // at turn end rather than at the final model step.
+            _lastActivityUtc = _deps.Clock.GetUtcNow();
             _events.EvictTransientOlderThan(
                 _deps.Clock.GetUtcNow().AddSeconds(-SessionEventRetention.SealedTurnTransientGraceMs / 1000.0),
                 _events.LastSequence);
+            _transientSweepTimer?.Dispose();
+            _transientSweepTimer = _deps.Clock.CreateTimer(
+                _ => SweepTransientEvents(),
+                null,
+                TimeSpan.FromMilliseconds(SessionEventRetention.SealedTurnTransientGraceMs),
+                Timeout.InfiniteTimeSpan);
             if (TurnFinished is { } handlers)
             {
                 foreach (Func<SessionRuntime, TurnOutcome, ValueTask> handler in handlers.GetInvocationList())
@@ -917,6 +961,23 @@ public sealed class SessionRuntime : IAsyncDisposable
     {
         _turnMachine.TryTransition(TurnPhase.Completing);
         _turnMachine.Transition(TurnPhase.Idle);
+    }
+
+    // The sealed-turn grace keeps the streaming tail for late consumers; once the grace elapses
+    // with no new turn the tail is dead weight, so it is dropped.
+    private void SweepTransientEvents()
+    {
+        if (_disposed || IsTurnActive)
+            return;
+
+        try
+        {
+            _events.EvictTransientOlderThan(_deps.Clock.GetUtcNow(), _events.LastSequence);
+        }
+        catch (Exception ex)
+        {
+            _deps.Logger.LogError(ex, "Transient event sweep failed.");
+        }
     }
 
     // Consumes at most one queued user input (one guide per model-step boundary) and, when
@@ -2575,6 +2636,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
         }
         _sessionCts.Dispose();
+        _transientSweepTimer?.Dispose();
+        _transientSweepTimer = null;
         _events.DropAll();
         _commandLock.Dispose();
         _recordLock.Dispose();

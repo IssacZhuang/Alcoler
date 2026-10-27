@@ -349,6 +349,10 @@ public sealed class WorkspaceRemovalTests : IDisposable
         public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
             _inner.SubmitAsync(command, cancellationToken);
 
+        public ValueTask<int> UnloadIdleSessionsAsync(
+            TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(0);
+
         public IConversationProjection Subscribe(SessionId sessionId) => _inner.Subscribe(sessionId);
 
         public IConversationProjection? TryObserve(SessionId sessionId) => _inner.TryObserve(sessionId);

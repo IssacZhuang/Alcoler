@@ -67,8 +67,15 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     private bool _terminalAutoStarted;
     private bool _disposed;
     private static readonly TimeSpan AutoArchiveInterval = TimeSpan.FromHours(1);
+    private static readonly TimeSpan IdleSessionUnloadThreshold = TimeSpan.FromHours(1);
+    private static readonly TimeSpan MaintenanceTickInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan LongBusySessionThreshold = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan CompactionCooldown = TimeSpan.FromMinutes(30);
     private DateTimeOffset? _lastAutoArchiveAt;
     private bool _autoArchiveRunning;
+    private CancellationTokenSource? _maintenanceCts = new();
+    private readonly BusyPeriodTracker _busyPeriods = new(() => DateTimeOffset.UtcNow,
+        LongBusySessionThreshold, CompactionCooldown);
 
     public WorkbenchViewModel(
         IAgentRuntime runtime,
@@ -112,6 +119,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             BrowserPane.PropertyChanged += OnBrowserPanePropertyChanged;
         }
         EnsureDocumentContext();
+        var maintenanceCts = _maintenanceCts;
+        _ = Task.Run(() => RunMaintenanceTicksAsync(maintenanceCts.Token));
     }
 
     public SessionSidebarViewModel Sidebar { get; }
@@ -330,6 +339,14 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     public void Dispose()
     {
         _disposed = true;
+        // Dispose runs a second time through explicit close plus using; the swap keeps the
+        // maintenance teardown idempotent.
+        var maintenanceCts = Interlocked.Exchange(ref _maintenanceCts, null);
+        if (maintenanceCts is not null)
+        {
+            maintenanceCts.Cancel();
+            maintenanceCts.Dispose();
+        }
         if (BrowserPane is not null)
         {
             BrowserPane.PropertyChanged -= OnBrowserPanePropertyChanged;
@@ -1061,6 +1078,48 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
     }
 
+    // RefreshFromRuntimeAsync only runs on user-driven refreshes; idle unloading must still
+    // progress while the app sits unused, so the tick loop drives it on its own timer.
+    private async Task RunMaintenanceTicksAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(MaintenanceTickInterval);
+        while (true)
+        {
+            try
+            {
+                if (!await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (_disposed)
+            {
+                return;
+            }
+            try
+            {
+                await TryAutoArchiveAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+            try
+            {
+                await _runtime.UnloadIdleSessionsAsync(IdleSessionUnloadThreshold, Active?.SessionId, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // A failed maintenance action must not kill the loop.
+            }
+        }
+    }
+
     private void OnSessionTitleChanged(SessionId sessionId, string title)
     {
         if (_disposed)
@@ -1091,7 +1150,19 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         {
             return;
         }
-        _scheduler.Post(() => Sidebar.ApplyActivity(sessionId, _activities?.GetSessionActivity(sessionId)));
+        _scheduler.Post(() =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            var activity = _activities?.GetSessionActivity(sessionId);
+            Sidebar.ApplyActivity(sessionId, activity);
+            if (_busyPeriods.OnActivity(sessionId, activity?.Phase))
+            {
+                _ = Task.Run(GcMaintenance.CompactLargeObjectHeap);
+            }
+        });
     }
 
     private void EnsurePanes(string root)

@@ -953,6 +953,10 @@ public sealed class WorkbenchViewModelTests : IDisposable
         public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
             ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 1));
 
+        public ValueTask<int> UnloadIdleSessionsAsync(
+            TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(0);
+
         public IConversationProjection Subscribe(SessionId id) => this;
         public IConversationProjection? TryObserve(SessionId id) => _resident ? Projection : null;
 

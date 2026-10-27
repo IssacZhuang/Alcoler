@@ -21,11 +21,17 @@ public sealed class SessionEventSubscriber : IDisposable
 
 public sealed class SessionEventStore
 {
+    // A turn that never seals (e.g. a hung tool call) streams transient events without end;
+    // this cap bounds residency between turn-end evictions, halved on eviction so
+    // compaction amortizes across bursts.
+    internal const int MaxResidentTransientEvents = 2048;
+
     private readonly object _sync = new();
     private readonly List<SequencedEvent> _events = [];
     private readonly List<ChannelWriter<SequencedEvent>> _subscribers = [];
     private readonly TimeProvider _clock;
     private long _nextSequence = 1;
+    private int _transientCount;
 
     public SessionEventStore(SessionId sessionId, TimeProvider clock)
     {
@@ -36,6 +42,8 @@ public sealed class SessionEventStore
     public SessionId SessionId { get; }
 
     public long LastSequence { get { lock (_sync) return _nextSequence - 1; } }
+
+    internal int TransientCount { get { lock (_sync) return _transientCount; } }
 
     public void AdvanceSequenceTo(long lastSequence)
     {
@@ -56,6 +64,14 @@ public sealed class SessionEventStore
             foreach (var writer in _subscribers)
             {
                 writer.TryWrite(sequenced);
+            }
+            if (SessionEventRetention.IsTransient(sessionEvent))
+            {
+                // Eviction runs after fan-out: subscribers already received the evicted
+                // events, and replay only loses streaming preview for the in-flight step.
+                _transientCount++;
+                if (_transientCount > MaxResidentTransientEvents)
+                    EvictOldestTransient(MaxResidentTransientEvents / 2);
             }
             return sequenced;
         }
@@ -115,17 +131,22 @@ public sealed class SessionEventStore
             // stop at that bound instead of walking the whole log.
             var bound = FirstIndexAtOrAbove(beforeSequence);
             var write = 0;
+            var evicted = 0;
             for (var read = 0; read < bound; read++)
             {
                 var evt = _events[read];
                 if (evt.OccurredAt < cutoffUtc && SessionEventRetention.IsTransient(evt.Event))
+                {
+                    evicted++;
                     continue;
+                }
                 if (write != read)
                     _events[write] = evt;
                 write++;
             }
             if (write < bound)
                 _events.RemoveRange(write, bound - write);
+            _transientCount -= evicted;
         }
     }
 
@@ -134,12 +155,35 @@ public sealed class SessionEventStore
         lock (_sync)
         {
             _events.Clear();
+            _transientCount = 0;
             foreach (var subscriber in _subscribers)
             {
                 subscriber.TryComplete();
             }
             _subscribers.Clear();
         }
+    }
+
+    // Sequences ascend with list order, so skipping the first transient entries
+    // encountered drops the oldest ones; the rest shift down in place.
+    private void EvictOldestTransient(int keepCount)
+    {
+        var toEvict = _transientCount - keepCount;
+        var write = 0;
+        for (var read = 0; read < _events.Count; read++)
+        {
+            if (toEvict > 0 && SessionEventRetention.IsTransient(_events[read].Event))
+            {
+                toEvict--;
+                continue;
+            }
+            if (write != read)
+                _events[write] = _events[read];
+            write++;
+        }
+        if (write < _events.Count)
+            _events.RemoveRange(write, _events.Count - write);
+        _transientCount = keepCount;
     }
 
     // Sequences are appended strictly ascending, but transient eviction can leave gaps, so

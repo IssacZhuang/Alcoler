@@ -653,6 +653,10 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
         public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
             Parents.SubmitAsync(command, cancellationToken);
 
+        public ValueTask<int> UnloadIdleSessionsAsync(
+            TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(0);
+
         public ValueTask DisposeAsync() => Parents.DisposeAsync();
     }
 

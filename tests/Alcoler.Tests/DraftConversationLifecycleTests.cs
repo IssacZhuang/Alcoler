@@ -902,6 +902,10 @@ public sealed class DraftConversationLifecycleTests
             return SubmitHandler?.Invoke(command) ?? ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 1));
         }
 
+        public ValueTask<int> UnloadIdleSessionsAsync(
+            TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(0);
+
         public IConversationProjection Subscribe(SessionId sessionId)
         {
             SubscribeCount++;

@@ -288,6 +288,48 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             .ConfigureAwait(false);
     }
 
+    public async ValueTask<int> UnloadIdleSessionsAsync(
+        TimeSpan idleThreshold,
+        SessionId? keepOpen,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+        var now = _options.Clock.GetUtcNow();
+        var unloaded = new List<SessionId>();
+        foreach (var (sessionId, runtime) in _sessions.ToArray())
+        {
+            // Subagent children stay resident while their parent is resident, so the
+            // parent-side transcript observe calls keep working.
+            if ((keepOpen is { } open && sessionId == open)
+                || !runtime.IsSafeToUnload
+                || now - runtime.LastActivityUtc < idleThreshold
+                || (runtime.ParentSessionId is { } parent && _sessions.ContainsKey(parent)))
+            {
+                continue;
+            }
+            if (_sessions.TryRemove(sessionId, out var removed))
+            {
+                await removed.DisposeAsync().ConfigureAwait(false);
+                unloaded.Add(sessionId);
+            }
+        }
+
+        foreach (var (key, reference) in _subagentRuntimes.ToArray())
+        {
+            if (!unloaded.Contains(key.Parent) || !_subagentRuntimes.TryRemove(key, out _))
+            {
+                continue;
+            }
+
+            if (reference.TryGetTarget(out var childRuntime))
+            {
+                await childRuntime.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+
+        return unloaded.Count;
+    }
+
     public ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);

@@ -511,6 +511,10 @@ public sealed class SidebarTitleFlowTests : IDisposable
             return ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 1));
         }
 
+        public ValueTask<int> UnloadIdleSessionsAsync(
+            TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(0);
+
         public IConversationProjection Subscribe(SessionId sessionId) => _projections[sessionId];
 
         public IConversationProjection? TryObserve(SessionId sessionId) => _projections.GetValueOrDefault(sessionId);
