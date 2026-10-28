@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using Alcoler.Localization;
+using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
@@ -12,6 +13,7 @@ using Avalonia.Threading;
 using ColorDocument.Avalonia;
 using ColorDocument.Avalonia.DocumentElements;
 using ColorTextBlock.Avalonia;
+using CommunityToolkit.Mvvm.Input;
 using Markdown.Avalonia;
 using Markdown.Avalonia.Parsers;
 using Markdown.Avalonia.Plugins;
@@ -22,8 +24,32 @@ internal static class ConversationMarkdownRendering
 {
     private static readonly ConcurrentDictionary<(char Delimiter, int Length), Regex> ClosingFences = new();
 
-    public static IMarkdownEngine2 CreateEngine(bool trimDocumentEdges = true, bool wrapCodeBlocks = false) =>
-        new ConversationEngine { TrimDocumentEdges = trimDocumentEdges, WrapCodeBlocks = wrapCodeBlocks };
+    public static IMarkdownEngine2 CreateEngine(Control owner, bool trimDocumentEdges = true, bool wrapCodeBlocks = false) =>
+        new ConversationEngine
+        {
+            TrimDocumentEdges = trimDocumentEdges,
+            WrapCodeBlocks = wrapCodeBlocks,
+            HyperlinkCommand = new RelayCommand<string>(target => OpenHyperlink(owner, target)),
+        };
+
+    private static void OpenHyperlink(Control owner, string? target)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+            return;
+        var contexts = owner.GetLogicalAncestors().OfType<Control>().Prepend(owner)
+            .Select(control => control.DataContext).ToArray();
+        var workbench = contexts.OfType<WorkbenchViewModel>().FirstOrDefault()
+            ?? TopLevel.GetTopLevel(owner)?.DataContext as WorkbenchViewModel;
+        if (workbench is null)
+            return;
+        var workspaceRoot = contexts.Select(context => context switch
+        {
+            ConversationViewModel conversation => conversation.WorkspaceRoot,
+            DocumentViewModel document => document.WorkspaceRoot,
+            _ => null,
+        }).FirstOrDefault(root => !string.IsNullOrWhiteSpace(root));
+        workbench.OpenMarkdownLink(target, workspaceRoot);
+    }
 
     public static MdAvPlugins CreatePlugins()
     {

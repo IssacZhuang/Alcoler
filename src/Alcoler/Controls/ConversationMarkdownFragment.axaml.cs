@@ -26,7 +26,7 @@ public partial class ConversationMarkdownFragment : UserControl
     public ConversationMarkdownFragment()
     {
         InitializeComponent();
-        _engine = ConversationMarkdownRendering.CreateEngine(trimDocumentEdges: false);
+        _engine = ConversationMarkdownRendering.CreateEngine(this, trimDocumentEdges: false);
         _engine.Plugins = ConversationMarkdownRendering.CreatePlugins();
         _engine.CascadeResources.SetParent(this);
         Focusable = true;

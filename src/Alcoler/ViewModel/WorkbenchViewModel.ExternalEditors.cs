@@ -25,6 +25,25 @@ public sealed partial class WorkbenchViewModel
         }
     }
 
+    public void OpenMarkdownLink(string target, string? workspaceRoot = null)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+            return;
+        if (Uri.TryCreate(target, UriKind.Absolute, out var uri) && !uri.IsFile)
+        {
+            try
+            {
+                _externalEditorLauncher.OpenDefault(target);
+            }
+            catch (Exception exception)
+            {
+                Banner = Loc.Get("timeline_open_failed", target, exception.Message);
+            }
+            return;
+        }
+        OpenFileWithDefaultApp(uri is { IsFile: true } ? uri.LocalPath : Uri.UnescapeDataString(target), workspaceRoot);
+    }
+
     public void OpenFileWithDefaultApp(string path, string? workspaceRoot = null)
     {
         if (!TryResolveExternalPath(path, workspaceRoot, out var fullPath))

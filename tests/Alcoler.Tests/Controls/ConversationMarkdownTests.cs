@@ -1,4 +1,9 @@
+using System.ComponentModel;
+using Alcoler.Contracts.Identifiers;
 using Alcoler.Controls;
+using Alcoler.Stores;
+using Alcoler.Ui;
+using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
@@ -154,6 +159,78 @@ public class ConversationMarkdownTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Hyperlinks_UseOriginWorkspaceAndReportLaunchFailures(bool fragment, bool document)
+    {
+        const string relativePath = "Artwork/SpriteModels/.tmp/street-trash-bin-update/game-four-facings-daylight.png";
+        var root = Directory.CreateTempSubdirectory("alcoler-markdown-link-").FullName;
+        try
+        {
+            var path = Path.GetFullPath(relativePath, root);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1sAAAAASUVORK5CYII="));
+            var runtime = new FakeAgentRuntime();
+            var launcher = new RecordingLinkLauncher();
+            using var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]),
+                externalEditorLauncher: launcher);
+            workbench.ShowNewTask(Path.Combine(root, "other-workspace"));
+            using var store = new ProjectionStore(() => throw new NotSupportedException(), StrongId.NewSessionId(),
+                InlineUiScheduler.Instance, TestSnapshots.State());
+            using var conversation = new ConversationViewModel(runtime, store) { WorkspaceRoot = root };
+            var markdown = $"[查看游戏内四朝向预览]({relativePath})";
+            Control view = fragment
+                ? new ConversationMarkdownFragment { Markdown = markdown }
+                : new ConversationMarkdown { Markdown = markdown };
+            view.DataContext = new object();
+            var scope = new ContentControl
+            {
+                DataContext = document
+                    ? new DocumentViewModel("plan", "plan", "Plan", "", new PlanDocumentViewModel("Plan", markdown), root)
+                    : conversation,
+                Content = view,
+            };
+            using var host = new Harness(scope);
+            host.Window.DataContext = workbench;
+            await host.RenderAsync();
+
+            ClickLink();
+
+            Assert.Equal(path, Assert.Single(launcher.Opened));
+            Assert.True(File.Exists(launcher.Opened[0]));
+            Assert.Null(workbench.Banner);
+
+            if (view is ConversationMarkdown rich)
+                rich.WrapCodeBlocks = true;
+            launcher.Error = new Win32Exception(2);
+            await host.RenderAsync();
+
+            ClickLink();
+
+            Assert.Contains("game-four-facings-daylight.png", workbench.Banner);
+            Assert.Contains(launcher.Error.Message, workbench.Banner);
+
+            void ClickLink()
+            {
+                var block = Assert.Single(view.GetVisualDescendants().OfType<CTextBlock>(),
+                    text => text.Text == "查看游戏内四朝向预览");
+                var point = block.TranslatePoint(new Point(8, block.Bounds.Height / 2), host.Window)!.Value;
+                host.Window.MouseMove(point);
+                host.Window.MouseDown(point, MouseButton.Left);
+                host.Window.MouseUp(point, MouseButton.Left);
+                host.Pump();
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 
@@ -367,6 +444,22 @@ public class ConversationMarkdownTests
     private static void AssertBrush(Control control, ThemeVariant theme, string resource, IBrush? actual) =>
         Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(control.FindResource(theme, resource)).Color,
             Assert.IsAssignableFrom<ISolidColorBrush>(actual).Color);
+
+    private sealed class RecordingLinkLauncher : IExternalEditorLauncher
+    {
+        public IReadOnlyList<ExternalEditor> Editors => [];
+        public List<string> Opened { get; } = [];
+        public Exception? Error { get; set; }
+
+        public void OpenDefault(string path)
+        {
+            if (Error is not null)
+                throw Error;
+            Opened.Add(path);
+        }
+
+        public void Open(ExternalEditor editor, string path) => throw new NotSupportedException();
+    }
 
     private sealed class Harness : IDisposable
     {

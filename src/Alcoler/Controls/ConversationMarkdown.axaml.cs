@@ -54,7 +54,7 @@ public partial class ConversationMarkdown : UserControl
 
     private void ApplyRenderingMode()
     {
-        Viewer.Engine = ConversationMarkdownRendering.CreateEngine(wrapCodeBlocks: WrapCodeBlocks);
+        Viewer.Engine = ConversationMarkdownRendering.CreateEngine(this, wrapCodeBlocks: WrapCodeBlocks);
         Viewer.Plugins = ConversationMarkdownRendering.CreatePlugins();
         if (!_hasRenderedMarkdown)
             return;
