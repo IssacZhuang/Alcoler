@@ -65,6 +65,8 @@ public sealed partial class DraftConversationViewModel : ObservableObject, IComp
 
     public Task SendAsync() => _send(this);
 
+    public Task SendQueuedNowAsync(QueuedInput input) => Task.CompletedTask;
+
     public Task WithdrawQueuedInputAsync(QueuedInput input) => Task.CompletedTask;
 
     public Task DeleteQueuedInputAsync(QueuedInput input) => Task.CompletedTask;

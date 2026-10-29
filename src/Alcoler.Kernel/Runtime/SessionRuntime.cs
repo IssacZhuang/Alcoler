@@ -116,6 +116,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private bool _titleAttempted;
     private bool _shellInitialized;
     private CancellationTokenSource? _turnCts;
+    private CommandId? _promotedCommandId;
     private ITimer? _transientSweepTimer;
     private readonly Queue<PendingTurnInput> _pendingInputs = new();
     private TokenUsage? _lastProviderUsage;
@@ -321,6 +322,9 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             case SendTextCommand sendText:
                 return await HandleSendTextAsync(sendText, ct).ConfigureAwait(false);
+
+            case SendQueuedNowCommand sendQueuedNow:
+                return await HandleSendQueuedNowAsync(sendQueuedNow).ConfigureAwait(false);
 
             case RemoveQueuedInputCommand remove:
                 return await HandleRemoveQueuedInputAsync(remove).ConfigureAwait(false);
@@ -546,7 +550,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         var files = await StoreInputImagesAsync(images, ct).ConfigureAwait(false);
         var input = new PendingTurnInput(sendText with { Images = null }, null, files);
-        if (_turnMachine.IsBusy)
+        if (_turnMachine.IsBusy || _promotedCommandId is not null)
         {
             await EnqueueInputAsync(input).ConfigureAwait(false);
             _turnInputSignal.Pulse();
@@ -568,6 +572,59 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         BumpRevision();
         return CommandAck.AcceptedAt(sendText.CommandId, Revision);
+    }
+
+    // A promoted input stays reserved in the queue until the cancelled turn seals, then starts
+    // as the next turn with user-steer presentation; an idle session starts it directly.
+    private async Task<CommandAck> HandleSendQueuedNowAsync(SendQueuedNowCommand command)
+    {
+        if (_promotedCommandId is not null)
+            return CommandAck.Rejected(command.CommandId, Revision, "another queued input is already being promoted");
+        if (!_pendingInputs.Any(input => input.Command?.CommandId == command.TargetCommandId))
+            return CommandAck.Rejected(command.CommandId, Revision, "queued input was already consumed or does not exist");
+
+        if (!_turnMachine.IsBusy)
+        {
+            if (!TryTakePendingInput(command.TargetCommandId, out var promoted) || promoted?.Command is null)
+                return CommandAck.Rejected(command.CommandId, Revision, "queued input was already consumed or does not exist");
+            await EmitAsync(new InputDequeuedEvent(command.TargetCommandId), persist: true).ConfigureAwait(false);
+            StartTurnFor(promoted);
+            BumpRevision();
+            return CommandAck.AcceptedAt(command.CommandId, Revision);
+        }
+
+        _promotedCommandId = command.TargetCommandId;
+        _turnCts?.Cancel();
+        BumpRevision();
+        return CommandAck.AcceptedAt(command.CommandId, Revision);
+    }
+
+    private async Task<bool> TryStartPromotedInputAsync()
+    {
+        await _commandLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (_promotedCommandId is not { } commandId)
+                return false;
+            _promotedCommandId = null;
+            if (_disposed || !TryTakePendingInput(commandId, out var promoted) || promoted?.Command is null)
+                return false;
+            try
+            {
+                await EmitAsync(new InputDequeuedEvent(commandId), persist: true).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _deps.Logger.LogError(ex, "Emitting the promoted input dequeue event failed.");
+            }
+            StartTurnFor(promoted with { Presentation = MessagePresentation.UserSteer });
+            BumpRevision();
+            return true;
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
     }
 
     private static string? ValidateImages(IReadOnlyList<InputImageBlock>? images)
@@ -633,6 +690,11 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private async Task<CommandAck> HandleRemoveQueuedInputAsync(RemoveQueuedInputCommand remove)
     {
+        if (_promotedCommandId == remove.TargetCommandId)
+        {
+            return CommandAck.Rejected(remove.CommandId, Revision,
+                "queued input is already being promoted");
+        }
         if (!TryRemovePendingInput(remove.TargetCommandId))
         {
             return CommandAck.Rejected(remove.CommandId, Revision,
@@ -644,21 +706,23 @@ public sealed class SessionRuntime : IAsyncDisposable
         return CommandAck.AcceptedAt(remove.CommandId, Revision);
     }
 
-    private bool TryRemovePendingInput(CommandId commandId)
+    private bool TryRemovePendingInput(CommandId commandId) => TryTakePendingInput(commandId, out _);
+
+    private bool TryTakePendingInput(CommandId commandId, out PendingTurnInput? taken)
     {
-        var removed = false;
+        taken = null;
         var count = _pendingInputs.Count;
         for (var index = 0; index < count; index++)
         {
             var input = _pendingInputs.Dequeue();
-            if (input.Command?.CommandId == commandId)
+            if (taken is null && input.Command?.CommandId == commandId)
             {
-                removed = true;
+                taken = input;
                 continue;
             }
             _pendingInputs.Enqueue(input);
         }
-        return removed;
+        return taken is not null;
     }
 
     private PendingTurnInput? DequeueOldestInput()
@@ -732,7 +796,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private async Task<CommandAck> HandleCompactAsync(CompactCommand compact, CancellationToken ct)
     {
-        if (_turnMachine.IsBusy)
+        if (_turnMachine.IsBusy || _promotedCommandId is not null)
         {
             return CommandAck.Rejected(compact.CommandId, Revision, "a turn is active");
         }
@@ -781,7 +845,7 @@ public sealed class SessionRuntime : IAsyncDisposable
 
             var openingMessage = input.NotificationBody is { } notificationBody
                 ? BuildNotificationMessage(notificationBody)
-                : BuildUserMessage(input);
+                : BuildUserMessage(input, input.Presentation);
             await CommitMessageAsync(openingMessage).ConfigureAwait(false);
             AppendSessionReferenceReminder(input);
             AppendDateReminder();
@@ -895,9 +959,9 @@ public sealed class SessionRuntime : IAsyncDisposable
         }
         finally
         {
-            // The completion announcement, the reported outcome, and the machine release
-            // must be one step for observers: once the announcing event is appended, no
-            // reader may still see a busy machine or the previous turn's outcome.
+            // The completion announcement, the reported outcome, the machine release, and
+            // turn-local cleanup must be one step for observers: a command that observes an
+            // idle machine must also observe the previous turn's state fully released.
             await _commandLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
@@ -923,38 +987,45 @@ public sealed class SessionRuntime : IAsyncDisposable
                     _deps.Logger.LogError(ex, "Turn {TurnId} completion announcement failed.", turnId);
                 }
                 ReleaseTurnMachine();
+                _turnLocalRequestMessages.Clear();
+                _turnCts?.Dispose();
+                _turnCts = null;
+                // Idle unloading measures from the last meaningful work, so the clock restarts
+                // at turn end rather than at the final model step.
+                _lastActivityUtc = _deps.Clock.GetUtcNow();
+                _events.EvictTransientOlderThan(
+                    _deps.Clock.GetUtcNow().AddSeconds(-SessionEventRetention.SealedTurnTransientGraceMs / 1000.0),
+                    _events.LastSequence);
+                _transientSweepTimer?.Dispose();
+                _transientSweepTimer = _deps.Clock.CreateTimer(
+                    _ => SweepTransientEvents(),
+                    null,
+                    TimeSpan.FromMilliseconds(SessionEventRetention.SealedTurnTransientGraceMs),
+                    Timeout.InfiniteTimeSpan);
             }
             finally
             {
                 _commandLock.Release();
             }
-            _turnLocalRequestMessages.Clear();
-            _turnCts?.Dispose();
-            _turnCts = null;
-            // Idle unloading measures from the last meaningful work, so the clock restarts
-            // at turn end rather than at the final model step.
-            _lastActivityUtc = _deps.Clock.GetUtcNow();
-            _events.EvictTransientOlderThan(
-                _deps.Clock.GetUtcNow().AddSeconds(-SessionEventRetention.SealedTurnTransientGraceMs / 1000.0),
-                _events.LastSequence);
-            _transientSweepTimer?.Dispose();
-            _transientSweepTimer = _deps.Clock.CreateTimer(
-                _ => SweepTransientEvents(),
-                null,
-                TimeSpan.FromMilliseconds(SessionEventRetention.SealedTurnTransientGraceMs),
-                Timeout.InfiniteTimeSpan);
-            if (TurnFinished is { } handlers)
+            try
             {
-                foreach (Func<SessionRuntime, TurnOutcome, ValueTask> handler in handlers.GetInvocationList())
+                if (TurnFinished is { } handlers)
                 {
-                    await handler(this, outcome).ConfigureAwait(false);
+                    foreach (Func<SessionRuntime, TurnOutcome, ValueTask> handler in handlers.GetInvocationList())
+                    {
+                        await handler(this, outcome).ConfigureAwait(false);
+                    }
                 }
             }
-            // Cancelled or failed turns hold pending inputs for an explicit user resume;
-            // only a completed turn auto-drains the queue.
-            if (!holdQueue)
+            finally
             {
-                await DrainQueueAsync().ConfigureAwait(false);
+                // Cancelled or failed turns hold pending inputs for an explicit user resume;
+                // a promoted input is that resume, otherwise only a completed turn drains.
+                var promoted = await TryStartPromotedInputAsync().ConfigureAwait(false);
+                if (!promoted && !holdQueue)
+                {
+                    await DrainQueueAsync().ConfigureAwait(false);
+                }
             }
         }
     }
@@ -1001,7 +1072,8 @@ public sealed class SessionRuntime : IAsyncDisposable
                 var next = _pendingInputs.Dequeue();
                 if (next.Command is { } command)
                 {
-                    if (steer is null && command.Delivery == SendTextDelivery.Guide)
+                    if (steer is null && command.Delivery == SendTextDelivery.Guide
+                        && command.CommandId != _promotedCommandId)
                     {
                         steer = next;
                         _ = EmitAsync(new InputDequeuedEvent(command.CommandId), persist: true);
@@ -1102,7 +1174,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             await _commandLock.WaitAsync(_sessionCts.Token).ConfigureAwait(false);
             try
             {
-                if (_pendingInputs.Count > 0 && !_turnMachine.IsBusy)
+                if (_promotedCommandId is null && _pendingInputs.Count > 0 && !_turnMachine.IsBusy)
                 {
                     next = _pendingInputs.Dequeue();
                     if (next.Command is { } command)
@@ -2662,7 +2734,8 @@ public sealed class SessionRuntime : IAsyncDisposable
     // A pending turn input is either a real user command or a task notification body that
     // already carries the system-notification prefix.
     private sealed record PendingTurnInput(
-        SendTextCommand? Command, string? NotificationBody, IReadOnlyList<FilePart>? Images = null);
+        SendTextCommand? Command, string? NotificationBody, IReadOnlyList<FilePart>? Images = null,
+        MessagePresentation? Presentation = null);
 
     // Runs on the turn task inside tool execution; the command lock is free at that point,
     // so a mode switch submits like any other client command. Base revision 0 always passes

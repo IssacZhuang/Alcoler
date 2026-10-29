@@ -582,6 +582,12 @@ public partial class ComposerView : UserControl
 
     private void OnSendClick(object? sender, RoutedEventArgs e) => _ = ViewModel?.SendAsync();
 
+    private void OnSendQueuedNowClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: QueuedInput input })
+            _ = ViewModel?.SendQueuedNowAsync(input);
+    }
+
     private void OnWithdrawQueuedClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: QueuedInput input })

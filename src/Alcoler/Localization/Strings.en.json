@@ -527,6 +527,8 @@
   "markdown_preview_image_named": "Preview image: {0}",
 
   "composer_queued_messages": "Queued messages",
+  "composer_send_queued_now_tooltip": "Steer: stop the active turn and send this message now",
+  "composer_send_queued_now_a11y": "Send queued message now",
   "composer_withdraw_tooltip": "Withdraw to composer",
   "composer_withdraw_a11y": "Withdraw queued message",
   "composer_delete_queued": "Delete queued message",
@@ -565,6 +567,8 @@
   "conversation_queue_withdraw_failed_detail": "The queued message could not be withdrawn. {0}",
   "conversation_queue_delete_failed": "The queued message could not be deleted.",
   "conversation_queue_delete_failed_detail": "The queued message could not be deleted. {0}",
+  "conversation_queue_send_now_failed": "The queued message could not be sent now.",
+  "conversation_queue_send_now_failed_detail": "The queued message could not be sent now. {0}",
   "conversation_rewind_draft_first": "Send or clear the current draft before rewinding a message.",
   "conversation_rewind_failed": "The message could not be rewound.",
   "conversation_rewind_failed_detail": "The message could not be rewound. {0}",

@@ -428,6 +428,24 @@ public class ComposerAndInteractionSmokeTests
     }
 
     [AvaloniaFact]
+    public async Task QueueStrip_SendNowPromotesTheTargetedItem()
+    {
+        var commandId = StrongId.NewCommandId();
+        var state = TestSnapshots.State() with
+        {
+            Queue = [new QueuedInput(commandId, "queued text", DateTimeOffset.UtcNow)],
+        };
+        using var harness = Show<ComposerView>(state);
+        await PumpAsync();
+
+        QueueAction(harness, "Send queued message now").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await PumpAsync();
+
+        var command = Assert.IsType<Contracts.Commands.SendQueuedNowCommand>(Assert.Single(harness.Runtime.Submitted));
+        Assert.Equal(commandId, command.TargetCommandId);
+    }
+
+    [AvaloniaFact]
     public async Task QueueStrip_DeleteRemovesItemWithoutChangingTheDraft()
     {
         var commandId = StrongId.NewCommandId();

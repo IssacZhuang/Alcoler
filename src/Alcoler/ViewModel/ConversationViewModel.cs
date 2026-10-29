@@ -746,6 +746,36 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
     }
 
+    public async Task SendQueuedNowAsync(QueuedInput input)
+    {
+        if (!_queueOperations.Add(input.CommandId))
+        {
+            return;
+        }
+        try
+        {
+            if (Queue.All(item => item.CommandId != input.CommandId))
+            {
+                Banner = Loc.Get("conversation_queue_unavailable");
+                return;
+            }
+            var ack = await SubmitAsync(new SendQueuedNowCommand(
+                StrongId.NewCommandId(), SessionId, _store.Revision, input.CommandId));
+            if (!ack.Accepted)
+            {
+                Banner = ack.RejectionReason ?? Loc.Get("conversation_queue_send_now_failed");
+            }
+        }
+        catch (Exception exception)
+        {
+            Banner = Loc.Get("conversation_queue_send_now_failed_detail", exception.Message);
+        }
+        finally
+        {
+            _queueOperations.Remove(input.CommandId);
+        }
+    }
+
     public async Task WithdrawQueuedInputAsync(QueuedInput input)
     {
         if (!_queueOperations.Add(input.CommandId))

@@ -102,6 +102,12 @@ public class SerializationSmokeTests
             AlcolerJson.Serialize(remove)));
         Assert.Equal(7, removeRoundTrip.BaseRevision);
         Assert.Equal(target, removeRoundTrip.TargetCommandId);
+
+        ConversationCommand sendNow = new SendQueuedNowCommand(StrongId.NewCommandId(), StrongId.NewSessionId(), 8, target);
+        var sendNowRoundTrip = Assert.IsType<SendQueuedNowCommand>(AlcolerJson.Deserialize<ConversationCommand>(
+            AlcolerJson.Serialize(sendNow)));
+        Assert.Equal(8, sendNowRoundTrip.BaseRevision);
+        Assert.Equal(target, sendNowRoundTrip.TargetCommandId);
     }
 
     [Fact]

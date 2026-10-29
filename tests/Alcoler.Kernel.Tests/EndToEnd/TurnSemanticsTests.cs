@@ -313,6 +313,100 @@ public class TurnSemanticsTests
     }
 
     [Fact]
+    public async Task SendQueuedNow_PreemptsActiveTurnAndStartsPromotedInputNext()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            ToolCall("Gate", new { }), Text("promoted answer"), Text("remaining answer"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        var opening = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start");
+        var remaining = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "remaining later");
+        var promoted = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "promoted now");
+        await runtime.SubmitAsync(opening, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True((await runtime.SubmitAsync(remaining, CancellationToken.None)).Accepted);
+        Assert.True((await runtime.SubmitAsync(promoted, CancellationToken.None)).Accepted);
+        await WaitForProjectionAsync(projection, snapshot => snapshot.State.Queue.Count == 2);
+
+        var sendNow = await runtime.SubmitAsync(new SendQueuedNowCommand(
+            StrongId.NewCommandId(), session.Id, 0, promoted.CommandId), CancellationToken.None);
+        Assert.True(sendNow.Accepted);
+
+        // The promoted item is reserved while the cancelled turn seals.
+        var removePromoted = await runtime.SubmitAsync(new RemoveQueuedInputCommand(
+            StrongId.NewCommandId(), session.Id, 0, promoted.CommandId), CancellationToken.None);
+        Assert.False(removePromoted.Accepted);
+
+        release.TrySetResult();
+        await WaitForAsync(() =>
+            projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 3);
+
+        Assert.Contains("promoted now", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+        Assert.Contains("The user sent a new message while you were working:", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+        Assert.DoesNotContain("remaining later", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+        Assert.Contains("remaining later", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
+
+        await using var store = harness.OpenStore();
+        var events = (await store.LoadDurableEventsAsync(session.Id, CancellationToken.None))
+            .Select(entry => entry.Event).ToList();
+        Assert.Equal(new[] { opening.CommandId, promoted.CommandId, remaining.CommandId },
+            events.OfType<TurnStartedEvent>().Select(e => e.CommandId));
+        var completions = events.OfType<TurnCompletedEvent>().ToList();
+        Assert.Equal(TurnOutcome.Cancelled, completions[0].Outcome);
+        Assert.All(completions.Skip(1), completion => Assert.Equal(TurnOutcome.Completed, completion.Outcome));
+        var messages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        var canonicalPromoted = Assert.Single(messages, m => m.Message.Presentation == MessagePresentation.UserSteer).Message;
+        Assert.Equal(MessageSource.RealUser, canonicalPromoted.Source);
+        Assert.Equal("promoted now", Assert.Single(canonicalPromoted.Parts.OfType<TextPart>()).Text);
+        Assert.Empty(projection.Snapshot().State.Queue);
+    }
+
+    [Fact]
+    public async Task SendQueuedNow_StartsSelectedInputWhenQueueIsHeldAfterStop()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            ToolCall("Gate", new { }), Text("second answer"), Text("first answer"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var runtime = harness.BuildRuntime(new GateTool(entered, release));
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        var opening = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "start");
+        var first = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "first later");
+        var second = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "second now");
+        await runtime.SubmitAsync(opening, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True((await runtime.SubmitAsync(first, CancellationToken.None)).Accepted);
+        Assert.True((await runtime.SubmitAsync(second, CancellationToken.None)).Accepted);
+        await WaitForProjectionAsync(projection, snapshot => snapshot.State.Queue.Count == 2);
+
+        Assert.True((await runtime.SubmitAsync(new StopCommand(
+            StrongId.NewCommandId(), session.Id, 0), CancellationToken.None)).Accepted);
+        release.TrySetResult();
+        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle);
+        Assert.Equal(2, projection.Snapshot().State.Queue.Count);
+
+        var sendNow = await runtime.SubmitAsync(new SendQueuedNowCommand(
+            StrongId.NewCommandId(), session.Id, 0, second.CommandId), CancellationToken.None);
+        Assert.True(sendNow.Accepted);
+        await WaitForAsync(() =>
+            projection.Snapshot().State.Phase == TurnPhase.Idle && harness.Model.Requests.Count == 3);
+
+        Assert.Contains("second now", RequestTexts(harness.Model.Requests[1]), StringComparison.Ordinal);
+        Assert.Contains("first later", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Equal(new[] { opening.CommandId, second.CommandId, first.CommandId },
+            events.Select(entry => entry.Event).OfType<TurnStartedEvent>().Select(e => e.CommandId));
+        Assert.Empty(projection.Snapshot().State.Queue);
+    }
+
+    [Fact]
     public async Task RemoveQueuedInput_DeletesOnlyTargetAndSurvivesReplay()
     {
         await using var harness = ScriptedCallHarness.Create(

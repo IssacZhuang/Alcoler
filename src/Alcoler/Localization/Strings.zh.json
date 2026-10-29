@@ -527,6 +527,8 @@
   "markdown_preview_image_named": "预览图片：{0}",
 
   "composer_queued_messages": "已排队的消息",
+  "composer_send_queued_now_tooltip": "引导：停止当前回合并立即发送这条消息",
+  "composer_send_queued_now_a11y": "立即发送排队消息",
   "composer_withdraw_tooltip": "撤回到输入框",
   "composer_withdraw_a11y": "撤回已排队的消息",
   "composer_delete_queued": "删除已排队的消息",
@@ -565,6 +567,8 @@
   "conversation_queue_withdraw_failed_detail": "无法撤回该排队消息。{0}",
   "conversation_queue_delete_failed": "无法删除该排队消息。",
   "conversation_queue_delete_failed_detail": "无法删除该排队消息。{0}",
+  "conversation_queue_send_now_failed": "无法立即发送该排队消息。",
+  "conversation_queue_send_now_failed_detail": "无法立即发送该排队消息。{0}",
   "conversation_rewind_draft_first": "回退消息前请先发送或清空当前草稿。",
   "conversation_rewind_failed": "无法回退该消息。",
   "conversation_rewind_failed_detail": "无法回退该消息。{0}",
