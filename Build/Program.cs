@@ -171,8 +171,9 @@ public sealed class PackageTask : FrostingTask<BuildContext>
         }
 
         Directory.CreateDirectory(context.PackageDir);
-        var packagePath = IOPath.Combine(
-            context.PackageDir, $"Alcoler-{context.Version}-{context.TargetRuntime}.zip");
+        var packageName = $"Alcoler-{context.Version}-{context.TargetRuntime}";
+        var packagePath = IOPath.Combine(context.PackageDir, $"{packageName}.zip");
+        var unpackedDir = IOPath.Combine(context.PackageDir, $"{packageName}-unpacked");
         if (File.Exists(packagePath))
         {
             File.Delete(packagePath);
@@ -186,6 +187,30 @@ public sealed class PackageTask : FrostingTask<BuildContext>
 
         context.Log.Information($"Packaging output -> {packagePath}");
         CreatePackageZip(context, context.OutputDir, packagePath);
+
+        if (Directory.Exists(unpackedDir))
+        {
+            Directory.Delete(unpackedDir, recursive: true);
+        }
+        context.Log.Information($"Staging unpacked output -> {unpackedDir}");
+        CopyDirectory(context.OutputDir, unpackedDir);
+    }
+
+    private static void CopyDirectory(string sourceDir, string destinationDir)
+    {
+        Directory.CreateDirectory(destinationDir);
+        foreach (var directory in Directory.GetDirectories(sourceDir, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(
+                IOPath.Combine(destinationDir, IOPath.GetRelativePath(sourceDir, directory)));
+        }
+        foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
+        {
+            File.Copy(
+                file,
+                IOPath.Combine(destinationDir, IOPath.GetRelativePath(sourceDir, file)),
+                overwrite: true);
+        }
     }
 
     private static void CreatePackageZip(BuildContext context, string outputDir, string packagePath)

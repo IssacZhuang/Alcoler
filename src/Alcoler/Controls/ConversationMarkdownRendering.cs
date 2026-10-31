@@ -29,8 +29,15 @@ internal static class ConversationMarkdownRendering
         {
             TrimDocumentEdges = trimDocumentEdges,
             WrapCodeBlocks = wrapCodeBlocks,
+            AssetPathRoot = GetAssetPathRoot(owner),
             HyperlinkCommand = new RelayCommand<string>(target => OpenHyperlink(owner, target)),
         };
+
+    public static string GetAssetPathRoot(Control owner)
+    {
+        var root = ConversationMarkdown.GetWorkspaceRoot(owner);
+        return string.IsNullOrWhiteSpace(root) ? Environment.CurrentDirectory : root;
+    }
 
     private static void OpenHyperlink(Control owner, string? target)
     {

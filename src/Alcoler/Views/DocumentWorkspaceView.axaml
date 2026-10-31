@@ -152,6 +152,7 @@
         <ItemsControl.ItemTemplate>
           <DataTemplate x:DataType="vm:DocumentViewModel">
             <ContentControl Content="{Binding Content}" IsVisible="{Binding IsActive}"
+                            controls:ConversationMarkdown.WorkspaceRoot="{Binding WorkspaceRoot}"
                             HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
           </DataTemplate>
         </ItemsControl.ItemTemplate>

@@ -9,6 +9,7 @@
              x:Class="Alcoler.Views.TimelineView"
              x:Name="TimelineRoot"
              x:DataType="vm:ConversationViewModel"
+             controls:ConversationMarkdown.WorkspaceRoot="{Binding WorkspaceRoot}"
              Background="{DynamicResource AlcolerBackground}">
   <UserControl.Resources>
     <views:ConversationIconConverter x:Key="ConversationIcon" />

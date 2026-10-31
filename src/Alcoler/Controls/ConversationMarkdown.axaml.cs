@@ -14,6 +14,9 @@ public partial class ConversationMarkdown : UserControl
     public static readonly StyledProperty<bool> WrapCodeBlocksProperty =
         AvaloniaProperty.Register<ConversationMarkdown, bool>(nameof(WrapCodeBlocks));
 
+    public static readonly AttachedProperty<string?> WorkspaceRootProperty =
+        AvaloniaProperty.RegisterAttached<ConversationMarkdown, Control, string?>("WorkspaceRoot", inherits: true);
+
     private string? _renderedMarkdown;
     private bool _hasRenderedMarkdown;
 
@@ -41,6 +44,10 @@ public partial class ConversationMarkdown : UserControl
         set => SetValue(WrapCodeBlocksProperty, value);
     }
 
+    public static string? GetWorkspaceRoot(Control control) => control.GetValue(WorkspaceRootProperty);
+
+    public static void SetWorkspaceRoot(Control control, string? value) => control.SetValue(WorkspaceRootProperty, value);
+
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
@@ -48,7 +55,7 @@ public partial class ConversationMarkdown : UserControl
             RenderMarkdown();
         else if (change.Property == SelectionEnabledProperty)
             Viewer.SelectionEnabled = SelectionEnabled;
-        else if (change.Property == WrapCodeBlocksProperty)
+        else if (change.Property == WrapCodeBlocksProperty || change.Property == WorkspaceRootProperty)
             ApplyRenderingMode();
     }
 

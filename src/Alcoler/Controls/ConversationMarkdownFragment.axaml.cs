@@ -47,7 +47,13 @@ public partial class ConversationMarkdownFragment : UserControl
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property != MarkdownProperty)
+        if (change.Property == ConversationMarkdown.WorkspaceRootProperty)
+        {
+            _engine.AssetPathRoot = ConversationMarkdownRendering.GetAssetPathRoot(this);
+            _engine.Plugins = ConversationMarkdownRendering.CreatePlugins();
+            _hasRenderedMarkdown = false;
+        }
+        else if (change.Property != MarkdownProperty)
             return;
         var markdown = Markdown;
         if (_hasRenderedMarkdown && string.Equals(_renderedMarkdown, markdown, StringComparison.Ordinal))

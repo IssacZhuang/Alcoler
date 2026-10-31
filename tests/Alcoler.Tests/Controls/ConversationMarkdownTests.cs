@@ -1,9 +1,13 @@
 using System.ComponentModel;
+using Alcoler.Contracts.Conversation;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Projections;
 using Alcoler.Controls;
 using Alcoler.Stores;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
+using Alcoler.Views;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
@@ -159,6 +163,147 @@ public class ConversationMarkdownTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Images_UseConversationWorkspaceAndReloadWhenItChanges(bool streaming)
+    {
+        const string relativePath = "Assets/Textures/Item/Material/CircuitBoard.png";
+        var root = Directory.CreateTempSubdirectory("alcoler-markdown-workspace-").FullName;
+        try
+        {
+            var firstRoot = Path.Combine(root, "first");
+            var secondRoot = Path.Combine(root, "second");
+            WriteImage(Path.Combine(firstRoot, relativePath), 128, 128);
+            WriteImage(Path.Combine(secondRoot, relativePath), 64, 32);
+            Assert.False(File.Exists(Path.GetFullPath(relativePath)));
+            var runtime = new FakeAgentRuntime();
+            using var store = new ProjectionStore(() => throw new NotSupportedException(), StrongId.NewSessionId(),
+                InlineUiScheduler.Instance, TestSnapshots.State());
+            using var conversation = new ConversationViewModel(runtime, store) { WorkspaceRoot = firstRoot };
+            var assistant = new AssistantMessageItemViewModel("image", StrongId.NewMessageId());
+            assistant.UpdateFrom(new AssistantMessageRow("image", assistant.Id,
+                [new TextPart(StrongId.NewPartId(), $"![电路板贴图]({relativePath})\n\nContinuing")],
+                streaming, DateTimeOffset.UtcNow));
+            conversation.Items.Add(assistant);
+            var timeline = new TimelineView { DataContext = conversation };
+            using var host = new Harness(timeline);
+            Control renderer = streaming
+                ? Assert.Single(timeline.GetVisualDescendants().OfType<ConversationMarkdownFragment>())
+                : Assert.Single(timeline.GetVisualDescendants().OfType<ConversationMarkdown>());
+
+            var firstImage = await WaitForImageAsync(host, renderer, new Size(128, 128));
+            conversation.WorkspaceRoot = secondRoot;
+            await WaitForImageAsync(host, renderer, new Size(64, 32));
+            Assert.Equal(new Size(128, 128), firstImage.Image!.Size);
+            if (renderer is ConversationMarkdown markdown)
+            {
+                markdown.WrapCodeBlocks = true;
+                await WaitForImageAsync(host, renderer, new Size(64, 32));
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Images_KeepDocumentWorkspacesIsolatedAcrossContextSwitches()
+    {
+        const string relativePath = "Assets/Textures/Item/Material/CircuitBoard.png";
+        const string markdown = $"![电路板贴图]({relativePath})";
+        var root = Directory.CreateTempSubdirectory("alcoler-markdown-documents-").FullName;
+        try
+        {
+            var firstRoot = Path.Combine(root, "first");
+            var secondRoot = Path.Combine(root, "second");
+            WriteImage(Path.Combine(firstRoot, relativePath), 128, 128);
+            WriteImage(Path.Combine(secondRoot, relativePath), 64, 32);
+            using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
+            workbench.ShowNewTask(firstRoot);
+            var firstDocument = workbench.OpenPlanDocument("image", "Image", markdown);
+            var documents = new DocumentWorkspaceView { DataContext = workbench };
+            using var host = new Harness(documents);
+            var firstView = Assert.Single(documents.GetVisualDescendants().OfType<PlanDocumentView>());
+            var firstImage = await WaitForImageAsync(host, firstView, new Size(128, 128));
+
+            workbench.ShowNewTask(secondRoot);
+            var secondDocument = workbench.OpenPlanDocument("image", "Image", markdown);
+            host.Pump();
+            var secondView = Assert.Single(documents.GetVisualDescendants().OfType<PlanDocumentView>(),
+                view => ReferenceEquals(view.DataContext, secondDocument.Content));
+            await WaitForImageAsync(host, secondView, new Size(64, 32));
+            Assert.Equal(2, workbench.Documents.Items.Count);
+            Assert.Equal(new Size(128, 128), firstImage.Image!.Size);
+
+            workbench.ShowNewTask(firstRoot);
+            host.Pump();
+            Assert.Same(firstDocument, workbench.Documents.ActiveDocument);
+            Assert.Same(firstView, Assert.Single(documents.GetVisualDescendants().OfType<PlanDocumentView>(),
+                view => ReferenceEquals(view.DataContext, firstDocument.Content)));
+            await WaitForImageAsync(host, firstView, new Size(128, 128));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Images_UseConversationWorkspaceInQuestionPreviews()
+    {
+        const string relativePath = "Assets/Textures/Item/Material/CircuitBoard.png";
+        var root = Directory.CreateTempSubdirectory("alcoler-markdown-preview-").FullName;
+        try
+        {
+            WriteImage(Path.Combine(root, relativePath), 128, 128);
+            var state = TestSnapshots.State() with
+            {
+                PendingInteraction = new InteractionRequest(StrongId.NewInteractionId(), "Choose",
+                    [new InteractionQuestion("Preview", "Which image?",
+                        [new InteractionOption("Circuit board", Preview: $"![电路板贴图]({relativePath})")])]),
+            };
+            var runtime = new FakeAgentRuntime();
+            using var store = new ProjectionStore(() => throw new NotSupportedException(), StrongId.NewSessionId(),
+                InlineUiScheduler.Instance, state);
+            using var conversation = new ConversationViewModel(runtime, store) { WorkspaceRoot = root };
+            var interaction = new InteractionAreaView { DataContext = conversation };
+            using var host = new Harness(interaction);
+            var preview = Assert.Single(interaction.GetVisualDescendants().OfType<ConversationMarkdown>(),
+                view => view.Name == "QuestionPreview");
+            await WaitForImageAsync(host, preview, new Size(128, 128));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void WriteImage(string path, int width, int height)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var bitmap = new SkiaSharp.SKBitmap(width, height);
+        bitmap.Erase(SkiaSharp.SKColors.CornflowerBlue);
+        using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+        File.WriteAllBytes(path, data.ToArray());
+    }
+
+    private static async Task<CImage> WaitForImageAsync(Harness host, Control view, Size expected)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (true)
+        {
+            host.Pump();
+            var image = Assert.Single(view.GetLogicalDescendants().OfType<CImage>());
+            if (image.Image?.Size == expected)
+                return image;
+            Assert.True(DateTime.UtcNow < deadline, $"Expected image size {expected}, got {image.Image?.Size}.");
+            await Task.Delay(10);
         }
     }
 
