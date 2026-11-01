@@ -112,6 +112,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
         draft.Composer.Draft = "parent question";
         await draft.SendAsync();
         await WaitUntilAsync(() => workbench.Active is ConversationViewModel conversation
+            && conversation.PhaseText == nameof(TurnPhase.Idle)
             && conversation.Items.OfType<AssistantMessageItemViewModel>()
                 .Any(item => item.MarkdownText == "parent answer" && !item.IsStreaming), scheduler);
 

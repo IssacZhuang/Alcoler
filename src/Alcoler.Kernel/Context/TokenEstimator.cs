@@ -212,7 +212,7 @@ public static class TokenEstimator
         }
     }
 
-    // Must match the provider request encoder so estimates track the bytes actually sent.
+    // Text and tool JSON must retain the provider request encoder's escaping.
     private static readonly JsonWriterOptions RelaxedWriterOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
@@ -255,9 +255,7 @@ public static class TokenEstimator
                     writer.WriteString("text", reasoning.Text);
                     break;
                 case InputImageBlock image:
-                    writer.WriteString("type", "image");
-                    writer.WriteString("mimeType", image.MimeType);
-                    writer.WriteString("data", image.Base64Data);
+                    WriteImageEstimate(writer, image);
                     break;
                 case InputToolCallBlock call:
                     writer.WriteString("type", "tool_call");
@@ -271,6 +269,18 @@ public static class TokenEstimator
                     writer.WriteString("id", result.Id.Value);
                     writer.WriteString("content", result.Content);
                     writer.WriteBoolean("isError", result.IsError);
+                    if (result.Images is { Count: > 0 } images)
+                    {
+                        writer.WritePropertyName("images");
+                        writer.WriteStartArray();
+                        foreach (var image in images)
+                        {
+                            writer.WriteStartObject();
+                            WriteImageEstimate(writer, image);
+                            writer.WriteEndObject();
+                        }
+                        writer.WriteEndArray();
+                    }
                     break;
                 default:
                     throw new InvalidOperationException($"Unhandled model content block {block.GetType().Name}.");
@@ -279,6 +289,13 @@ public static class TokenEstimator
         }
         writer.WriteEndArray();
         writer.WriteEndObject();
+    }
+
+    private static void WriteImageEstimate(Utf8JsonWriter writer, InputImageBlock image)
+    {
+        writer.WriteString("type", "image");
+        writer.WriteString("mimeType", image.MimeType);
+        writer.WriteString("data", $"[Attached {image.MimeType}]");
     }
 
     private static string RoleName(MessageRole role) => role switch

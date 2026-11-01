@@ -7,6 +7,7 @@ using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
+using Alcoler.Kernel.Context;
 using Alcoler.Kernel.Runtime;
 using Xunit;
 
@@ -140,6 +141,100 @@ public class MediaHydrationTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LargeUserImages_ResumePreservesProviderUsageAndAvoidsAutoCompaction(bool reportsContextUsage)
+    {
+        var firstUsage = new TokenUsage(InputTokens: 1500, OutputTokens: 60, CacheReadTokens: 900,
+            ContextUsageTokens: reportsContextUsage ? 1500 : null);
+        var secondUsage = new TokenUsage(InputTokens: 1600, OutputTokens: 70, CacheReadTokens: 1100,
+            ContextUsageTokens: reportsContextUsage ? 1600 : null);
+        var thirdUsage = new TokenUsage(InputTokens: 1700, OutputTokens: 80, CacheReadTokens: 1200,
+            ContextUsageTokens: reportsContextUsage ? 1700 : null);
+        await using var harness = ScriptedCallHarness.Create(
+            Reply("first seen", firstUsage), Reply("second seen", secondUsage), Reply("still remembered", thirdUsage));
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        var images = Enumerable.Range(0, 2).Select(index =>
+        {
+            var payload = new byte[1024 * 1024];
+            Convert.FromBase64String(TinyPngBase64).CopyTo(payload, 0);
+            payload[^1] = (byte)(index + 1);
+            return new InputImageBlock("image/png", Convert.ToBase64String(payload));
+        }).ToArray();
+        var ack = await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
+            "look at these images", Images: images), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitForReplyAsync(projection, "first seen");
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
+            "remember them"), CancellationToken.None)).Accepted);
+        await WaitForReplyAsync(projection, "second seen");
+
+        Assert.Equal(2, harness.Model.Requests.Count);
+        Assert.All(harness.Model.Requests, request => Assert.Equal(images, request.Messages.SelectMany(ImageBlocks)));
+        var prior = Assert.IsType<ContextUsageState>(projection.Snapshot().State.ContextUsage);
+        Assert.Equal(1600, prior.UsedTokens);
+        Assert.Equal(TokenEstimator.ProviderUsageSource, prior.TokenSource);
+        Assert.Equal(secondUsage, prior.LastUsage);
+        Assert.Equal(2000, prior.CacheReadTokens);
+        Assert.Equal(3100, prior.CacheInputTokens);
+        await using var store = harness.OpenStore();
+        var stored = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        var imageMessage = Assert.Single(stored, message => message.Message.Parts.OfType<FilePart>().Any()).Message;
+        var references = imageMessage.Parts.OfType<FilePart>().ToArray();
+        Assert.Equal(images.Length, references.Length);
+        Assert.All(references, reference => Assert.StartsWith("alcoler-artifact://", reference.ArtifactUri));
+        var serialized = AlcolerJson.Serialize(imageMessage);
+        Assert.All(images, image => Assert.DoesNotContain(image.Base64Data, serialized, StringComparison.Ordinal));
+        var lastAssistant = stored.Last(message => message.Message.Role == MessageRole.Assistant).Message;
+        await runtime.DisposeAsync();
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var replay = resumed.Subscribe(session.Id);
+        var restored = Assert.IsType<ContextUsageState>(replay.Snapshot().State.ContextUsage);
+        var assistantTail = reportsContextUsage ? 0 : TokenEstimator.EstimateMessageTokens(lastAssistant);
+        Assert.Equal(prior.UsedTokens + assistantTail, restored.UsedTokens);
+        Assert.Equal(TokenEstimator.ProviderUsageSource, restored.TokenSource);
+        Assert.Equal(secondUsage, restored.LastUsage);
+        Assert.Equal(prior.CacheReadTokens, restored.CacheReadTokens);
+        Assert.Equal(prior.CacheInputTokens, restored.CacheInputTokens);
+        Assert.Equal(prior.OutputTokens, restored.OutputTokens);
+        Assert.Equal(prior.GenerationDurationMs, restored.GenerationDurationMs);
+        Assert.Equal(references, Assert.Single(replay.Snapshot().Rows.OfType<UserMessageRow>(), row => row.Images is { Count: > 0 }).Images!);
+        var highWater = (await store.LoadDurableEventsAsync(session.Id, CancellationToken.None)).Max(entry => entry.Sequence);
+
+        Assert.True((await resumed.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
+            "what did you see?"), CancellationToken.None)).Accepted);
+        await WaitForReplyAsync(replay, "still remembered");
+        Assert.Equal(3, harness.Model.Requests.Count);
+        Assert.Equal(images, harness.Model.Requests[2].Messages.SelectMany(ImageBlocks));
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.DoesNotContain(events, entry => entry.Event is CompactBoundaryAppliedEvent or MicrocompactAppliedEvent or TurnFailedEvent);
+        var completedTurns = events.Select(entry => entry.Event).OfType<TurnCompletedEvent>().ToArray();
+        Assert.Equal(3, completedTurns.Length);
+        Assert.All(completedTurns, turn => Assert.Equal(TurnOutcome.Completed, turn.Outcome));
+        var preRequest = events.Where(entry => entry.Sequence > highWater).Select(entry => entry.Event)
+            .OfType<ContextUsageUpdatedEvent>().First().Usage;
+        var continuedMessages = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        var newTail = continuedMessages.Skip(stored.Count).Select(message => message.Message)
+            .TakeWhile(message => message.Role != MessageRole.Assistant).Sum(TokenEstimator.EstimateMessageTokens);
+        Assert.Equal(restored.UsedTokens + newTail, preRequest.UsedTokens);
+        Assert.Equal(TokenEstimator.ProviderUsageSource, preRequest.TokenSource);
+        Assert.Equal(secondUsage, preRequest.LastUsage);
+        Assert.Equal(prior.CacheReadTokens, preRequest.CacheReadTokens);
+        Assert.Equal(prior.CacheInputTokens, preRequest.CacheInputTokens);
+        var continued = Assert.IsType<ContextUsageState>(replay.Snapshot().State.ContextUsage);
+        Assert.Equal(1700, continued.UsedTokens);
+        Assert.Equal(thirdUsage, continued.LastUsage);
+        Assert.Equal(3200, continued.CacheReadTokens);
+        Assert.Equal(4800, continued.CacheInputTokens);
+        Assert.All(new[] { prior, restored, preRequest, continued }, usage =>
+            Assert.InRange(Assert.Single(usage.Breakdown, category => category.Source == ContextUsageSources.Messages).Characters, 1L, 10_000L));
+    }
+
+    [Theory]
     [InlineData("image/svg+xml", TinyPngBase64, "unsupported_image_mime_type")]
     [InlineData("image/png", "not-base64!", "invalid_image_base64")]
     [InlineData("image/png", "", "invalid_image_base64")]
@@ -199,8 +294,8 @@ public class MediaHydrationTests
         Assert.Equal(8, Assert.Single(projection.Snapshot().Rows.OfType<UserMessageRow>()).Images!.Count);
     }
 
-    private static IReadOnlyList<ModelStreamEvent> Reply(string text) =>
-        [new ModelTextDelta(text), new ModelStreamFinished(ModelFinishReason.Stop)];
+    private static IReadOnlyList<ModelStreamEvent> Reply(string text, TokenUsage? usage = null) =>
+        [new ModelTextDelta(text), new ModelStreamFinished(ModelFinishReason.Stop, usage)];
 
     private static async Task WaitForReplyAsync(IConversationProjection projection, string text)
     {

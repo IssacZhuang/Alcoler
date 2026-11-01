@@ -496,6 +496,32 @@ public class ContextBuilderTests
         Assert.Equal(6, assembled.PrefixMessageCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Assemble_ImagePayloadSizeDoesNotInflateBreakdown(bool inline)
+    {
+        var message = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+            [new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"),
+                [new ToolResultText("caption"), new ToolResultMedia("shot", "image/png")])], DateTimeOffset.UtcNow);
+        AssembledContext Assemble(string data) => ContextBuilder.Assemble(Input([message]) with
+        {
+            Media = new Dictionary<string, MediaPayload> { ["shot"] = new("image/png", data) },
+            InlineToolResultImages = inline,
+        });
+        var small = Assemble("a");
+        var payload = new string('a', 4_000_000);
+        var large = Assemble(payload);
+
+        Assert.Equal(small.Breakdown, large.Breakdown);
+        Assert.Equal(TokenEstimator.EstimateRequestTokens(small.Request), TokenEstimator.EstimateRequestTokens(large.Request));
+        Assert.InRange(Assert.Single(large.Breakdown, item => item.Source == ContextUsageSources.Messages).Characters, 1, 1_000);
+        var image = inline
+            ? Assert.Single(Assert.Single(large.Request.Messages.SelectMany(item => item.Content).OfType<InputToolResultBlock>()).Images!)
+            : Assert.Single(large.Request.Messages.SelectMany(item => item.Content).OfType<InputImageBlock>());
+        Assert.Same(payload, image.Base64Data);
+    }
+
     [Fact]
     public void Assemble_HiddenPartsDoNotAffectRequestAccounting()
     {

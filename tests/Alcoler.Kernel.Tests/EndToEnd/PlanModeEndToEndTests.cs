@@ -145,6 +145,7 @@ public class PlanModeEndToEndTests
             CancellationToken.None);
         Assert.True(ack.Accepted);
 
+        await WaitForAssistantTextAsync(projection, "The write was denied.");
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
         var call = Assert.Single(projection.Snapshot().Rows.OfType<ToolCallRow>());
         Assert.Equal(ToolCallStatus.Failed, call.Status);
@@ -242,6 +243,7 @@ public class PlanModeEndToEndTests
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "Keep planning"),
             CancellationToken.None);
         Assert.True(ack.Accepted);
+        await WaitForAssistantTextAsync(projection, "Still planning.");
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
 
         await using var resumed = harness.BuildRuntime();

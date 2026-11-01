@@ -106,8 +106,27 @@ public sealed class CdpBrowserAutomationTests
         using var page = new FakePage { FrameTransforms = [Transform(1, 1)], OmitChildFrame = true, BlockFrame = blocked };
         using var engine = new CdpBrowserAutomation(page);
         page.Emit("Target.attachedToTarget", "{\"sessionId\":\"oopif-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
-        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"},\"timeoutMs\":200}");
-        Assert.Equal(!blocked, result.Ok);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var hitTests = 0;
+        // The first blocked hit test must prevent input before cancellation ends the retry loop.
+        page.AfterSend = method =>
+        {
+            if (blocked && method == "Runtime.callFunctionOn"
+                && page.Calls[^1].Parameters.GetProperty("functionDeclaration").GetString()!.Contains("elementFromPoint(x,y)")
+                && ++hitTests == 2)
+                cancellation.Cancel();
+        };
+        var action = new BrowserCommandAction("click", Parse("{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"}}"));
+        if (blocked)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.ExecuteAsync(action, cancellation.Token));
+            Assert.Equal(2, hitTests);
+        }
+        else
+        {
+            var result = await engine.ExecuteAsync(action, cancellation.Token);
+            Assert.True(result.Ok, result.Error);
+        }
         Assert.Contains(page.Calls, c => c.Method == "Page.createIsolatedWorld" && c.Session == "oopif-session");
         Assert.Contains(page.Calls, c => c.Method == "Runtime.callFunctionOn" && c.Session is null && c.Parameters.GetProperty("functionDeclaration").GetString()!.Contains("DOMMatrixReadOnly"));
         Assert.DoesNotContain(page.Calls, c => c.Method == "DOM.getFrameOwner");
@@ -127,20 +146,22 @@ public sealed class CdpBrowserAutomationTests
         using var engine = new CdpBrowserAutomation(page);
         page.Emit("Target.attachedToTarget", "{\"sessionId\":\"swap-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
         page.Emit("Page.frameDetached", "{\"frameId\":\"child\",\"reason\":\"swap\"}");
-        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"},\"timeoutMs\":200}");
+        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"}}");
         Assert.True(result.Ok, result.Error);
         var world = Assert.Single(page.Calls, c => c.Method == "Page.createIsolatedWorld" && c.Parameters.GetProperty("frameId").GetString() == "child");
         Assert.Equal("swap-session", world.Session);
     }
 
-    [Fact]
-    public async Task TargetDetachedFromTargetRetiresFrameSessionRoute()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(250)]
+    public async Task TargetDetachedFromTargetRetiresFrameSessionRoute(int initializationDelayMs)
     {
-        using var page = new FakePage { FrameTransforms = [Transform(1, 1)] };
+        using var page = new FakePage { FrameTransforms = [Transform(1, 1)], InitializationDelayMs = initializationDelayMs };
         using var engine = new CdpBrowserAutomation(page);
         page.Emit("Target.attachedToTarget", "{\"sessionId\":\"doomed-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
         page.Emit("Target.detachedFromTarget", "{\"sessionId\":\"doomed-session\"}");
-        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"},\"timeoutMs\":200}");
+        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"}}");
         Assert.True(result.Ok, result.Error);
         var world = Assert.Single(page.Calls, c => c.Method == "Page.createIsolatedWorld" && c.Parameters.GetProperty("frameId").GetString() == "child");
         Assert.Null(world.Session);
@@ -153,7 +174,7 @@ public sealed class CdpBrowserAutomationTests
         using var engine = new CdpBrowserAutomation(page);
         page.Emit("Target.attachedToTarget", "{\"sessionId\":\"old-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
         page.Emit("Page.frameDetached", "{\"frameId\":\"child\",\"reason\":\"replace\"}");
-        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"},\"timeoutMs\":200}");
+        var result = await Execute(engine, "click", "{\"locator\":{\"frame\":\"iframe\",\"role\":\"button\",\"name\":\"Frame action\"}}");
         Assert.True(result.Ok, result.Error);
         var world = Assert.Single(page.Calls, c => c.Method == "Page.createIsolatedWorld" && c.Parameters.GetProperty("frameId").GetString() == "child");
         Assert.Null(world.Session);
@@ -400,6 +421,7 @@ public sealed class CdpBrowserAutomationTests
         public bool FailEvaluation { get; set; }
         public bool StrictFailure { get; init; }
         public bool HangMouse { get; init; }
+        public int InitializationDelayMs { get; init; }
         public JsonElement[]? FrameTransforms { get; init; }
         public bool OmitChildFrame { get; init; }
         public bool BlockFrame { get; init; }
@@ -412,6 +434,7 @@ public sealed class CdpBrowserAutomationTests
             var p = BrowserJson.Element(parameters);
             Calls.Add(new(method, p, sessionId));
             AfterSend?.Invoke(method);
+            if (method == "Page.enable" && InitializationDelayMs > 0) await Task.Delay(InitializationDelayMs, cancellationToken);
             if (HangMouse && method == "Input.dispatchMouseEvent") await Task.Delay(Timeout.Infinite, cancellationToken);
             if (FailAccessibility && method.StartsWith("Accessibility.")) throw new NotSupportedException("Accessibility unsupported");
             if (method == "Page.getFrameTree") return FrameTransforms is null || OmitChildFrame

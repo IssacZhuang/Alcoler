@@ -2518,17 +2518,58 @@ public sealed class SessionRuntime : IAsyncDisposable
                 var resumedModel = await _deps.ResolveModel(resumedSelection).ConfigureAwait(false);
                 var descriptor = resumedModel.Descriptor;
                 _contextModelId = descriptor.FullId;
+                var history = _history.Snapshot();
                 var resumed = await AssembleContextAsync(
-                    _history.Snapshot(), resumedSelection.Options ?? new ModelCallOptions(), resumedModel).ConfigureAwait(false);
-                _contextUsage = new ContextUsageState(TokenEstimator.EstimateRequestTokens(resumed.Request),
+                    history, resumedSelection.Options ?? new ModelCallOptions(), resumedModel).ConfigureAwait(false);
+                RestoreProviderUsage(durable, replayDurable, descriptor);
+                var (tokens, source) = EstimateContextTokens(resumed, history);
+                _contextUsage = new ContextUsageState(tokens,
                     descriptor.Properties.ContextWindowTokens ?? CompactPolicy.DefaultContextWindowTokens,
-                    TokenEstimator.EstimateSource, resumed.Breakdown,
+                    source, resumed.Breakdown,
                     _contextUsage?.CacheReadTokens ?? 0, _contextUsage?.CacheInputTokens ?? 0,
+                    LastUsage: _lastProviderUsage,
                     OutputTokens: _contextUsage?.OutputTokens ?? 0,
                     GenerationDurationMs: _contextUsage?.GenerationDurationMs ?? 0);
                 EmitForReplay(new ContextUsageUpdatedEvent(_contextUsage));
             }
         }
+    }
+
+    private void RestoreProviderUsage(
+        IReadOnlyList<SequencedEvent> durable, IReadOnlyList<SequencedEvent> replayDurable, ModelDescriptor descriptor)
+    {
+        if (_contextUsage is not { TokenSource: TokenEstimator.ProviderUsageSource, LastUsage: { } usage } saved
+            || (usage.ContextUsageTokens ?? usage.InputTokens) is not > 0)
+        {
+            return;
+        }
+
+        // Only successful usage samples advance cache input totals; pre-request snapshots retain them.
+        var sample = replayDurable.FirstOrDefault(entry => entry.Event is ContextUsageUpdatedEvent context
+            && context.Usage.TokenSource == TokenEstimator.ProviderUsageSource
+            && context.Usage.CacheInputTokens == saved.CacheInputTokens
+            && context.Usage.LastUsage == usage);
+        // Microcompaction is not materialized in stored history until a full compaction.
+        var lastRewrite = durable.LastOrDefault(entry => entry.Event is CompactBoundaryAppliedEvent or MicrocompactAppliedEvent);
+        if (sample is null || lastRewrite?.Event is MicrocompactAppliedEvent
+            || replayDurable.Any(entry => entry.Sequence > sample.Sequence
+                && entry.Event is SessionModelChangedEvent or CompactBoundaryAppliedEvent
+                    or MicrocompactAppliedEvent or ConversationRewoundEvent))
+        {
+            return;
+        }
+
+        var assistant = replayDurable.Where(entry => entry.Sequence > sample.Sequence)
+            .TakeWhile(entry => entry.Event is not (ContextUsageUpdatedEvent or TurnStartedEvent or TurnCompletedEvent))
+            .Select(entry => entry.Event).OfType<AssistantMessageCommittedEvent>().FirstOrDefault()?.Message;
+        if (assistant is null || assistant.ProviderId != descriptor.ProviderId || assistant.ModelId != descriptor.ModelId
+            || _history.LastIndexOf(assistant.Id) is not { } anchorIndex)
+        {
+            return;
+        }
+
+        _lastProviderUsage = usage;
+        _usageAnchorIndex = anchorIndex;
     }
 
     // Committed messages survive the cut as anchors for the kept prefix; every other

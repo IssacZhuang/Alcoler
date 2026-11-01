@@ -81,12 +81,12 @@ public sealed class ChromiumBrowserPage : IBrowserPage
         try
         {
             await _connection.SendAsync("Page.bringToFront", null, cancellationToken, _ownSessionId).ConfigureAwait(false);
-            // Activation completes asynchronously; input dispatched before the page reports visible is still dropped.
+            // Visibility can precede the compositor frame that accepts native input.
             using var bound = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             bound.CancelAfter(TimeSpan.FromSeconds(2));
             await _connection.SendAsync("Runtime.evaluate", new Dictionary<string, object?>
             {
-                ["expression"] = "new Promise(r=>document.visibilityState==='visible'?r():document.addEventListener('visibilitychange',()=>r(),{once:true}))",
+                ["expression"] = "(async()=>{while(document.visibilityState!=='visible')await new Promise(r=>document.addEventListener('visibilitychange',r,{once:true}));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));})()",
                 ["awaitPromise"] = true,
             }, bound.Token, _ownSessionId).ConfigureAwait(false);
         }

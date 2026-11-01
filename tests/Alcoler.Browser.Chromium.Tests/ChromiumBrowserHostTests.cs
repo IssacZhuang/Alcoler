@@ -191,6 +191,73 @@ public sealed class ChromiumBrowserHostTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FirstInputWaitsForVisibleRenderedFrameBeforeDispatch(bool headless)
+    {
+        var (host, wire, _) = CreateHost(headless);
+        using (host)
+        {
+            var page = await host.CreatePageAsync(_session, "tab_1", CancellationToken.None);
+            wire.HoldEvaluations = true;
+            var pending = page.SendAsync("Input.dispatchMouseEvent", new Dictionary<string, object?> { ["type"] = "mousePressed" }, CancellationToken.None);
+            var readiness = await WaitForFrameAsync(wire, frame => frame.Method == "Runtime.evaluate");
+            try
+            {
+                var expression = readiness.Parameters.GetProperty("expression").GetString()!;
+                Assert.Contains("while(document.visibilityState!=='visible')", expression, StringComparison.Ordinal);
+                Assert.Contains("requestAnimationFrame(()=>requestAnimationFrame(r))", expression, StringComparison.Ordinal);
+                Assert.True(readiness.Parameters.GetProperty("awaitPromise").GetBoolean());
+                Assert.Equal("S1", readiness.SessionId);
+                Assert.DoesNotContain(Parse(wire.Snapshot()), frame => frame.Method.StartsWith("Input.", StringComparison.Ordinal));
+            }
+            finally
+            {
+                wire.Push("{\"id\":" + readiness.Id + ",\"result\":{}}");
+            }
+            await pending.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Single(Parse(wire.Snapshot()), frame => frame.Method == "Input.dispatchMouseEvent");
+        }
+    }
+
+    [Fact]
+    public async Task CallerCancellationDuringFirstInputReadinessDoesNotDispatchInput()
+    {
+        var (host, wire, _) = CreateHost();
+        using (host)
+        using (var cancellation = new CancellationTokenSource())
+        {
+            var page = await host.CreatePageAsync(_session, "tab_1", CancellationToken.None);
+            wire.HoldEvaluations = true;
+            var pending = page.SendAsync("Input.dispatchMouseEvent", new Dictionary<string, object?> { ["type"] = "mousePressed" }, cancellation.Token);
+            var readiness = await WaitForFrameAsync(wire, frame => frame.Method == "Runtime.evaluate");
+            cancellation.Cancel();
+            var terminate = await WaitForFrameAsync(wire, frame => frame.Method == "Runtime.terminateExecution");
+            Assert.Equal("S1", terminate.SessionId);
+            wire.Push("{\"id\":" + readiness.Id + ",\"result\":{}}");
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.DoesNotContain(Parse(wire.Snapshot()), frame => frame.Method.StartsWith("Input.", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public async Task FirstInputReadinessTimeoutFallsBackAfterDrainingTheBoundedEvaluation()
+    {
+        var (host, wire, _) = CreateHost();
+        using (host)
+        {
+            var page = await host.CreatePageAsync(_session, "tab_1", CancellationToken.None);
+            wire.HoldEvaluations = true;
+            var pending = page.SendAsync("Input.dispatchMouseEvent", new Dictionary<string, object?> { ["type"] = "mousePressed" }, CancellationToken.None);
+            var readiness = await WaitForFrameAsync(wire, frame => frame.Method == "Runtime.evaluate");
+            await WaitForFrameAsync(wire, frame => frame.Method == "Runtime.terminateExecution");
+            wire.Push("{\"id\":" + readiness.Id + ",\"result\":{}}");
+            await pending.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Single(Parse(wire.Snapshot()), frame => frame.Method == "Input.dispatchMouseEvent");
+        }
+    }
+
     [Fact]
     public async Task ShowAndHideIssueBringToFrontGetWindowAndSetWindowBoundsInOrder()
     {
@@ -354,6 +421,7 @@ public sealed class ChromiumBrowserHostTests
         private int _sessions;
 
         public List<string> Frames { get; } = [];
+        public bool HoldEvaluations { get; set; }
 
         public List<string> Snapshot()
         {
@@ -375,6 +443,7 @@ public sealed class ChromiumBrowserHostTests
             var root = document.RootElement;
             if (!root.TryGetProperty("method", out var methodElement) || methodElement.GetString() is not { } method) return Task.CompletedTask;
             var parameters = root.TryGetProperty("params", out var parameterElement) ? parameterElement.Clone() : default;
+            if (method == "Runtime.evaluate" && HoldEvaluations) return Task.CompletedTask;
             var response = Respond(method, parameters);
             Push("{\"id\":" + root.GetProperty("id").GetInt64() + ",\"result\":" + BrowserJson.Serialize(response) + "}");
             return Task.CompletedTask;

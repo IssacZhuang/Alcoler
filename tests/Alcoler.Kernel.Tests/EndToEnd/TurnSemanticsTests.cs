@@ -84,6 +84,8 @@ public class TurnSemanticsTests
     // the test so notification delivery timing is deterministic.
     private sealed class BackgroundNotifyTool(TaskCompletionSource jobRelease) : ITool
     {
+        public ITurnInputSignal? TurnInputSignal { get; private set; }
+
         public ToolContract Contract { get; } = new(
             "BackgroundNotify",
             "Test-only tool that starts a gated background job.",
@@ -102,6 +104,7 @@ public class TurnSemanticsTests
 
         public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
         {
+            TurnInputSignal = context.TurnInputSignal;
             context.BackgroundJobs?.Start(
                 "probe job",
                 null,
@@ -1075,14 +1078,17 @@ public class TurnSemanticsTests
         var jobRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var gateRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var runtime = harness.BuildRuntime(new BackgroundNotifyTool(jobRelease), new GateTool(entered, gateRelease));
+        var backgroundTool = new BackgroundNotifyTool(jobRelease);
+        await using var runtime = harness.BuildRuntime(backgroundTool, new GateTool(entered, gateRelease));
         var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
 
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "run then wait"), CancellationToken.None);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var notificationSignal = Assert.IsAssignableFrom<ITurnInputSignal>(backgroundTool.TurnInputSignal);
+        var seenVersion = notificationSignal.Version;
         jobRelease.TrySetResult();
-        await Task.Delay(50);
+        await notificationSignal.WaitAsync(seenVersion, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         gateRelease.TrySetResult();
 
         await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle);

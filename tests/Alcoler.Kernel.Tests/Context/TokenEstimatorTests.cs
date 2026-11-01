@@ -177,6 +177,34 @@ public class TokenEstimatorTests
         Assert.Equal(("[Attached image/png]".Length + 2) / 3, TokenEstimator.EstimateModelMessageTokens(message));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EstimateRequestTokens_ImagesDoNotCountBase64Payload(bool inline)
+    {
+        ModelRequest Request(string data)
+        {
+            var image = new InputImageBlock("image/png", data);
+            ModelContentBlock block = inline
+                ? new InputToolResultBlock(new ToolCallId("image-call"), "image", false, Images: [image])
+                : image;
+            return new ModelRequest([new ModelInputMessage(MessageRole.User, [block])], [], new ModelCallOptions());
+        }
+
+        var small = TokenEstimator.EstimateRequestTokens(Request("a"));
+        var large = TokenEstimator.EstimateRequestTokens(Request(new string('a', 4_000_000)));
+
+        Assert.Equal(small, large);
+        Assert.InRange(large, 1, 1_000);
+        if (inline)
+        {
+            var withoutImage = new ModelRequest(
+                [new ModelInputMessage(MessageRole.User,
+                    [new InputToolResultBlock(new ToolCallId("image-call"), "image", false)])], [], new ModelCallOptions());
+            Assert.True(large > TokenEstimator.EstimateRequestTokens(withoutImage));
+        }
+    }
+
     [Fact]
     public void EstimateCurrentInputTokens_WithoutUsage_EstimatesWholeHistory()
     {

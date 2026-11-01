@@ -48,7 +48,7 @@ public class ContextUsageTests
     }
 
     [Fact]
-    public async Task Resume_RecomputesRequestBreakdownAndPreservesCacheTotals()
+    public async Task Resume_RestoresProviderUsageAndPreservesCacheTotals()
     {
         await using var harness = TestHarness.Create(
             Reply("answer", new TokenUsage(ContextUsageTokens: 2000, CacheReadTokens: 1600)),
@@ -68,8 +68,9 @@ public class ContextUsageTests
         await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
         using var resumedProjection = resumed.Subscribe(session.Id);
         var context = Assert.IsType<ContextUsageState>(resumedProjection.Snapshot().State.ContextUsage);
-        Assert.Equal(TokenEstimator.EstimateSource, context.TokenSource);
-        Assert.True(context.UsedTokens > 0);
+        Assert.Equal(TokenEstimator.ProviderUsageSource, context.TokenSource);
+        Assert.Equal(2000, context.UsedTokens);
+        Assert.Equal(2000, context.LastUsage!.ContextUsageTokens);
         Assert.Equal(1600, context.CacheReadTokens);
         Assert.Equal(2000, context.CacheInputTokens);
         Assert.Contains(context.Breakdown, category => category.Source == ContextUsageSources.Messages);
@@ -79,6 +80,52 @@ public class ContextUsageTests
         Assert.Equal(2500, continued.UsedTokens);
         Assert.Equal(3600, continued.CacheReadTokens);
         Assert.Equal(4500, continued.CacheInputTokens);
+    }
+
+    [Fact]
+    public async Task Resume_ModelSelectionChangeDiscardsProviderAnchor()
+    {
+        await using var harness = TestHarness.Create(Reply("answer", new TokenUsage(ContextUsageTokens: 2000, CacheReadTokens: 1600)));
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await SendAndWaitAsync(runtime, projection, session.Id, "question", 1);
+        var ack = await runtime.SubmitAsync(new SwitchModelCommand(StrongId.NewCommandId(), session.Id, 0,
+            new ModelSelection("scripted", "test-model", new ModelCallOptions(MaxOutputTokens: 4000))), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await runtime.DisposeAsync();
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var replay = resumed.Subscribe(session.Id);
+        var context = Assert.IsType<ContextUsageState>(replay.Snapshot().State.ContextUsage);
+        Assert.Equal(TokenEstimator.EstimateSource, context.TokenSource);
+        Assert.Null(context.LastUsage);
+        Assert.Equal(1600, context.CacheReadTokens);
+        Assert.Equal(2000, context.CacheInputTokens);
+    }
+
+    [Fact]
+    public async Task Resume_EmptyOutputContinuationDoesNotAnchorToALaterResponse()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            [new ModelStreamFinished(ModelFinishReason.Length, new TokenUsage(ContextUsageTokens: 2000, CacheReadTokens: 1600))],
+            [new ModelTextDelta("continued"), new ModelStreamFinished(ModelFinishReason.Stop)]);
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await SendAndWaitAsync(runtime, projection, session.Id, "question", 1);
+        Assert.Equal(2, harness.Model.Requests.Count);
+        await runtime.DisposeAsync();
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var replay = resumed.Subscribe(session.Id);
+        var context = Assert.IsType<ContextUsageState>(replay.Snapshot().State.ContextUsage);
+        Assert.Equal(TokenEstimator.EstimateSource, context.TokenSource);
+        Assert.Null(context.LastUsage);
+        Assert.Equal(1600, context.CacheReadTokens);
+        Assert.Equal(2000, context.CacheInputTokens);
     }
 
     [Fact]
