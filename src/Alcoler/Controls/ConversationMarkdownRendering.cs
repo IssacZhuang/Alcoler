@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using Alcoler.Localization;
 using Alcoler.ViewModel;
+using Alcoler.Views;
 using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
@@ -30,7 +31,7 @@ internal static class ConversationMarkdownRendering
             TrimDocumentEdges = trimDocumentEdges,
             WrapCodeBlocks = wrapCodeBlocks,
             AssetPathRoot = GetAssetPathRoot(owner),
-            HyperlinkCommand = new RelayCommand<string>(target => OpenHyperlink(owner, target)),
+            HyperlinkCommand = new AsyncRelayCommand<string>(target => OpenHyperlinkAsync(owner, target)),
         };
 
     public static string GetAssetPathRoot(Control owner)
@@ -39,7 +40,7 @@ internal static class ConversationMarkdownRendering
         return string.IsNullOrWhiteSpace(root) ? Environment.CurrentDirectory : root;
     }
 
-    private static void OpenHyperlink(Control owner, string? target)
+    private static async Task OpenHyperlinkAsync(Control owner, string? target)
     {
         if (string.IsNullOrWhiteSpace(target))
             return;
@@ -55,7 +56,10 @@ internal static class ConversationMarkdownRendering
             DocumentViewModel document => document.WorkspaceRoot,
             _ => null,
         }).FirstOrDefault(root => !string.IsNullOrWhiteSpace(root));
-        workbench.OpenMarkdownLink(target, workspaceRoot);
+        var ownerId = contexts.OfType<DocumentViewModel>().FirstOrDefault()?.OwnerId;
+        var window = TopLevel.GetTopLevel(owner) as Window;
+        await workbench.OpenMarkdownLinkAsync(target, workspaceRoot, ownerId,
+            window is null ? null : (path, mimeType) => ImageViewerDialog.TryShowFileAsync(window, path, mimeType));
     }
 
     public static MdAvPlugins CreatePlugins()

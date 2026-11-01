@@ -15,6 +15,7 @@ using Avalonia.Headless.XUnit;
 using Avalonia.Input;
 using Avalonia.LogicalTree;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Rendering.Composition;
 using Avalonia.Styling;
 using Avalonia.Threading;
@@ -308,25 +309,48 @@ public class ConversationMarkdownTests
     }
 
     [AvaloniaTheory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task Hyperlinks_UseOriginWorkspaceAndReportLaunchFailures(bool fragment, bool document)
+    [InlineData(false, false, "image")]
+    [InlineData(true, false, "image")]
+    [InlineData(false, true, "image")]
+    [InlineData(true, true, "image")]
+    [InlineData(false, false, "text")]
+    [InlineData(true, false, "text")]
+    [InlineData(false, true, "text")]
+    [InlineData(true, true, "text")]
+    [InlineData(false, false, "binary")]
+    [InlineData(true, false, "binary")]
+    [InlineData(false, true, "binary")]
+    [InlineData(true, true, "binary")]
+    [InlineData(false, false, "oversized-image")]
+    [InlineData(true, false, "oversized-image")]
+    [InlineData(false, true, "oversized-image")]
+    [InlineData(true, true, "oversized-image")]
+    public async Task Hyperlinks_PreferInternalViewersAndPreserveOriginContext(bool fragment, bool document, string kind)
     {
-        const string relativePath = "Artwork/SpriteModels/.tmp/street-trash-bin-update/game-four-facings-daylight.png";
+        var extension = kind is "image" or "oversized-image" ? "png" : kind == "text" ? "cfg" : "kra";
+        var relativePath = $"Artwork/SpriteModels/.tmp/street-trash-bin-update/game-four-facings-daylight.{extension}";
         var root = Directory.CreateTempSubdirectory("alcoler-markdown-link-").FullName;
         try
         {
             var path = Path.GetFullPath(relativePath, root);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllBytes(path, Convert.FromBase64String(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1sAAAAASUVORK5CYII="));
+            if (kind == "image")
+                WriteImage(path, 640, 320);
+            else if (kind == "oversized-image")
+            {
+                using var file = File.Create(path);
+                file.SetLength(ComposerImageAttachment.MaxImageBytes + 1L);
+            }
+            else if (kind == "text")
+                File.WriteAllText(path, "configuration = true");
+            else
+                File.WriteAllBytes(path, [0x50, 0x4b, 3, 4, 0, 0]);
             var runtime = new FakeAgentRuntime();
             var launcher = new RecordingLinkLauncher();
             using var workbench = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]),
                 externalEditorLauncher: launcher);
             workbench.ShowNewTask(Path.Combine(root, "other-workspace"));
+            var ownerId = document ? "source-owner" : workbench.CurrentDocumentOwnerId;
             using var store = new ProjectionStore(() => throw new NotSupportedException(), StrongId.NewSessionId(),
                 InlineUiScheduler.Instance, TestSnapshots.State());
             using var conversation = new ConversationViewModel(runtime, store) { WorkspaceRoot = root };
@@ -338,7 +362,7 @@ public class ConversationMarkdownTests
             var scope = new ContentControl
             {
                 DataContext = document
-                    ? new DocumentViewModel("plan", "plan", "Plan", "", new PlanDocumentViewModel("Plan", markdown), root)
+                    ? new DocumentViewModel("plan", "plan", "Plan", "", new PlanDocumentViewModel("Plan", markdown), root, ownerId)
                     : conversation,
                 Content = view,
             };
@@ -346,9 +370,49 @@ public class ConversationMarkdownTests
             host.Window.DataContext = workbench;
             await host.RenderAsync();
 
+            if (kind == "image")
+            {
+                System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(GlyphRun).TypeHandle);
+                using var decoder = AvaloniaLocator.EnterScope();
+                Avalonia.Skia.SkiaPlatform.Initialize();
+                ClickLink();
+                var dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(host.Window.OwnedWindows));
+                try
+                {
+                    await WaitForAsync(host, () => dialog.FindControl<Image>("PreviewImage")!.Source is not null);
+                    Assert.Equal(Path.GetFileName(path), dialog.Title);
+                    Assert.Equal(new PixelSize(640, 320), Assert.IsType<Bitmap>(dialog.FindControl<Image>("PreviewImage")!.Source).PixelSize);
+                    Assert.Empty(launcher.Opened);
+                    Assert.Null(workbench.Banner);
+                }
+                finally
+                {
+                    dialog.Close();
+                }
+                return;
+            }
+
             ClickLink();
 
+            if (kind == "text")
+            {
+                await WaitForAsync(host, () => workbench.Documents.Items.Any(item =>
+                    item.Kind == "file" && item.Content is TextDocumentViewModel { IsLoading: false }));
+                var fileDocument = Assert.Single(workbench.Documents.Items, item => item.Kind == "file");
+                var preview = Assert.IsType<TextDocumentViewModel>(fileDocument.Content);
+                Assert.Equal(path, preview.FilePath);
+                Assert.Equal("configuration = true", preview.Text);
+                Assert.Null(preview.Error);
+                Assert.Equal(root, fileDocument.WorkspaceRoot);
+                Assert.Equal(ownerId, fileDocument.OwnerId);
+                Assert.Empty(launcher.Opened);
+                Assert.Null(workbench.Banner);
+                return;
+            }
+
+            await WaitForAsync(host, () => launcher.Opened.Count > 0);
             Assert.Equal(path, Assert.Single(launcher.Opened));
+            Assert.Empty(host.Window.OwnedWindows);
             Assert.True(File.Exists(launcher.Opened[0]));
             Assert.Null(workbench.Banner);
 
@@ -359,7 +423,8 @@ public class ConversationMarkdownTests
 
             ClickLink();
 
-            Assert.Contains("game-four-facings-daylight.png", workbench.Banner);
+            await WaitForAsync(host, () => workbench.Banner is not null);
+            Assert.Contains(Path.GetFileName(path), workbench.Banner);
             Assert.Contains(launcher.Error.Message, workbench.Banner);
 
             void ClickLink()
@@ -377,6 +442,18 @@ public class ConversationMarkdownTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task WaitForAsync(Harness host, Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!condition())
+        {
+            host.Pump();
+            Assert.True(DateTime.UtcNow < deadline, "The hyperlink action did not complete.");
+            await Task.Delay(10);
+        }
+        host.Pump();
     }
 
     [AvaloniaFact]

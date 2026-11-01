@@ -96,7 +96,7 @@ public static class ComposerClipboardImages
     internal static ComposerImageAttachment FromDib(byte[] dib) =>
         ComposerImageAttachment.FromBitmapBytes(WindowsClipboardImages.CreateBitmapFile(dib), "Clipboard image.png");
 
-    private static string? GetFileMimeType(string name) => Path.GetExtension(name).ToLowerInvariant() switch
+    internal static string? GetFileMimeType(string name) => Path.GetExtension(name).ToLowerInvariant() switch
     {
         ".png" => "image/png",
         ".jpg" or ".jpeg" => "image/jpeg",

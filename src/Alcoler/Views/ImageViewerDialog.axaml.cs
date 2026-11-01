@@ -16,6 +16,8 @@ public partial class ImageViewerDialog : Window
     private readonly CancellationTokenSource _loading = new();
     private Bitmap? _bitmap;
     private bool _closed;
+    private bool _closeOnLoadError;
+    private bool _loadFailed;
     private bool _fit = true;
     private double _zoom = 1;
 
@@ -51,6 +53,26 @@ public partial class ImageViewerDialog : Window
         {
             return new ImageViewerDialog(attachment.Name, _ => Task.FromException<Bitmap?>(exception)).ShowDialog(owner);
         }
+    }
+
+    internal static async Task<bool> TryShowFileAsync(Window owner, string path, string mimeType)
+    {
+        var dialog = new ImageViewerDialog(Path.GetFileName(path), token => Task.Run<Bitmap?>(async () =>
+        {
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var length = stream.Length;
+            ComposerImageAttachment.ValidateSize(length);
+            var bytes = new byte[(int)length];
+            await stream.ReadExactlyAsync(bytes, token);
+            token.ThrowIfCancellationRequested();
+            return ComposerImageAttachment.DecodeThumbnail(bytes, mimeType.ToLowerInvariant(), 32_768);
+        }, token))
+        {
+            _closeOnLoadError = true,
+        };
+        await dialog.ShowDialog(owner);
+        return !dialog._loadFailed;
     }
 
     internal static Task ShowArtifactAsync(Window owner, string uri, string mimeType, string? fileName,
@@ -111,6 +133,12 @@ public partial class ImageViewerDialog : Window
 
     private void ShowError(string message)
     {
+        _loadFailed = true;
+        if (_closeOnLoadError)
+        {
+            Close();
+            return;
+        }
         StatusLabel.Text = message;
         StatusLabel.IsVisible = true;
     }

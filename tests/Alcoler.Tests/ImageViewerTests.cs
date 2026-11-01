@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text.Json;
 using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Conversation;
@@ -172,6 +173,131 @@ public sealed class ImageViewerTests
             owner.Close();
             if (Directory.Exists(directory))
                 Directory.Delete(directory, true);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Viewer_LocalFileRetainsFullResolutionAndNameAndReleasesResources()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"alcoler-viewer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "local screenshot.png");
+        var owner = new Window();
+        owner.Show();
+        try
+        {
+            using var scope = UseImageDecoder();
+            await File.WriteAllBytesAsync(path, CreatePng(1600, 800));
+            ImageViewerDialog dialog;
+            Task<bool> closed;
+            using (var writer = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+            {
+                closed = ImageViewerDialog.TryShowFileAsync(owner, path, "IMAGE/PNG");
+                dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(owner.OwnedWindows));
+                await WaitForAsync(() => dialog.FindControl<Image>("PreviewImage")!.Source is not null);
+            }
+            var image = dialog.FindControl<Image>("PreviewImage")!;
+            var bitmap = Assert.IsType<Bitmap>(image.Source);
+            Assert.Equal(new PixelSize(1600, 800), bitmap.PixelSize);
+            Assert.Equal("local screenshot.png", dialog.Title);
+            Assert.Equal("local screenshot.png", dialog.FindControl<TextBlock>("FileNameLabel")!.Text);
+            Assert.False(dialog.FindControl<TextBlock>("StatusLabel")!.IsVisible);
+            Assert.True(dialog.FindControl<StackPanel>("ZoomControls")!.IsEnabled);
+            using var reopened = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            Assert.True(reopened.Length > 0);
+            dialog.Close();
+            Assert.True(await closed);
+            Assert.Empty(owner.OwnedWindows);
+            Assert.Null(image.Source);
+            using var output = new MemoryStream();
+            Assert.NotNull(Record.Exception(() => bitmap.Save(output)));
+        }
+        finally
+        {
+            CloseOwnedWindows(owner);
+            owner.Close();
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData("missing")]
+    [InlineData("empty")]
+    [InlineData("corrupt")]
+    [InlineData("oversized-bytes")]
+    [InlineData("oversized-pixels")]
+    public async Task Viewer_InvalidLocalFileRequestsFallbackAndReleasesResources(string failure)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"alcoler-viewer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "unavailable.png");
+        var owner = new Window();
+        owner.Show();
+        try
+        {
+            using var scope = UseImageDecoder();
+            switch (failure)
+            {
+                case "empty":
+                    await File.WriteAllBytesAsync(path, []);
+                    break;
+                case "corrupt":
+                    await File.WriteAllBytesAsync(path, [1, 2, 3]);
+                    break;
+                case "oversized-bytes":
+                    using (var file = File.Create(path))
+                        file.SetLength(ComposerImageAttachment.MaxImageBytes + 1L);
+                    break;
+                case "oversized-pixels":
+                    var bytes = CreatePng();
+                    BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), 4097);
+                    BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(20), 4096);
+                    await File.WriteAllBytesAsync(path, bytes);
+                    break;
+            }
+            var closed = ImageViewerDialog.TryShowFileAsync(owner, path, "image/png");
+            await WaitForAsync(() => closed.IsCompleted);
+            Assert.False(await closed);
+            Assert.Empty(owner.OwnedWindows);
+            if (File.Exists(path))
+            {
+                using var reopened = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                Assert.True(reopened.CanRead);
+            }
+        }
+        finally
+        {
+            CloseOwnedWindows(owner);
+            owner.Close();
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Viewer_CloseLocalFileDuringLoadDoesNotRequestFallback()
+    {
+        var directory = Directory.CreateTempSubdirectory("alcoler-viewer-cancel-").FullName;
+        var owner = new Window();
+        owner.Show();
+        try
+        {
+            using var scope = UseImageDecoder();
+            var path = Path.Combine(directory, "cancelled.png");
+            await File.WriteAllBytesAsync(path, CreatePng());
+
+            var closed = ImageViewerDialog.TryShowFileAsync(owner, path, "image/png");
+            var dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(owner.OwnedWindows));
+            dialog.Close();
+
+            Assert.True(await closed);
+            Assert.Empty(owner.OwnedWindows);
+            Assert.Null(dialog.FindControl<Image>("PreviewImage")!.Source);
+        }
+        finally
+        {
+            CloseOwnedWindows(owner);
+            owner.Close();
+            Directory.Delete(directory, true);
         }
     }
 

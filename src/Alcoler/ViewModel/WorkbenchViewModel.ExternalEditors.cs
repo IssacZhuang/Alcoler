@@ -25,7 +25,8 @@ public sealed partial class WorkbenchViewModel
         }
     }
 
-    public void OpenMarkdownLink(string target, string? workspaceRoot = null)
+    public async Task OpenMarkdownLinkAsync(string target, string? workspaceRoot = null, string? ownerId = null,
+        Func<string, string, Task<bool>>? openImage = null)
     {
         if (string.IsNullOrWhiteSpace(target))
             return;
@@ -41,7 +42,34 @@ public sealed partial class WorkbenchViewModel
             }
             return;
         }
-        OpenFileWithDefaultApp(uri is { IsFile: true } ? uri.LocalPath : Uri.UnescapeDataString(target), workspaceRoot);
+        workspaceRoot = string.IsNullOrWhiteSpace(workspaceRoot) ? CurrentWorkspaceRoot : workspaceRoot;
+        var path = uri is { IsFile: true } ? uri.LocalPath : Uri.UnescapeDataString(target);
+        if (!TryResolveExternalPath(path, workspaceRoot, out var fullPath))
+            return;
+        ownerId ??= CurrentDocumentOwnerId;
+        try
+        {
+            if (ComposerClipboardImages.GetFileMimeType(fullPath) is { } mimeType)
+            {
+                if (openImage is not null && await openImage(fullPath, mimeType))
+                    return;
+            }
+            else
+            {
+                using var preview = TextDocumentViewModel.ForFile(fullPath, InlineUiScheduler.Instance);
+                await preview.ReloadAsync();
+                if (preview.Error is null)
+                {
+                    await OpenFileDocumentAsync(fullPath, workspaceRoot, ownerId);
+                    return;
+                }
+            }
+            OpenFileWithDefaultApp(fullPath, workspaceRoot);
+        }
+        catch (Exception exception)
+        {
+            Banner = Loc.Get("timeline_open_failed", Path.GetFileName(fullPath), exception.Message);
+        }
     }
 
     public void OpenFileWithDefaultApp(string path, string? workspaceRoot = null)
