@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Alcoler.Controls;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
@@ -8,10 +9,15 @@ using Alcoler.Contracts.Sessions;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Rendering.Composition;
 using Avalonia.Skia;
+using Avalonia.Threading;
 using Xunit;
 
 namespace Alcoler.Tests;
@@ -140,6 +146,123 @@ public sealed class DraftConversationLifecycleTests
         Assert.False(draft.Composer.IsSending);
     }
 
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FirstSend_RendersCenteredLoadingWhileCreateBlocks_AndClearsOnCompletion(bool fails)
+    {
+        using var release = new ManualResetEventSlim();
+        var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new DraftRuntime
+        {
+            BeforeCreate = () =>
+            {
+                started.SetResult(Dispatcher.UIThread.CheckAccess());
+                if (!release.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Session creation was not released.");
+            },
+            CreateFailure = fails ? new IOException("Storage unavailable") : null,
+        };
+        using var workbench = Create(runtime);
+        var window = new MainWindow(workbench);
+        window.Show();
+        var overlay = window.FindControl<Border>("SessionLoadingOverlay")!;
+        var indicator = window.FindControl<Icon>("SessionLoadingIndicator")!;
+        Assert.False(overlay.IsVisible);
+        var draft = workbench.Draft!;
+        draft.Composer.Draft = "Keep the UI responsive";
+        var sending = draft.SendAsync();
+        try
+        {
+            Assert.False(await started.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.False(sending.IsCompleted);
+            await RenderAsync(window);
+
+            Assert.True(overlay.IsEffectivelyVisible);
+            Assert.Contains("running", indicator.Classes);
+            Assert.True(indicator.Bounds.Width > 0 && indicator.Bounds.Height > 0);
+            var center = indicator.TranslatePoint(new Point(indicator.Bounds.Width / 2, indicator.Bounds.Height / 2), overlay)!.Value;
+            Assert.InRange(center.X, overlay.Bounds.Width / 2 - 1, overlay.Bounds.Width / 2 + 1);
+            Assert.InRange(center.Y, overlay.Bounds.Height / 2 - 1, overlay.Bounds.Height / 2 + 1);
+            var rotation = Assert.IsType<RotateTransform>(indicator.RenderTransform);
+            var angle = rotation.Angle;
+            await Task.Delay(80);
+            await RenderAsync(window);
+            Assert.NotEqual(angle, rotation.Angle);
+
+            release.Set();
+            await sending.WaitAsync(TimeSpan.FromSeconds(5));
+            Dispatcher.UIThread.RunJobs();
+
+            Assert.False(overlay.IsVisible);
+            Assert.DoesNotContain("running", indicator.Classes);
+            Assert.False(draft.Composer.IsSending);
+            if (fails)
+            {
+                Assert.Same(draft, workbench.Draft);
+                Assert.Null(workbench.Active);
+                Assert.Equal("Keep the UI responsive", draft.Composer.Draft);
+                Assert.True(draft.Composer.CanSend);
+                Assert.Contains("Storage unavailable", workbench.Banner);
+            }
+            else
+            {
+                Assert.NotNull(workbench.Active);
+                Assert.Same(draft.Composer, workbench.Active.Composer);
+                Assert.Empty(draft.Composer.Draft);
+            }
+        }
+        finally
+        {
+            release.Set();
+            await sending.WaitAsync(TimeSpan.FromSeconds(5));
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task FirstSend_SynchronousSubmissionDoesNotBlockRendering()
+    {
+        using var release = new ManualResetEventSlim();
+        var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new DraftRuntime
+        {
+            SubmitHandler = command =>
+            {
+                started.SetResult(Dispatcher.UIThread.CheckAccess());
+                if (!release.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Message submission was not released.");
+                return ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 1));
+            },
+        };
+        using var workbench = Create(runtime);
+        var window = new MainWindow(workbench);
+        window.Show();
+        var draft = workbench.Draft!;
+        draft.Composer.Draft = "Prepare the first turn off the UI thread";
+        var sending = draft.SendAsync();
+        try
+        {
+            Assert.False(await started.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.False(sending.IsCompleted);
+            await RenderAsync(window);
+
+            Assert.NotNull(workbench.Active);
+            Assert.True(workbench.Active.Composer.IsSending);
+            Assert.False(window.FindControl<Border>("SessionLoadingOverlay")!.IsVisible);
+
+            release.Set();
+            await sending.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(workbench.Active.Composer.Draft);
+        }
+        finally
+        {
+            release.Set();
+            await sending.WaitAsync(TimeSpan.FromSeconds(5));
+            window.Close();
+        }
+    }
+
     [Fact]
     public async Task FirstSend_HoldsSendLockAfterOpeningConversation()
     {
@@ -150,6 +273,7 @@ public sealed class DraftConversationLifecycleTests
         draft.Composer.Draft = "Only send once";
 
         var sending = draft.SendAsync();
+        await runtime.FirstSubmitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.NotNull(workbench.Active);
         Assert.True(workbench.Active!.Composer.IsSending);
         await ApplyInitialProjectionAsync();
@@ -176,6 +300,7 @@ public sealed class DraftConversationLifecycleTests
         var draft = workbench.Draft!;
         draft.Composer.Draft = "Original captured prompt";
         var sending = draft.SendAsync();
+        await runtime.FirstSubmitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await ApplyInitialProjectionAsync();
         workbench.Active!.Composer.Draft = "Newer draft edit";
         if (throws)
@@ -255,27 +380,51 @@ public sealed class DraftConversationLifecycleTests
         Assert.Empty(runtime.Submitted);
     }
 
-    [Fact]
+    [AvaloniaFact]
     public async Task NavigationDuringCreate_DoesNotStealFocusOrClearAnotherWorkspaceDraft()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var runtime = new DraftRuntime { CreateGate = gate.Task };
         using var workbench = Create(runtime);
+        var window = new MainWindow(workbench);
+        window.Show();
         var original = workbench.Draft!;
         original.Composer.Draft = "First workspace prompt";
         var sending = original.SendAsync();
-        var otherRoot = Path.Combine(Path.GetTempPath(), "alcoler-draft-other");
-        workbench.ShowNewTask(otherRoot);
-        var other = workbench.Draft!;
-        other.Composer.Draft = "Other workspace text";
-        gate.SetResult();
-        await sending;
+        try
+        {
+            var overlay = window.FindControl<Border>("SessionLoadingOverlay")!;
+            Dispatcher.UIThread.RunJobs();
+            Assert.True(overlay.IsVisible);
+            var otherRoot = Path.Combine(Path.GetTempPath(), "alcoler-draft-other");
+            workbench.ShowNewTask(otherRoot);
+            var other = workbench.Draft!;
+            other.Composer.Draft = "Other workspace text";
+            Dispatcher.UIThread.RunJobs();
+            Assert.False(overlay.IsVisible);
 
-        Assert.Same(other, workbench.Draft);
-        Assert.Null(workbench.Active);
-        Assert.Equal("Other workspace text", other.Composer.Draft);
-        Assert.Single(runtime.Created);
-        Assert.Single(runtime.Submitted);
+            workbench.ShowNewTask(original.WorkspaceRoot);
+            Dispatcher.UIThread.RunJobs();
+            Assert.Same(original, workbench.Draft);
+            Assert.True(overlay.IsVisible);
+            workbench.ShowNewTask(otherRoot);
+            gate.SetResult();
+            await sending.WaitAsync(TimeSpan.FromSeconds(5));
+            Dispatcher.UIThread.RunJobs();
+
+            Assert.False(overlay.IsVisible);
+            Assert.Same(other, workbench.Draft);
+            Assert.Null(workbench.Active);
+            Assert.Equal("Other workspace text", other.Composer.Draft);
+            Assert.Single(runtime.Created);
+            Assert.Single(runtime.Submitted);
+        }
+        finally
+        {
+            gate.TrySetResult();
+            await sending.WaitAsync(TimeSpan.FromSeconds(5));
+            window.Close();
+        }
     }
 
     [Fact]
@@ -628,6 +777,7 @@ public sealed class DraftConversationLifecycleTests
         await draft.SwitchModelAsync(draft.ApplyThoughtLevel(second.Selection));
         draft.Composer.Draft = "Capture selected model";
         var sending = draft.SendAsync();
+        await runtime.FirstSubmitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await ApplyInitialProjectionAsync();
         var first = workbench.ModelChoices.Single(model => model.ModelId == "first");
         workbench.Active!.ConfigureModel(first, useDefaultReasoning: true);
@@ -720,6 +870,7 @@ public sealed class DraftConversationLifecycleTests
         var root = workbench.Draft!.WorkspaceRoot;
         workbench.Draft.Composer.Draft = "Older first choice";
         var sending = workbench.Draft.SendAsync();
+        await runtime.FirstSubmitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await ApplyInitialProjectionAsync();
         var secondSession = await workbench.NewSessionAsync(root);
         await ApplyInitialProjectionAsync();
@@ -835,6 +986,17 @@ public sealed class DraftConversationLifecycleTests
         _scheduler.RunPending();
     }
 
+    private static async Task RenderAsync(Window window)
+    {
+        Dispatcher.UIThread.RunJobs();
+        window.UpdateLayout();
+        var rendered = ElementComposition.GetElementVisual(window)!.Compositor.RequestCompositionBatchCommitAsync().Rendered;
+        Dispatcher.UIThread.RunJobs();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        await rendered.WaitAsync(TimeSpan.FromSeconds(5));
+        Dispatcher.UIThread.RunJobs();
+    }
+
     private sealed class QueuedUiScheduler : IUiScheduler
     {
         private readonly ConcurrentQueue<Action> _pending = new();
@@ -860,13 +1022,16 @@ public sealed class DraftConversationLifecycleTests
         public List<SessionOptions> Created { get; } = [];
         public List<ConversationCommand> Submitted { get; } = [];
         public Task? CreateGate { get; init; }
+        public Action? BeforeCreate { get; init; }
         public Exception? CreateFailure { get; init; }
         public Func<ConversationCommand, ValueTask<CommandAck>>? SubmitHandler { get; init; }
+        public TaskCompletionSource<ConversationCommand> FirstSubmitted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public SessionId LastSessionId { get; private set; }
         public int SubscribeCount { get; private set; }
 
         public async ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken)
         {
+            BeforeCreate?.Invoke();
             Created.Add(options);
             if (CreateGate is not null)
             {
@@ -899,7 +1064,9 @@ public sealed class DraftConversationLifecycleTests
         public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken)
         {
             Submitted.Add(command);
-            return SubmitHandler?.Invoke(command) ?? ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 1));
+            var ack = SubmitHandler?.Invoke(command) ?? ValueTask.FromResult(CommandAck.AcceptedAt(command.CommandId, 1));
+            FirstSubmitted.TrySetResult(command);
+            return ack;
         }
 
         public ValueTask<int> UnloadIdleSessionsAsync(

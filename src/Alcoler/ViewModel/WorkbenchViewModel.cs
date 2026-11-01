@@ -424,7 +424,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         var savedText = saved?.Composer.Draft;
         var savedMode = saved?.Composer.Mode;
         var conversation = new ConversationViewModel(_runtime, store, saved?.Composer, ModelChoices,
-            WorkbenchModelCatalog.DefaultSelection(_config)) { WorkspaceRoot = workspaceRoot };
+            WorkbenchModelCatalog.DefaultSelection(_config))
+        { WorkspaceRoot = workspaceRoot };
         conversation.Composer.ConfigureWorkspace(workspaceRoot);
         using var resumedProbe = residentProbe is null ? _runtime.TryObserve(sessionId) : null;
         var snapshot = (residentProbe ?? resumedProbe)?.Snapshot();
@@ -498,7 +499,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     }
 
     public void ShowNewTask(string? workspaceRoot = null)
-    {        ++_navigationVersion;
+    {
+        ++_navigationVersion;
         if (workspaceRoot is not null)
         {
             RevealWorkspace(workspaceRoot);
@@ -753,11 +755,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         try
         {
             var images = draft.Composer.SnapshotImages();
-            var handle = await _runtime.CreateSessionAsync(
-                new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection,
-                    ActiveWorkflows: draft.Composer.ArmedWorkflows is { Count: > 0 } armed ? armed : null,
-                    PlanEnabled: planEnabled),
-                CancellationToken.None);
+            var options = new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection,
+                ActiveWorkflows: draft.Composer.ArmedWorkflows is { Count: > 0 } armed ? armed : null,
+                PlanEnabled: planEnabled);
+            var handle = await Task.Run(() => _runtime.CreateSessionAsync(options, CancellationToken.None).AsTask());
             createdId = handle.Id;
             draft.CreatedSessionId = handle.Id;
             TransferDraftSelection(draft, handle.Id);
@@ -793,9 +794,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             submitting = true;
             using var createdProjection = _runtime.TryObserve(handle.Id);
             var revision = createdProjection?.Snapshot().Revision ?? 0;
-            var ack = await _runtime.SubmitAsync(new SendTextCommand(
+            var send = new SendTextCommand(
                 StrongId.NewCommandId(), handle.Id, revision, text, mode, selection, Images: images,
-                PlanEnabled: planEnabled), CancellationToken.None);
+                PlanEnabled: planEnabled);
+            var ack = await Task.Run(() => _runtime.SubmitAsync(send, CancellationToken.None).AsTask());
             if (ack.Accepted)
             {
                 ClearSubmittedMode(handle.Id, mode);
