@@ -84,6 +84,36 @@ public sealed class SessionEndpointTests
     }
 
     [Fact]
+    public async Task ListSessions_IncludesSessionActivity()
+    {
+        var (_, token) = await _harness.PairAsync();
+        var sessionId = await _harness.CreateSessionAsync(token, title: "activity");
+
+        using (var idleResponse = await _harness.GetWithTokenAsync("api/sessions", token))
+        {
+            Assert.Equal(HttpStatusCode.OK, idleResponse.StatusCode);
+            using var idle = await idleResponse.ReadJsonAsync();
+            var entry = FindSession(idle.RootElement, sessionId.Value);
+            Assert.NotNull(entry);
+            var activity = entry.Value.GetProperty("activity");
+            Assert.Equal(JsonValueKind.Object, activity.ValueKind);
+            Assert.Equal("Idle", activity.GetProperty("phase").GetString());
+            Assert.Equal(JsonValueKind.Null, activity.GetProperty("lastOutcome").ValueKind);
+        }
+
+        _harness.Runtime.SeedPendingPermission(sessionId);
+
+        using var pendingResponse = await _harness.GetWithTokenAsync("api/sessions", token);
+        Assert.Equal(HttpStatusCode.OK, pendingResponse.StatusCode);
+        using var pending = await pendingResponse.ReadJsonAsync();
+        var pendingEntry = FindSession(pending.RootElement, sessionId.Value);
+        Assert.NotNull(pendingEntry);
+        var pendingActivity = pendingEntry.Value.GetProperty("activity");
+        Assert.Equal(JsonValueKind.Object, pendingActivity.ValueKind);
+        Assert.Equal("AwaitingPermission", pendingActivity.GetProperty("phase").GetString());
+    }
+
+    [Fact]
     public async Task ArchiveSession_RemovesFromActive_AndShowsInArchivedKind()
     {
         var (_, token) = await _harness.PairAsync();
@@ -139,4 +169,10 @@ public sealed class SessionEndpointTests
 
     private static IEnumerable<JsonElement> EnumerateSessions(JsonElement root) =>
         root.ValueKind == JsonValueKind.Array ? root.EnumerateArray() : [];
+
+    private static JsonElement? FindSession(JsonElement root, string sessionId) =>
+        EnumerateSessions(root)
+            .Where(summary => summary.GetProperty("id").GetString() == sessionId)
+            .Select(summary => (JsonElement?)summary)
+            .FirstOrDefault();
 }

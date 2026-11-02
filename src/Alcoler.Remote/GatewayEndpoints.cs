@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -59,7 +60,7 @@ internal static class GatewayEndpoints
             {
                 return GatewayJson.Error(501, "not_supported", "archived_sessions");
             }
-            return GatewayJson.Data(sessions);
+            return GatewayJson.Plain(WriteSessionList(sessions, runtime as ISessionActivityRuntime));
         });
 
         app.MapPost("/api/sessions", async (HttpRequest request, CancellationToken cancellationToken) =>
@@ -232,6 +233,46 @@ internal static class GatewayEndpoints
             var socket = await context.WebSockets.AcceptWebSocketAsync();
             await SessionStream.RunAsync(state, new SessionId(sessionId), socket, context.RequestAborted);
         });
+    }
+
+    private static byte[] WriteSessionList(
+        IReadOnlyList<SessionSummary> sessions,
+        ISessionActivityRuntime? activityRuntime)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartArray();
+            foreach (var session in sessions)
+            {
+                // Round-trip through GatewayJson so SessionSummary keeps the exact wire shape
+                // produced by the contract source generator; activity is appended after it.
+                using var document = JsonDocument.Parse(GatewayJson.Serialize(session));
+                writer.WriteStartObject();
+                foreach (var property in document.RootElement.EnumerateObject())
+                    property.WriteTo(writer);
+                WriteActivity(writer, activityRuntime?.GetSessionActivity(session.Id));
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        return stream.ToArray();
+    }
+
+    private static void WriteActivity(Utf8JsonWriter writer, SessionActivitySnapshot? activity)
+    {
+        if (activity is null)
+        {
+            writer.WriteNull("activity");
+            return;
+        }
+        writer.WriteStartObject("activity");
+        writer.WriteString("phase", activity.Phase.ToString());
+        if (activity.LastOutcome is { } outcome)
+            writer.WriteString("lastOutcome", outcome.ToString());
+        else
+            writer.WriteNull("lastOutcome");
+        writer.WriteEndObject();
     }
 
     private static bool TryParseListRequest(HttpRequest request, out int limit, out SessionListKind kind)

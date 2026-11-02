@@ -1,5 +1,3 @@
-// Shared helpers and the inline SVG icon set. No external assets.
-
 export function esc(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -26,15 +24,36 @@ export function relTime(iso) {
   const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (s < 60) return 'just now';
   const m = Math.floor(s / 60);
-  if (m < 60) return m + 'm';
+  if (m < 60) return m + 'm ago';
   const h = Math.floor(m / 60);
-  if (h < 24) return h + 'h';
+  if (h < 24) return h + 'h ago';
   const d = Math.floor(h / 24);
-  if (d < 7) return d + 'd';
-  return new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (d < 7) return d + 'd ago';
+  const date = new Date(t);
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-export function fmtDuration(ms) {
+// System.Text.Json serializes TimeSpan as "[-][d.]hh:mm:ss[.fffffff]".
+function parseTimeSpan(value) {
+  const text = String(value).trim();
+  const m = /^(-)?(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,7}))?$/.exec(text);
+  if (!m) return null;
+  const days = Number(m[2] || 0);
+  const hours = Number(m[3] || 0);
+  const minutes = Number(m[4] || 0);
+  const seconds = Number(m[5] || 0);
+  const fraction = m[6] ? Number((m[6] + '000').slice(0, 3)) : 0;
+  const ms = (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000 + fraction;
+  return m[1] ? -ms : ms;
+}
+
+export function fmtDuration(duration) {
+  let ms = duration;
+  if (typeof ms === 'string') {
+    ms = parseTimeSpan(ms);
+    if (ms == null) return '';
+  }
   if (ms == null || !isFinite(ms) || ms < 0) return '';
   if (ms < 1000) return Math.round(ms) + 'ms';
   const s = ms / 1000;
@@ -51,6 +70,11 @@ export function fmtNum(n) {
 export function truncate(s, n) {
   s = String(s ?? '');
   return s.length > n ? s.slice(0, n) + '\u2026' : s;
+}
+
+export function workspaceTail(root) {
+  const trimmed = String(root || '').replace(/[\\/]+$/, '');
+  return trimmed.split(/[\\/]+/).filter(Boolean).pop() || '';
 }
 
 export async function copyText(text) {
@@ -81,7 +105,11 @@ const ICON_PATHS = {
   stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor" stroke="none"/>',
   camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
   'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+  'chevron-up': '<path d="m6 15 6-6 6 6"/>',
   'chevron-right': '<path d="m9 6 6 6-6 6"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2.9-2.9z"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
   archive: '<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',

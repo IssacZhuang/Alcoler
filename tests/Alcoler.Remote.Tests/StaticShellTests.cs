@@ -21,6 +21,11 @@ public sealed class StaticShellTests
         Assert.Equal("no-cache", response.Headers.CacheControl?.ToString());
         var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("<!doctype", body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("id=\"view-pair\"", body);
+        Assert.Contains("id=\"view-shell\"", body);
+        Assert.Contains("class=\"sidebar\"", body);
+        Assert.Contains("data-composer=\"draft\"", body);
+        Assert.Contains("data-composer=\"session\"", body);
     }
 
     [Fact]
@@ -35,6 +40,21 @@ public sealed class StaticShellTests
             StringComparison.OrdinalIgnoreCase);
         var body = await response.Content.ReadAsStringAsync();
         Assert.False(string.IsNullOrEmpty(body));
+    }
+
+    [Theory]
+    [InlineData("wwwroot/session-list.js")]
+    [InlineData("wwwroot/composer.js")]
+    public async Task WwwRoot_ServesShellModules(string path)
+    {
+        using var response = await _harness.Client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(
+            "javascript",
+            response.Content.Headers.ContentType?.MediaType ?? "",
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(string.IsNullOrWhiteSpace(await response.Content.ReadAsStringAsync()));
     }
 
     [Fact]

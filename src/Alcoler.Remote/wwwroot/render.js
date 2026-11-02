@@ -27,6 +27,20 @@ export function phaseLabel(phase) {
   return PHASE_LABEL[normKey(phase)] || (phase ? String(phase) : 'Idle');
 }
 
+const ACTIVITY_LABEL = {
+  processingInput: 'Preparing request',
+  awaitingModel: 'Waiting for model',
+  streaming: 'Generating response',
+  executingTools: 'Running tools',
+  awaitingPermission: 'Waiting for permission',
+  awaitingInteraction: 'Waiting for your answer',
+  completing: 'Finishing up',
+};
+
+export function activityLabel(phase) {
+  return ACTIVITY_LABEL[normKey(phase)] || '';
+}
+
 // Busy means everything except idle, error, and completing; the composer
 // turns its send button into a stop button while busy.
 export function isBusy(phase) {
@@ -41,6 +55,14 @@ const STATUS_ICON = {
   succeeded: 'check',
   failed: 'x',
   cancelled: 'minus',
+};
+
+const TOOL_STATE_LABEL = {
+  pending: 'Pending',
+  running: 'Running',
+  awaitingPermission: 'Needs permission',
+  cancelled: 'Cancelled',
+  failed: 'Error',
 };
 
 const OUT_TRUNC = 1500;
@@ -235,10 +257,11 @@ function toolCallHtml(row) {
   const status = STATUS_ICON[statusKey] ? statusKey : 'pending';
   const statusCls = row.isError ? 'failed' : status;
   const statusIco = row.isError ? 'x' : STATUS_ICON[status];
+  const stateLabel = row.isError ? 'Error' : TOOL_STATE_LABEL[status];
   const dur = fmtDuration(row.duration);
   let head = `<summary class="tool-head"><span class="tool-status ${statusCls}">${icon(statusIco)}</span><span class="tool-name">${esc(row.toolName || 'tool')}</span>`;
+  if (stateLabel) head += `<span class="tool-state ${statusCls}">${stateLabel}</span>`;
   if (dur) head += `<span class="tool-dur">${dur}</span>`;
-  if (row.isError) head += '<span class="tool-flag-error">failed</span>';
   head += `<span class="tool-chev">${icon('chevron-right')}</span></summary>`;
 
   let body = '';
@@ -311,11 +334,6 @@ export function hydrateThumbs(scope, root) {
 export function renderQueue(container, queue) {
   const items = Array.isArray(queue) ? queue : [];
   container.textContent = '';
-  if (!items.length) {
-    container.hidden = true;
-    return;
-  }
-  container.hidden = false;
   for (const q of items) {
     const chip = document.createElement('span');
     chip.className = 'qchip';
@@ -324,7 +342,7 @@ export function renderQueue(container, queue) {
   }
 }
 
-// ctx: { sent: Set<interactionId>, onPermission(id, outcome), onAnswer(id, answers) }
+// ctx: { sent: Set<interactionId>, onPermission(id, outcome, feedback), onAnswer(id, answers) }
 export function renderPending(container, state, ctx) {
   const perm = state && state.pendingPermission;
   const inter = state && state.pendingInteraction;
@@ -364,15 +382,24 @@ function inputSummary(input) {
 }
 
 function permissionCardHtml(p, ctx) {
-  const sent = ctx.sent.has(p.interactionId);
-  return `<div class="pcard pcard-perm" data-interaction="${esc(p.interactionId)}">
-    <div class="pcard-label">${icon('shield')}<span>Desktop approval — from mobile</span></div>
+  const interactionId = p.interactionId ?? p.InteractionId ?? '';
+  const sent = ctx.sent.has(interactionId);
+  const allowsFeedback = !!(p.allowsFeedback ?? p.AllowsFeedback);
+  const input = p.input ?? p.Input;
+  const plan = allowsFeedback && input && typeof input.plan === 'string' ? input.plan : '';
+  const planTitle = input && typeof input.summary === 'string' ? input.summary : '';
+  const denyLabel = allowsFeedback ? 'Request changes' : 'Deny';
+  const allowLabel = allowsFeedback ? 'Approve' : 'Allow';
+  return `<div class="pcard pcard-perm" data-interaction="${esc(interactionId)}">
+    <div class="pcard-label">${icon(allowsFeedback ? 'info' : 'shield')}<span>${allowsFeedback ? 'Plan ready' : 'Permission required'}</span></div>
     <div class="pcard-head"><span class="pcard-tool">${esc(p.toolName || 'tool')}</span>${riskChip(p.riskLevel)}</div>
     ${p.reason ? `<p class="pcard-reason">${esc(p.reason)}</p>` : ''}
-    ${inputSummary(p.input)}
+    ${plan ? `<div class="pcard-plan-label">${esc(planTitle || 'Proposed plan')}</div><div class="pcard-plan">${renderMarkdown(plan)}</div>` : ''}
+    ${inputSummary(input)}
+    ${allowsFeedback ? `<div class="pcard-feedback-label">Feedback</div><textarea class="pcard-feedback" rows="3" placeholder="Describe the changes you want" aria-label="Feedback"${sent ? ' disabled' : ''}></textarea>` : ''}
     <div class="pcard-actions">
-      <button type="button" class="btn danger" data-outcome="denied"${sent ? ' disabled' : ''}>Deny</button>
-      <button type="button" class="btn primary" data-outcome="allowed"${sent ? ' disabled' : ''}>${sent ? 'Sent' : 'Allow'}</button>
+      <button type="button" class="btn danger" data-outcome="denied"${sent ? ' disabled' : ''}>${denyLabel}</button>
+      <button type="button" class="btn primary" data-outcome="allowed"${sent ? ' disabled' : ''}>${sent ? 'Sent' : allowLabel}</button>
     </div>
   </div>`;
 }
@@ -403,7 +430,7 @@ function interactionCardHtml(it, ctx) {
     </div>`;
   }).join('');
   return `<div class="pcard pcard-interact" data-interaction="${esc(it.interactionId)}">
-    <div class="pcard-label">${icon('shield')}<span>Desktop question — from mobile</span></div>
+    <div class="pcard-label">${icon('info')}<span>Your answer is needed</span></div>
     ${it.prompt ? `<p class="pcard-prompt">${esc(it.prompt)}</p>` : ''}
     ${questions}
     ${needsSubmit ? `<button type="button" class="btn primary q-submit"${sent ? ' disabled' : ''}>${sent ? 'Sent' : 'Submit'}</button>` : ''}
@@ -415,7 +442,11 @@ function wirePending(container, ctx) {
     btn.addEventListener('click', () => {
       const card = btn.closest('.pcard');
       if (ctx.sent.has(card.dataset.interaction)) return;
-      ctx.onPermission(card.dataset.interaction, btn.dataset.outcome);
+      const feedback = card.querySelector('.pcard-feedback');
+      ctx.onPermission(
+        card.dataset.interaction,
+        btn.dataset.outcome,
+        (feedback && feedback.value.trim()) || undefined);
     });
   });
   container.querySelectorAll('.pcard-interact .opt-btn').forEach(btn => {

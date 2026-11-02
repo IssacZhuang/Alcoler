@@ -12,7 +12,7 @@ namespace Alcoler.Remote.Tests.Fakes;
 // Thread-safe in-memory IAgentRuntime with just enough session state and command
 // behavior to exercise the gateway end to end. Commands validate BaseRevision,
 // bump the revision, and publish projection deltas synchronously.
-public sealed class FakeAgentRuntime : IAgentRuntime
+public sealed class FakeAgentRuntime : IAgentRuntime, ISessionActivityRuntime
 {
     private readonly object _lock = new();
     private readonly Dictionary<SessionId, FakeSession> _sessions = [];
@@ -88,6 +88,21 @@ public sealed class FakeAgentRuntime : IAgentRuntime
     public ValueTask<int> UnloadIdleSessionsAsync(
         TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
         ValueTask.FromResult(0);
+
+    public IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId) => [];
+
+    public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId) => false;
+
+    public SessionActivitySnapshot? GetSessionActivity(SessionId sessionId)
+    {
+        lock (_lock)
+        {
+            if (!_sessions.TryGetValue(sessionId, out var session))
+                return null;
+            lock (session.Gate)
+                return new SessionActivitySnapshot(session.State.Phase, LastOutcome: null);
+        }
+    }
 
     public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken)
     {
