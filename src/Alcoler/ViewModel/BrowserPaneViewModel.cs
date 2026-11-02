@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text.Json;
 using Alcoler.Contracts.Browser;
 using Alcoler.Contracts.Identifiers;
@@ -18,6 +19,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     private readonly IUiScheduler _scheduler;
     private readonly Func<string, IImage?>? _imageLoader;
     private readonly Func<string, Control>? _pagePresenterFactory;
+    private readonly Func<Uri, Task<bool>> _uriLauncher;
     private string? _loadedScreenshotUri;
     private DateTimeOffset _loadedScreenshotUpdatedAt;
     private string? _presenterTabId;
@@ -30,12 +32,14 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         IBrowserController controller,
         IUiScheduler scheduler,
         Func<string, IImage?>? imageLoader = null,
-        Func<string, Control>? pagePresenterFactory = null)
+        Func<string, Control>? pagePresenterFactory = null,
+        Func<Uri, Task<bool>>? uriLauncher = null)
     {
         _controller = controller;
         _scheduler = scheduler;
         _imageLoader = imageLoader;
         _pagePresenterFactory = pagePresenterFactory;
+        _uriLauncher = uriLauncher ?? LaunchWithSystemBrowser;
         _controller.StatusChanged += OnControllerStatusChanged;
     }
 
@@ -48,6 +52,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     private string _stateText = Loc.Get("browser_state_idle");
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(OpenInBrowserCommand))]
     private string? _url;
 
     [ObservableProperty]
@@ -103,7 +108,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     public BrowserPaneViewModel CreateBoundView(SessionId? sessionId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var view = new BrowserPaneViewModel(_controller, _scheduler, _imageLoader, _pagePresenterFactory);
+        var view = new BrowserPaneViewModel(_controller, _scheduler, _imageLoader, _pagePresenterFactory, _uriLauncher);
         view.Bind(sessionId);
         return view;
     }
@@ -174,6 +179,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         BackCommand.NotifyCanExecuteChanged();
         ForwardCommand.NotifyCanExecuteChanged();
         ReloadCommand.NotifyCanExecuteChanged();
+        OpenInBrowserCommand.NotifyCanExecuteChanged();
     }
 
     private bool CanExecute => CanInteract && !IsNavigating;
@@ -181,6 +187,8 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     private bool CanNavigate => CanExecute && !string.IsNullOrWhiteSpace(Address);
 
     private bool CanUseTab => CanExecute && ActiveTabId is not null;
+
+    private bool CanOpenInBrowser => !_disposed && Uri.TryCreate(Url, UriKind.Absolute, out _);
 
     private bool CanSelectTab(BrowserTabStatus? tab) => CanExecute && tab is not null
         && tab.Id != ActiveTabId && Tabs.Any(current => current.Id == tab.Id);
@@ -225,8 +233,48 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanUseTab))]
     private Task ReloadAsync() => ExecuteAsync(Command("reload", ActiveTabId), Loc.Get("browser_op_reload"));
 
+    [RelayCommand(CanExecute = nameof(CanOpenInBrowser))]
+    private async Task OpenInBrowserAsync()
+    {
+        if (!CanOpenInBrowser || !Uri.TryCreate(Url, UriKind.Absolute, out var uri))
+        {
+            return;
+        }
+        var version = _bindingVersion;
+        Banner = null;
+        try
+        {
+            if (!await _uriLauncher(uri))
+            {
+                _scheduler.Post(() =>
+                {
+                    if (!_disposed && _bindingVersion == version)
+                    {
+                        Banner = Loc.Get("browser_open_in_browser_failed");
+                    }
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _scheduler.Post(() =>
+            {
+                if (!_disposed && _bindingVersion == version)
+                {
+                    Banner = Loc.Get("browser_op_failed", Loc.Get("browser_open_in_browser"), ex.Message);
+                }
+            });
+        }
+    }
+
     private static BrowserCommandAction Command(string command, string? tabId) =>
         new(command, EmptyInput) { TabId = tabId, UserInitiated = true };
+
+    private static Task<bool> LaunchWithSystemBrowser(Uri uri)
+    {
+        using var process = Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+        return Task.FromResult(process is not null);
+    }
 
     private async Task ExecuteAsync(BrowserAction action, string operation)
     {

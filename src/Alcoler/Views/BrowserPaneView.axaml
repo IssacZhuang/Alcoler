@@ -58,7 +58,7 @@
     </Grid>
 
     <Grid x:Name="PART_BrowserToolbar" DockPanel.Dock="Top" Height="48" Margin="12,0"
-          ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="4">
+          ColumnDefinitions="Auto,Auto,Auto,*,Auto" ColumnSpacing="4">
       <Button x:Name="PART_BrowserBack" Classes="icon" Command="{Binding BackCommand}"
               ToolTip.Tip="{loc:Loc browser_back}" AutomationProperties.Name="{loc:Loc browser_back}" VerticalAlignment="Center">
         <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconChevronRight}" RenderTransformOrigin="50%,50%">
@@ -78,6 +78,11 @@
                ToolTip.Tip="{Binding Url}" AutomationProperties.Name="{loc:Loc browser_address_a11y}" Height="28" MinHeight="28" Padding="8,3"
                FontSize="{DynamicResource AlcolerFontSmall}" VerticalContentAlignment="Center"
                VerticalAlignment="Center" CornerRadius="{DynamicResource AlcolerRadiusLarge}" />
+      <Button Grid.Column="4" x:Name="PART_BrowserOpenInBrowser" Classes="icon" Command="{Binding OpenInBrowserCommand}"
+              ToolTip.Tip="{loc:Loc browser_open_in_browser}" AutomationProperties.Name="{loc:Loc browser_open_in_browser}"
+              VerticalAlignment="Center">
+        <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconExternalLink}" />
+      </Button>
     </Grid>
 
     <Border DockPanel.Dock="Top" Margin="12,0,12,8" Padding="8"

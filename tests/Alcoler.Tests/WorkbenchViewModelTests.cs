@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Alcoler.Adapters.Models;
 using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Browser;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
@@ -12,6 +14,7 @@ using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
+using Alcoler.Kernel.Tools;
 using Alcoler.Terminal;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
@@ -201,6 +204,93 @@ public sealed class WorkbenchViewModelTests : IDisposable
             conversation.Items.OfType<UserMessageItemViewModel>().Select(item => item.Text));
         Assert.Equal(new[] { firstReply, nextReply },
             conversation.Items.OfType<AssistantMessageItemViewModel>().Select(item => item.MarkdownText));
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Fact]
+    public async Task OpenSession_AfterCompactionAndRuntimeRestart_PreservesFirstUserMessageAndFoldsCompletedTurn()
+    {
+        const string firstPrompt = "Preserve the original request after compaction.";
+        const string progress = "Checking the current task list.";
+        const string finalReply = "The requested work is complete.";
+        SessionHandle session;
+        MessageId firstMessageId;
+
+        await using (var store = new SqliteSessionStore(DatabasePath))
+        {
+            await store.InitializeAsync(CancellationToken.None);
+            await using var runtime = CreateRuntime(store, [new TodoReadTool(new InMemoryTodoStore())],
+                new ScriptStep.Events(
+                    new ModelTextDelta(progress),
+                    new ModelToolCallReady(new ToolCall(StrongId.NewToolCallId(), "TodoRead",
+                        JsonSerializer.SerializeToElement(new { }))),
+                    new ModelStreamFinished(ModelFinishReason.ToolCalls)),
+                Reply(finalReply),
+                new ScriptStep.Events(
+                    new ModelTextDelta("The task list was checked and the work completed."),
+                    new ModelTextEnded(),
+                    new ModelStreamFinished(ModelFinishReason.Stop)));
+            session = await runtime.CreateSessionAsync(new SessionOptions(_root, "Compacted session"), CancellationToken.None);
+            using var projection = runtime.Subscribe(session.Id);
+            var ack = await runtime.SubmitAsync(new SendTextCommand(
+                StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, firstPrompt), CancellationToken.None);
+            Assert.True(ack.Accepted, ack.RejectionReason);
+            await WaitUntilAsync(() =>
+            {
+                var snapshot = projection.Snapshot();
+                return snapshot.State.Phase == TurnPhase.Idle
+                    && snapshot.Rows.OfType<AssistantMessageRow>().Any(row =>
+                        !row.IsStreaming && row.Parts.OfType<TextPart>().Any(part => part.Text == finalReply));
+            });
+            await WaitUntilAsync(() => runtime.GetSessionActivity(session.Id) is
+                { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+            firstMessageId = new MessageId(Assert.Single(projection.Snapshot().Rows.OfType<UserMessageRow>()).RowId);
+
+            ack = await runtime.SubmitAsync(new CompactCommand(
+                StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision), CancellationToken.None);
+
+            Assert.True(ack.Accepted, ack.RejectionReason);
+            var compacted = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+            Assert.DoesNotContain(compacted, item => item.Message.Id == firstMessageId);
+            Assert.Contains(compacted.SelectMany(item => item.Message.Parts).OfType<AttachmentPart>(),
+                part => part.Kind == AttachmentKind.CompactSummary);
+            var durable = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+            var original = Assert.Single(durable.Select(entry => entry.Event).OfType<UserMessageCommittedEvent>(),
+                entry => entry.Message.Id == firstMessageId).Message;
+            Assert.Equal(firstPrompt, Assert.Single(original.Parts.OfType<TextPart>()).Text);
+        }
+
+        await using var reopenedStore = new SqliteSessionStore(DatabasePath);
+        await reopenedStore.InitializeAsync(CancellationToken.None);
+        await using var reopenedRuntime = CreateRuntime(reopenedStore);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(reopenedRuntime, scheduler, new WorkbenchConfig([]));
+        Assert.Null(reopenedRuntime.TryObserve(session.Id));
+
+        await workbench.OpenSessionAsync(session.Id);
+
+        var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
+        await WaitUntilAsync(() => conversation.PhaseText == nameof(TurnPhase.Idle)
+            && conversation.Items.OfType<AssistantMessageItemViewModel>()
+                .Any(item => item.MarkdownText == finalReply && !item.IsStreaming), scheduler);
+        var anchor = Assert.Single(conversation.Items.OfType<UserMessageItemViewModel>());
+        Assert.Same(anchor, conversation.Items[0]);
+        Assert.Equal(firstMessageId, anchor.Id);
+        Assert.Equal(firstPrompt, anchor.Text);
+        Assert.False(anchor.IsFolded);
+        Assert.True(anchor.HasTurnSummary);
+        Assert.False(anchor.IsTurnExpanded);
+        var intermediate = Assert.Single(conversation.Items.OfType<AssistantMessageItemViewModel>(),
+            item => item.MarkdownText == progress);
+        Assert.True(intermediate.IsFolded);
+        var tool = Assert.Single(conversation.Items.OfType<ToolCallItemViewModel>());
+        Assert.Equal("TodoRead", tool.ToolName);
+        Assert.Equal(ToolCallStatus.Succeeded, tool.Status);
+        Assert.True(tool.IsFolded);
+        var final = Assert.Single(conversation.Items.OfType<AssistantMessageItemViewModel>(),
+            item => item.MarkdownText == finalReply);
+        Assert.False(final.IsFolded);
+        Assert.True(final.HasFinalMarkdown);
         await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
     }
 
@@ -876,7 +966,10 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
 
-    private AgentRuntime CreateRuntime(SqliteSessionStore store, params ScriptStep[] script)
+    private AgentRuntime CreateRuntime(SqliteSessionStore store, params ScriptStep[] script) =>
+        CreateRuntime(store, [], script);
+
+    private AgentRuntime CreateRuntime(SqliteSessionStore store, IReadOnlyList<ITool> tools, params ScriptStep[] script)
     {
         var artifacts = new FileArtifactStore(Path.Combine(_root, "artifacts"));
         return new AgentRuntime(new AgentRuntimeOptions
@@ -884,7 +977,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
             Store = store,
             Artifacts = artifacts,
             Providers = [new ScriptedModelProvider(new SequencedChatModel(script))],
-            Tools = [],
+            Tools = tools,
             WorkspaceFactory = root => new WorkspaceToolEnvironment(root, artifacts),
             DefaultModel = new ModelSelection("scripted", "scripted-model"),
         });

@@ -1,7 +1,10 @@
+using System.Text.Json;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
@@ -286,6 +289,112 @@ public class RewindEndToEndTests
             row => row.Text.Contains(failure, StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    public async Task RewindLegacyTargetWithoutEnvelope_DropsDiscardedEventsAndPreservesArchivedPrefix(
+        bool compactBeforeTarget, bool compactAfterRewind, bool missingPreservedHead)
+    {
+        var callId = StrongId.NewToolCallId();
+        List<IReadOnlyList<ModelStreamEvent>> calls =
+        [
+            [new ModelToolCallReady(new ToolCall(callId, "TodoRead", JsonSerializer.SerializeToElement(new { }))),
+             new ModelStreamFinished(ModelFinishReason.ToolCalls)],
+            [new ModelStreamFailed(new ModelFailure(ModelFailureKind.InvalidRequest, "discarded failure"))],
+            Reply("replacement answer"),
+        ];
+        if (compactAfterRewind)
+            calls.Add([new ModelTextDelta("replacement summary"), new ModelTextEnded(),
+                new ModelStreamFinished(ModelFinishReason.Stop)]);
+        await using var harness = new ScriptedCallHarness(calls);
+        var sessionId = StrongId.NewSessionId();
+        var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+        ConversationMessage Text(MessageRole role, string text, int seconds) => new(
+            StrongId.NewMessageId(), role, [new TextPart(StrongId.NewPartId(), text)], now.AddSeconds(seconds));
+        var archivedUser = Text(MessageRole.User, "archived question", 1);
+        var archivedAssistant = Text(MessageRole.Assistant, "archived answer", 2);
+        var target = Text(MessageRole.User, "legacy target", 6);
+        var legacyAssistant = Text(MessageRole.Assistant, "legacy discarded answer", 7);
+        var archivedTurn = StrongId.NewTurnId();
+        var legacyTurn = StrongId.NewTurnId();
+        var events = new List<SequencedEvent>
+        {
+            new(1, sessionId, now, new TurnStartedEvent(archivedTurn, StrongId.NewCommandId())),
+            new(2, sessionId, archivedUser.CreatedAt, new UserMessageCommittedEvent(archivedUser)),
+            new(3, sessionId, archivedAssistant.CreatedAt, new AssistantMessageCommittedEvent(archivedAssistant)),
+            new(4, sessionId, now.AddSeconds(3), new TurnCompletedEvent(archivedTurn, TurnOutcome.Completed)),
+        };
+        var messages = new List<ConversationMessage>();
+        if (compactBeforeTarget)
+        {
+            var compactAt = now.AddSeconds(missingPreservedHead ? 9 : 4);
+            messages.Add(new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
+                [new AttachmentPart(StrongId.NewPartId(), AttachmentKind.CompactSummary, "archived summary", ProviderVisible: true)],
+                compactAt));
+            events.Add(new SequencedEvent(missingPreservedHead ? 8 : 5, sessionId, compactAt, new CompactBoundaryAppliedEvent(
+                new CompactBoundary("legacy-prefix", missingPreservedHead ? CompactTrigger.Auto : CompactTrigger.Manual, 100, 10,
+                    archivedAssistant.Id, missingPreservedHead ? target.Id : null,
+                    missingPreservedHead ? legacyAssistant.Id : null, compactAt))));
+        }
+        else
+        {
+            messages.AddRange([archivedUser, archivedAssistant]);
+        }
+        messages.AddRange([target, legacyAssistant]);
+        events.AddRange([
+            new SequencedEvent(6, sessionId, now.AddSeconds(5), new TurnStartedEvent(legacyTurn, StrongId.NewCommandId())),
+            new SequencedEvent(7, sessionId, now.AddSeconds(8), new TurnCompletedEvent(legacyTurn, TurnOutcome.Completed)),
+        ]);
+        await using (var store = harness.OpenStore())
+        {
+            await store.UpsertSessionAsync(new SessionRecord(sessionId, harness.Root, "Legacy rewind", PermissionMode.Yolo,
+                new ModelSelection("scripted", "test-model"), now, now), CancellationToken.None);
+            await store.AppendMessagesAsync(sessionId, messages, 0, CancellationToken.None);
+            await store.AppendDurableEventsAsync(events, CancellationToken.None);
+        }
+
+        await using (var runtime = harness.BuildRuntime())
+        {
+            await runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
+            using var projection = runtime.Subscribe(sessionId);
+            await SendAndWaitIdleAsync(runtime, projection, sessionId, "discarded question", expectedReplies: 3);
+            Assert.Single(projection.Snapshot().Rows.OfType<ToolCallRow>());
+            Assert.Contains(projection.Snapshot().Rows.OfType<SystemNoticeRow>(), row => row.Kind == "turn_error");
+
+            await RewindWhenIdleAsync(runtime, sessionId, target.Id);
+            await WaitForAsync(() => UserTexts(projection).SequenceEqual(["archived question"]),
+                "the legacy rewind did not remove the discarded branch");
+            await SendAndWaitIdleAsync(runtime, projection, sessionId, "replacement question", expectedReplies: 2);
+            if (compactAfterRewind)
+            {
+                var ack = await runtime.SubmitAsync(new CompactCommand(StrongId.NewCommandId(), sessionId, 0), CancellationToken.None);
+                Assert.True(ack.Accepted, ack.RejectionReason);
+            }
+        }
+
+        for (var reopen = 0; reopen < 2; reopen++)
+        {
+            await using var runtime = harness.BuildRuntime();
+            await runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
+            using var projection = runtime.Subscribe(sessionId);
+            var snapshot = projection.Snapshot();
+            Assert.Equal(TurnPhase.Idle, snapshot.State.Phase);
+            Assert.Null(snapshot.State.ActiveTurn);
+            Assert.Equal(["archived question", "replacement question"], UserTexts(projection));
+            Assert.Equal(["archived answer", "replacement answer"], snapshot.Rows.OfType<AssistantMessageRow>()
+                .Select(row => Assert.Single(row.Parts.OfType<TextPart>()).Text));
+            Assert.All(snapshot.Rows.OfType<AssistantMessageRow>(), row => Assert.True(row.CanFork));
+            Assert.Empty(snapshot.Rows.OfType<ToolCallRow>());
+            Assert.DoesNotContain(snapshot.Rows.OfType<SystemNoticeRow>(), row => row.Kind == "turn_error");
+            Assert.Equal((compactBeforeTarget && !missingPreservedHead ? 1 : 0) + (compactAfterRewind ? 1 : 0),
+                snapshot.Rows.OfType<SystemNoticeRow>().Count(row => row.Kind == "compact"));
+        }
+    }
+
     [Fact]
     public async Task Rewind_IgnoresRunningSubagentsOwnedByOtherSessions_ButRejectsItsOwnRunningSubagents()
     {
@@ -360,6 +469,22 @@ public class RewindEndToEndTests
             Func<SubagentResult, ValueTask> onCompleted,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private static async Task RewindWhenIdleAsync(AgentRuntime runtime, SessionId sessionId, MessageId target)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var command = new RewindConversationCommand(StrongId.NewCommandId(), sessionId, 0, target);
+        while (true)
+        {
+            var ack = await runtime.SubmitAsync(command, CancellationToken.None);
+            if (ack.Accepted)
+                return;
+            Assert.Equal("wait for the current turn to finish before rewinding", ack.RejectionReason);
+            if (DateTime.UtcNow >= deadline)
+                throw new TimeoutException("the completed turn did not release the rewind command");
+            await Task.Delay(10);
+        }
     }
 
     private static async Task SendAndWaitIdleAsync(

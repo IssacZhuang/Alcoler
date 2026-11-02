@@ -284,6 +284,95 @@ public class RuntimeRecoveryTests
     }
 
     [Fact]
+    public async Task Resume_AfterCompaction_RestoresVisibleHistoryWithoutExpandingModelContext()
+    {
+        await using var harness = ScriptedCallHarness.Create(
+            TodoReadCall(0), StopText("first answer"), StopText("compact summary"), StopText("continued answer"));
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "original question", expectedReplies: 2);
+        var originalRows = projection.Snapshot().Rows;
+        var ack = await runtime.SubmitAsync(new CompactCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await using var store = harness.OpenStore();
+        var compacted = await store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        Assert.DoesNotContain(compacted, item => item.Message.Id.Value == originalRows[0].RowId);
+        Assert.Contains(compacted.SelectMany(item => item.Message.Parts).OfType<AttachmentPart>(),
+            part => part.Kind == AttachmentKind.CompactSummary);
+        await runtime.DisposeAsync();
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var reopened = resumed.Subscribe(session.Id);
+        var snapshot = reopened.Snapshot();
+        Assert.Equal(TurnPhase.Idle, snapshot.State.Phase);
+        Assert.Equal(originalRows.Select(row => row.RowId),
+            snapshot.Rows.Where(row => row is not SystemNoticeRow { Kind: "compact" }).Select(row => row.RowId));
+        Assert.Equal("original question", Assert.IsType<UserMessageRow>(snapshot.Rows[0]).Text);
+        Assert.Equal(ToolCallStatus.Succeeded, Assert.Single(snapshot.Rows.OfType<ToolCallRow>()).Status);
+        Assert.Contains(snapshot.Rows.OfType<SystemNoticeRow>(), row => row.Kind == "compact");
+        Assert.True(snapshot.Rows.OfType<AssistantMessageRow>().Last().CanFork);
+
+        await SendAndWaitIdleAsync(resumed, reopened, session.Id, "continue", expectedReplies: 3);
+        var requestText = string.Join("\n", harness.Model.Requests[^1].Messages
+            .SelectMany(message => message.Content.OfType<InputTextBlock>()).Select(block => block.Text));
+        Assert.Contains("compact summary", requestText);
+        Assert.DoesNotContain("original question", requestText);
+        Assert.DoesNotContain("first answer", requestText);
+        Assert.Equal(["original question", "continue"], reopened.Snapshot().Rows.OfType<UserMessageRow>().Select(row => row.Text));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Resume_AfterRewindAndCompaction_DoesNotRestoreDiscardedTurns(bool compactBeforeRewind)
+    {
+        var calls = new List<IReadOnlyList<ModelStreamEvent>> { StopText("first answer") };
+        if (compactBeforeRewind)
+            calls.Add(StopText("summary"));
+        calls.AddRange([StopText("discarded answer"), StopText("replacement answer"), StopText("replacement summary")]);
+        await using var harness = new ScriptedCallHarness(calls);
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "original question");
+        if (compactBeforeRewind)
+        {
+            var compact = await runtime.SubmitAsync(new CompactCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+            Assert.True(compact.Accepted, compact.RejectionReason);
+        }
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "discarded question", expectedReplies: 2);
+        var target = projection.Snapshot().Rows.OfType<UserMessageRow>().Last();
+        var rewind = await runtime.SubmitAsync(new RewindConversationCommand(
+            StrongId.NewCommandId(), session.Id, 0, new MessageId(target.RowId)), CancellationToken.None);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while (rewind.RejectionReason == "wait for the current turn to finish before rewinding")
+        {
+            await Task.Delay(10, timeout.Token);
+            rewind = await runtime.SubmitAsync(new RewindConversationCommand(
+                StrongId.NewCommandId(), session.Id, 0, new MessageId(target.RowId)), timeout.Token);
+        }
+        Assert.True(rewind.Accepted, rewind.RejectionReason);
+        using var rewound = runtime.Subscribe(session.Id);
+        Assert.Equal("original question", Assert.Single(rewound.Snapshot().Rows.OfType<UserMessageRow>()).Text);
+        await SendAndWaitIdleAsync(runtime, rewound, session.Id, "replacement question", expectedReplies: 2);
+        var ack = await runtime.SubmitAsync(new CompactCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await runtime.DisposeAsync();
+
+        await using var resumed = harness.BuildRuntime();
+        await resumed.ResumeSessionAsync(session.Id, CancellationToken.None);
+        using var reopened = resumed.Subscribe(session.Id);
+        var snapshot = reopened.Snapshot();
+        Assert.Equal(TurnPhase.Idle, snapshot.State.Phase);
+        Assert.Equal(["original question", "replacement question"], snapshot.Rows.OfType<UserMessageRow>().Select(row => row.Text));
+        Assert.Equal(2, snapshot.Rows.OfType<AssistantMessageRow>().Count());
+        Assert.DoesNotContain(snapshot.Rows.OfType<AssistantMessageRow>(), row => row.Parts.OfType<TextPart>()
+            .Any(part => part.Text == "discarded answer"));
+    }
+
+    [Fact]
     public async Task ManualCompaction_PromptTooLong_ReselectsTruncatedSummaryAndRetries()
     {
         await using var harness = ScriptedCallHarness.Create(

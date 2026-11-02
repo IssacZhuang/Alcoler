@@ -566,13 +566,14 @@ public class SubagentEndToEndTests
     }
 
     [Fact]
-    public async Task SqliteReplay_UsesCanonicalMessages_WithoutResurrectingCompactedEnvelopesOrTools()
+    public async Task SqliteReplay_RestoresCompactedHistory_AndUsesCanonicalMessagesWithoutDuplicates()
     {
         await using var harness = TestHarness.Create();
         var now = DateTimeOffset.UtcNow;
         var sessionId = StrongId.NewSessionId();
-        var callId = new ToolCallId("removed-call");
-        var stale = new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
+        var turnId = StrongId.NewTurnId();
+        var callId = new ToolCallId("compacted-call");
+        var compacted = new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
             [new ToolCallPart(StrongId.NewPartId(), callId, "Read", JsonSerializer.SerializeToElement(new { }))], now);
         var retained = new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
             [new TextPart(StrongId.NewPartId(), "old content")], now);
@@ -584,17 +585,22 @@ public class SubagentEndToEndTests
                 null, now, now), CancellationToken.None);
             await store.AppendMessagesAsync(sessionId, [canonical], 0, CancellationToken.None);
             await store.AppendDurableEventsAsync([
-                new SequencedEvent(10, sessionId, now, new AssistantMessageCommittedEvent(stale)),
-                new SequencedEvent(11, sessionId, now, new ToolCallStartedEvent(StrongId.NewTurnId(), callId, "Read",
+                new SequencedEvent(9, sessionId, now, new TurnStartedEvent(turnId, StrongId.NewCommandId())),
+                new SequencedEvent(10, sessionId, now, new AssistantMessageCommittedEvent(compacted)),
+                new SequencedEvent(11, sessionId, now, new ToolCallStartedEvent(turnId, callId, "Read",
                     JsonSerializer.SerializeToElement(new { }))),
                 new SequencedEvent(20, sessionId, now, new AssistantMessageCommittedEvent(retained)),
-                new SequencedEvent(21, sessionId, now, new AssistantMessageCommittedEvent(retained))], CancellationToken.None);
+                new SequencedEvent(21, sessionId, now, new AssistantMessageCommittedEvent(retained)),
+                new SequencedEvent(22, sessionId, now, new TurnCompletedEvent(turnId, TurnOutcome.Completed))], CancellationToken.None);
         }
         await using var reopenedStore = new SqliteSessionStore(harness.DatabasePath);
         await using var runtime = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, reopenedStore);
         await runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
         using var projection = runtime.Subscribe(sessionId);
-        var row = Assert.IsType<AssistantMessageRow>(Assert.Single(projection.Snapshot().Rows));
+        var rows = projection.Snapshot().Rows;
+        Assert.Equal([compacted.Id.Value, callId.Value, canonical.Id.Value], rows.Select(row => row.RowId));
+        Assert.Equal(ToolCallStatus.Cancelled, Assert.IsType<ToolCallRow>(rows[1]).Status);
+        var row = Assert.IsType<AssistantMessageRow>(rows[2]);
         Assert.Equal(canonical.Id, row.Id);
         Assert.Equal("canonical content", Assert.IsType<TextPart>(Assert.Single(row.Parts)).Text);
     }

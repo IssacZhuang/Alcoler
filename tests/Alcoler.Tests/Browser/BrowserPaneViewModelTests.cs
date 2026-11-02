@@ -243,6 +243,43 @@ public class BrowserPaneViewModelTests
     }
 
     [AvaloniaFact]
+    public async Task OpenInBrowserCommand_LaunchesCurrentPageThroughSystemBrowser()
+    {
+        Uri? launched = null;
+        using var viewModel = Create(out var controller, uriLauncher: uri =>
+        {
+            launched = uri;
+            return Task.FromResult(true);
+        });
+        Assert.False(viewModel.OpenInBrowserCommand.CanExecute(null));
+
+        var sessionId = new SessionId("sess_active");
+        controller.Status = TabStatus("second");
+        viewModel.Bind(sessionId);
+
+        Assert.True(viewModel.OpenInBrowserCommand.CanExecute(null));
+        await viewModel.OpenInBrowserCommand.ExecuteAsync(null);
+
+        Assert.Equal(new Uri("https://example.com/second"), launched);
+        Assert.Null(viewModel.Banner);
+
+        controller.RaiseStatusChanged(sessionId, new BrowserSessionStatus(BrowserSessionState.Idle, Tabs: []));
+        Assert.False(viewModel.OpenInBrowserCommand.CanExecute(null));
+    }
+
+    [AvaloniaFact]
+    public async Task OpenInBrowserCommand_ReportsLauncherFailure()
+    {
+        using var viewModel = Create(out var controller, uriLauncher: _ => Task.FromResult(false));
+        controller.Status = new BrowserSessionStatus(BrowserSessionState.Launched, "https://example.com");
+        viewModel.Bind(new SessionId("sess_active"));
+
+        await viewModel.OpenInBrowserCommand.ExecuteAsync(null);
+
+        Assert.Equal("Could not open the link in the default browser.", viewModel.Banner);
+    }
+
+    [AvaloniaFact]
     public void BrowserPaneView_AddressEnterNavigates_AndScreenshotRemainsOptionalFallback()
     {
         var image = new FakeImage();
@@ -272,6 +309,7 @@ public class BrowserPaneViewModelTests
             Assert.NotNull(view.FindControl<Button>("PART_BrowserBack"));
             Assert.NotNull(view.FindControl<Button>("PART_BrowserForward"));
             Assert.Same(viewModel.ReloadCommand, view.FindControl<Button>("PART_BrowserRefresh")!.Command);
+            Assert.Same(viewModel.OpenInBrowserCommand, view.FindControl<Button>("PART_BrowserOpenInBrowser")!.Command);
         }
         finally
         {
@@ -738,10 +776,11 @@ public class BrowserPaneViewModelTests
 
     private static BrowserPaneViewModel Create(
         out FakeBrowserController controller, Func<string, IImage?>? imageLoader = null,
-        Func<string, Control>? pagePresenterFactory = null)
+        Func<string, Control>? pagePresenterFactory = null, Func<Uri, Task<bool>>? uriLauncher = null)
     {
         controller = new FakeBrowserController();
-        return new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, imageLoader, pagePresenterFactory);
+        return new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, imageLoader, pagePresenterFactory,
+            uriLauncher);
     }
 
     private sealed class FakePresenter(string tabId) : Control, IDisposable

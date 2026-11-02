@@ -432,6 +432,8 @@
   "browser_back": "Back",
   "browser_forward": "Forward",
   "browser_reload": "Reload page",
+  "browser_open_in_browser": "Open in browser",
+  "browser_open_in_browser_failed": "Could not open the link in the default browser.",
   "browser_op_reload": "Reload",
   "browser_enter_url": "Enter a URL",
   "browser_address_a11y": "Browser address",

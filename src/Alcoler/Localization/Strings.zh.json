@@ -432,6 +432,8 @@
   "browser_back": "后退",
   "browser_forward": "前进",
   "browser_reload": "重新加载页面",
+  "browser_open_in_browser": "在浏览器打开",
+  "browser_open_in_browser_failed": "无法使用系统默认浏览器打开链接。",
   "browser_op_reload": "重新加载",
   "browser_enter_url": "输入网址",
   "browser_address_a11y": "浏览器地址栏",

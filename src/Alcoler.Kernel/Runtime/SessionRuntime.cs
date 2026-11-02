@@ -2470,7 +2470,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         var replayDurable = FilterDurableForBranch(durable);
         var activeMessageIds = activeMessages.Select(stored => stored.Message.Id).ToHashSet();
         var completedTails = SessionBranches.FindCompletedTurnTails(durable, activeMessageIds);
-        foreach (var (sessionEvent, occurredAt) in ReconstructTimeline(activeMessages, replayDurable, completedTails))
+        var displayDurable = FilterDurableForMissingRewindTargets(durable);
+        foreach (var (sessionEvent, occurredAt) in ReconstructTimeline(activeMessages, displayDurable, completedTails))
         {
             _events.Append(sessionEvent, occurredAt);
         }
@@ -2587,6 +2588,92 @@ public sealed class SessionRuntime : IAsyncDisposable
             .ToList();
     }
 
+    private static IReadOnlyList<SequencedEvent> FilterDurableForMissingRewindTargets(IReadOnlyList<SequencedEvent> durable)
+    {
+        var replay = new List<SequencedEvent>(durable.Count);
+        foreach (var entry in durable.OrderBy(entry => entry.Sequence))
+        {
+            if (entry.Event is ConversationRewoundEvent rewound
+                && !replay.Any(previous => CommittedMessage(previous.Event)?.Id == rewound.TargetMessageId))
+            {
+                var kept = rewound.KeptMessageIds.ToHashSet();
+                var prefixCount = 0;
+                TurnId? turn = null;
+                var keepTurn = false;
+                for (var index = 0; index < replay.Count && replay[index].Sequence <= rewound.CutEventSequence; index++)
+                {
+                    var previous = replay[index].Event;
+                    if (CommittedMessage(previous) is { } message)
+                    {
+                        keepTurn = kept.Contains(message.Id);
+                        if (keepTurn)
+                            prefixCount = index + 1;
+                    }
+                    else if (previous is TurnStartedEvent started)
+                    {
+                        turn = started.TurnId;
+                        keepTurn = false;
+                    }
+                    else if (previous is TurnCompletedEvent completed)
+                    {
+                        if (keepTurn && turn == completed.TurnId)
+                            prefixCount = index + 1;
+                        turn = null;
+                        keepTurn = false;
+                    }
+                    else if (previous is TurnFailedEvent failed)
+                    {
+                        if (keepTurn && turn == failed.TurnId)
+                            prefixCount = index + 1;
+                    }
+                    else if (previous is CompactBoundaryAppliedEvent compact)
+                    {
+                        // Archived display history is outside the rewind's compacted model prefix.
+                        var compactPrefix = compact.Boundary.PreservedHeadId is { } head
+                            ? replay.FindIndex(0, index, candidate => CommittedMessage(candidate.Event)?.Id == head)
+                            : index + 1;
+                        if (compactPrefix < 0 && compact.Boundary.LastSummarizedMessageId is { } summarizedTail)
+                        {
+                            var tailIndex = replay.FindIndex(0, index,
+                                candidate => CommittedMessage(candidate.Event)?.Id == summarizedTail);
+                            if (tailIndex >= 0)
+                            {
+                                compactPrefix = tailIndex + 1;
+                                for (var terminal = compactPrefix; terminal < index; terminal++)
+                                {
+                                    var next = replay[terminal].Event;
+                                    if (CommittedMessage(next) is not null
+                                        || next is TurnStartedEvent or ConversationRewoundEvent or CompactBoundaryAppliedEvent)
+                                        break;
+                                    if (next is TurnCompletedEvent or TurnFailedEvent)
+                                        compactPrefix = terminal + 1;
+                                }
+                            }
+                        }
+                        if (compactPrefix >= 0)
+                            prefixCount = Math.Max(prefixCount, compactPrefix);
+                    }
+                }
+
+                // Legacy targets can be absent from both the active messages and committed envelopes.
+                for (var index = replay.Count - 1; index >= prefixCount; index--)
+                {
+                    if (replay[index].Sequence <= rewound.CutEventSequence)
+                        replay.RemoveAt(index);
+                }
+            }
+            replay.Add(entry);
+        }
+        return replay;
+    }
+
+    private static ConversationMessage? CommittedMessage(SessionEvent sessionEvent) => sessionEvent switch
+    {
+        UserMessageCommittedEvent user => user.Message,
+        AssistantMessageCommittedEvent assistant => assistant.Message,
+        _ => null,
+    };
+
     private static TurnId? FindInterruptedTurn(IReadOnlyList<SequencedEvent> durable)
     {
         TurnId? activeTurn = null;
@@ -2612,24 +2699,18 @@ public sealed class SessionRuntime : IAsyncDisposable
         IReadOnlyDictionary<MessageId, TurnId> completedTails)
     {
         var canonical = messages.ToDictionary(stored => stored.Message.Id, stored => stored.Message);
-        var toolCalls = messages.SelectMany(stored => stored.Message.Parts).OfType<ToolCallPart>()
-            .Select(call => call.ToolCallId).ToHashSet();
         var representedCompletions = durable.Select(entry => entry.Event).OfType<TurnCompletedEvent>()
             .Select(completed => completed.TurnId).ToHashSet();
         var timeline = new List<(SessionEvent Event, DateTimeOffset OccurredAt)>();
         var anchors = new Dictionary<MessageId, int>();
         foreach (var entry in durable.OrderBy(entry => entry.Sequence))
         {
-            var committed = entry.Event switch
-            {
-                UserMessageCommittedEvent user => user.Message,
-                AssistantMessageCommittedEvent assistant => assistant.Message,
-                _ => null,
-            };
+            var committed = CommittedMessage(entry.Event);
             if (committed is not null)
             {
-                // Compaction can replace or remove messages without rewriting old envelopes.
-                if (canonical.TryGetValue(committed.Id, out var message) && anchors.TryAdd(message.Id, timeline.Count))
+                // Compaction replaces model context, not the visible conversation retained in committed envelopes.
+                var message = canonical.GetValueOrDefault(committed.Id) ?? committed;
+                if (anchors.TryAdd(message.Id, timeline.Count))
                 {
                     timeline.Add((MessageCommitted(message), entry.OccurredAt));
                     if (completedTails.TryGetValue(message.Id, out var turnId)
@@ -2639,9 +2720,10 @@ public sealed class SessionRuntime : IAsyncDisposable
                     }
                 }
             }
-            else if (entry.Event is SubagentStartedEvent or SubagentStatusChangedEvent or TurnFailedEvent or TurnCompletedEvent
-                || entry.Event is ToolCallStartedEvent started && toolCalls.Contains(started.ToolCallId)
-                || entry.Event is ToolCallResultEvent result && toolCalls.Contains(result.ToolCallId))
+            else if (entry.Event is SubagentStartedEvent or SubagentStatusChangedEvent
+                or TurnStartedEvent or TurnFailedEvent or TurnCompletedEvent
+                or ToolCallStartedEvent or ToolCallResultEvent
+                or ConversationRewoundEvent or CompactBoundaryAppliedEvent)
             {
                 timeline.Add((entry.Event, entry.OccurredAt));
             }
