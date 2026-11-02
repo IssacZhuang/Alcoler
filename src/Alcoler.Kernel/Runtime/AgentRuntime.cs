@@ -79,6 +79,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 {
     private readonly AgentRuntimeOptions _options;
     private readonly ConcurrentDictionary<SessionId, SessionRuntime> _sessions = new();
+    private readonly object _resumeSync = new();
+    private readonly Dictionary<SessionId, ResumeGate> _resumeGates = [];
     private readonly ConcurrentDictionary<(SessionId Parent, SessionId Child), WeakReference<AgentRuntime>> _subagentRuntimes = new();
     private readonly ToolRegistry _tools;
     private readonly ConcurrentDictionary<(long Generation, string ProviderId, string ModelId), IChatModel> _modelCache = new();
@@ -87,6 +89,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     private ModelSelection? _defaultModel;
     private long _providerGeneration;
     private bool _disposed;
+
+    private sealed class ResumeGate
+    {
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public int Users { get; set; }
+    }
 
     public AgentRuntime(AgentRuntimeOptions options)
     {
@@ -126,15 +134,51 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 
     public async ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
         if (_sessions.TryGetValue(sessionId, out var active))
         {
             return new SessionHandle(active.SessionId, active.WorkspaceRoot, active.Title);
         }
 
-        var record = await _options.Store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Session {sessionId.Value} not found.");
-        await CreateRuntimeAsync(record, isNewSession: false, cancellationToken).ConfigureAwait(false);
-        return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
+        ResumeGate gate;
+        lock (_resumeSync)
+        {
+            if (!_resumeGates.TryGetValue(sessionId, out gate!))
+            {
+                gate = new ResumeGate();
+                _resumeGates.Add(sessionId, gate);
+            }
+            gate.Users++;
+        }
+        var entered = false;
+        try
+        {
+            await gate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            entered = true;
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+            if (_sessions.TryGetValue(sessionId, out active))
+            {
+                return new SessionHandle(active.SessionId, active.WorkspaceRoot, active.Title);
+            }
+
+            var record = await _options.Store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Session {sessionId.Value} not found.");
+            await CreateRuntimeAsync(record, isNewSession: false, cancellationToken).ConfigureAwait(false);
+            return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
+        }
+        finally
+        {
+            if (entered)
+                gate.Semaphore.Release();
+            lock (_resumeSync)
+            {
+                if (--gate.Users == 0)
+                {
+                    _resumeGates.Remove(sessionId);
+                    gate.Semaphore.Dispose();
+                }
+            }
+        }
     }
 
     public async ValueTask<SessionHandle> ForkSessionAsync(

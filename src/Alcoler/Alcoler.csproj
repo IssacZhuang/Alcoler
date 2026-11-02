@@ -22,6 +22,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="Markdown.Avalonia.Tight" Version="11.0.3" />
     <PackageReference Include="Porta.Pty" Version="2.2.3" />
+    <PackageReference Include="QRCoder" Version="1.8.1" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup>
@@ -43,5 +44,6 @@
                       AdditionalProperties="AlcoGrepTargetRid=$(RuntimeIdentifier)" />
     <ProjectReference Include="..\Alcoler.Browser\Alcoler.Browser.csproj" />
     <ProjectReference Include="..\Alcoler.Browser.Chromium\Alcoler.Browser.Chromium.csproj" />
+    <ProjectReference Include="..\Alcoler.Remote\Alcoler.Remote.csproj" />
   </ItemGroup>
 </Project>

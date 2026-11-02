@@ -14,6 +14,7 @@ using Alcoler.Auth;
 using Alcoler.Git;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
+using System.Reflection;
 using Microsoft.Extensions.Logging;
 
 namespace Alcoler;
@@ -88,6 +89,18 @@ public static class Composition
             await mcpTools.DisposeAsync();
             throw;
         }
+        // A second artifact store over the shared root is safe: FileArtifactStore is stateless
+        // beyond the root path, and BuildRuntimeAsync keeps its own instance private.
+        var remoteAccess = new RemoteAccessViewModel(
+            () => runtime,
+            Path.Combine(WorkbenchDataPaths.Root, "remote"),
+            new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath).TryLoadAsync,
+            ProductVersion);
+        if (config.Remote?.Enabled == true)
+        {
+            // Start failures surface through the settings status line, not startup.
+            await remoteAccess.ApplyConfigAsync(config.Remote, ct);
+        }
         var workbench = new WorkbenchViewModel(
             runtime,
             AvaloniaUiScheduler.Instance,
@@ -111,7 +124,9 @@ public static class Composition
                     BuildProviders(saved, chatGptAccount),
                     WorkbenchModelCatalog.DefaultSelection(saved));
                 mcpTools.Update(saved.McpServers);
-            });
+                _ = remoteAccess.ApplyConfigAsync(saved.Remote);
+            },
+            remoteAccess: remoteAccess);
         await workbench.RefreshFromRuntimeAsync();
         return workbench;
     }
@@ -180,6 +195,10 @@ public static class Composition
         });
         return runtime;
     }
+
+    private static string? ProductVersion => typeof(WorkbenchViewModel).Assembly
+        .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()
+        ?.InformationalVersion.Split('+')[0];
 
     private static IAsyncDisposable? CombineDisposables(IAsyncDisposable? first, IAsyncDisposable? second) =>
         (first, second) switch

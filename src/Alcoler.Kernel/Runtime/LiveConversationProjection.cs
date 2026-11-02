@@ -6,16 +6,17 @@ namespace Alcoler.Kernel.Runtime;
 
 public sealed class LiveConversationProjection : IConversationProjection
 {
+    internal const int MaxPendingDeltas = 256;
+
     private readonly ProjectionBuilder _builder = new();
     private readonly SessionEventSubscriber _subscriber;
     private readonly Channel<ConversationDelta> _deltas;
     private readonly Task _pump;
     private readonly Func<long> _revisionSource;
-    private readonly object _waitLock = new();
+    private readonly object _sync = new();
     private readonly List<Waiter> _waiters = [];
-    private long _appliedSequence;
     private long _lastSequence;
-    private bool _disposed;
+    private bool _completed;
 
     private sealed class Waiter(long sequence)
     {
@@ -28,10 +29,11 @@ public sealed class LiveConversationProjection : IConversationProjection
     {
         _subscriber = store.Subscribe(fromSequence);
         _revisionSource = revisionSource;
-        _deltas = Channel.CreateUnbounded<ConversationDelta>(new UnboundedChannelOptions
+        _deltas = Channel.CreateBounded<ConversationDelta>(new BoundedChannelOptions(MaxPendingDeltas)
         {
             SingleReader = true,
             SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait,
         });
         // The initial snapshot must be consistent the moment construction returns; only events
         // arriving after this point are delivered as deltas.
@@ -44,8 +46,11 @@ public sealed class LiveConversationProjection : IConversationProjection
 
     public ConversationSnapshot Snapshot()
     {
-        var (rows, state) = _builder.SnapshotState();
-        return new ConversationSnapshot(_revisionSource(), _lastSequence, rows, state);
+        lock (_sync)
+        {
+            var (rows, state) = _builder.SnapshotState();
+            return new ConversationSnapshot(_revisionSource(), _lastSequence, rows, state);
+        }
     }
 
     public async IAsyncEnumerable<ConversationDelta> Deltas(
@@ -59,11 +64,15 @@ public sealed class LiveConversationProjection : IConversationProjection
 
     public Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default)
     {
-        lock (_waitLock)
+        lock (_sync)
         {
-            if (_appliedSequence >= sequence)
+            if (_lastSequence >= sequence)
             {
                 return Task.CompletedTask;
+            }
+            if (_completed)
+            {
+                return Task.FromException(new InvalidOperationException("The projection ended before reaching the requested sequence."));
             }
             var waiter = new Waiter(sequence);
             _waiters.Add(waiter);
@@ -71,10 +80,10 @@ public sealed class LiveConversationProjection : IConversationProjection
             {
                 waiter.Registration = cancellationToken.Register(() =>
                 {
-                    // Dispose runs after TrySetCanceled; disposing under _waitLock could
+                    // Dispose runs after TrySetCanceled; disposing under _sync could
                     // deadlock if the registration's callback is blocked on that lock.
                     waiter.Registration.Dispose();
-                    lock (_waitLock)
+                    lock (_sync)
                     {
                         _waiters.Remove(waiter);
                     }
@@ -85,26 +94,43 @@ public sealed class LiveConversationProjection : IConversationProjection
         }
     }
 
-    public void Dispose()
+    public void Dispose() => Complete();
+
+    private void Complete()
     {
-        if (_disposed)
+        List<Waiter> abandoned;
+        lock (_sync)
         {
-            return;
+            if (_completed)
+                return;
+            _completed = true;
+            abandoned = [.. _waiters];
+            _waiters.Clear();
         }
-        _disposed = true;
         _subscriber.Dispose();
         _deltas.Writer.TryComplete();
+        foreach (var waiter in abandoned)
+        {
+            waiter.Registration.Dispose();
+            waiter.Completion.TrySetException(
+                new InvalidOperationException("The projection ended before reaching the requested sequence."));
+        }
     }
 
     private async Task PumpAsync()
     {
+        var publishDeltas = true;
         try
         {
             await foreach (var sequenced in _subscriber.Reader.ReadAllAsync())
             {
-                if (ApplyToBuilder(sequenced) is { } ops)
+                var ops = ApplyToBuilder(sequenced);
+                if (publishDeltas && ops is not null
+                    && !_deltas.Writer.TryWrite(new ConversationDelta(sequenced.Sequence, ops)))
                 {
-                    await _deltas.Writer.WriteAsync(new ConversationDelta(sequenced.Sequence, ops));
+                    // End a slow delta feed without freezing snapshot-only observers.
+                    publishDeltas = false;
+                    _deltas.Writer.TryComplete();
                 }
             }
         }
@@ -113,41 +139,39 @@ public sealed class LiveConversationProjection : IConversationProjection
         }
         finally
         {
-            _deltas.Writer.TryComplete();
+            Complete();
+            while (_subscriber.Reader.TryRead(out _))
+            {
+            }
         }
     }
 
     private IReadOnlyList<RowOp>? ApplyToBuilder(SequencedEvent sequenced)
     {
-        if (sequenced.Sequence <= _lastSequence)
-        {
-            return null;
-        }
-        Interlocked.Exchange(ref _lastSequence, sequenced.Sequence);
-        var ops = _builder.Apply(sequenced);
-        // Advance only after the builder applied the event, so a completed wait always
-        // observes the event's effect in the next Snapshot.
+        IReadOnlyList<RowOp> ops;
         List<Waiter>? completed = null;
-        lock (_waitLock)
+        lock (_sync)
         {
-            if (sequenced.Sequence > _appliedSequence)
+            if (_completed || sequenced.Sequence <= _lastSequence)
             {
-                _appliedSequence = sequenced.Sequence;
-                for (var index = _waiters.Count - 1; index >= 0; index--)
+                return null;
+            }
+            ops = _builder.Apply(sequenced);
+            _lastSequence = sequenced.Sequence;
+            for (var index = _waiters.Count - 1; index >= 0; index--)
+            {
+                var waiter = _waiters[index];
+                if (waiter.Sequence <= sequenced.Sequence)
                 {
-                    var waiter = _waiters[index];
-                    if (waiter.Sequence <= sequenced.Sequence)
-                    {
-                        completed ??= [];
-                        completed.Add(waiter);
-                        _waiters.RemoveAt(index);
-                    }
+                    completed ??= [];
+                    completed.Add(waiter);
+                    _waiters.RemoveAt(index);
                 }
             }
         }
         if (completed is not null)
         {
-            // Disposed outside _waitLock: a cancel callback blocked on that lock could
+            // Disposed outside _sync: a cancel callback blocked on that lock could
             // otherwise stall Dispose, which waits on in-flight callbacks.
             foreach (var waiter in completed)
             {
