@@ -1,7 +1,6 @@
 using System.Net.WebSockets;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
-using Microsoft.AspNetCore.Http;
 
 namespace Alcoler.Remote;
 
@@ -9,12 +8,16 @@ internal static class SessionStream
 {
     private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(30);
     private static readonly byte[] PingFrame = GatewayJson.Frame("ping");
     private static readonly byte[] EndedFrame = GatewayJson.Frame("ended");
     private static readonly byte[] SessionNotFoundFrame = GatewayJson.Frame("error", "session_not_found");
 
-    public static async Task RunAsync(GatewayState state, SessionId sessionId, WebSocket socket, CancellationToken requestAborted)
+    public static async Task RunAsync(
+        GatewayState state, SessionId sessionId, WebSocket socket, CancellationToken requestAborted,
+        TimeSpan? pingInterval = null, TimeSpan? sendTimeout = null)
     {
+        var writeTimeout = sendTimeout ?? SendTimeout;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
         using var sendGate = new SemaphoreSlim(1, 1);
         Task? receive = null;
@@ -25,27 +28,31 @@ internal static class SessionStream
             projection = await ResolveProjectionAsync(state.Options.Runtime(), sessionId, cancellation.Token);
             if (projection is null)
             {
-                await SendAsync(socket, sendGate, SessionNotFoundFrame, CancellationToken.None);
-                await CloseAsync(socket, (WebSocketCloseStatus)4404, "session_not_found");
+                await SendAsync(socket, sendGate, SessionNotFoundFrame, cancellation.Token, writeTimeout);
+                await CloseAsync(socket, sendGate, (WebSocketCloseStatus)4404, "session_not_found");
                 return;
             }
-            receive = ReceiveLoopAsync(socket, cancellation);
-            ping = PingLoopAsync(socket, sendGate, cancellation);
+            receive = ReceiveLoopAsync(socket, sendGate, cancellation);
+            var snapshot = projection.Snapshot();
             await SendAsync(socket, sendGate,
-                GatewayJson.Wrap("snapshot", "snapshot", GatewayJson.Serialize(projection.Snapshot())),
-                cancellation.Token);
+                GatewayJson.Wrap("snapshot", "snapshot", GatewayJson.Serialize(snapshot)),
+                cancellation.Token, writeTimeout);
+            ping = PingLoopAsync(socket, sendGate, cancellation, pingInterval ?? PingInterval, writeTimeout);
+            var lastSequence = snapshot.Sequence;
             await foreach (var delta in projection.Deltas(cancellation.Token).ConfigureAwait(false))
             {
+                if (delta.Sequence <= lastSequence)
+                    continue;
                 await SendAsync(socket, sendGate,
                     GatewayJson.Wrap("delta", "delta", GatewayJson.Serialize(delta)),
-                    cancellation.Token);
+                    cancellation.Token, writeTimeout);
+                lastSequence = delta.Sequence;
             }
-            await SendAsync(socket, sendGate, EndedFrame, cancellation.Token);
-            await CloseAsync(socket, WebSocketCloseStatus.NormalClosure, "ended");
+            await SendAsync(socket, sendGate, EndedFrame, cancellation.Token, writeTimeout);
+            await CloseAsync(socket, sendGate, WebSocketCloseStatus.NormalClosure, "ended");
         }
         catch (OperationCanceledException)
         {
-            // Client disconnect or transport abort; teardown happens in finally.
         }
         catch (WebSocketException)
         {
@@ -53,15 +60,27 @@ internal static class SessionStream
         catch (IOException)
         {
         }
+        catch (ObjectDisposedException)
+        {
+        }
         finally
         {
-            cancellation.Cancel();
-            if (receive is not null)
-                await receive;
-            if (ping is not null)
-                await ping;
-            projection?.Dispose();
-            socket.Dispose();
+            try
+            {
+                cancellation.Cancel();
+                await Task.WhenAll(receive ?? Task.CompletedTask, ping ?? Task.CompletedTask);
+            }
+            finally
+            {
+                try
+                {
+                    projection?.Dispose();
+                }
+                finally
+                {
+                    socket.Dispose();
+                }
+            }
         }
     }
 
@@ -88,25 +107,45 @@ internal static class SessionStream
         }
     }
 
-    private static async Task SendAsync(WebSocket socket, SemaphoreSlim gate, byte[] payload, CancellationToken cancellationToken)
+    private static async Task SendAsync(
+        WebSocket socket, SemaphoreSlim gate, byte[] payload, CancellationToken cancellationToken, TimeSpan timeout)
     {
-        await gate.WaitAsync(cancellationToken);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
+        var entered = false;
         try
         {
-            await socket.SendAsync(payload, WebSocketMessageType.Text, true, cancellationToken);
+            await gate.WaitAsync(deadline.Token);
+            entered = true;
+            await socket.SendAsync(payload, WebSocketMessageType.Text, true, deadline.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            socket.Abort();
+            throw;
         }
         finally
         {
-            gate.Release();
+            if (entered)
+                gate.Release();
         }
     }
 
-    private static async Task CloseAsync(WebSocket socket, WebSocketCloseStatus status, string reason)
+    private static async Task CloseAsync(WebSocket socket, SemaphoreSlim gate, WebSocketCloseStatus status, string reason)
     {
         using var timeout = new CancellationTokenSource(CloseTimeout);
         try
         {
-            await socket.CloseAsync(status, reason, timeout.Token);
+            await gate.WaitAsync(timeout.Token);
+            try
+            {
+                // CloseAsync would start a second receive alongside ReceiveLoopAsync.
+                await socket.CloseOutputAsync(status, reason, timeout.Token);
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -117,9 +156,13 @@ internal static class SessionStream
         catch (IOException)
         {
         }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
-    private static async Task ReceiveLoopAsync(WebSocket socket, CancellationTokenSource cancellation)
+    private static async Task ReceiveLoopAsync(
+        WebSocket socket, SemaphoreSlim gate, CancellationTokenSource cancellation)
     {
         var buffer = new byte[4096];
         try
@@ -127,34 +170,44 @@ internal static class SessionStream
             while (true)
             {
                 var received = await socket.ReceiveAsync(buffer, cancellation.Token);
-                // Client frames are ignored, except that any non-empty message ends
-                // the stream: this socket is a one-way projection feed.
-                if (received.MessageType == WebSocketMessageType.Close || received.Count > 0)
+                if (received.MessageType == WebSocketMessageType.Close)
                 {
                     cancellation.Cancel();
+                    await CloseAsync(socket, gate, WebSocketCloseStatus.NormalClosure, "closed");
                     return;
                 }
+                // This socket is a one-way projection feed; non-empty client frames end it.
+                if (received.Count > 0)
+                    return;
             }
         }
         catch (OperationCanceledException)
         {
         }
         catch (WebSocketException)
+        {
+        }
+        catch (IOException)
         {
         }
         catch (ObjectDisposedException)
         {
         }
+        finally
+        {
+            cancellation.Cancel();
+        }
     }
 
-    private static async Task PingLoopAsync(WebSocket socket, SemaphoreSlim gate, CancellationTokenSource cancellation)
+    private static async Task PingLoopAsync(
+        WebSocket socket, SemaphoreSlim gate, CancellationTokenSource cancellation, TimeSpan interval, TimeSpan sendTimeout)
     {
-        using var timer = new PeriodicTimer(PingInterval);
+        using var timer = new PeriodicTimer(interval);
         try
         {
             while (await timer.WaitForNextTickAsync(cancellation.Token))
             {
-                await SendAsync(socket, gate, PingFrame, cancellation.Token);
+                await SendAsync(socket, gate, PingFrame, cancellation.Token, sendTimeout);
             }
         }
         catch (OperationCanceledException)
@@ -162,6 +215,16 @@ internal static class SessionStream
         }
         catch (WebSocketException)
         {
+        }
+        catch (IOException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            cancellation.Cancel();
         }
     }
 }

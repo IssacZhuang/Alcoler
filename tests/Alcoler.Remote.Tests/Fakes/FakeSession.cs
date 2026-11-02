@@ -22,6 +22,7 @@ internal sealed class FakeSession
     public long Sequence { get; set; }
     public List<ConversationRow> Rows { get; } = [];
     public List<Channel<ConversationDelta>> Views { get; } = [];
+    public Func<IConversationProjection>? ProjectionFactory { get; set; }
 
     public ConversationDelta Publish(IReadOnlyList<RowOp> ops)
     {

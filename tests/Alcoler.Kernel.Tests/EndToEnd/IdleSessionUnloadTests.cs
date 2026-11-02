@@ -154,6 +154,116 @@ public class IdleSessionUnloadTests
     }
 
     [Fact]
+    public async Task ConcurrentColdResumes_ShareRuntimeAndKeepBothObserversLive()
+    {
+        await using var harness = TestHarness.Create();
+        var sessionId = await CreateStoredSessionAsync(harness);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loads = 0;
+        await using var runtime = harness.BuildRuntime(options => options with
+        {
+            SessionToolsProvider = async cancellationToken =>
+            {
+                Interlocked.Increment(ref loads);
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return [];
+            },
+        });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var firstResume = ResumeAndObserveAsync(runtime, sessionId, timeout.Token);
+        await entered.Task.WaitAsync(timeout.Token);
+        var secondResume = ResumeAndObserveAsync(runtime, sessionId, timeout.Token);
+        release.TrySetResult();
+        using var first = await firstResume.WaitAsync(timeout.Token);
+        using var second = await secondResume.WaitAsync(timeout.Token);
+        Assert.Equal(1, loads);
+
+        var ack = await runtime.SubmitAsync(
+            new RenameSessionCommand(StrongId.NewCommandId(), sessionId, 0, "after concurrent resume"), timeout.Token);
+        Assert.True(ack.Accepted);
+        await first.WaitUntilSequenceAsync(ack.LastEventSequence, timeout.Token);
+        await second.WaitUntilSequenceAsync(ack.LastEventSequence, timeout.Token);
+        Assert.Equal("after concurrent resume", first.Snapshot().State.Title);
+        Assert.Equal("after concurrent resume", second.Snapshot().State.Title);
+
+        first.Dispose();
+        var later = await runtime.SubmitAsync(
+            new RenameSessionCommand(StrongId.NewCommandId(), sessionId, ack.Revision, "still live"), timeout.Token);
+        Assert.True(later.Accepted);
+        await second.WaitUntilSequenceAsync(later.LastEventSequence, timeout.Token);
+        Assert.Equal("still live", second.Snapshot().State.Title);
+    }
+
+    [Fact]
+    public async Task ColdResume_CancelledWaiter_DoesNotReplaceActiveResumeGate()
+    {
+        await using var harness = TestHarness.Create();
+        var sessionId = await CreateStoredSessionAsync(harness);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loads = 0;
+        await using var runtime = harness.BuildRuntime(options => options with
+        {
+            SessionToolsProvider = async cancellationToken =>
+            {
+                Interlocked.Increment(ref loads);
+                entered.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return [];
+            },
+        });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var first = runtime.ResumeSessionAsync(sessionId, timeout.Token).AsTask();
+        await entered.Task.WaitAsync(timeout.Token);
+        using var cancellation = new CancellationTokenSource();
+        var cancelled = runtime.ResumeSessionAsync(sessionId, cancellation.Token).AsTask();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled.WaitAsync(timeout.Token));
+        var third = runtime.ResumeSessionAsync(sessionId, timeout.Token).AsTask();
+        release.TrySetResult();
+        var handles = await Task.WhenAll(first, third).WaitAsync(timeout.Token);
+        Assert.Equal(1, loads);
+        Assert.Equal(handles[0].Id, handles[1].Id);
+    }
+
+    [Fact]
+    public async Task ColdResume_FailedCreation_ReleasesGateForRetry()
+    {
+        await using var harness = TestHarness.Create();
+        var sessionId = await CreateStoredSessionAsync(harness);
+        var loads = 0;
+        await using var runtime = harness.BuildRuntime(options => options with
+        {
+            SessionToolsProvider = _ => Interlocked.Increment(ref loads) == 1
+                ? ValueTask.FromException<IReadOnlyList<Alcoler.Contracts.Tools.ITool>>(new IOException("load failed"))
+                : ValueTask.FromResult<IReadOnlyList<Alcoler.Contracts.Tools.ITool>>([]),
+        });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await Assert.ThrowsAsync<IOException>(() => runtime.ResumeSessionAsync(sessionId, timeout.Token).AsTask());
+        Assert.Null(runtime.TryObserve(sessionId));
+        await runtime.ResumeSessionAsync(sessionId, timeout.Token);
+        using var projection = runtime.Subscribe(sessionId);
+        Assert.Equal(sessionId, RuntimeOf(runtime, sessionId).SessionId);
+        Assert.Equal(2, loads);
+    }
+
+    private static async Task<SessionId> CreateStoredSessionAsync(TestHarness harness)
+    {
+        await using var runtime = harness.BuildRuntime();
+        var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        return session.Id;
+    }
+
+    private static async Task<IConversationProjection> ResumeAndObserveAsync(
+        AgentRuntime runtime, SessionId sessionId, CancellationToken cancellationToken)
+    {
+        await runtime.ResumeSessionAsync(sessionId, cancellationToken);
+        return runtime.Subscribe(sessionId);
+    }
+
+    [Fact]
     public async Task SubagentChild_WithResidentParentIsSkipped()
     {
         var clock = new ManualTimeProvider();

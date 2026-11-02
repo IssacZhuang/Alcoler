@@ -132,7 +132,7 @@ public sealed class FakeAgentRuntime : IAgentRuntime, ISessionActivityRuntime
         lock (_lock)
         {
             var session = RequireSession(sessionId);
-            return new FakeConversationProjection(session);
+            return session.ProjectionFactory?.Invoke() ?? new FakeConversationProjection(session);
         }
     }
 
@@ -141,8 +141,14 @@ public sealed class FakeAgentRuntime : IAgentRuntime, ISessionActivityRuntime
         lock (_lock)
         {
             var session = RequireSession(sessionId);
-            return new FakeConversationProjection(session);
+            return session.ProjectionFactory?.Invoke() ?? new FakeConversationProjection(session);
         }
+    }
+
+    public void UseProjection(SessionId sessionId, Func<IConversationProjection> factory)
+    {
+        lock (_lock)
+            RequireSession(sessionId).ProjectionFactory = factory;
     }
 
     public InteractionId SeedPendingPermission(SessionId sessionId)

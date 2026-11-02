@@ -65,46 +65,86 @@ const TOOL_STATE_LABEL = {
   failed: 'Error',
 };
 
-const OUT_TRUNC = 1500;
+const TEXT_PREVIEW = 1500;
+const INPUT_PREVIEW = 4000;
+const OUTPUT_PREVIEW = 6000;
+const OUTPUT_BLOCKS = 24;
+const STREAM_INTERVAL = 150;
 const FCS_MAX_FILES = 12;
+const rowSources = new WeakMap();
+
+function rowState() {
+  return { open: new Set(), all: new Set() };
+}
 
 export class Transcript {
-  constructor(el) {
+  constructor(el, { onChange } = {}) {
     this.el = el;
     this.els = new Map();
+    this.states = new Map();
     this.timers = new Map();
+    this.disposed = false;
+    this.notify = () => { if (!this.disposed) onChange?.(); };
+    this.onToggle = event => this.toggle(event);
+    this.onClick = event => this.showAll(event);
+    el.addEventListener('toggle', this.onToggle, true);
+    el.addEventListener('click', this.onClick);
+  }
+
+  state(rowId) {
+    if (!this.states.has(rowId)) this.states.set(rowId, rowState());
+    return this.states.get(rowId);
+  }
+
+  capture(rowId, el) {
+    const state = this.state(rowId);
+    for (const detail of el.querySelectorAll('details[data-disclosure]')) {
+      if (detail.open) state.open.add(detail.dataset.disclosure);
+      else state.open.delete(detail.dataset.disclosure);
+    }
+    return state;
   }
 
   rebuild(rows) {
+    if (this.disposed) return;
+    for (const [id, el] of this.els) this.capture(id, el);
     for (const t of this.timers.values()) clearTimeout(t.timer);
     this.timers.clear();
+    const changed = this.el.childNodes.length > 0;
     this.els.clear();
-    this.el.textContent = '';
+    const states = new Map();
     const frag = document.createDocumentFragment();
     for (const row of rows || []) {
       if (!row || !row.rowId) continue;
-      const el = rowElement(row);
+      const state = this.state(row.rowId);
+      const el = rowElement(row, state);
+      states.set(row.rowId, state);
       this.els.set(row.rowId, el);
       frag.appendChild(el);
     }
-    this.el.appendChild(frag);
-    hydrateThumbs(this.el);
+    this.states = states;
+    this.el.replaceChildren(frag);
+    hydrateThumbs(this.el, null, this.notify);
+    if (changed || this.els.size) this.notify();
   }
 
   append(row) {
-    if (!row || !row.rowId) return;
+    if (!row || !row.rowId || this.disposed) return;
     if (this.els.has(row.rowId)) { this.upsert(row); return; }
-    const el = rowElement(row);
+    const el = rowElement(row, this.state(row.rowId));
     this.els.set(row.rowId, el);
     this.el.appendChild(el);
-    hydrateThumbs(this.el, el);
+    hydrateThumbs(this.el, el, this.notify);
+    this.notify();
   }
 
   upsert(row) {
-    if (!row || !row.rowId) return;
+    if (!row || !row.rowId || this.disposed) return;
     const existing = this.els.get(row.rowId);
     if (!existing) { this.append(row); return; }
-    if (row.$type === 'assistant_message' && row.isStreaming) {
+    const status = normKey(row.status);
+    if ((row.$type === 'assistant_message' && row.isStreaming)
+      || (row.$type === 'tool_call' && ['pending', 'running', 'awaitingPermission'].includes(status))) {
       this.upsertThrottled(row, existing);
       return;
     }
@@ -112,16 +152,15 @@ export class Transcript {
     this.replace(existing, row);
   }
 
-  // Streaming rows are re-rendered at most 4 times per second.
   upsertThrottled(row, existing) {
     let t = this.timers.get(row.rowId);
     if (!t) {
-      t = { last: 0, timer: 0, row: null };
+      t = { last: -Infinity, timer: 0, row: null };
       this.timers.set(row.rowId, t);
     }
     t.row = row;
     if (t.timer) return;
-    const wait = 250 - (performance.now() - t.last);
+    const wait = STREAM_INTERVAL - (performance.now() - t.last);
     if (wait <= 0) {
       t.last = performance.now();
       t.row = null;
@@ -132,21 +171,72 @@ export class Transcript {
       const tt = this.timers.get(row.rowId);
       if (!tt) return;
       tt.timer = 0;
-      if (!tt.row) return;
-      const current = this.els.get(row.rowId);
       const pending = tt.row;
       tt.row = null;
       tt.last = performance.now();
-      if (current) this.replace(current, pending);
+      const current = this.els.get(row.rowId);
+      if (current && pending) this.replace(current, pending);
     }, wait);
   }
 
   replace(existing, row) {
-    const el = rowElement(row);
-    carryDetailsOpen(existing, el);
+    const el = rowElement(row, this.capture(row.rowId, existing));
     this.els.set(row.rowId, el);
     existing.replaceWith(el);
-    hydrateThumbs(this.el, el);
+    hydrateThumbs(this.el, el, this.notify);
+    this.notify();
+  }
+
+  toggle(event) {
+    const detail = event.target;
+    if (!detail.matches?.('details[data-disclosure]')) return;
+    const el = detail.closest('.row');
+    if (!el || this.els.get(el.dataset.rowId) !== el) return;
+    const state = this.state(el.dataset.rowId);
+    const key = detail.dataset.disclosure;
+    let changed = state.open.has(key) !== detail.open;
+    if (detail.open) state.open.add(key);
+    else state.open.delete(key);
+    if (key === 'tool') {
+      const body = detail.querySelector('.tool-body');
+      if (detail.open && !body.dataset.loaded) {
+        body.innerHTML = toolBodyHtml(rowSources.get(el), state);
+        body.dataset.loaded = '1';
+        hydrateThumbs(this.el, body, this.notify);
+        changed = true;
+      } else if (!detail.open && body.dataset.loaded) {
+        body.replaceChildren();
+        delete body.dataset.loaded;
+        changed = true;
+      }
+    }
+    if (changed) this.notify();
+  }
+
+  showAll(event) {
+    const button = event.target.closest?.('.out-more[data-section]');
+    if (!button) return;
+    const el = button.closest('.row');
+    if (!el || this.els.get(el.dataset.rowId) !== el) return;
+    const row = rowSources.get(el);
+    const state = this.state(el.dataset.rowId);
+    const key = button.dataset.section;
+    event.preventDefault();
+    if (key === 'outputs') {
+      state.all.add(key);
+      const body = el.querySelector('.tool-body');
+      body.innerHTML = toolBodyHtml(row, state);
+      hydrateThumbs(this.el, body, this.notify);
+    } else {
+      const text = toolSectionText(row, key);
+      const block = button.closest('.tool-text-block');
+      if (text == null || !block) return;
+      state.all.add(key);
+      block.querySelector('.out-clip').textContent = text;
+      block.querySelector('pre').classList.remove('is-clipped');
+      button.remove();
+    }
+    this.notify();
   }
 
   remove(rowId) {
@@ -154,6 +244,8 @@ export class Transcript {
     const el = this.els.get(rowId);
     if (el) el.remove();
     this.els.delete(rowId);
+    this.states.delete(rowId);
+    if (el) this.notify();
   }
 
   cancelTimer(rowId) {
@@ -163,22 +255,20 @@ export class Transcript {
   }
 
   dispose() {
+    this.disposed = true;
+    this.el.removeEventListener('toggle', this.onToggle, true);
+    this.el.removeEventListener('click', this.onClick);
     for (const t of this.timers.values()) clearTimeout(t.timer);
     this.timers.clear();
     this.els.clear();
+    this.states.clear();
   }
 }
 
-function carryDetailsOpen(oldEl, newEl) {
-  const a = oldEl.querySelectorAll('details');
-  const b = newEl.querySelectorAll('details');
-  const min = Math.min(a.length, b.length);
-  for (let i = 0; i < min; i++) b[i].open = a[i].open;
-}
-
-export function rowElement(row) {
+export function rowElement(row, state = rowState()) {
   const div = document.createElement('div');
   div.dataset.rowId = row.rowId;
+  rowSources.set(div, row);
   switch (row.$type) {
     case 'user_message':
       div.className = 'row row-user';
@@ -186,11 +276,11 @@ export function rowElement(row) {
       break;
     case 'assistant_message':
       div.className = 'row row-assistant';
-      div.innerHTML = assistantHtml(row);
+      div.innerHTML = assistantHtml(row, state);
       break;
     case 'tool_call':
       div.className = 'row row-tool';
-      div.innerHTML = toolCallHtml(row);
+      div.innerHTML = toolCallHtml(row, state);
       break;
     case 'file_change_summary':
       div.className = 'row row-fcs';
@@ -213,7 +303,19 @@ function sanitizeToken(s) {
 }
 
 function imgThumb(im) {
-  return `<button type="button" class="thumb" data-artifact="${esc(im.artifactUri || '')}" data-mime="${esc(im.mimeType || '')}" data-name="${esc(im.fileName || 'image')}" aria-label="View image"><span class="thumb-loading">${icon('camera')}</span></button>`;
+  const name = truncate(im.fileName || 'image', 256);
+  return `<button type="button" class="thumb" data-artifact="${esc(im.artifactUri || '')}" data-mime="${esc(im.mimeType || '')}" data-name="${esc(name)}" aria-label="${esc('View image: ' + name)}"><span class="thumb-loading">${icon('camera')}</span></button>`;
+}
+
+function artifactHtml(media) {
+  const mime = String(media.mimeType || '').split(';', 1)[0].trim().toLowerCase();
+  if (mime.startsWith('image/')) return imgThumb(media);
+  const name = truncate(media.fileName || 'attachment', 256);
+  const attrs = `data-artifact="${esc(media.artifactUri || '')}" data-mime="${esc(media.mimeType || '')}"`;
+  const link = `<a class="artifact-link" ${attrs} download="${esc(name)}" aria-disabled="true">${esc(name)}<span class="artifact-mime">${esc(mime || 'Download file')}</span></a>`;
+  const kind = mime.startsWith('audio/') ? 'audio' : mime.startsWith('video/') ? 'video' : '';
+  if (!kind) return link;
+  return `<figure class="media-attachment"><${kind} controls preload="none" ${attrs} aria-label="${esc(name)}"></${kind}><figcaption>${link}</figcaption></figure>`;
 }
 
 function userHtml(row) {
@@ -223,7 +325,7 @@ function userHtml(row) {
   return h;
 }
 
-function assistantHtml(row) {
+function assistantHtml(row, state) {
   const texts = [];
   const thinks = [];
   const files = [];
@@ -237,14 +339,14 @@ function assistantHtml(row) {
   let h = '';
   if (thinks.length) {
     const joined = thinks.join('\n\n');
-    h += `<details class="thinking"><summary><span class="thk-label">Thinking</span><span class="thk-len">${fmtNum(joined.length)} chars</span>${icon('chevron-down')}</summary><div class="thk-body">${esc(joined)}</div></details>`;
+    h += `<details class="thinking" data-disclosure="thinking"${state.open.has('thinking') ? ' open' : ''}><summary><span class="thk-label">Thinking</span><span class="thk-len">${fmtNum(joined.length)} chars</span>${icon('chevron-down')}</summary><div class="thk-body">${esc(joined)}</div></details>`;
   }
   if (texts.length) {
     h += `<div class="md-body">${renderMarkdown(texts.join('\n\n'))}${row.isStreaming ? '<span class="stream-cursor" aria-hidden="true"></span>' : ''}</div>`;
   } else if (row.isStreaming) {
     h += '<div class="md-body"><span class="stream-cursor" aria-hidden="true"></span></div>';
   }
-  if (files.length) h += `<div class="msg-images">${files.map(imgThumb).join('')}</div>`;
+  if (files.length) h += `<div class="msg-images">${files.map(artifactHtml).join('')}</div>`;
   return h;
 }
 
@@ -252,38 +354,215 @@ function safeJson(v) {
   try { return JSON.stringify(v, null, 2); } catch { return String(v); }
 }
 
-function toolCallHtml(row) {
-  const statusKey = normKey(row.status);
-  const status = STATUS_ICON[statusKey] ? statusKey : 'pending';
-  const statusCls = row.isError ? 'failed' : status;
-  const statusIco = row.isError ? 'x' : STATUS_ICON[status];
-  const stateLabel = row.isError ? 'Error' : TOOL_STATE_LABEL[status];
-  const dur = fmtDuration(row.duration);
-  let head = `<summary class="tool-head"><span class="tool-status ${statusCls}">${icon(statusIco)}</span><span class="tool-name">${esc(row.toolName || 'tool')}</span>`;
-  if (stateLabel) head += `<span class="tool-state ${statusCls}">${stateLabel}</span>`;
-  if (dur) head += `<span class="tool-dur">${dur}</span>`;
-  head += `<span class="tool-chev">${icon('chevron-right')}</span></summary>`;
+const SUMMARY_KEYS = ['description', 'file_path', 'path', 'command', 'pattern', 'query', 'url'];
+const CONTEXT_LABELS = {
+  description: 'Description', file_path: 'File path', path: 'Path', command: 'Command',
+  pattern: 'Pattern', query: 'Query', url: 'URL', action: 'Action',
+};
+const TOOL_PRESENTATION = {
+  bash: ['Terminal', 'M4 17l6-6-6-6M12 19h8'],
+  read: ['Read', 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M8 13h8M8 17h6'],
+  edit: ['Edit', 'M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L9 17l-4 1 1-4ZM15 5l3 3'],
+  write: ['Write', 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M12 12v6M9 15h6'],
+  grep: ['Search', 'M21 21l-4.34-4.34M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z'],
+  browser: ['Browser', 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10Z'],
+  todoread: ['Tasks', 'm3 6 2 2 4-4M13 6h8m-18 6 2 2 4-4M13 12h8m-18 6 2 2 4-4M13 18h8'],
+  task: ['Agent', 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 3a4 4 0 1 0 0 0 8 4 4 0 0 0 0-8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'],
+  exitplanmode: ['Plan', 'M9 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4M9 3h6v4H9ZM8 12h8M8 16h5'],
+};
+const TOOL_ALIASES = {
+  shell: 'bash', terminal: 'bash', runcommand: 'bash', readfile: 'read', editfile: 'edit',
+  writefile: 'write', glob: 'grep', todowrite: 'todoread',
+};
 
-  let body = '';
-  if (row.input != null) {
-    body += `<div class="tool-sec">Input</div><pre class="tool-io">${esc(safeJson(row.input))}</pre>`;
-  }
-  const outs = row.output || [];
-  const textOuts = outs.filter(o => o && typeof o.text === 'string');
-  const mediaOuts = outs.filter(o => o && o.artifactUri);
-  if (textOuts.length) body += outputTextHtml(textOuts[textOuts.length - 1].text);
-  if (mediaOuts.length) body += `<div class="msg-images">${mediaOuts.map(imgThumb).join('')}</div>`;
-  if (!body) body = '<div class="tool-empty">No output yet</div>';
-
-  return `<details class="tool${row.isError ? ' is-error' : ''}">${head}<div class="tool-body">${body}</div></details>`;
+function inputField(input, key) {
+  const value = input && typeof input === 'object' && !Array.isArray(input) ? input[key] : null;
+  return typeof value === 'string' && /\S/.test(value) ? { key, value } : null;
 }
 
-function outputTextHtml(text) {
-  const head = '<div class="tool-sec">Output</div>';
-  if (text.length <= OUT_TRUNC) {
-    return `${head}<pre class="tool-io out-text">${esc(text)}</pre>`;
+function summaryField(input) {
+  for (const key of SUMMARY_KEYS) {
+    const field = inputField(input, key);
+    if (field) return field;
   }
-  return `${head}<pre class="tool-io out-text is-clipped"><span class="out-clip">${esc(text.slice(0, OUT_TRUNC))}\u2026</span><button type="button" class="link-btn out-more" data-full="${esc(text)}">Show all</button></pre>`;
+  return null;
+}
+
+export function toolSummary(input) {
+  const field = summaryField(input);
+  if (!field) return '';
+  const line = field.value.slice(0, 161).split(/[\r\n]/, 1)[0];
+  return line.length > 160 ? line.slice(0, 157) + '...' : line;
+}
+
+function toolFields(row) {
+  const first = summaryField(row.input) || inputField(row.input, 'action');
+  const fields = first ? [first] : [];
+  const add = key => {
+    const field = inputField(row.input, key);
+    if (field && !fields.some(f => f.key === key)) fields.push(field);
+  };
+  add(inputField(row.input, 'file_path') ? 'file_path' : 'path');
+  const name = String(row.toolName || '').toLowerCase();
+  if (name === 'grep' || name === 'glob') {
+    add('pattern');
+    add('query');
+  } else if (['bash', 'shell', 'terminal', 'runcommand'].includes(name)) add('command');
+  else if (name === 'browser') add('action');
+  return fields.slice(0, 3);
+}
+
+function isPathField(field) {
+  return field && (field.key === 'file_path' || field.key === 'path');
+}
+
+function pathParts(value) {
+  const end = value.search(/[\r\n]/);
+  const line = end < 0 ? value : value.slice(0, end);
+  const trimmed = line.replace(/[\\/]+$/, '');
+  if (!trimmed || /^[a-zA-Z]:$/.test(trimmed)) return { name: line, parent: '' };
+  const split = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  const parent = trimmed.slice(0, split + 1);
+  return { name: trimmed.slice(split + 1), parent: parent.length > 36 ? '...' + parent.slice(-33) : parent };
+}
+
+function contextHtml(field) {
+  if (isPathField(field)) {
+    const path = pathParts(field.value);
+    return `<span class="tool-context tool-file-context"><span class="tool-context-label">${CONTEXT_LABELS[field.key]}:</span> <span class="tool-file-name">${esc(truncate(path.name, 160))}</span>${path.parent ? ` <span class="tool-file-parent">${esc(path.parent)}</span>` : ''}</span>`;
+  }
+  return `<span class="tool-context"><span class="tool-context-label">${CONTEXT_LABELS[field.key]}:</span> ${esc(toolSummary({ description: field.value }))}</span>`;
+}
+
+function toolGlyph(path) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
+}
+
+export function toolCallHtml(row, state = rowState()) {
+  const statusKey = normKey(row.status);
+  const status = Object.hasOwn(STATUS_ICON, statusKey) ? statusKey : 'pending';
+  const error = row.isError || status === 'failed';
+  const statusCls = error ? 'failed' : status;
+  const stateLabel = error ? 'Error' : TOOL_STATE_LABEL[status];
+  const statusLabel = stateLabel || 'Succeeded';
+  const name = truncate(row.toolName || 'tool', 80);
+  const key = String(row.toolName || '').toLowerCase();
+  const canonical = Object.hasOwn(TOOL_ALIASES, key) ? TOOL_ALIASES[key] : key;
+  const presentation = Object.hasOwn(TOOL_PRESENTATION, canonical) ? TOOL_PRESENTATION[canonical] : null;
+  const fields = toolFields(row);
+  const summary = fields[0];
+  const path = isPathField(summary) ? pathParts(summary.value) : null;
+  const context = (path?.parent ? `<span class="tool-context tool-path-parent">${esc(path.parent)}</span>` : '')
+    + fields.slice(1).map(contextHtml).join('');
+  const summaryText = path ? truncate(path.name, 160) : toolSummary(row.input) || toolSummary({ description: summary?.value });
+  const dur = fmtDuration(row.duration);
+  let head = `<summary class="tool-head"><span class="tool-icon">${presentation ? toolGlyph(presentation[1]) : icon('wrench')}</span><span class="tool-title"><span class="tool-label"><span class="tool-name" title="${esc(name)}">${esc(presentation ? presentation[0] : name)}</span>${summary ? `<span class="tool-summary${path ? ' is-path' : ''}">${esc(summaryText)}</span>` : ''}</span>${context}</span><span class="tool-meta">`;
+  const change = row.fileChange;
+  if (Number(change?.added) > 0) head += `<span class="tool-add" aria-label="${esc(fmtNum(change.added))} lines added">+${fmtNum(change.added)}</span>`;
+  if (Number(change?.removed) > 0) head += `<span class="tool-del" aria-label="${esc(fmtNum(change.removed))} lines removed">\u2212${fmtNum(change.removed)}</span>`;
+  head += `<span class="tool-status ${statusCls}" role="img" aria-label="${statusLabel}">${icon(error ? 'x' : STATUS_ICON[status])}</span>`;
+  if (stateLabel) head += `<span class="tool-state ${statusCls}">${stateLabel}</span>`;
+  if (dur) head += `<span class="tool-dur" aria-label="Elapsed time: ${esc(dur)}">${esc(dur)}</span>`;
+  head += `</span><span class="tool-chev">${icon('chevron-right')}</span></summary>`;
+  const open = state.open.has('tool');
+  return `<details class="tool${error ? ' is-error' : ''}" data-disclosure="tool"${open ? ' open' : ''}>${head}<div class="tool-body"${open ? ' data-loaded="1"' : ''}>${open ? toolBodyHtml(row, state) : ''}</div></details>`;
+}
+
+export function jsonPreview(value, limit = INPUT_PREVIEW) {
+  const chunks = [];
+  const ancestors = new Set();
+  const stop = {};
+  let length = 0;
+  let clipped = false;
+  const write = text => {
+    const left = limit - length;
+    chunks.push(text.slice(0, left));
+    length += Math.min(text.length, left);
+    if (text.length > left) { clipped = true; throw stop; }
+  };
+  const string = text => write(JSON.stringify(text.slice(0, limit - length + 1)));
+  const visit = (v, depth) => {
+    if (v === null || typeof v !== 'object') {
+      if (typeof v === 'string') string(v);
+      else write(JSON.stringify(v) ?? 'null');
+      return;
+    }
+    if (ancestors.has(v) || depth >= 32) {
+      clipped = true;
+      write(ancestors.has(v) ? '"[Circular]"' : '"[Depth limit]"');
+      return;
+    }
+    ancestors.add(v);
+    const array = Array.isArray(v);
+    write(array ? '[' : '{');
+    let count = 0;
+    const entry = (key, item) => {
+      write((count++ ? ',\n' : '\n') + '  '.repeat(depth + 1));
+      if (!array) { string(key); write(': '); }
+      visit(item, depth + 1);
+    };
+    if (array) {
+      for (let i = 0; i < v.length; i++) entry('', v[i]);
+    } else {
+      for (const key in v) {
+        if (!Object.hasOwn(v, key)) continue;
+        const item = v[key];
+        if (item === undefined || typeof item === 'function' || typeof item === 'symbol') continue;
+        entry(key, item);
+      }
+    }
+    if (count) write('\n' + '  '.repeat(depth));
+    write(array ? ']' : '}');
+    ancestors.delete(v);
+  };
+  try { visit(value, 0); }
+  catch (error) {
+    if (error !== stop) return { text: 'Input preview unavailable', clipped: true };
+  }
+  return { text: chunks.join(''), clipped };
+}
+
+function textPreview(text, all, limit = TEXT_PREVIEW) {
+  return { text: all ? text : text.slice(0, limit), clipped: !all && text.length > limit };
+}
+
+function textBlockHtml(label, key, preview, cls = '') {
+  return `<div class="tool-text-block" data-section="${esc(key)}"><div class="tool-sec">${esc(label)}</div><pre class="tool-io ${cls}${preview.clipped ? ' is-clipped' : ''}"><span class="out-clip">${esc(preview.text)}${preview.clipped ? '\u2026' : ''}</span></pre>${preview.clipped ? `<button type="button" class="link-btn out-more" data-section="${esc(key)}" aria-label="${esc('Show all ' + label.toLowerCase())}">Show all</button>` : ''}</div>`;
+}
+
+function toolSectionText(row, key) {
+  if (key === 'input') return safeJson(row.input);
+  if (key.startsWith('context:')) return inputField(row.input, key.slice(8))?.value ?? null;
+  const match = /^output-(\d+)$/.exec(key);
+  return match && typeof row.output?.[Number(match[1])]?.text === 'string'
+    ? row.output[Number(match[1])].text : null;
+}
+
+export function toolBodyHtml(row, state = rowState()) {
+  let body = toolFields(row).map(field => {
+    const key = 'context:' + field.key;
+    return textBlockHtml(CONTEXT_LABELS[field.key], key, textPreview(field.value, state.all.has(key)), 'tool-context-detail');
+  }).join('');
+  if (row.input != null) {
+    const preview = state.all.has('input') ? { text: safeJson(row.input), clipped: false } : jsonPreview(row.input);
+    body += textBlockHtml('Input', 'input', preview);
+  }
+  const outs = Array.isArray(row.output) ? row.output : [];
+  const count = state.all.has('outputs') ? outs.length : Math.min(outs.length, OUTPUT_BLOCKS);
+  let budget = OUTPUT_PREVIEW;
+  for (let i = 0; i < count; i++) {
+    const out = outs[i];
+    if (!out) continue;
+    if (typeof out.text === 'string') {
+      const key = 'output-' + i;
+      const preview = textPreview(out.text, state.all.has(key), Math.min(TEXT_PREVIEW, budget));
+      budget = Math.max(0, budget - preview.text.length);
+      body += textBlockHtml(outs.length > 1 ? 'Output ' + (i + 1) : 'Output', key, preview, 'out-text');
+    } else if (out.artifactUri) body += `<div class="msg-images tool-media">${artifactHtml(out)}</div>`;
+  }
+  if (count < outs.length) body += `<button type="button" class="link-btn out-more" data-section="outputs">Show all output blocks (${fmtNum(outs.length - count)} more)</button>`;
+  if (!outs.length) body += '<div class="tool-empty">No output yet</div>';
+  return body;
 }
 
 function fileChangeHtml(row) {
@@ -298,36 +577,51 @@ function fileChangeHtml(row) {
   return `<div class="fcs"><div class="fcs-total"><span class="fcs-add">+${fmtNum(added)}</span> <span class="fcs-del">\u2212${fmtNum(removed)}</span><span class="fcs-count">across ${files.length} ${files.length === 1 ? 'file' : 'files'}</span></div>${listHtml ? `<ul class="fcs-list">${listHtml}</ul>` : ''}</div>`;
 }
 
-// Fill [data-artifact] thumbs with authenticated blob object URLs.
-export function hydrateThumbs(scope, root) {
+export function hydrateThumbs(scope, root, onChange = () => {}) {
   const el = root || scope;
-  el.querySelectorAll('.thumb[data-artifact]:not([data-hydrated])').forEach(btn => {
-    btn.dataset.hydrated = '1';
-    const uri = btn.dataset.artifact;
-    if (!uri) {
-      btn.classList.add('thumb-error');
-      const s = document.createElement('span');
-      s.className = 'thumb-fail';
-      s.textContent = 'unavailable';
-      btn.replaceChildren(s);
-      return;
-    }
-    artifactObjectUrl(uri, btn.dataset.mime).then(url => {
-      if (!btn.isConnected) return;
-      btn.dataset.url = url;
-      const img = new Image();
-      img.alt = btn.dataset.name || 'image';
-      img.decoding = 'async';
-      img.src = url;
-      btn.replaceChildren(img);
-    }).catch(() => {
-      if (!btn.isConnected) return;
-      btn.classList.add('thumb-error');
-      const s = document.createElement('span');
-      s.className = 'thumb-fail';
-      s.textContent = 'unavailable';
-      btn.replaceChildren(s);
-    });
+  const selector = ['.thumb', '.artifact-link', 'audio', 'video']
+    .map(s => s + '[data-artifact]:not([data-hydrated])').join(',');
+  el.querySelectorAll(selector).forEach(target => {
+    target.dataset.hydrated = '1';
+    const notify = () => { if (target.isConnected) onChange(); };
+    const fail = () => {
+      if (!target.isConnected) return;
+      if (target.matches('.thumb')) {
+        target.classList.add('thumb-error');
+        const span = document.createElement('span');
+        span.className = 'thumb-fail';
+        span.textContent = 'unavailable';
+        target.replaceChildren(span);
+      } else {
+        target.classList.add('artifact-error');
+        target.setAttribute('title', 'Attachment unavailable');
+        if (target.matches('a')) target.append(' (unavailable)');
+      }
+      notify();
+    };
+    const uri = target.dataset.artifact;
+    if (!uri) { fail(); return; }
+    artifactObjectUrl(uri, target.dataset.mime).then(url => {
+      if (!target.isConnected) return;
+      if (target.matches('.thumb')) {
+        target.dataset.url = url;
+        const img = new Image();
+        img.alt = target.dataset.name || 'image';
+        img.decoding = 'async';
+        img.addEventListener('load', notify, { once: true });
+        img.addEventListener('error', fail, { once: true });
+        img.src = url;
+        target.replaceChildren(img);
+      } else if (target.matches('a')) {
+        target.href = url;
+        target.removeAttribute('aria-disabled');
+      } else {
+        target.addEventListener('loadedmetadata', notify, { once: true });
+        target.addEventListener('error', fail, { once: true });
+        target.src = url;
+      }
+      notify();
+    }).catch(fail);
   });
 }
 

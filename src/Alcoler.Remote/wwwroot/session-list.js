@@ -2,7 +2,7 @@
 // survive re-renders; callers own the polling and title cache.
 
 import { icon, relTime, workspaceTail } from './util.js';
-import { normKey } from './render.js';
+import { normKey, phaseLabel } from './render.js';
 
 const PAGE_SIZE = 5;
 
@@ -28,13 +28,28 @@ export class SessionList {
     this.error = null;
     this.expanded = new Map();
     this.visible = new Map();
+    this.rendered = false;
   }
 
   setSessions(sessions) {
-    this.sessions = Array.isArray(sessions) ? sessions.slice() : [];
+    const next = Array.isArray(sessions) ? sessions.slice() : [];
+    const unchanged = this.rendered && !this.loading && !this.error && sameSessions(this.sessions, next);
+    this.sessions = next;
     this.loading = false;
     this.error = null;
-    this.render();
+    if (!unchanged) this.render();
+  }
+
+  updateActivity(sessionId, activity) {
+    const session = this.sessions.find(item => item.id === sessionId);
+    if (!session) return;
+    const next = activity ? { ...session.activity, ...activity } : null;
+    if (sameActivity(session.activity, next)) return;
+    session.activity = next;
+    if (!this.container || this.loading || this.error) return;
+    const row = [...this.container.querySelectorAll('.session-row')].find(item => item.dataset.id === sessionId);
+    if (row) this.applyActivity(row, session);
+    else if (needsAttention(session)) this.render();
   }
 
   setActive(sessionId) {
@@ -54,6 +69,8 @@ export class SessionList {
       if (row.dataset.id !== sessionId) continue;
       const titleEl = row.querySelector('.sr-title');
       if (titleEl) titleEl.textContent = display;
+      const session = this.sessions.find(item => item.id === sessionId);
+      if (session) this.applyActivity(row, session);
       break;
     }
   }
@@ -86,6 +103,7 @@ export class SessionList {
 
   render() {
     if (!this.container) return;
+    this.rendered = true;
     this.container.textContent = '';
     if (this.loading) {
       const wrap = document.createElement('div');
@@ -203,7 +221,9 @@ export class SessionList {
     body.className = 'session-group-body sl-group-body';
     const total = group.sessions.length;
     const visibleCount = this.visibleCount(group.key, total);
-    for (const session of group.sessions.slice(0, visibleCount)) {
+    const shown = group.sessions.filter((session, index) =>
+      index < visibleCount || session.id === this.activeId || needsAttention(session));
+    for (const session of shown) {
       body.appendChild(this.sessionElement(session));
     }
     rootEl.appendChild(body);
@@ -211,7 +231,7 @@ export class SessionList {
     if (total > PAGE_SIZE) {
       const more = document.createElement('div');
       more.className = 'session-group-more sl-group-more';
-      if (visibleCount < total) {
+      if (shown.length < total) {
         const showMore = document.createElement('button');
         showMore.type = 'button';
         showMore.className = 'link-btn sl-show-more';
@@ -244,7 +264,6 @@ export class SessionList {
     const id = String(session.id || '');
     const title = sessionDisplayTitle(session);
     const active = this.activeId === id;
-    const state = activityState(session.activity, active);
 
     const wrap = document.createElement('div');
     wrap.className = 'session-row-wrap sl-row-wrap';
@@ -259,35 +278,22 @@ export class SessionList {
     }
 
     const indicator = document.createElement('span');
-    indicator.className = 'sl-indicator' + (state.kind ? ' ' + state.kind : '');
+    indicator.className = 'sl-indicator';
     indicator.setAttribute('aria-hidden', 'true');
-    if (state.kind === 'running') {
-      const spinner = document.createElement('span');
-      spinner.className = 'sl-spinner';
-      spinner.innerHTML = icon('loader');
-      indicator.appendChild(spinner);
-    } else if (state.kind === 'failed' || state.kind === 'completed' || state.kind === 'active') {
-      const dot = document.createElement('span');
-      dot.className = 'sl-dot ' + state.kind;
-      indicator.appendChild(dot);
-    }
 
     const main = document.createElement('span');
     main.className = 'sr-main sl-main';
     const titleEl = document.createElement('span');
     titleEl.className = 'sr-title sl-title';
     titleEl.textContent = title;
+    const status = document.createElement('span');
+    status.className = 'sl-status';
     const time = document.createElement('span');
     time.className = 'sr-time sl-time';
-    if (state.awaiting) {
-      time.classList.add('is-awaiting');
-      time.textContent = 'Awaiting';
-      time.title = 'Waiting for confirmation';
-    } else {
-      time.textContent = relTime(session.updatedAt);
-    }
-    main.append(titleEl, time);
+    time.textContent = relTime(session.updatedAt);
+    main.append(titleEl, status, time);
     row.append(indicator, main);
+    this.applyActivity(row, session);
     row.addEventListener('click', () => {
       if (this.onOpen) this.onOpen(id);
     });
@@ -308,6 +314,37 @@ export class SessionList {
     return wrap;
   }
 
+  applyActivity(row, session) {
+    const state = activityState(session.activity, this.activeId === session.id);
+    const indicator = row.querySelector('.sl-indicator');
+    if (indicator.dataset.kind !== state.kind) {
+      indicator.dataset.kind = state.kind;
+      indicator.className = 'sl-indicator ' + state.kind;
+      indicator.textContent = '';
+      if (state.kind === 'running') {
+        const spinner = document.createElement('span');
+        spinner.className = 'sl-spinner';
+        spinner.innerHTML = icon('loader');
+        indicator.appendChild(spinner);
+      } else if (state.kind === 'waiting' || state.kind === 'failed') {
+        indicator.innerHTML = icon(state.kind === 'waiting' ? 'clock' : 'x');
+      } else if (state.kind === 'completed' || state.kind === 'active') {
+        const dot = document.createElement('span');
+        dot.className = 'sl-dot ' + state.kind;
+        indicator.appendChild(dot);
+      }
+    }
+    const status = row.querySelector('.sl-status');
+    status.className = 'sl-status ' + state.kind;
+    status.textContent = state.label;
+    status.title = state.description;
+    status.hidden = !state.label;
+    row.querySelector('.sr-time').hidden = !!state.label;
+    row.dataset.status = state.kind;
+    row.setAttribute('aria-label', `${sessionDisplayTitle(session)}, ${state.description}`);
+    row.title = `${sessionDisplayTitle(session)}\n${state.description}`;
+  }
+
   isExpanded(key) {
     if (!this.expanded.has(key)) this.expanded.set(key, true);
     return this.expanded.get(key);
@@ -324,6 +361,7 @@ export class SessionList {
     this.activeId = null;
     this.expanded.clear();
     this.visible.clear();
+    this.rendered = false;
     if (this.container) this.container.textContent = '';
     this.onOpen = null;
     this.onArchive = null;
@@ -336,13 +374,37 @@ function activityState(activity, active) {
   const phase = normKey(activity && activity.phase);
   const outcome = normKey(activity && activity.lastOutcome);
   if (phase === 'awaitingPermission' || phase === 'awaitingInteraction') {
-    return { kind: 'awaiting', awaiting: true };
+    return {
+      kind: 'waiting', label: 'Waiting',
+      description: phase === 'awaitingPermission' ? 'Waiting for approval' : 'Waiting for your answer',
+    };
   }
-  if (phase && phase !== 'idle') return { kind: 'running', awaiting: false };
-  if (outcome === 'failed') return { kind: 'failed', awaiting: false };
-  if (outcome === 'completed' && !active) return { kind: 'completed', awaiting: false };
-  if (active) return { kind: 'active', awaiting: false };
-  return { kind: '', awaiting: false };
+  if (phase === 'error') return { kind: 'failed', label: 'Failed', description: 'Failed' };
+  if (['processingInput', 'awaitingModel', 'streaming', 'executingTools', 'completing'].includes(phase)) {
+    return { kind: 'running', label: 'Running', description: `Running: ${phaseLabel(phase)}` };
+  }
+  if (outcome === 'failed') return { kind: 'failed', label: 'Failed', description: 'Failed' };
+  if (outcome === 'completed' && !active) return { kind: 'completed', label: '', description: 'Completed' };
+  return { kind: active ? 'active' : 'idle', label: '', description: 'Idle' };
+}
+
+function needsAttention(session) {
+  const state = activityState(session.activity, false);
+  return state.kind === 'running' || state.kind === 'waiting';
+}
+
+function sameActivity(a, b) {
+  return normKey(a && a.phase) === normKey(b && b.phase) &&
+    normKey(a && a.lastOutcome) === normKey(b && b.lastOutcome);
+}
+
+function sameSessions(a, b) {
+  return a.length === b.length && a.every((session, index) => {
+    const other = b[index];
+    return session.id === other.id && session.title === other.title &&
+      session.workspaceRoot === other.workspaceRoot && session.updatedAt === other.updatedAt &&
+      sameActivity(session.activity, other.activity);
+  });
 }
 
 function timeValue(value) {

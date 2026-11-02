@@ -176,6 +176,7 @@ function createShell() {
     pollTimer: 0,
     listRefreshTimer: 0,
     refreshSeq: 0,
+    refreshInFlight: false,
     draftWorkspace: '',
     draftMode: 'build',
     draftSending: false,
@@ -389,17 +390,19 @@ function onVisibilityChange() {
   }
   startPolling(shell);
   refreshSessions({ silent: true });
-  if (convo && convo.ws && convo.ws.status === 'offline') convo.ws.manualReconnect();
+  if (convo && convo.ws) convo.ws.ensureConnected();
+  if (convo && convo.refreshLayout) convo.refreshLayout();
 }
 
 function onOnline() {
-  if (convo && convo.ws && convo.ws.status === 'offline') convo.ws.manualReconnect();
+  if (convo && convo.ws) convo.ws.ensureConnected();
   if (shell) refreshSessions({ silent: true });
 }
 
 async function refreshSessions({ silent = false } = {}) {
   const sh = shell;
-  if (!sh || !api.getToken()) return;
+  if (!sh || !api.getToken() || sh.refreshInFlight) return;
+  sh.refreshInFlight = true;
   const seq = ++sh.refreshSeq;
   if (!silent || sh.listState !== 'ready') {
     sh.listState = 'loading';
@@ -417,6 +420,8 @@ async function refreshSessions({ silent = false } = {}) {
       sh.list.showError(sessionListErrorMessage(e));
     }
     return;
+  } finally {
+    sh.refreshInFlight = false;
   }
   if (!shell || shell !== sh || seq !== sh.refreshSeq) return;
   sessions = Array.isArray(sessions) ? sessions : [];
@@ -465,7 +470,7 @@ function startPolling(sh) {
   sh.pollTimer = setInterval(() => {
     if (document.hidden) return;
     refreshSessions({ silent: true });
-  }, 15000);
+  }, 5000);
 }
 
 function stopPolling(sh) {
@@ -743,9 +748,13 @@ function startConversation(sh, id, restore) {
     snapshotReady: false,
     sent: new Set(),
     titleFallback: sessionTitles.get(id) || 'Session',
-    transcript: new Transcript(els.transcript),
+    transcript: null,
     ws: null,
+    followLatest: true,
+    layoutFrame: 0,
     lastPendingKey: null,
+    lastQueueKey: null,
+    lastTitle: null,
     lastPhase: null,
     restoreError: '',
     connStatus: 'offline',
@@ -780,8 +789,24 @@ function startConversation(sh, id, restore) {
   sh.sessionComposer.setPlan(false);
 
   const nearBottom = () => els.scroll.scrollHeight - els.scroll.scrollTop - els.scroll.clientHeight < 80;
-  const toBottom = () => { els.scroll.scrollTop = els.scroll.scrollHeight; };
+  const toBottom = () => {
+    st.followLatest = true;
+    els.scroll.scrollTop = els.scroll.scrollHeight;
+  };
   const updateJump = () => { els.jump.hidden = nearBottom(); };
+  const refreshLayout = () => {
+    if (st.disposed || convo !== st || st.layoutFrame) return;
+    st.layoutFrame = requestAnimationFrame(() => {
+      st.layoutFrame = 0;
+      if (st.disposed || convo !== st) return;
+      if (st.followLatest) toBottom();
+      updateJump();
+    });
+  };
+  st.refreshLayout = refreshLayout;
+  st.transcript = new Transcript(els.transcript, { onChange: refreshLayout });
+  st.resizeObserver = new ResizeObserver(refreshLayout);
+  st.resizeObserver.observe(els.transcript);
 
   const closeOverlay = () => {
     els.overlay.hidden = true;
@@ -800,15 +825,6 @@ function startConversation(sh, id, restore) {
       setTimeout(() => { copyBtn.textContent = old; }, 1200);
       return;
     }
-    const more = event.target.closest('.out-more');
-    if (more) {
-      const pre = more.closest('pre');
-      const clip = pre && pre.querySelector('.out-clip');
-      if (clip && more.dataset.full != null) clip.textContent = more.dataset.full;
-      more.remove();
-      if (pre) pre.classList.remove('is-clipped');
-      return;
-    }
     const thumb = event.target.closest('.thumb[data-url]');
     if (thumb) {
       els.overlayImg.src = thumb.dataset.url;
@@ -816,12 +832,18 @@ function startConversation(sh, id, restore) {
     }
   };
 
-  const onScroll = () => updateJump();
+  const onScroll = () => {
+    st.followLatest = nearBottom();
+    updateJump();
+  };
   els.transcript.addEventListener('click', onTranscriptClick);
   els.scroll.addEventListener('scroll', onScroll, { passive: true });
   st.onTranscriptClick = onTranscriptClick;
   st.onScroll = onScroll;
-  els.jump.onclick = toBottom;
+  els.jump.onclick = () => {
+    toBottom();
+    updateJump();
+  };
   els.overlay.onclick = event => { if (event.target === els.overlay) closeOverlay(); };
   els.overlayClose.onclick = closeOverlay;
 
@@ -855,7 +877,11 @@ function startConversation(sh, id, restore) {
   };
 
   st.setConn = status => {
+    if (st.disposed || convo !== st) return;
     st.connStatus = status;
+    els.dot.title = status === 'online' ? 'Live updates connected' : status === 'offline' ? 'Disconnected' : 'Connecting to live updates';
+    els.dot.setAttribute('aria-label', els.dot.title);
+    sh.sessionComposer.setReady(st.snapshotReady && status === 'online');
     st.updateConn();
   };
 
@@ -905,21 +931,30 @@ function startConversation(sh, id, restore) {
   function updateChrome() {
     const state = st.state || {};
     const title = state.title || st.titleFallback || 'Session';
-    els.title.textContent = title;
-    document.title = title + ' — Alcoler';
-    sessionTitles.set(id, title);
-    sh.list.updateTitle(id, title);
-    sh.list.setActive(id);
+    if (st.lastTitle !== title) {
+      st.lastTitle = title;
+      els.title.textContent = title;
+      document.title = title + ' — Alcoler';
+      sessionTitles.set(id, title);
+      sh.list.updateTitle(id, title);
+    }
 
     const phase = normKey(state.phase || 'idle') || 'idle';
-    els.phase.textContent = phaseLabel(phase);
-    els.phase.className = 'phase-text phase-' + sanitizeToken(phase);
+    if (st.lastPhase !== phase) {
+      els.phase.textContent = phaseLabel(phase);
+      els.phase.className = 'phase-text phase-' + sanitizeToken(phase);
+      sh.list.updateActivity(id, { phase });
+    }
 
     const queue = Array.isArray(state.queue) ? state.queue : [];
-    els.queueBadge.hidden = queue.length === 0;
-    els.queueBadge.textContent = queue.length ? `${queue.length} queued` : '';
-    els.queueStrip.hidden = queue.length === 0;
-    renderQueue(els.queueChips, queue);
+    const queueKey = JSON.stringify(queue);
+    if (st.lastQueueKey !== queueKey) {
+      st.lastQueueKey = queueKey;
+      els.queueBadge.hidden = queue.length === 0;
+      els.queueBadge.textContent = queue.length ? `${queue.length} queued` : '';
+      els.queueStrip.hidden = queue.length === 0;
+      renderQueue(els.queueChips, queue);
+    }
 
     const label = activityLabel(phase);
     const showActivity = !!label;
@@ -1031,13 +1066,16 @@ function startConversation(sh, id, restore) {
     if (typeof snapshot.revision === 'number') st.revision = snapshot.revision;
     if (typeof snapshot.sequence === 'number') st.lastSeq = snapshot.sequence;
     st.state = snapshot.state || {};
-    const stick = st.transcript.els.size === 0 || nearBottom();
+    const stick = st.transcript.els.size === 0 || st.followLatest;
+    const scrollTop = els.scroll.scrollTop;
+    st.followLatest = stick;
     st.transcript.rebuild(snapshot.rows || []);
-    sh.sessionComposer.setReady(true);
+    sh.sessionComposer.setReady(st.connStatus === 'online');
     updateChrome();
     st.updateConn();
     if (stick) toBottom();
-    updateJump();
+    else els.scroll.scrollTop = scrollTop;
+    refreshLayout();
   };
 
   const applyDelta = delta => {
@@ -1045,19 +1083,19 @@ function startConversation(sh, id, restore) {
     // Stale deltas are dropped; the snapshot after a reconnect is authoritative.
     if (typeof delta.sequence === 'number' && st.lastSeq != null && delta.sequence <= st.lastSeq) return;
     if (typeof delta.sequence === 'number') st.lastSeq = delta.sequence;
-    const stick = nearBottom();
+    let stateChanged = false;
     for (const op of delta.ops || []) {
       if (!op) continue;
       if (op.$type === 'row_appended' && op.row) st.transcript.append(op.row);
       else if (op.$type === 'row_upserted' && op.row) st.transcript.upsert(op.row);
       else if (op.$type === 'row_removed') st.transcript.remove(op.rowId);
-      else if (op.$type === 'state_patch') {
-        st.state = op.state || st.state;
-        updateChrome();
+      else if (op.$type === 'state_patch' && op.state) {
+        st.state = op.state;
+        stateChanged = true;
       }
     }
-    if (stick) toBottom();
-    updateJump();
+    if (stateChanged) updateChrome();
+    refreshLayout();
   };
 
   st.ws = new StreamClient({
@@ -1091,6 +1129,8 @@ function disposeConversation() {
   convo = null;
   st.disposed = true;
   if (st.ws) st.ws.close();
+  if (st.layoutFrame) cancelAnimationFrame(st.layoutFrame);
+  if (st.resizeObserver) st.resizeObserver.disconnect();
   st.transcript.dispose();
   if (st.onTranscriptClick && st.els.transcript) {
     st.els.transcript.removeEventListener('click', st.onTranscriptClick);

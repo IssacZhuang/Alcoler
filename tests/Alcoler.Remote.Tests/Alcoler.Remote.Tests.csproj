@@ -7,5 +7,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Alcoler.Remote\Alcoler.Remote.csproj" />
     <ProjectReference Include="..\..\src\Alcoler.Contracts\Alcoler.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Alcoler.Kernel\Alcoler.Kernel.csproj" />
   </ItemGroup>
 </Project>
