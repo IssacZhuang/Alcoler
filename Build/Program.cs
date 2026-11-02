@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text;
 using System.Xml.Linq;
 using Cake.Common;
 using Cake.Common.Tools.DotNet;
@@ -12,6 +13,7 @@ using Cake.Common.Tools.DotNet.Test;
 using Cake.Core;
 using Cake.Core.Diagnostics;
 using Cake.Frosting;
+using SkiaSharp;
 using IOPath = System.IO.Path;
 
 public static class Program
@@ -178,6 +180,10 @@ public sealed class PackageTask : FrostingTask<BuildContext>
         {
             File.Delete(packagePath);
         }
+        if (Directory.Exists(unpackedDir))
+        {
+            Directory.Delete(unpackedDir, recursive: true);
+        }
 
         foreach (var pdbPath in Directory.GetFiles(context.OutputDir, "*.pdb", SearchOption.AllDirectories))
         {
@@ -186,14 +192,125 @@ public sealed class PackageTask : FrostingTask<BuildContext>
         }
 
         context.Log.Information($"Packaging output -> {packagePath}");
-        CreatePackageZip(context, context.OutputDir, packagePath);
-
-        if (Directory.Exists(unpackedDir))
+        if (context.TargetRuntime.StartsWith("osx"))
         {
-            Directory.Delete(unpackedDir, recursive: true);
+            StageAppBundle(context, unpackedDir);
+            var bundleDir = IOPath.Combine(unpackedDir, "Alcoler.app");
+            CreatePackageZip(context, bundleDir, packagePath, "Alcoler.app");
         }
-        context.Log.Information($"Staging unpacked output -> {unpackedDir}");
-        CopyDirectory(context.OutputDir, unpackedDir);
+        else
+        {
+            CreatePackageZip(context, context.OutputDir, packagePath, entryRoot: null);
+            context.Log.Information($"Staging unpacked output -> {unpackedDir}");
+            CopyDirectory(context.OutputDir, unpackedDir);
+        }
+    }
+
+    private static string StageAppBundle(BuildContext context, string unpackedDir)
+    {
+        var contentsDir = IOPath.Combine(unpackedDir, "Alcoler.app", "Contents");
+        var macosDir = IOPath.Combine(contentsDir, "MacOS");
+        context.Log.Information($"Staging app bundle -> {macosDir}");
+        CopyDirectory(context.OutputDir, macosDir);
+
+        File.WriteAllText(
+            IOPath.Combine(contentsDir, "Info.plist"),
+            $"""
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>CFBundleDevelopmentRegion</key>
+                <string>en</string>
+                <key>CFBundleDisplayName</key>
+                <string>Alcoler</string>
+                <key>CFBundleExecutable</key>
+                <string>Alcoler</string>
+                <key>CFBundleIconFile</key>
+                <string>Alcoler</string>
+                <key>CFBundleIdentifier</key>
+                <string>com.issaczhuang.Alcoler</string>
+                <key>CFBundleInfoDictionaryVersion</key>
+                <string>6.0</string>
+                <key>CFBundleName</key>
+                <string>Alcoler</string>
+                <key>CFBundlePackageType</key>
+                <string>APPL</string>
+                <key>CFBundleShortVersionString</key>
+                <string>{context.Version}</string>
+                <key>CFBundleVersion</key>
+                <string>{context.Version}</string>
+                <key>LSApplicationCategoryType</key>
+                <string>public.app-category.developer-tools</string>
+                <key>LSMinimumSystemVersion</key>
+                <string>12.0</string>
+                <key>NSHighResolutionCapable</key>
+                <true/>
+                <key>NSSupportsAutomaticGraphicsSwitching</key>
+                <true/>
+            </dict>
+            </plist>
+            """);
+        File.WriteAllBytes(
+            IOPath.Combine(contentsDir, "PkgInfo"),
+            Encoding.ASCII.GetBytes("APPL????"));
+
+        var iconSource = IOPath.Combine(context.RepoRoot, "src", "Alcoler", "Assets", "Icons", "Alcoler.png");
+        CreateIcns(iconSource, IOPath.Combine(contentsDir, "Resources", "Alcoler.icns"));
+        return IOPath.GetDirectoryName(contentsDir)!;
+    }
+
+    // icns is a big-endian length-prefixed container of PNG chunks; no icns
+    // tooling exists on a Windows build host, so the container is written directly.
+    private static void CreateIcns(string sourcePng, string targetIcns)
+    {
+        (string Type, int Size)[] entries =
+        [
+            ("ic07", 128),
+            ("ic08", 256),
+            ("ic09", 512),
+            ("ic10", 1024),
+            ("ic11", 32),
+            ("ic12", 64),
+        ];
+        using var source = SKBitmap.Decode(sourcePng)
+            ?? throw new InvalidDataException($"Cannot decode icon source: {sourcePng}");
+        Directory.CreateDirectory(IOPath.GetDirectoryName(targetIcns)!);
+        using var output = File.Create(targetIcns);
+        output.WriteByte((byte)'i');
+        output.WriteByte((byte)'c');
+        output.WriteByte((byte)'n');
+        output.WriteByte((byte)'s');
+        WriteBigEndian(output, 0);
+        var totalLength = 8;
+        foreach (var (type, size) in entries)
+        {
+            using var resized = new SKBitmap(new SKImageInfo(size, size));
+            using (var canvas = new SKCanvas(resized))
+            using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High })
+            {
+                canvas.Clear(SKColors.Transparent);
+                canvas.DrawBitmap(source, SKRect.Create(0, 0, size, size), paint);
+            }
+            using var encoded = SKImage.FromBitmap(resized).Encode();
+            output.WriteByte((byte)type[0]);
+            output.WriteByte((byte)type[1]);
+            output.WriteByte((byte)type[2]);
+            output.WriteByte((byte)type[3]);
+            WriteBigEndian(output, 8 + (int)encoded.Size);
+            encoded.SaveTo(output);
+            totalLength += 8 + (int)encoded.Size;
+        }
+        output.Position = 4;
+        WriteBigEndian(output, totalLength);
+    }
+
+    private static void WriteBigEndian(Stream stream, int value)
+    {
+        stream.WriteByte((byte)(value >> 24));
+        stream.WriteByte((byte)(value >> 16));
+        stream.WriteByte((byte)(value >> 8));
+        stream.WriteByte((byte)value);
     }
 
     private static void CopyDirectory(string sourceDir, string destinationDir)
@@ -213,7 +330,8 @@ public sealed class PackageTask : FrostingTask<BuildContext>
         }
     }
 
-    private static void CreatePackageZip(BuildContext context, string outputDir, string packagePath)
+    private static void CreatePackageZip(
+        BuildContext context, string sourceDir, string packagePath, string? entryRoot)
     {
         const int modeExecutable = unchecked((int)0x81ED0000); // 0755
         const int modeRegular = unchecked((int)0x81A40000);    // 0644
@@ -222,17 +340,20 @@ public sealed class PackageTask : FrostingTask<BuildContext>
         // binary and ripgrep are not executable after extraction on unix.
         var unixModes = context.TargetRuntime.StartsWith("osx") || context.TargetRuntime.StartsWith("linux");
         using var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create);
-        foreach (var filePath in Directory.GetFiles(outputDir, "*", SearchOption.AllDirectories))
+        foreach (var filePath in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
         {
-            var entryName = IOPath.GetRelativePath(outputDir, filePath).Replace('\\', '/');
+            var relativePath = IOPath.GetRelativePath(sourceDir, filePath).Replace('\\', '/');
+            var entryName = entryRoot is null ? relativePath : $"{entryRoot}/{relativePath}";
             var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
             if (unixModes)
             {
                 var fileName = IOPath.GetFileNameWithoutExtension(filePath);
+                var parentDirectory = IOPath.GetFileName(IOPath.GetDirectoryName(filePath));
                 var inRootDirectory = IOPath.GetDirectoryName(IOPath.GetFullPath(filePath))
-                    == IOPath.GetFullPath(outputDir);
+                    == IOPath.GetFullPath(sourceDir);
                 var executable = fileName == "rg" ||
-                    (inRootDirectory && IOPath.GetExtension(filePath).Length == 0);
+                    (IOPath.GetExtension(filePath).Length == 0 &&
+                     (parentDirectory == "MacOS" || inRootDirectory));
                 entry.ExternalAttributes = executable ? modeExecutable : modeRegular;
             }
             using var source = File.OpenRead(filePath);
