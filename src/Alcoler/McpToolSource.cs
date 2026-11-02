@@ -1,18 +1,25 @@
 using System.Text.Json;
 using Alcoler.Adapters.Mcp;
 using Alcoler.Contracts.Tools;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Alcoler;
 
 internal sealed class McpToolSource : IAsyncDisposable
 {
     private readonly object _gate = new();
+    private readonly ILoggerFactory _loggerFactory;
     private readonly List<McpServerManager> _retired = [];
     private McpServerManager? _current;
     private string? _fingerprint;
     private bool _disposed;
 
-    public McpToolSource(IReadOnlyList<WorkbenchMcpServerConfig>? servers) => Update(servers);
+    public McpToolSource(IReadOnlyList<WorkbenchMcpServerConfig>? servers, ILoggerFactory? loggerFactory = null)
+    {
+        _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+        Update(servers);
+    }
 
     public async ValueTask<IReadOnlyList<ITool>> GetToolsAsync(CancellationToken cancellationToken)
     {
@@ -48,7 +55,8 @@ internal sealed class McpToolSource : IAsyncDisposable
             if (servers.Count > 0)
             {
                 _current = new McpServerManager(
-                    [.. servers.Select(server => new McpServerConfig(server.Name, server.Command, server.Args, server.Env))]);
+                    [.. servers.Select(server => new McpServerConfig(server.Name, server.Command, server.Args, server.Env))],
+                    _loggerFactory.CreateLogger<McpServerManager>());
             }
         }
     }

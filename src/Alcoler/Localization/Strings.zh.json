@@ -12,6 +12,11 @@
   "common_remove": "移除",
   "common_rename": "重命名",
 
+  "error_log_location": "日志位置：{0}",
+  "error_open_log_folder": "打开日志目录",
+  "error_startup_title": "Alcoler 启动失败",
+  "error_unhandled_title": "程序发生异常",
+
   "settings_add_model": "添加模型",
   "settings_add_provider": "添加提供商",
   "settings_add_server": "添加服务器",

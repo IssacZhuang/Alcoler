@@ -1,9 +1,12 @@
 using Alcoler.Localization;
+using Alcoler.Logging;
+using Alcoler.Views;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+using Avalonia.Threading;
 
 namespace Alcoler;
 
@@ -23,6 +26,7 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Dispatcher.UIThread.UnhandledException += OnDispatcherUnhandledException;
             _ = RunAsync(desktop);
         }
         base.OnFrameworkInitializationCompleted();
@@ -30,21 +34,82 @@ public partial class App : Application
 
     private async Task RunAsync(IClassicDesktopStyleApplicationLifetime desktop)
     {
-        var config = WorkbenchConfig.LoadOrDefault();
-        Themes.ThemeSelector.Apply(config.Theme);
-        Loc.SetLanguage(Loc.ResolveLanguage(config.Language));
-        var viewModel = await Composition.BuildWorkbenchAsync(config, CancellationToken.None);
-        var window = new MainWindow(viewModel);
-        window.Closing += OnMainWindowClosing;
-        _mainWindow = window;
-        desktop.MainWindow = window;
-        _trayIcon = CreateTrayIcon(desktop);
-        desktop.Exit += (_, _) =>
+        try
         {
-            _trayIcon?.Dispose();
-            _trayIcon = null;
-            viewModel.Dispose();
-        };
+            var config = WorkbenchConfig.LoadOrDefault();
+            Themes.ThemeSelector.Apply(config.Theme);
+            Loc.SetLanguage(Loc.ResolveLanguage(config.Language));
+            var viewModel = await Composition.BuildWorkbenchAsync(config, CancellationToken.None);
+            var window = new MainWindow(viewModel);
+            window.Closing += OnMainWindowClosing;
+            _mainWindow = window;
+            desktop.MainWindow = window;
+            _trayIcon = CreateTrayIcon(desktop);
+            desktop.Exit += (_, _) =>
+            {
+                Dispatcher.UIThread.UnhandledException -= OnDispatcherUnhandledException;
+                _trayIcon?.Dispose();
+                _trayIcon = null;
+                viewModel.Dispose();
+            };
+        }
+        catch (Exception exception)
+        {
+            AppLog.LogUnhandled("Startup", exception);
+            ShowStartupFailure(desktop, exception);
+        }
+    }
+
+    private void OnDispatcherUnhandledException(object? sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        e.Handled = true;
+        AppLog.LogUnhandled("Dispatcher", e.Exception);
+        try
+        {
+            if (_mainWindow is not null)
+            {
+                ShowMainWindow();
+                _mainWindow.ShowErrorTip(Describe(e.Exception), AppLog.DirectoryPath);
+            }
+        }
+        catch (Exception exception)
+        {
+            AppLog.LogUnhandled("ErrorTip", exception);
+        }
+    }
+
+    private void ShowStartupFailure(IClassicDesktopStyleApplicationLifetime desktop, Exception exception)
+    {
+        try
+        {
+            if (_mainWindow is not null)
+            {
+                ShowMainWindow();
+                _mainWindow.ShowErrorTip(Describe(exception), AppLog.DirectoryPath);
+                return;
+            }
+
+            var window = new StartupErrorWindow(Describe(exception), AppLog.DirectoryPath);
+            window.Closed += (_, _) => desktop.Shutdown();
+            desktop.MainWindow = window;
+            window.Show();
+        }
+        catch (Exception failure)
+        {
+            AppLog.LogUnhandled("StartupFailurePresentation", failure);
+            desktop.Shutdown();
+        }
+    }
+
+    private static string Describe(Exception exception)
+    {
+        const int maxLength = 500;
+        var message = exception.Message.Trim();
+        if (message.Length > maxLength)
+        {
+            message = message[..maxLength] + "...";
+        }
+        return message.Length == 0 ? exception.GetType().Name : $"{exception.GetType().Name}: {message}";
     }
 
     private TrayIcon CreateTrayIcon(IClassicDesktopStyleApplicationLifetime desktop)

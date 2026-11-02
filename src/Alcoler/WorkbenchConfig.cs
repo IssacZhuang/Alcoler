@@ -163,4 +163,6 @@ public static class WorkbenchDataPaths
     public static string ExecPath => Path.Combine(Root, "exec");
 
     public static string PlansPath => Path.Combine(Root, "plans");
+
+    public static string LogsPath => Path.Combine(Root, "logs");
 }

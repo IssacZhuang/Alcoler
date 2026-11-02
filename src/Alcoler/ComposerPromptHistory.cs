@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Alcoler.Logging;
 
 namespace Alcoler;
 
@@ -161,15 +162,22 @@ public sealed class ComposerPromptHistory
     {
         while (true)
         {
-            Dictionary<string, string[]> stored;
-            lock (_gate)
+            try
             {
-                while (!_saveQueued)
-                    Monitor.Wait(_gate);
-                _saveQueued = false;
-                stored = _entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), WorkspaceComparer);
+                Dictionary<string, string[]> stored;
+                lock (_gate)
+                {
+                    while (!_saveQueued)
+                        Monitor.Wait(_gate);
+                    _saveQueued = false;
+                    stored = _entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray(), WorkspaceComparer);
+                }
+                WriteStored(stored);
             }
-            WriteStored(stored);
+            catch (Exception exception)
+            {
+                AppLog.LogUnhandled("PromptHistorySave", exception);
+            }
         }
     }
 

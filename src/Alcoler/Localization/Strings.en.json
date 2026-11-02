@@ -12,6 +12,11 @@
   "common_remove": "Remove",
   "common_rename": "Rename",
 
+  "error_log_location": "Log files: {0}",
+  "error_open_log_folder": "Open log folder",
+  "error_startup_title": "Alcoler could not start",
+  "error_unhandled_title": "Unexpected error",
+
   "settings_add_model": "Add model",
   "settings_add_provider": "Add provider",
   "settings_add_server": "Add server",

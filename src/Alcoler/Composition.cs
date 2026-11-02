@@ -9,10 +9,12 @@ using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
+using Alcoler.Logging;
 using Alcoler.Auth;
 using Alcoler.Git;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
+using Microsoft.Extensions.Logging;
 
 namespace Alcoler;
 
@@ -20,7 +22,8 @@ public static class Composition
 {
     public static async Task<WorkbenchViewModel> BuildWorkbenchAsync(WorkbenchConfig config, CancellationToken ct)
     {
-        var mcpTools = new McpToolSource(config.McpServers);
+        var loggerFactory = AppLog.Factory;
+        var mcpTools = new McpToolSource(config.McpServers, loggerFactory);
         const string ChromiumCapabilitiesText =
             "Headless Chromium-family browser running as a separate OS process, with the Chromium sandbox enabled by default. "
             + "Each session uses an isolated profile persisted on disk, and downloads land in that profile's downloads directory. "
@@ -47,11 +50,12 @@ public static class Composition
                 {
                     ExecutablePath = config.Browser?.ExecutablePath,
                     Headless = config.Browser?.Headless,
-                });
+                },
+                loggerFactory.CreateLogger<ChromiumBrowserHost>());
         }
         var backend = embedded ? "webview2" : "chromium";
-        var browser = new BrowserController(browserHost, backendName: backend,
-            capabilitiesText: backend == "chromium" ? ChromiumCapabilitiesText : null);
+        var browser = new BrowserController(browserHost, loggerFactory.CreateLogger<BrowserController>(),
+            backendName: backend, capabilitiesText: backend == "chromium" ? ChromiumCapabilitiesText : null);
         browserHost.NewTabRequested += async (_, request) =>
         {
             try
@@ -74,7 +78,7 @@ public static class Composition
         {
             runtime = await BuildRuntimeAsync(config, ct, mcpTools.GetToolsAsync, extraTools,
                 () => Volatile.Read(ref currentConfig).IntegratedTerminalShell, chatGptAccount,
-                () => Volatile.Read(ref currentConfig).DisabledSkillPaths ?? []);
+                () => Volatile.Read(ref currentConfig).DisabledSkillPaths ?? [], loggerFactory);
         }
         catch
         {
@@ -119,7 +123,8 @@ public static class Composition
         IReadOnlyList<ITool>? extraTools = null,
         Func<ShellEnvironment?>? shellPreference = null,
         ChatGptAccountService? chatGptAccount = null,
-        Func<IReadOnlyList<string>>? disabledSkillPathsProvider = null)
+        Func<IReadOnlyList<string>>? disabledSkillPathsProvider = null,
+        ILoggerFactory? loggerFactory = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(WorkbenchDataPaths.DatabasePath)!);
         Directory.CreateDirectory(WorkbenchDataPaths.ArtifactsPath);
@@ -171,6 +176,7 @@ public static class Composition
             ResolveShell = snapshot => ShellResolver.ResolveEnvironment(
                 shellPreference is null ? config.IntegratedTerminalShell : shellPreference(), snapshot),
             DisabledSkillPathsProvider = disabledSkillPathsProvider,
+            Logging = loggerFactory,
         });
         return runtime;
     }

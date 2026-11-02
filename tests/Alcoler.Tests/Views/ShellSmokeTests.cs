@@ -8,6 +8,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
@@ -118,6 +119,55 @@ public class ShellSmokeTests
             viewModel.ClearBanner();
             Dispatcher.UIThread.RunJobs();
             Assert.False(timer.IsEnabled);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void ErrorToast_ShowsMessageAndLogPath_AndDismisses()
+    {
+        using var viewModel = CreateWorkbench();
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            var toast = window.FindControl<Border>("ErrorToast")!;
+            Assert.False(toast.IsVisible);
+
+            window.ShowErrorTip("InvalidOperationException: boom", @"C:\logs");
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            Assert.True(toast.IsVisible);
+            Assert.Equal("InvalidOperationException: boom",
+                window.FindControl<SelectableTextBlock>("ErrorToastMessage")!.Text);
+            Assert.Contains(@"C:\logs", window.FindControl<TextBlock>("ErrorToastLogPath")!.Text);
+
+            toast.GetVisualDescendants().OfType<Button>().First().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            Assert.False(toast.IsVisible);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void StartupErrorWindow_ShowsMessageAndLogPath()
+    {
+        var window = new Alcoler.Views.StartupErrorWindow("InvalidOperationException: boom", @"C:\logs");
+        window.Show();
+        try
+        {
+            Dispatcher.UIThread.RunJobs();
+            Assert.Equal("InvalidOperationException: boom",
+                window.FindControl<TextBlock>("MessageText")!.Text);
+            Assert.Contains(@"C:\logs", window.FindControl<SelectableTextBlock>("LogPathText")!.Text);
         }
         finally
         {

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using Alcoler.Logging;
 using Alcoler.Ui;
 using Alcoler.Controls;
 using Alcoler.Localization;
@@ -11,6 +12,7 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Microsoft.Extensions.Logging;
 using LayoutHorizontalAlignment = Avalonia.Layout.HorizontalAlignment;
 
 namespace Alcoler;
@@ -33,6 +35,7 @@ public partial class MainWindow : Window
     private bool _paneStateInitialized;
     private WorkbenchViewModel? _viewModel;
     private ConversationViewModel? _conversation;
+    private string? _errorLogDirectory;
 
     private ColumnDefinition SidePaneColumn => ShellGrid.ColumnDefinitions[^1];
     private RowDefinition TerminalSplitterRow => MainCard.RowDefinitions[^2];
@@ -186,6 +189,14 @@ public partial class MainWindow : Window
     }
 
     internal void FocusComposer() => MainComposer.FocusInput();
+
+    internal void ShowErrorTip(string message, string logDirectory)
+    {
+        _errorLogDirectory = logDirectory;
+        ErrorToastMessage.Text = message;
+        ErrorToastLogPath.Text = Loc.Get("error_log_location", logDirectory);
+        ErrorToast.IsVisible = true;
+    }
 
     internal bool IsPaneAnimationActive => _columnAnimations.Count > 0;
 
@@ -481,6 +492,24 @@ public partial class MainWindow : Window
     }
 
     private void OnDismissWorkbenchBannerClick(object? sender, RoutedEventArgs e) => _viewModel?.ClearBanner();
+
+    private void OnDismissErrorToastClick(object? sender, RoutedEventArgs e) => ErrorToast.IsVisible = false;
+
+    private void OnOpenErrorLogClick(object? sender, RoutedEventArgs e)
+    {
+        if (_errorLogDirectory is not { } directory)
+        {
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            AppLog.CreateLogger("Alcoler.ErrorTip").LogError(exception, "Opening the log directory failed.");
+        }
+    }
 
     private void OnWorkbenchBannerTimerTick(object? sender, EventArgs e)
     {

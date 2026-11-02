@@ -19,6 +19,7 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.4" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="LibGit2Sharp" Version="0.32.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="Markdown.Avalonia.Tight" Version="11.0.3" />
     <PackageReference Include="Porta.Pty" Version="2.2.3" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />

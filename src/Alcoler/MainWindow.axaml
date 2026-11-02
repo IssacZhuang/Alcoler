@@ -183,6 +183,32 @@
             </Button>
           </Grid>
         </Border>
+        <Border x:Name="ErrorToast" Grid.Row="0" Grid.RowSpan="5" ZIndex="101"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="16,0,16,88"
+                MaxWidth="680" Padding="12,10"
+                Background="{DynamicResource AlcolerCard}"
+                BorderBrush="{DynamicResource AlcolerError}" BorderThickness="1"
+                CornerRadius="{DynamicResource AlcolerRadiusLarge}"
+                BoxShadow="0 8 24 0 #40000000"
+                IsVisible="False">
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6">
+            <TextBlock Text="{loc:Loc error_unhandled_title}" FontSize="{DynamicResource AlcolerFontBase}"
+                       FontWeight="SemiBold" Foreground="{DynamicResource AlcolerError}" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Classes="icon tiny" Click="OnDismissErrorToastClick" ToolTip.Tip="{loc:Loc main_dismiss}">
+              <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+            </Button>
+            <ScrollViewer Grid.Row="1" Grid.ColumnSpan="2" MaxHeight="120" HorizontalScrollBarVisibility="Disabled">
+              <SelectableTextBlock x:Name="ErrorToastMessage" FontSize="{DynamicResource AlcolerFontSmall}"
+                                   TextWrapping="Wrap" Foreground="{DynamicResource AlcolerTextPrimary}" />
+            </ScrollViewer>
+            <Grid Grid.Row="2" Grid.ColumnSpan="2" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBlock x:Name="ErrorToastLogPath" VerticalAlignment="Center" TextWrapping="Wrap"
+                         FontSize="{DynamicResource AlcolerFontXs}" Foreground="{DynamicResource AlcolerTextSecondary}" />
+              <Button Grid.Column="1" Classes="secondary" Padding="10,4" Click="OnOpenErrorLogClick"
+                      Content="{loc:Loc error_open_log_folder}" />
+            </Grid>
+          </Grid>
+        </Border>
       </Grid>
     </Border>
     <Border x:Name="SidePaneDivider" Grid.Column="3" Width="1" HorizontalAlignment="Center" IsHitTestVisible="False"

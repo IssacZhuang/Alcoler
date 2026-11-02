@@ -1,0 +1,35 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:loc="using:Alcoler.Localization"
+        x:Class="Alcoler.Views.StartupErrorWindow"
+        Title="{loc:Loc error_startup_title}"
+        Width="560" SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource AlcolerBackground}">
+  <Window.Styles>
+    <Style Selector="TextBlock.header">
+      <Setter Property="FontSize" Value="18" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource AlcolerError}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="Button.action">
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="Padding" Value="16,7" />
+      <Setter Property="CornerRadius" Value="{DynamicResource AlcolerRadiusLarge}" />
+    </Style>
+  </Window.Styles>
+  <StackPanel Margin="24,20" Spacing="14">
+    <TextBlock Classes="header" Text="{loc:Loc error_startup_title}" />
+    <TextBlock x:Name="MessageText" TextWrapping="Wrap" FontSize="{DynamicResource AlcolerFontBase}"
+               Foreground="{DynamicResource AlcolerTextPrimary}" />
+    <SelectableTextBlock x:Name="LogPathText" TextWrapping="Wrap"
+                         FontSize="{DynamicResource AlcolerFontSmall}"
+                         Foreground="{DynamicResource AlcolerTextSecondary}" />
+    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+      <Button Classes="secondary action" Content="{loc:Loc error_open_log_folder}" Click="OnOpenLogsClick" />
+      <Button Classes="primary action" Content="{loc:Loc main_close}" Click="OnCloseClick" IsDefault="True" />
+    </StackPanel>
+  </StackPanel>
+</Window>
