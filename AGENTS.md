@@ -22,6 +22,10 @@ The Browser tool is engine-agnostic: `src/Alcoler.Browser` (BrowserTool, Browser
 
 Selection: `browser.embeddedView` in `~/.alcoler/config.json` (Windows-only meaning; default true there, false elsewhere) picks WebView2 vs Chromium. `browser.headless: false` is a diagnostics escape hatch to run Chromium headed. Binary resolution for chromium: `browser.executablePath` → `ALCOLER_BROWSER_EXECUTABLE` → installed Chrome/Chromium/Edge → Chrome-for-Testing download into `~/.alcoler`. Verification: `tests/Alcoler.Browser.Tests` + `tests/Alcoler.Browser.Chromium.Tests` (unit, no browser), `tests/Alcoler.Browser.IntegrationTests` (WebView2, Windows) and `tests/Alcoler.Browser.Chromium.IntegrationTests` (real browser, any OS).
 
+## Remote Access
+
+`remote.enabled` / `remote.port` in `~/.alcoler/config.json` (default disabled, port 8757) gate an in-process Kestrel gateway from `src/Alcoler.Remote` that shares the desktop AgentRuntime: sessions, commands, and approvals flow over HTTP+WS, and a mobile PWA is served from `/`. Wiring lives in `Composition` behind `RemoteAccessViewModel` (lazy gateway; settings dialog owns pairing UI), so toggling the setting applies live without a restart. Pairing uses a one-time QR token; accepted devices become hashed device tokens in `~/.alcoler/remote/devices.json`, with an audit log in `~/.alcoler/remote/audit.jsonl`. LAN-only by default: non-private source addresses are rejected (`AllowNonPrivateClients` exists but stays false). Full PWA install/service-worker needs a secure context, so over plain-HTTP LAN the web UI works in-browser but add-to-homescreen and the offline shell do not; use an HTTPS reverse proxy or a tailnet for those. Verification: `tests/Alcoler.Remote.Tests`.
+
 ## Memory Budget
 
 Baseline from the kernel memory probe (`tests/Alcoler.Kernel.Tests/EndToEnd/MemorySpikeProbe.cs`): 10 resident sessions holding 850 scripted turns cost 7 MB managed / +21 MB working set over the process floor; the desktop process floor is Avalonia-dominated (~135 MB). No fixed working-set cap is enforced: memory and performance must be weighed together, with session residency and event retention kept bounded.

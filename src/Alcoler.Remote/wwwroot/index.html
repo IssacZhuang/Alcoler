@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Alcoler Remote</title>
+<meta name="description" content="Remote control for the Alcoler coding agent.">
+<meta name="theme-color" content="#191919">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app" class="app"></div>
+<noscript>
+  <div class="noscript">Alcoler Remote needs JavaScript to run. Enable JavaScript and reload this page.</div>
+</noscript>
+
+<template id="view-pair">
+  <section class="view pair-view">
+    <div class="pair-wrap">
+      <div class="pair-logo" aria-hidden="true">
+        <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path fill="#e7eaf0" fill-rule="evenodd"
+            d="M64 26 100 102H84.8L77 83H51l-7.8 19H28L64 26Zm0 24.8L56.8 70h14.4L64 50.8Z"/>
+        </svg>
+      </div>
+      <h1 class="pair-title">Alcoler</h1>
+      <p id="pair-status" class="pair-status">Connecting to desktop...</p>
+      <div id="pair-auto" class="pair-auto" hidden>
+        <p class="pair-msg"><span class="spinner" aria-hidden="true"></span><span id="pair-msg">Pairing with desktop...</span></p>
+        <button id="pair-retry" class="btn primary" hidden>Retry pairing</button>
+      </div>
+      <form id="pair-form" class="pair-form" autocomplete="off" hidden>
+        <label for="pair-code">Pairing code</label>
+        <input id="pair-code" type="text" autocapitalize="off" autocorrect="off" spellcheck="false"
+          placeholder="Paste the pairing code or QR link">
+        <button type="submit" class="btn primary">Pair this device</button>
+      </form>
+      <p id="pair-error" class="pair-error" hidden></p>
+      <p class="pair-hint">Open Alcoler on your computer, scan its pairing QR code with this phone, then come back here.</p>
+    </div>
+  </section>
+</template>
+
+<template id="view-list">
+  <section class="view list-view">
+    <header class="topbar">
+      <h1 class="tb-title">Sessions</h1>
+      <div class="tb-actions">
+        <button id="btn-refresh" class="icon-btn" aria-label="Refresh" title="Refresh"></button>
+        <button id="btn-new" class="icon-btn" aria-label="New session" title="New session"></button>
+      </div>
+    </header>
+    <div id="list-scroll" class="list-scroll">
+      <div id="list-content" class="list-content"></div>
+    </div>
+    <div id="new-sheet" class="sheet-backdrop" hidden>
+      <form id="new-form" class="sheet" novalidate>
+        <h2 class="sheet-title">New session</h2>
+        <div class="field">
+          <label for="new-workspace">Workspace root</label>
+          <input id="new-workspace" type="text" list="workspace-roots" autocapitalize="off" autocorrect="off"
+            spellcheck="false" placeholder="C:\Projects\myproject" required>
+          <datalist id="workspace-roots"></datalist>
+        </div>
+        <div class="field">
+          <label for="new-title">Title <span class="opt">(optional)</span></label>
+          <input id="new-title" type="text" placeholder="Fix the login bug">
+        </div>
+        <fieldset class="field">
+          <legend>Mode</legend>
+          <div class="seg">
+            <label><input type="radio" name="mode" value="build" checked><span>Build</span></label>
+            <label><input type="radio" name="mode" value="edit"><span>Edit</span></label>
+            <label><input type="radio" name="mode" value="yolo"><span>Yolo</span></label>
+          </div>
+        </fieldset>
+        <p id="new-error" class="sheet-error" hidden></p>
+        <div class="sheet-actions">
+          <button type="button" id="new-cancel" class="btn">Cancel</button>
+          <button type="submit" id="new-create" class="btn primary">Create</button>
+        </div>
+      </form>
+    </div>
+  </section>
+</template>
+
+<template id="view-session">
+  <section class="view session-view">
+    <header class="topbar">
+      <button id="btn-back" class="icon-btn" aria-label="Back to sessions" title="Back to sessions"></button>
+      <div class="tb-session">
+        <div id="sess-title" class="sess-title">Session</div>
+      </div>
+      <div class="tb-status">
+        <span id="conn-dot" class="dot offline" title="Connection"></span>
+        <span id="phase-chip" class="chip phase-idle">Idle</span>
+      </div>
+    </header>
+    <div id="conn-banner" class="conn-banner" hidden></div>
+    <div class="transcript-region">
+      <div id="transcript-scroll" class="transcript-scroll">
+        <div id="transcript" class="transcript"></div>
+      </div>
+      <button id="jump-latest" class="jump-pill" hidden></button>
+    </div>
+    <div class="desk">
+      <div id="queue-chips" class="queue-chips" hidden></div>
+      <div id="pending-cards"></div>
+    </div>
+    <footer class="composer">
+      <div id="attach-row" class="attach-row" hidden></div>
+      <div class="composer-row">
+        <button id="btn-attach" class="icon-btn" aria-label="Attach photos" title="Attach photos"></button>
+        <textarea id="composer-input" rows="1" placeholder="Message Alcoler"></textarea>
+        <button id="btn-send" class="send-btn" disabled aria-label="Send"></button>
+        <input id="file-input" type="file" accept="image/*" capture="environment" multiple hidden>
+      </div>
+    </footer>
+    <div id="img-overlay" class="img-overlay" hidden>
+      <button id="overlay-close" class="icon-btn overlay-close" aria-label="Close image"></button>
+      <img id="overlay-img" alt="Attached image">
+    </div>
+  </section>
+</template>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

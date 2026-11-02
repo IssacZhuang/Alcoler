@@ -12,6 +12,7 @@ namespace Alcoler.Views;
 public partial class SettingsDialog : Window
 {
     private readonly SettingsViewModel _viewModel;
+    private readonly Avalonia.Threading.DispatcherTimer _remoteStatusTimer;
     private bool _isSaving;
 
     public SettingsDialog()
@@ -20,25 +21,34 @@ public partial class SettingsDialog : Window
     }
 
     internal SettingsDialog(WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null,
-        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null)
+        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null,
+        RemoteAccessViewModel? remoteAccess = null)
     {
         InitializeComponent();
         _viewModel = new SettingsViewModel(current, chatGptAccount: chatGptAccount, skillsCatalog: skillsCatalog,
-            archivedSessions: archivedSessions);
+            archivedSessions: archivedSessions, remoteAccess: remoteAccess);
         DataContext = _viewModel;
         if (_viewModel.ChatGpt is { } chatGpt)
             chatGpt.OpenAuthorizeUrl = uri => Launcher.LaunchUriAsync(uri);
+        _remoteStatusTimer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _remoteStatusTimer.Tick += (_, _) => _viewModel.RemoteAccess?.RefreshState();
         ProvidersTab.IsChecked = true;
         Opened += async (_, _) => await _viewModel.LoadArchivedSessionCountAsync();
         Closing += (_, e) => e.Cancel = _isSaving;
-        Closed += (_, _) => _viewModel.Dispose();
+        Closed += (_, _) =>
+        {
+            _remoteStatusTimer.Stop();
+            _viewModel.Dispose();
+        };
         WindowChrome.Attach(this);
     }
 
     public static async Task<WorkbenchConfig?> ShowAsync(Window owner, WorkbenchConfig current,
-        Auth.ChatGptAccountService? chatGptAccount = null, IArchivedSessionMaintenance? archivedSessions = null)
+        Auth.ChatGptAccountService? chatGptAccount = null, IArchivedSessionMaintenance? archivedSessions = null,
+        RemoteAccessViewModel? remoteAccess = null)
     {
-        var dialog = new SettingsDialog(current, chatGptAccount, archivedSessions: archivedSessions);
+        var dialog = new SettingsDialog(current, chatGptAccount, archivedSessions: archivedSessions,
+            remoteAccess: remoteAccess);
         return await dialog.ShowDialog<WorkbenchConfig?>(owner);
     }
 
@@ -192,6 +202,16 @@ public partial class SettingsDialog : Window
         AppearancePanel.IsVisible = section == "appearance";
         RuntimePanel.IsVisible = section == "runtime";
         SessionsPanel.IsVisible = section == "sessions";
+        RemotePanel.IsVisible = section == "remote";
+        if (section == "remote")
+        {
+            _viewModel.RemoteAccess?.RefreshState();
+            _remoteStatusTimer.Start();
+        }
+        else
+        {
+            _remoteStatusTimer.Stop();
+        }
         SectionTitle.Text = section switch
         {
             "runtime" => Loc.Get("settings_runtime"),
@@ -199,7 +219,25 @@ public partial class SettingsDialog : Window
             "sessions" => Loc.Get("settings_sessions"),
             "mcp" => Loc.Get("settings_mcp"),
             "skills" => Loc.Get("settings_skills"),
+            "remote" => Loc.Get("settings_remote"),
             _ => Loc.Get("settings_providers"),
         };
+    }
+
+    private async void OnCopyPairingUrlClick(object? sender, RoutedEventArgs e)
+    {
+        var url = _viewModel.RemoteAccess?.PairingUrl;
+        if (string.IsNullOrEmpty(url) || TopLevel.GetTopLevel(this)?.Clipboard is not { } clipboard)
+        {
+            return;
+        }
+        try
+        {
+            await clipboard.SetTextAsync(url);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException)
+        {
+            _viewModel.Error = Loc.Get("settings_remote_copy_error", exception.Message);
+        }
     }
 }

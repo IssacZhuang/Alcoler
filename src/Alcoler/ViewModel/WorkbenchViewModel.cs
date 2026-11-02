@@ -87,7 +87,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         Action<WorkbenchComposerConfig>? saveComposer = null,
         Action<WorkbenchConfig>? applySettings = null,
         ChatGptAccountService? chatGptAccount = null,
-        IExternalEditorLauncher? externalEditorLauncher = null)
+        IExternalEditorLauncher? externalEditorLauncher = null,
+        RemoteAccessViewModel? remoteAccess = null)
     {
         _runtime = runtime;
         _config = config;
@@ -105,6 +106,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _scheduler = scheduler;
         ChatGptAccount = chatGptAccount;
         BrowserPane = browserPane;
+        Remote = remoteAccess;
         _hub = new SessionProjectionHub(runtime, scheduler, coalesceWindow: TimeSpan.FromMilliseconds(30));
         Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync);
         runtime.SessionTitleChanged += OnSessionTitleChanged;
@@ -192,6 +194,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     private GitPaneViewModel? _gitPane;
 
     public BrowserPaneViewModel? BrowserPane { get; }
+
+    public RemoteAccessViewModel? Remote { get; }
 
     public DocumentWorkspaceViewModel Documents { get; } = new();
 
@@ -381,6 +385,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         Documents.PropertyChanged -= OnDocumentsPropertyChanged;
         Documents.Dispose();
         BrowserPane?.Dispose();
+        if (Remote is { } remote)
+        {
+            // The gateway serves the runtime; it must stop before owned runtime resources go.
+            Task.Run(() => remote.DisposeAsync().AsTask()).Wait(TimeSpan.FromSeconds(30));
+        }
         if (_ownedResource is not null)
         {
             // Shutdown-time async disposal can marshal through the UI thread it is

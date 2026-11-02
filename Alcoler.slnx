@@ -5,6 +5,7 @@
     <Project Path="src/Alcoler.Browser.Chromium/Alcoler.Browser.Chromium.csproj" />
     <Project Path="src/Alcoler.Contracts/Alcoler.Contracts.csproj" />
     <Project Path="src/Alcoler.Kernel/Alcoler.Kernel.csproj" />
+    <Project Path="src/Alcoler.Remote/Alcoler.Remote.csproj" />
     <Project Path="src/Alcoler/Alcoler.csproj" />
   </Folder>
   <Folder Name="/tests/">

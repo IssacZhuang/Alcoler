@@ -70,6 +70,20 @@ public sealed record WorkbenchBrowserConfig(
     string? ExecutablePath = null,
     bool? Headless = null);
 
+// Remote gates the LAN mobile-control gateway; a null or disabled section keeps it off.
+public sealed record WorkbenchRemoteConfig(
+    bool? Enabled = null,
+    int? Port = null)
+{
+    public const int DefaultPort = 8757;
+
+    public int EffectivePort => Port is int port and >= 1 and <= 65535 ? port : DefaultPort;
+
+    public WorkbenchRemoteConfig Clamped() => Port is int port
+        ? this with { Port = Math.Clamp(port, 1, 65535) }
+        : this;
+}
+
 public sealed record WorkbenchConfig(
     IReadOnlyList<WorkbenchProviderConfig> Providers,
     WorkbenchDefaultModelConfig? DefaultModel = null,
@@ -82,7 +96,8 @@ public sealed record WorkbenchConfig(
     IReadOnlyList<string>? DisabledSkillPaths = null,
     bool AutoArchiveSessions = false,
     int AutoArchiveOlderThanDays = 7,
-    WorkbenchBrowserConfig? Browser = null)
+    WorkbenchBrowserConfig? Browser = null,
+    WorkbenchRemoteConfig? Remote = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -108,6 +123,7 @@ public sealed record WorkbenchConfig(
             Theme = string.IsNullOrWhiteSpace(parsed.Theme) ? "dark" : parsed.Theme,
             Language = Loc.NormalizeConfiguredLanguage(parsed.Language),
             AutoArchiveOlderThanDays = Math.Clamp(parsed.AutoArchiveOlderThanDays, 1, 365),
+            Remote = parsed.Remote?.Clamped(),
         };
     }
 
