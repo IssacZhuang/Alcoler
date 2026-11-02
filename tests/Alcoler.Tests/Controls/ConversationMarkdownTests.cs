@@ -109,6 +109,83 @@ public class ConversationMarkdownTests
     }
 
     [AvaloniaTheory]
+    [InlineData(false, "`code`")]
+    [InlineData(true, "`code`")]
+    [InlineData(false, "Text ending in `code`")]
+    [InlineData(true, "Text ending in `code`")]
+    [InlineData(false, "**Nested `code`**")]
+    [InlineData(true, "**Nested `code`**")]
+    [InlineData(false, "- First `code`\n- Second `tail`")]
+    [InlineData(true, "- First `code`\n- Second `tail`")]
+    [InlineData(false, "Wrapped `C:/Projects/Alcoler/long-path-component/another-component/文件.cs`")]
+    [InlineData(true, "Wrapped `C:/Projects/Alcoler/long-path-component/another-component/文件.cs`")]
+    public void DecoratedInlineEnd_SelectsEveryCharacterInBothDirections(bool fragment, string markdown)
+    {
+        Control view = fragment
+            ? new ConversationMarkdownFragment { Markdown = markdown }
+            : new ConversationMarkdown { Markdown = markdown };
+        using var host = new Harness(view, 280);
+        var blocks = view.GetVisualDescendants().OfType<CTextBlock>()
+            .Where(block => block.GetLogicalDescendants().OfType<CCode>().Any()).ToArray();
+        Assert.NotEmpty(blocks);
+        foreach (var block in blocks)
+        {
+            foreach (var reverse in new[] { false, true })
+            {
+                block.Select(reverse ? block.Text.Length : 0, reverse ? 0 : block.Text.Length);
+                var selection = Assert.IsType<Selection>(block.Selection);
+                Assert.Equal(0, Math.Min(selection.From, selection.To));
+                Assert.Equal(block.Text.Length, Math.Max(selection.From, selection.To));
+                Assert.Equal(block.Text, block.GetSelectedText());
+                host.Window.Width = reverse ? 280 : 360;
+                host.Pump();
+                Assert.Equal(block.Text, block.GetSelectedText());
+            }
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task DecoratedListSelection_DragAndCopyPreserveCompleteText(bool fragment, bool reverse)
+    {
+        const string markdown = "- First `code`\n- Second `tail`\n- After";
+        Control view = fragment
+            ? new ConversationMarkdownFragment { Markdown = markdown }
+            : new ConversationMarkdown { Markdown = markdown };
+        using var host = new Harness(view);
+        await host.RenderAsync();
+        var blocks = view.GetVisualDescendants().OfType<CTextBlock>().ToArray();
+        var first = Assert.Single(blocks, block => block.Text == "First code");
+        var last = Assert.Single(blocks, block => block.Text == "Second tail");
+        var after = Assert.Single(blocks, block => block.Text == "After");
+        var start = first.TranslatePoint(new Point(1, first.Bounds.Height / 2), host.Window)!.Value;
+        var end = after.TranslatePoint(new Point(2, after.Bounds.Height / 2), host.Window)!.Value;
+        var from = reverse ? end : start;
+        var to = reverse ? start : end;
+        host.Window.MouseMove(from);
+        host.Window.MouseDown(from, MouseButton.Left);
+        if (fragment)
+            Assert.True(view.IsFocused, $"Selection did not start at {from}; hit {host.Window.InputHitTest(from)}, after {after.Bounds}, view {view.Bounds}.");
+        host.Window.MouseMove(to, RawInputModifiers.LeftMouseButton);
+        host.Window.MouseUp(to, MouseButton.Left);
+        host.Pump();
+
+        Assert.Equal(first.Text, first.GetSelectedText());
+        Assert.Equal(last.Text, last.GetSelectedText());
+        await host.Window.Clipboard!.SetTextAsync("not the selection");
+        host.Window.KeyPressQwerty(PhysicalKey.C, RawInputModifiers.Control);
+        host.Window.KeyReleaseQwerty(PhysicalKey.C, RawInputModifiers.Control);
+        host.Pump();
+        var copied = await host.Window.Clipboard.GetTextAsync();
+        Assert.Contains(first.Text, copied);
+        Assert.Contains(last.Text, copied);
+        ConversationMarkdownFragment.ClearActiveSelection();
+    }
+
+    [AvaloniaTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Images_KeepFullHeightAndScaleWithViewport(bool fragment)
