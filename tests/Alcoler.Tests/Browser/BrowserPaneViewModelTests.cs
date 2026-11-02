@@ -169,18 +169,6 @@ public class BrowserPaneViewModelTests
     }
 
     [AvaloniaFact]
-    public void TakeOverCommand_PausesActiveSessionThroughController()
-    {
-        using var viewModel = Create(out var controller);
-        var sessionId = new SessionId("sess_active");
-        viewModel.Bind(sessionId);
-
-        viewModel.TakeOverCommand.Execute(null);
-
-        Assert.Equal([sessionId], controller.Takeovers);
-    }
-
-    [AvaloniaFact]
     public void Screenshot_ReloadsSamePathWhenVersionChanges_AndDisposesPreviousImage()
     {
         var images = new List<FakeImage>();
@@ -234,7 +222,6 @@ public class BrowserPaneViewModelTests
         using var viewModel = Create(out var controller);
         viewModel.Address = "example.com";
         Assert.False(viewModel.NavigateCommand.CanExecute(null));
-        Assert.False(viewModel.TakeOverCommand.CanExecute(null));
         var sessionId = new SessionId("sess_active");
         viewModel.Bind(sessionId);
         viewModel.Address = "example.com";
@@ -293,12 +280,12 @@ public class BrowserPaneViewModelTests
     }
 
     [AvaloniaFact]
-    public void Status_ProjectsTabsSelectionOwnershipAndErrors()
+    public void Status_ProjectsTabsSelectionAndErrors()
     {
         using var viewModel = Create(out var controller);
         var sessionId = new SessionId("sess_active");
         viewModel.Bind(sessionId);
-        var status = TabStatus("second") with { Error = "WebView is unsupported on this platform.", IsUserControlled = true };
+        var status = TabStatus("second") with { Error = "WebView is unsupported on this platform." };
 
         controller.RaiseStatusChanged(sessionId, status);
 
@@ -309,18 +296,13 @@ public class BrowserPaneViewModelTests
         Assert.Equal("second", viewModel.ActiveTabId);
         Assert.Equal("https://example.com/second", viewModel.Address);
         Assert.Equal("Second", viewModel.Title);
-        Assert.True(viewModel.IsUserControlled);
-        Assert.Contains("paused", viewModel.OwnershipText);
         Assert.Equal(status.Error, viewModel.Banner);
-        Assert.False(viewModel.TakeOverCommand.CanExecute(null));
-        Assert.True(viewModel.ResumeCommand.CanExecute(null));
 
         controller.RaiseStatusChanged(sessionId, TabStatus("first") with { Tabs = [] , ActiveTabId = null });
 
         Assert.Empty(viewModel.Tabs);
         Assert.Null(viewModel.SelectedTab);
         Assert.Null(viewModel.ActiveTabId);
-        Assert.False(viewModel.IsUserControlled);
         Assert.Null(viewModel.Banner);
     }
 
@@ -418,7 +400,6 @@ public class BrowserPaneViewModelTests
         Assert.Equal(0, controller.CancelCount);
         Assert.Empty(controller.Actions);
         Assert.False(viewModel.NewTabCommand.CanExecute(null));
-        Assert.False(viewModel.TakeOverCommand.CanExecute(null));
     }
 
     [AvaloniaFact]
@@ -448,7 +429,7 @@ public class BrowserPaneViewModelTests
     {
         using var viewModel = Create(out var controller);
         var sessionId = new SessionId("sess_active");
-        controller.Status = TabStatus("first") with { IsUserControlled = true };
+        controller.Status = TabStatus("first");
         viewModel.Bind(sessionId);
         Assert.False(viewModel.SelectTabCommand.CanExecute(viewModel.Tabs[0]));
         Assert.False(viewModel.CloseTabCommand.CanExecute(new BrowserTabStatus("missing", "", "")));
@@ -473,49 +454,6 @@ public class BrowserPaneViewModelTests
         });
         Assert.All(controller.Actions.Take(6), request =>
             Assert.Equal(System.Text.Json.JsonValueKind.Object, Assert.IsType<BrowserCommandAction>(request.Action).Input.ValueKind));
-        Assert.True(viewModel.IsUserControlled);
-        Assert.DoesNotContain(controller.Actions, request => request.Action.Verb == "resume");
-    }
-
-    [AvaloniaFact]
-    public async Task TakeOver_RemainsAvailableWhileAgentBrowserActionIsBusy()
-    {
-        using var viewModel = Create(out var controller);
-        var sessionId = new SessionId("sess_active");
-        controller.Status = TabStatus("first") with { State = BrowserSessionState.Busy };
-        viewModel.Bind(sessionId);
-
-        Assert.Equal("Busy", viewModel.StateText);
-        Assert.True(viewModel.TakeOverCommand.CanExecute(null));
-        await viewModel.TakeOverCommand.ExecuteAsync(null);
-
-        Assert.Equal([sessionId], controller.Takeovers);
-    }
-
-    [AvaloniaFact]
-    public async Task TakeOverAndResume_RequireExplicitOwnershipChanges()
-    {
-        using var viewModel = Create(out var controller);
-        var sessionId = new SessionId("sess_active");
-        controller.Status = TabStatus("first");
-        viewModel.Bind(sessionId);
-        Assert.False(viewModel.ResumeCommand.CanExecute(null));
-        await viewModel.TakeOverCommand.ExecuteAsync(null);
-        Assert.Equal([sessionId], controller.Takeovers);
-
-        controller.Status = controller.Status with { IsUserControlled = true };
-        controller.RaiseStatusChanged(sessionId, controller.Status);
-        Assert.False(viewModel.TakeOverCommand.CanExecute(null));
-        Assert.True(viewModel.ResumeCommand.CanExecute(null));
-        await viewModel.ResumeCommand.ExecuteAsync(null);
-
-        var request = Assert.Single(controller.Actions);
-        Assert.Equal("resume", request.Action.Verb);
-        Assert.True(request.Action.UserInitiated);
-        Assert.True(viewModel.IsUserControlled);
-        controller.RaiseStatusChanged(sessionId, controller.Status with { IsUserControlled = false });
-        Assert.False(viewModel.IsUserControlled);
-        Assert.True(viewModel.TakeOverCommand.CanExecute(null));
     }
 
     [AvaloniaFact]
@@ -579,7 +517,7 @@ public class BrowserPaneViewModelTests
     }
 
     [AvaloniaFact]
-    public async Task BrowserPaneView_EmbedsPresenterAndExposesTabNavigationAndOwnershipControls()
+    public async Task BrowserPaneView_EmbedsPresenterAndExposesTabNavigationControls()
     {
         var image = new FakeImage();
         var presenters = new List<FakePresenter>();
@@ -617,20 +555,6 @@ public class BrowserPaneViewModelTests
             await ClickAsync(view.FindControl<Button>("PART_BrowserNewTab")!);
             Assert.Equal(["back", "forward", "reload", "select_tab", "close_tab", "new_tab"],
                 controller.Actions.Select(request => request.Action.Verb));
-
-            var takeOver = view.FindControl<Button>("PART_BrowserTakeOver")!;
-            var resume = view.FindControl<Button>("PART_BrowserResume")!;
-            Assert.True(takeOver.IsVisible);
-            Assert.False(resume.IsVisible);
-            await ClickAsync(takeOver);
-            Assert.Single(controller.Takeovers);
-            controller.Status = controller.Status with { IsUserControlled = true };
-            controller.RaiseStatusChanged(sessionId, controller.Status);
-            Dispatcher.UIThread.RunJobs();
-            Assert.False(takeOver.IsVisible);
-            Assert.True(resume.IsVisible);
-            await ClickAsync(resume);
-            Assert.Equal("resume", controller.Actions[^1].Action.Verb);
 
             view.IsVisible = false;
             Dispatcher.UIThread.RunJobs();
@@ -861,8 +785,6 @@ public class BrowserPaneViewModelTests
 
     private sealed class FakeBrowserController : IBrowserController
     {
-        public List<SessionId> Takeovers { get; } = [];
-
         public List<(SessionId SessionId, BrowserAction Action)> Actions { get; } = [];
 
         public BrowserActionResult Result { get; set; } = new(Ok: true);
@@ -889,12 +811,6 @@ public class BrowserPaneViewModelTests
         public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken)
         {
             CancelCount++;
-            return Task.CompletedTask;
-        }
-
-        public Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken)
-        {
-            Takeovers.Add(sessionId);
             return Task.CompletedTask;
         }
 

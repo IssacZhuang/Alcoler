@@ -76,9 +76,6 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     private string? _activeTabId;
 
     [ObservableProperty]
-    private bool _isUserControlled;
-
-    [ObservableProperty]
     private Control? _pagePresenter;
 
     public bool HasScreenshot => Screenshot is not null;
@@ -90,10 +87,6 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     public bool ShowEmptyState => !HasPagePresenter && !HasScreenshot;
 
     public bool CanInteract => !_disposed && ActiveSessionId is not null;
-
-    public string OwnershipText => IsUserControlled
-        ? Loc.Get("browser_user_controlled")
-        : Loc.Get("browser_agent_controlled");
 
     public string EmptyStateText => _presenterError ?? (CanInteract
         ? _pagePresenterFactory is null
@@ -156,12 +149,6 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
 
     partial void OnActiveTabIdChanged(string? value) => NotifyCommandsChanged();
 
-    partial void OnIsUserControlledChanged(bool value)
-    {
-        OnPropertyChanged(nameof(OwnershipText));
-        NotifyCommandsChanged();
-    }
-
     partial void OnActiveSessionIdChanged(SessionId? value)
     {
         _bindingVersion++;
@@ -187,8 +174,6 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         BackCommand.NotifyCanExecuteChanged();
         ForwardCommand.NotifyCanExecuteChanged();
         ReloadCommand.NotifyCanExecuteChanged();
-        TakeOverCommand.NotifyCanExecuteChanged();
-        ResumeCommand.NotifyCanExecuteChanged();
     }
 
     private bool CanExecute => CanInteract && !IsNavigating;
@@ -196,10 +181,6 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     private bool CanNavigate => CanExecute && !string.IsNullOrWhiteSpace(Address);
 
     private bool CanUseTab => CanExecute && ActiveTabId is not null;
-
-    private bool CanTakeOver => CanExecute && !IsUserControlled;
-
-    private bool CanResume => CanExecute && IsUserControlled;
 
     private bool CanSelectTab(BrowserTabStatus? tab) => CanExecute && tab is not null
         && tab.Id != ActiveTabId && Tabs.Any(current => current.Id == tab.Id);
@@ -244,16 +225,10 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanUseTab))]
     private Task ReloadAsync() => ExecuteAsync(Command("reload", ActiveTabId), Loc.Get("browser_op_reload"));
 
-    [RelayCommand(CanExecute = nameof(CanTakeOver))]
-    private Task TakeOverAsync() => ExecuteAsync(null, Loc.Get("browser_take_over"));
-
-    [RelayCommand(CanExecute = nameof(CanResume))]
-    private Task ResumeAsync() => ExecuteAsync(Command("resume", null), Loc.Get("browser_resume_agent"));
-
     private static BrowserCommandAction Command(string command, string? tabId) =>
         new(command, EmptyInput) { TabId = tabId, UserInitiated = true };
 
-    private async Task ExecuteAsync(BrowserAction? action, string operation)
+    private async Task ExecuteAsync(BrowserAction action, string operation)
     {
         if (!CanExecute || ActiveSessionId is not { } sessionId)
         {
@@ -264,15 +239,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         IsNavigating = true;
         try
         {
-            BrowserActionResult? result = null;
-            if (action is null)
-            {
-                await _controller.TakeoverAsync(sessionId, CancellationToken.None);
-            }
-            else
-            {
-                result = await _controller.ExecuteAsync(sessionId, action, CancellationToken.None);
-            }
+            var result = await _controller.ExecuteAsync(sessionId, action, CancellationToken.None);
             _scheduler.Post(() =>
             {
                 if (!_disposed && _bindingVersion == version)
@@ -353,7 +320,6 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         }
         ActiveTabId = activeId;
         SelectedTab = Tabs.FirstOrDefault(tab => tab.Id == activeId);
-        IsUserControlled = status?.IsUserControlled == true || SelectedTab?.IsUserControlled == true;
         StateText = status?.State switch
         {
             null or BrowserSessionState.Idle => Loc.Get("browser_state_idle"),

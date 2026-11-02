@@ -5,7 +5,7 @@ namespace Alcoler.Browser;
 
 public sealed record BrowserProtocolEvent(string Method, JsonElement Parameters, string? SessionId = null);
 
-public sealed record BrowserNewTabRequestedEventArgs(SessionId SessionId, string OpenerTabId, string Url, bool IsUserInitiated = false, string? TargetId = null);
+public sealed record BrowserNewTabRequestedEventArgs(SessionId SessionId, string OpenerTabId, string Url, string? TargetId = null);
 
 public interface IBrowserPage : IDisposable
 {

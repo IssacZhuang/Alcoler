@@ -397,10 +397,9 @@ internal sealed partial class WebViewBrowserPage : IBrowserPage
         using var args = new NativeComObject<INewWindowArgs>(pointer);
         args.Value.SetHandled(1);
         args.Value.GetUri(out var url);
-        args.Value.GetIsUserInitiated(out var isUserInitiated);
         if (WebViewBrowserHost.IsAllowedUrl(url))
         {
-            _host.RaiseNewTabRequested(this, url, isUserInitiated != 0);
+            _host.RaiseNewTabRequested(this, url);
         }
     }
 

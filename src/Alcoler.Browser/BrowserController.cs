@@ -42,12 +42,6 @@ public sealed class BrowserController : IBrowserController
     public async Task<BrowserActionResult> ExecuteAsync(
         SessionId sessionId, BrowserAction action, CancellationToken cancellationToken)
     {
-        if (action.Verb == "takeover")
-        {
-            await TakeoverAsync(sessionId, cancellationToken).ConfigureAwait(false);
-            lock (_sync)
-                return TabList(GetSession(sessionId)) with { Text = "Control handed to the user. Automated input is paused until the user resumes it." };
-        }
         SessionEntry session;
         lock (_sync)
         {
@@ -61,10 +55,6 @@ public sealed class BrowserController : IBrowserController
             lock (_sync)
             {
                 pending.Token.ThrowIfCancellationRequested();
-                if (session.UserControlled && !action.UserInitiated && !IsObservation(action))
-                    return Failure("Browser is under human control. The user must choose Resume agent before automated interaction can continue.");
-                if (session.UserControlled && action.Verb == "record_status")
-                    return new(true, StructuredOutput: BrowserJson.Serialize(new Dictionary<string, object?> { ["state"] = "cancelled" }));
                 session.Inflight = pending;
                 session.Busy = true;
                 session.Error = null;
@@ -109,61 +99,16 @@ public sealed class BrowserController : IBrowserController
         return Task.CompletedTask;
     }
 
-    public async Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        SessionEntry session;
-        lock (_sync)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            session = GetSession(sessionId);
-            session.UserControlled = true;
-            session.ControlGeneration++;
-            session.Inflight?.Cancel();
-        }
-        Publish(sessionId, session);
-        using var pending = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
-        await session.Gate.WaitAsync(pending.Token).ConfigureAwait(false);
-        try
-        {
-            TabEntry[] tabs;
-            lock (_sync)
-            {
-                session.UserControlled = true;
-                tabs = session.Tabs.Values.ToArray();
-            }
-            foreach (var tab in tabs)
-                await tab.Automation.SuspendAsync(pending.Token).ConfigureAwait(false);
-            string? active;
-            lock (_sync) active = session.ActiveTabId;
-            // Showing the page is a best-effort handover affordance: a headless backend has
-            // no window to raise, but control is still gated by UserControlled.
-            if (active is not null)
-            {
-                try { await _host.ShowPageAsync(active, pending.Token).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException) { }
-            }
-        }
-        finally
-        {
-            session.Gate.Release();
-            Publish(sessionId, session);
-        }
-    }
-
     public Task<BrowserActionResult> OpenPopupAsync(
         SessionId sessionId, string openerTabId, string url, CancellationToken cancellationToken,
-        bool isUserInitiated = false, string? adoptTargetId = null)
+        string? adoptTargetId = null)
     {
         PopupAction action;
         lock (_sync)
         {
-            if (_disposed || !_sessions.TryGetValue(sessionId, out var session))
+            if (_disposed || !_sessions.TryGetValue(sessionId, out _))
                 return Task.FromResult(Failure("The popup opener is no longer available."));
-            action = new PopupAction(openerTabId, url, session.ControlGeneration, adoptTargetId)
-            {
-                UserInitiated = isUserInitiated && session.UserControlled && session.Inflight is null,
-            };
+            action = new PopupAction(openerTabId, url, adoptTargetId);
         }
         return ExecuteAsync(sessionId, action, cancellationToken);
     }
@@ -175,49 +120,26 @@ public sealed class BrowserController : IBrowserController
         switch (action.Verb)
         {
             case "capabilities":
-                return new(true, Text: _capabilitiesText ?? "Embedded WebView browser. Windows WebView2 runtime is required for automation. Tabs and control ownership are session-scoped; browser data persists in an application profile. Use snapshot to discover elements; refs expire on navigation. File upload and external Chrome attachment are not supported.",
+                return new(true, Text: _capabilitiesText ?? "Embedded WebView browser. Windows WebView2 runtime is required for automation. Tabs are session-scoped; browser data persists in an application profile. Use snapshot to discover elements; refs expire on navigation. File upload and external Chrome attachment are not supported.",
                     StructuredOutput: BrowserJson.Serialize(new Dictionary<string, object?>
                     {
                         ["backend"] = _backendName, ["platform"] = PlatformName(), ["maxTabs"] = MaxTabs,
                         ["observations"] = new[] { "snapshot", "dom_snapshot", "screenshot", "element_info", "evaluate" },
                         ["interactions"] = new[] { "navigate", "click", "dblclick", "hover", "fill", "type", "press", "scroll", "drag", "check", "uncheck", "select_option" },
-                        ["lifecycle"] = new[] { "tabs", "new_tab", "select_tab", "close_tab", "back", "forward", "reload", "takeover", "resume", "finalize" },
+                        ["lifecycle"] = new[] { "tabs", "new_tab", "select_tab", "close_tab", "back", "forward", "reload", "finalize" },
                         ["events"] = new[] { "wait_for", "dialog", "downloads", "download_media" },
                         ["media"] = new[] { "viewport", "visibility", "record_start", "record_status", "record_cancel" },
                         ["unsupported"] = new[] { "networkidle", "file_upload", "external_browser_attachment" },
                     }));
             case "tabs":
                 return TabList(session);
-            case "resume":
-                if (!action.UserInitiated)
-                    return Failure("Only the user can resume automated control from the browser pane.");
-                lock (_sync)
-                {
-                    session.UserControlled = false;
-                    session.ControlGeneration++;
-                }
-                return TabList(session) with { Text = "Automated browser control resumed." };
             case "finalize":
-            {
-                var finalized = FinalizeTabs(session, input);
-                if (session.UserControlled)
-                {
-                    TabEntry[] tabs;
-                    lock (_sync) tabs = session.Tabs.Values.ToArray();
-                    foreach (var tab in tabs)
-                        await tab.Automation.SuspendAsync(ct).ConfigureAwait(false);
-                }
-                return finalized;
-            }
+                return FinalizeTabs(session, input);
             case "popup":
             case "new_tab":
             {
                 if (action is PopupAction popup)
-                {
-                    if (popup.ControlGeneration != session.ControlGeneration)
-                        return Failure("The popup was discarded because browser control ownership changed.");
                     _ = RequireTab(session, popup.OpenerTabId);
-                }
                 var url = action is PopupAction requested ? requested.Url : GetString(input, "url") ?? "about:blank";
                 ValidateUrl(url);
                 var created = await CreateTabAsync(sessionId, session, ct, action is PopupAction adopt ? adopt.AdoptTargetId : null).ConfigureAwait(false);
@@ -254,8 +176,6 @@ public sealed class BrowserController : IBrowserController
             current = tabId is not null ? RequireTab(session, tabId)
                 : session.ActiveTabId is { } active && session.Tabs.TryGetValue(active, out var tab) ? tab : null;
         }
-        if (current is null && session.UserControlled)
-            return Failure("No active browser tab is available under human control. The user must open a tab or resume the agent.");
         current ??= await CreateTabAsync(sessionId, session, ct).ConfigureAwait(false);
         if (action.Verb == "visibility")
         {
@@ -379,11 +299,6 @@ public sealed class BrowserController : IBrowserController
         {
             foreach (var id in keep) _ = RequireTab(session, id);
             foreach (var id in keep) session.Tabs[id].Keep = true;
-            if (input.ValueKind == JsonValueKind.Object && input.TryGetProperty("release", out var release) && release.GetBoolean())
-            {
-                session.UserControlled = true;
-                session.ControlGeneration++;
-            }
         }
         return TabList(session) with { Text = "Browser deliverables retained. Unlisted tabs were not closed." };
     }
@@ -396,17 +311,16 @@ public sealed class BrowserController : IBrowserController
             var index = 0;
             foreach (var tab in session.Tabs.Values)
             {
-                tabs[index++] = new Dictionary<string, object?>(6)
+                tabs[index++] = new Dictionary<string, object?>(5)
                 {
                     ["id"] = tab.Page.Id, ["url"] = tab.Automation.Url ?? "about:blank",
                     ["title"] = tab.Automation.Title ?? string.Empty,
                     ["active"] = tab.Page.Id == session.ActiveTabId,
-                    ["userControlled"] = session.UserControlled,
                     ["keep"] = tab.Keep,
                 };
             }
             return new(true, TabId: session.ActiveTabId, StructuredOutput: BrowserJson.Serialize(
-                new Dictionary<string, object?> { ["tabs"] = tabs, ["activeTabId"] = session.ActiveTabId, ["userControlled"] = session.UserControlled }));
+                new Dictionary<string, object?> { ["tabs"] = tabs, ["activeTabId"] = session.ActiveTabId }));
         }
     }
 
@@ -442,7 +356,7 @@ public sealed class BrowserController : IBrowserController
             {
                 var item = new BrowserTabStatus(
                     tab.Page.Id, tab.Automation.Url ?? "about:blank", tab.Automation.Title ?? "New tab",
-                    tab.Page.Id == session.ActiveTabId, IsLoading: tab.Loading, IsUserControlled: session.UserControlled);
+                    tab.Page.Id == session.ActiveTabId, IsLoading: tab.Loading);
                 tabs[index++] = item;
                 if (active is null && item.IsActive) active = item;
             }
@@ -450,7 +364,7 @@ public sealed class BrowserController : IBrowserController
                 session.Busy ? BrowserSessionState.Busy : session.Error is not null ? BrowserSessionState.Failed
                     : tabs.Length > 0 ? BrowserSessionState.Launched : BrowserSessionState.Idle,
                 active?.Url, active?.Title, UpdatedAt: DateTimeOffset.UtcNow, Tabs: tabs,
-                ActiveTabId: session.ActiveTabId, IsUserControlled: session.UserControlled, Error: session.Error);
+                ActiveTabId: session.ActiveTabId, Error: session.Error);
             session.Status = status;
             // An immediate publish already reflects everything a pending progress debounce would publish.
             session.DownloadsTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -477,11 +391,6 @@ public sealed class BrowserController : IBrowserController
             return tab;
         }
     }
-
-    private static bool IsObservation(BrowserAction action) => action.Verb is
-        "tabs" or "capabilities" or "snapshot" or "dom_snapshot" or "screenshot" or "read_text" or "count"
-        or "inner_text" or "text_content" or "get_attribute" or "is_visible" or "is_enabled" or "element_info"
-        or "downloads" or "record_status" or "record_cancel" or "takeover";
 
     private static string? GetString(JsonElement input, string name) =>
         input.ValueKind == JsonValueKind.Object && input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
@@ -528,7 +437,7 @@ public sealed class BrowserController : IBrowserController
         _host.Dispose();
     }
 
-    private sealed record PopupAction(string OpenerTabId, string Url, int ControlGeneration, string? AdoptTargetId = null) : BrowserAction
+    private sealed record PopupAction(string OpenerTabId, string Url, string? AdoptTargetId = null) : BrowserAction
     {
         public override string Verb => "popup";
     }
@@ -538,8 +447,6 @@ public sealed class BrowserController : IBrowserController
         public SemaphoreSlim Gate { get; } = new(1, 1);
         public Dictionary<string, TabEntry> Tabs { get; } = [];
         public string? ActiveTabId { get; set; }
-        public bool UserControlled { get; set; }
-        public int ControlGeneration { get; set; }
         public bool Busy { get; set; }
         public string? Error { get; set; }
         public CancellationTokenSource? Inflight { get; set; }

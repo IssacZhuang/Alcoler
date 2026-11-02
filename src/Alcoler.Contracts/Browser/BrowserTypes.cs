@@ -87,7 +87,6 @@ public sealed record BrowserSessionStatus(
     DateTimeOffset UpdatedAt = default,
     IReadOnlyList<BrowserTabStatus>? Tabs = null,
     string? ActiveTabId = null,
-    bool IsUserControlled = false,
     string? Error = null);
 
 public sealed record BrowserTabStatus(
@@ -95,8 +94,7 @@ public sealed record BrowserTabStatus(
     string Url,
     string Title,
     bool IsActive = false,
-    bool IsLoading = false,
-    bool IsUserControlled = false);
+    bool IsLoading = false);
 
 public sealed record BrowserStatusChangedEventArgs(SessionId SessionId, BrowserSessionStatus Status);
 
@@ -112,8 +110,6 @@ public interface IBrowserController : IDisposable
     Task<BrowserActionResult> ExecuteAsync(SessionId sessionId, BrowserAction action, CancellationToken cancellationToken);
 
     Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken);
-
-    Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken);
 
     BrowserSessionStatus? GetStatus(SessionId sessionId);
 }

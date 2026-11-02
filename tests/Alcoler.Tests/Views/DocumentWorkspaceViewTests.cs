@@ -803,7 +803,6 @@ public class DocumentWorkspaceViewTests
             return Task.FromResult(new BrowserActionResult(Ok: true));
         }
         public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken) { ActionCount++; return Task.CompletedTask; }
-        public Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken) { ActionCount++; return Task.CompletedTask; }
         public BrowserSessionStatus? GetStatus(SessionId sessionId) => _statuses.GetValueOrDefault(sessionId);
         public void Dispose() { }
     }

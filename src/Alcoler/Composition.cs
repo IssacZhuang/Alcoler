@@ -25,8 +25,8 @@ public static class Composition
             "Headless Chromium-family browser running as a separate OS process, with the Chromium sandbox enabled by default. "
             + "Each session uses an isolated profile persisted on disk, and downloads land in that profile's downloads directory. "
             + "There is no visible browser window: observe pages through snapshots and screenshots. Visibility and window control "
-            + "are unavailable in headless mode; takeover still pauses automated input until the user resumes it. "
-            + "Tabs and control ownership are session-scoped. Use snapshot to discover elements; refs expire on navigation. "
+            + "are unavailable in headless mode. "
+            + "Tabs are session-scoped. Use snapshot to discover elements; refs expire on navigation. "
             + "File upload and external browser attachment are not supported.";
         var embedded = config.Browser?.EmbeddedView ?? OperatingSystem.IsWindows();
         IBrowserHost browserHost;
@@ -57,7 +57,7 @@ public static class Composition
             try
             {
                 await browser.OpenPopupAsync(request.SessionId, request.OpenerTabId, request.Url,
-                    CancellationToken.None, request.IsUserInitiated, request.TargetId);
+                    CancellationToken.None, request.TargetId);
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
             {

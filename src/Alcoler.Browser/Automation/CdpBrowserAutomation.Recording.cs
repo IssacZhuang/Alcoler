@@ -14,25 +14,6 @@ public sealed partial class CdpBrowserAutomation
     private long _recordedMilliseconds;
     private bool _recordingStop;
 
-    public async Task SuspendAsync(CancellationToken cancellationToken)
-    {
-        _recordingCancellation?.Cancel();
-        _recordingMedia = null;
-        _recordingState = "cancelled";
-        if (_disposed) return;
-        var recording = _recordingTask;
-        if (recording is not null) await recording.WaitAsync(cancellationToken);
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            _recordingMedia = null;
-            _recordingState = "cancelled";
-            _recordingError = null;
-            await ReleasePressedInputAsync();
-        }
-        finally { _gate.Release(); }
-    }
-
     private async Task<BrowserActionResult> RecordingAsync(string command, JsonElement input, CancellationToken ct)
     {
         if (command == "record_start")

@@ -289,7 +289,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
                 if (openerId is not null && entry.PagesByTargetId.TryGetValue(openerId, out var opener))
                 {
                     // Chrome announces popups with an empty URL; the notification waits for a committed navigation.
-                    RegisterPendingTarget(entry, targetId, url, opener.Id, userInitiated: false);
+                    RegisterPendingTarget(entry, targetId, url, opener.Id);
                     return;
                 }
                 ChromiumBrowserPage? anchor = null;
@@ -300,7 +300,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
                 }
                 if (anchor is not null && openerId is null)
                 {
-                    RegisterPendingTarget(entry, targetId, url, anchor.Id, userInitiated: true);
+                    RegisterPendingTarget(entry, targetId, url, anchor.Id);
                     return;
                 }
                 _ = TrySendAsync(entry, "Target.closeTarget", D("targetId", targetId));
@@ -319,7 +319,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
                 {
                     var url = String(info, "url");
                     if (url is not null && IsNavigableUrl(url))
-                        RegisterPendingTarget(entry, targetId, url, pending.OpenerTabId, pending.UserInitiated);
+                        RegisterPendingTarget(entry, targetId, url, pending.OpenerTabId);
                 }
                 return;
             }
@@ -439,11 +439,11 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         }
     }
 
-    private void RegisterPendingTarget(SessionEntry entry, string targetId, string url, string openerTabId, bool userInitiated)
+    private void RegisterPendingTarget(SessionEntry entry, string targetId, string url, string openerTabId)
     {
         var notify = IsNavigableUrl(url);
-        lock (_sync) entry.Popups[targetId] = new PopupRequest(url, openerTabId, userInitiated, notify);
-        if (notify) NewTabRequested?.Invoke(this, new(entry.SessionId, openerTabId, url, userInitiated, targetId));
+        lock (_sync) entry.Popups[targetId] = new PopupRequest(url, openerTabId, notify);
+        if (notify) NewTabRequested?.Invoke(this, new(entry.SessionId, openerTabId, url, targetId));
     }
 
     private static bool IsNavigableUrl(string url) =>
@@ -462,7 +462,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         return result;
     }
 
-    private sealed record PopupRequest(string Url, string OpenerTabId, bool UserInitiated, bool Notified);
+    private sealed record PopupRequest(string Url, string OpenerTabId, bool Notified);
 
     private sealed class SessionEntry
     {

@@ -11,8 +11,6 @@ internal sealed class FakeBrowserController : IBrowserController
 
     public List<SessionId> Canceled { get; } = [];
 
-    public List<SessionId> Takeovers { get; } = [];
-
     public Func<BrowserAction, BrowserActionResult>? ResultFactory { get; set; }
 
     public BrowserSessionStatus? Status { get; set; }
@@ -33,12 +31,6 @@ internal sealed class FakeBrowserController : IBrowserController
     public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken)
     {
         Canceled.Add(sessionId);
-        return Task.CompletedTask;
-    }
-
-    public Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken)
-    {
-        Takeovers.Add(sessionId);
         return Task.CompletedTask;
     }
 

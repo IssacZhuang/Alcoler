@@ -212,8 +212,8 @@ public class BrowserToolTests
                 "capabilities", "tabs", "new_tab", "close_tab", "select_tab", "back", "forward", "reload",
                 "snapshot", "dom_snapshot", "dblclick", "hover", "fill", "drag", "check", "uncheck", "select_option",
                 "count", "inner_text", "text_content", "is_visible", "is_enabled", "element_info", "get_attribute",
-                "wait_for", "evaluate", "dialog", "downloads", "download_media", "viewport", "visibility", "takeover",
-                "resume", "finalize", "record_start", "record_status", "record_cancel"],
+                "wait_for", "evaluate", "dialog", "downloads", "download_media", "viewport", "visibility",
+                "finalize", "record_start", "record_status", "record_cancel"],
             verbs);
     }
 

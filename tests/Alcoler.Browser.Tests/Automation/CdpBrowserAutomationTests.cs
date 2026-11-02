@@ -352,25 +352,6 @@ public sealed class CdpBrowserAutomationTests
     }
 
     [Fact]
-    public async Task SuspendDiscardsCompletedRecordingAndDrainsCancelledRecording()
-    {
-        using var page = new FakePage();
-        using var engine = new CdpBrowserAutomation(page);
-        var start = await Execute(engine, "record_start", "{\"maxDurationMs\":100,\"fps\":10}");
-        Assert.True(start.Ok, start.Error);
-        await Task.Delay(200);
-        await engine.SuspendAsync(default);
-        var status = await Execute(engine, "record_status", "{}");
-        Assert.Null(status.Media);
-        Assert.Contains("cancelled", status.StructuredOutput);
-        await Execute(engine, "record_start", "{\"maxDurationMs\":5000}");
-        await engine.SuspendAsync(default);
-        Assert.Null((await Execute(engine, "record_status", "{}")).Media);
-        engine.Dispose();
-        await engine.SuspendAsync(default);
-    }
-
-    [Fact]
     public async Task SnapshotScopeCanReuseExistingReferenceBeforeInvalidation()
     {
         using var page = new FakePage();

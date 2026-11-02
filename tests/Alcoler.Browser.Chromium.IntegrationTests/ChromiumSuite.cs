@@ -67,7 +67,6 @@ internal sealed class ChromiumSuite : IDisposable
         new("download_media returns exact fixture bytes", false, DownloadMediaAsync),
         new("bounded WebM recording completes with EBML media", false, RecordingAsync),
         new("target=_blank popup is adopted as a new session tab", true, PopupAsync),
-        new("takeover blocks model input until user resume", false, TakeoverAsync),
         new("per-session profile isolation for cookies and localStorage", false, SessionIsolationAsync),
         new("visibility show restores the window and screenshots keep working", true, VisibilityShowAsync),
         new("close_tab auto-creates the next tab and finalize keeps listed tabs", false, CloseAndFinalizeAsync),
@@ -409,7 +408,7 @@ internal sealed class ChromiumSuite : IDisposable
         var completion = _popup;
         try
         {
-            var result = await _controller.OpenPopupAsync(e.SessionId, e.OpenerTabId, e.Url, _ct, e.IsUserInitiated, e.TargetId);
+            var result = await _controller.OpenPopupAsync(e.SessionId, e.OpenerTabId, e.Url, _ct, e.TargetId);
             completion?.TrySetResult((e, result));
         }
         catch (Exception ex)
@@ -417,28 +416,6 @@ internal sealed class ChromiumSuite : IDisposable
             if (completion is null) Console.WriteLine($"WARN unexpected popup callback{Environment.NewLine}{ex}");
             else completion.TrySetException(ex);
         }
-    }
-
-    private async Task TakeoverAsync()
-    {
-        await CommandAsync("record_start", D(("maxDurationMs", 3000), ("fps", 4)), _tab);
-        await CommandAsync("takeover", tab: _tab);
-        var recording = await CommandAsync("record_status", tab: _tab);
-        Equal("cancelled", Structured(recording).GetProperty("state").GetString(), "Takeover recording cancellation");
-        Check(recording.Media is null, "Takeover exposed recording media after yielding control.");
-        Check(_controller.GetStatus(_session)?.IsUserControlled == true, "Takeover did not publish human ownership.");
-        var blocked = await RawAsync("fill", Target(D(("css", "#account")), ("text", "must not be written")), _tab);
-        Check(!blocked.Ok && blocked.Error?.Contains("human control", StringComparison.Ordinal) == true,
-            "Automated input was not blocked during human control: " + blocked.Error);
-        Check(!(await RawAsync("evaluate", D(("expression", "document.body.dataset.illegal='yes'")), _tab)).Ok, "Evaluate bypassed human ownership.");
-        Check((await CommandAsync("tabs")).Ok, "Observation was blocked during human control.");
-        Check(!(await RawAsync("resume", tab: _tab)).Ok, "Model resume bypassed human ownership.");
-        Check(_controller.GetStatus(_session)?.IsUserControlled == true, "Rejected model resume changed ownership.");
-        await CommandAsync("fill", Target(D(("css", "#account")), ("text", "human content")), _tab, userInitiated: true);
-        await CommandAsync("resume", tab: _tab, userInitiated: true);
-        Check(_controller.GetStatus(_session)?.IsUserControlled == false, "User resume did not release human ownership.");
-        await CommandAsync("fill", Target(D(("css", "#account")), ("text", "resumed account")), _tab);
-        await AssertJsAsync("document.querySelector('#account').value === 'resumed account' && !document.body.dataset.illegal");
     }
 
     private async Task SessionIsolationAsync()
@@ -614,16 +591,16 @@ internal sealed class ChromiumSuite : IDisposable
     }
 
     private async Task<BrowserActionResult> RawAsync(string verb, Dictionary<string, object?>? input = null,
-        string? tab = null, SessionId? session = null, bool userInitiated = false)
+        string? tab = null, SessionId? session = null)
     {
-        var action = new BrowserCommandAction(verb, BrowserJson.Element(input ?? D())) { TabId = tab, UserInitiated = userInitiated };
+        var action = new BrowserCommandAction(verb, BrowserJson.Element(input ?? D())) { TabId = tab };
         return await _controller.ExecuteAsync(session ?? _session, action, _ct).WaitAsync(TimeSpan.FromSeconds(65), _ct);
     }
 
     private async Task<BrowserActionResult> CommandAsync(string verb, Dictionary<string, object?>? input = null,
-        string? tab = null, SessionId? session = null, bool userInitiated = false)
+        string? tab = null, SessionId? session = null)
     {
-        var result = await RawAsync(verb, input, tab, session, userInitiated);
+        var result = await RawAsync(verb, input, tab, session);
         Check(result.Ok, $"Browser '{verb}' failed on {tab ?? "active tab"}: {result.Error}; uncertain={result.SideEffectUncertain}");
         return result;
     }

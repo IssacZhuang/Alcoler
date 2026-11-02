@@ -1032,8 +1032,6 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
         public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task TakeoverAsync(SessionId sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
         public void Dispose() => DisposeCount++;
     }
 

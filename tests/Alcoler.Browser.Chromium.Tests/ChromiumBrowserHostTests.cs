@@ -61,7 +61,6 @@ public sealed class ChromiumBrowserHostTests
             Assert.Equal(_session, request.SessionId);
             Assert.Equal("tab_1", request.OpenerTabId);
             Assert.Equal("https://example.test/popup", request.Url);
-            Assert.False(request.IsUserInitiated);
             Assert.Equal("POP1", request.TargetId);
 
             var before = wire.Snapshot().Count;
@@ -73,7 +72,7 @@ public sealed class ChromiumBrowserHostTests
     }
 
     [Fact]
-    public async Task UserOpenedTargetWithoutOpenerRaisesUserInitiatedNewTabRequested()
+    public async Task TargetWithoutOpenerRaisesNewTabRequested()
     {
         var (host, wire, _) = CreateHost();
         using (host)
@@ -83,7 +82,6 @@ public sealed class ChromiumBrowserHostTests
             host.NewTabRequested += (_, e) => raised.TrySetResult(e);
             wire.Push("{\"method\":\"Target.targetCreated\",\"params\":{\"targetInfo\":{\"targetId\":\"USER1\",\"type\":\"page\",\"url\":\"https://example.test/manual\"}}}");
             var request = await raised.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.True(request.IsUserInitiated);
             Assert.Equal("tab_1", request.OpenerTabId);
             Assert.Equal("https://example.test/manual", request.Url);
             Assert.Equal("USER1", request.TargetId);

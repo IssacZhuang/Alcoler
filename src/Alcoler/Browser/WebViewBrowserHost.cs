@@ -166,8 +166,8 @@ public sealed class WebViewBrowserHost : IBrowserHost
         }
     }
 
-    internal void RaiseNewTabRequested(WebViewBrowserPage page, string url, bool isUserInitiated) =>
-        NewTabRequested?.Invoke(this, new BrowserNewTabRequestedEventArgs(page.SessionId, page.Id, url, isUserInitiated));
+    internal void RaiseNewTabRequested(WebViewBrowserPage page, string url) =>
+        NewTabRequested?.Invoke(this, new BrowserNewTabRequestedEventArgs(page.SessionId, page.Id, url));
 
     internal void DisposePage(WebViewBrowserPage page)
     {
