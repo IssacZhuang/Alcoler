@@ -8,9 +8,9 @@ internal static class TestMessages
 {
     internal static int Counter;
 
-    internal static MessageId NextMessageId() => new($"msg_{++Counter}");
-    internal static PartId NextPartId() => new($"part_{++Counter}");
-    internal static ToolCallId NextToolCallId(string name) => new($"call_{name}_{++Counter}");
+    internal static MessageId NextMessageId() => new($"msg_{Interlocked.Increment(ref Counter)}");
+    internal static PartId NextPartId() => new($"part_{Interlocked.Increment(ref Counter)}");
+    internal static ToolCallId NextToolCallId(string name) => new($"call_{name}_{Interlocked.Increment(ref Counter)}");
 
     internal static ConversationMessage UserText(string text) =>
         new(NextMessageId(), MessageRole.User, [new TextPart(NextPartId(), text)], DateTimeOffset.UtcNow);

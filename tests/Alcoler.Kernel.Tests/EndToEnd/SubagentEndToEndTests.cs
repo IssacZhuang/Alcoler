@@ -253,6 +253,11 @@ public class SubagentEndToEndTests
             await WaitForAsync(() => finished.All(state => model.Notifications.Any(text =>
                 text.Contains($"<task-id>{state.Id.Value}</task-id>", StringComparison.Ordinal)
                 && text.Contains($"<tool-use-id>{calls.Single(call => call.Input.GetProperty("description").GetString() == state.Description).Id.Value}</tool-use-id>", StringComparison.Ordinal))));
+            using (var current = runtime.Subscribe(session.Id))
+            {
+                await projection.WaitUntilSequenceAsync(current.Snapshot().Sequence)
+                    .WaitAsync(TimeSpan.FromSeconds(10));
+            }
             await WaitForPhaseAsync(projection, TurnPhase.Idle);
         }
         else
@@ -301,7 +306,7 @@ public class SubagentEndToEndTests
         {
             model.ReleaseChildren.TrySetResult();
         }
-        await WaitForAsync(() => Subagents(projection) is [ { Status: SubagentStatus.Failed } ]);
+        await WaitForAsync(() => Subagents(projection) is [{ Status: SubagentStatus.Failed }]);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
         var child = Assert.Single(Subagents(projection));
         var call = Assert.Single(projection.Snapshot().Rows.OfType<ToolCallRow>());
@@ -385,7 +390,7 @@ public class SubagentEndToEndTests
                 && text.Contains("<tool-use-id>followup</tool-use-id>", StringComparison.Ordinal)
                 && text.Contains("Continue the child task", StringComparison.Ordinal)
                 && text.Contains("followup-result", StringComparison.Ordinal)));
-            await WaitForAsync(() => Subagents(projection) is [ { Status: SubagentStatus.Completed } ]);
+            await WaitForAsync(() => Subagents(projection) is [{ Status: SubagentStatus.Completed }]);
             var completed = Assert.Single(Subagents(projection));
             Assert.Equal(original.Id, completed.Id);
             Assert.Equal(original.ParentToolCallId, completed.ParentToolCallId);
@@ -423,7 +428,7 @@ public class SubagentEndToEndTests
         Assert.Contains("<message>Found &lt;entry&gt; &amp; continuing.</message>", reply);
         Assert.DoesNotContain("[SYSTEM NOTIFICATION - NOT USER INPUT]", reply);
         Assert.DoesNotContain(projection.Snapshot().Rows.OfType<UserMessageRow>(), row => row.Text.Contains("<subagent-message>"));
-        await WaitForAsync(() => Subagents(projection) is [ { Status: SubagentStatus.Completed } ]);
+        await WaitForAsync(() => Subagents(projection) is [{ Status: SubagentStatus.Completed }]);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
         using var childProjection = runtime.TryObserveSubagent(session.Id, state.ChildSessionId);
         Assert.NotNull(childProjection);
@@ -477,8 +482,13 @@ public class SubagentEndToEndTests
         var input = JsonSerializer.SerializeToElement(new { prompt = "research" });
         var first = new SubagentState(StrongId.NewSubagentId(), StrongId.NewSessionId(), "first",
             SubagentStatus.Running, null, now, null, ParentToolCallId: call1, AgentType: "Explore");
-        var parallel = first with { Id = StrongId.NewSubagentId(), ChildSessionId = StrongId.NewSessionId(),
-            Description = "parallel", ParentToolCallId = call2 };
+        var parallel = first with
+        {
+            Id = StrongId.NewSubagentId(),
+            ChildSessionId = StrongId.NewSessionId(),
+            Description = "parallel",
+            ParentToolCallId = call2
+        };
         var messages = new List<ConversationMessage>();
         var events = new List<SequencedEvent>();
         var expected = new ProjectionBuilder();

@@ -31,7 +31,7 @@ public sealed partial class CdpBrowserAutomation
                   const stream=canvas.captureStream(fps), recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:2000000});
                   const state={canvas,stream,recorder,chunks:[],size:0,error:null,done:false};
                   state.finished=new Promise(resolve=>recorder.onstop=()=>{state.done=true;stream.getTracks().forEach(t=>t.stop());resolve(true);});
-                  recorder.onerror=e=>{state.error=e.error?.message || 'MediaRecorder failed';};
+                  state.started=new Promise(resolve=>{recorder.onstart=()=>resolve(true);recorder.onerror=e=>{state.error=e.error?.message || 'MediaRecorder failed';resolve(false);};});
                   recorder.ondataavailable=e=>{state.size+=e.data.size;if(state.size>maxBytes){state.error='Recording exceeds media size limit';if(recorder.state!=='inactive')recorder.stop();}else state.chunks.push(e.data);};
                   globalThis.__alcolerRecording=state;
                   recorder.start(250);
@@ -80,7 +80,7 @@ public sealed partial class CdpBrowserAutomation
                     var frame = await SendAsync("Page.captureScreenshot", D(("format", "jpeg"), ("quality", 65), ("fromSurface", true), ("captureBeyondViewport", false)), frameTimeout.Token);
                     var data = RequiredString(frame, "data");
                     if (data.Length > MaxMedia) throw new InvalidOperationException("Recording frame exceeds size limit.");
-                    await CallAsync(context, "async function(data){const s=globalThis.__alcolerRecording;if(!s || s.error)throw Error(s?.error || 'Recording context lost');if(s.done)throw Error('Recording stopped unexpectedly');const image=new Image();image.src='data:image/jpeg;base64,'+data;await image.decode();s.canvas.getContext('2d').drawImage(image,0,0,s.canvas.width,s.canvas.height);return true;}", [D("value", data)], frameTimeout.Token, true);
+                    await CallAsync(context, "async function(data){const s=globalThis.__alcolerRecording;if(!s || s.error)throw Error(s?.error || 'Recording context lost');if(s.done)throw Error('Recording stopped unexpectedly');const image=new Image();image.src='data:image/jpeg;base64,'+data;await image.decode();s.canvas.getContext('2d').drawImage(image,0,0,s.canvas.width,s.canvas.height);await s.started;if(s.error)throw Error(s.error);return true;}", [D("value", data)], frameTimeout.Token, true);
                 }
                 finally { frameTimer.Change(Timeout.Infinite, Timeout.Infinite); _gate.Release(); }
                 Interlocked.Exchange(ref _recordedMilliseconds, clock.ElapsedMilliseconds);
@@ -94,6 +94,7 @@ public sealed partial class CdpBrowserAutomation
                 finish.CancelAfter(10000);
                 var result = RemoteValue(await CallAsync(context, "async function(){const s=globalThis.__alcolerRecording;if(!s)throw Error('Recording context lost');if(s.recorder.state!=='inactive')s.recorder.stop();await s.finished;if(s.error)throw Error(s.error);const blob=new Blob(s.chunks,{type:s.recorder.mimeType});s.chunks=[];const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(r.error);r.readAsDataURL(blob);});delete globalThis.__alcolerRecording;return data.slice(data.indexOf(',')+1);}", [], finish.Token, true));
                 _recordingMedia = DecodeBounded(result.GetString() ?? "", MaxMedia);
+                if (_recordingMedia.Length == 0) throw new InvalidOperationException("Recording did not produce media.");
                 _recordingState = "completed";
             }
             finally { _gate.Release(); }

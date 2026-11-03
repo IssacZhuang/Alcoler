@@ -1,5 +1,6 @@
 using Alcoler.Adapters.Models;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
@@ -43,7 +44,7 @@ public class WorkflowEndToEndTests
             StrongId.NewCommandId(), session.Id, ack.Revision, "refactor the storage layer"),
             CancellationToken.None);
         Assert.True(sendAck.Accepted);
-        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        await WaitForReplyAsync(projection, "Orchestrating.");
         await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
 
         var requestText = RequestText(Assert.Single(capturing.Requests));
@@ -55,7 +56,7 @@ public class WorkflowEndToEndTests
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "continue"),
             CancellationToken.None);
         Assert.True(secondAck.Accepted);
-        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        await WaitForReplyAsync(projection, "Working directly.");
 
         Assert.Equal(2, capturing.Requests.Count);
         Assert.DoesNotContain("# Orchestrator mode", RequestText(capturing.Requests[1]));
@@ -79,14 +80,14 @@ public class WorkflowEndToEndTests
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "refactor the storage layer"),
             CancellationToken.None);
         Assert.True(sendAck.Accepted);
-        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        await WaitForReplyAsync(projection, "Orchestrating.");
         await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
 
         var secondAck = await runtime.SubmitAsync(new SendTextCommand(
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, "continue"),
             CancellationToken.None);
         Assert.True(secondAck.Accepted);
-        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        await WaitForReplyAsync(projection, "Working directly.");
 
         Assert.Equal(2, capturing.Requests.Count);
         Assert.Contains("# Orchestrator mode", RequestText(capturing.Requests[0]));
@@ -160,7 +161,7 @@ public class WorkflowEndToEndTests
             "refactor the storage layer", Workflows: [OrchestratorWorkflow.Id]),
             CancellationToken.None);
         Assert.True(ack.Accepted);
-        await WaitForPhaseAsync(projection, TurnPhase.Idle);
+        await WaitForReplyAsync(projection, "Orchestrating.");
         await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
 
         Assert.Contains("Orchestrator mode is active.", RequestText(Assert.Single(capturing.Requests)));
@@ -188,7 +189,7 @@ public class WorkflowEndToEndTests
         Assert.True(sendAck.Accepted);
         using (var projection = runtime.Subscribe(session.Id))
         {
-            await WaitForPhaseAsync(projection, TurnPhase.Idle);
+            await WaitForReplyAsync(projection, "Orchestrating.");
             await WaitForStateAsync(projection, state => state.ActiveWorkflows is not { Count: > 0 });
         }
         await runtime.DisposeAsync();
@@ -203,19 +204,21 @@ public class WorkflowEndToEndTests
             StrongId.NewCommandId(), session.Id, resumedProjection.Snapshot().Revision, "continue"),
             CancellationToken.None);
         Assert.True(secondAck.Accepted);
-        await WaitForPhaseAsync(resumedProjection, TurnPhase.Idle);
+        await WaitForReplyAsync(resumedProjection, "Resumed.");
 
         Assert.DoesNotContain("# Orchestrator mode", RequestText(Assert.Single(resuming.Requests)));
     }
 
-    private static async Task WaitForPhaseAsync(IConversationProjection projection, TurnPhase phase)
+    private static async Task WaitForReplyAsync(IConversationProjection projection, string text)
     {
         var deadline = Task.Delay(TimeSpan.FromSeconds(30));
-        while (projection.Snapshot().State.Phase != phase)
+        while (projection.Snapshot() is var snapshot && (snapshot.State.Phase != TurnPhase.Idle
+            || !snapshot.Rows.OfType<AssistantMessageRow>().Any(row =>
+                row.Parts.OfType<TextPart>().Any(part => part.Text == text))))
         {
             if (deadline.IsCompleted)
             {
-                throw new TimeoutException($"Phase never reached {phase} (current: {projection.Snapshot().State.Phase}).");
+                throw new TimeoutException($"Reply '{text}' never completed (current: {projection.Snapshot().State.Phase}).");
             }
             await Task.Delay(20);
         }

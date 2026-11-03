@@ -68,6 +68,7 @@ internal sealed class ChromiumSuite : IDisposable
         new("browser download completes into the session downloads directory", false, DownloadsAsync),
         new("download_media returns exact fixture bytes", false, DownloadMediaAsync),
         new("bounded WebM recording completes with EBML media", false, RecordingAsync),
+        new("recording waits for recorder readiness after a delayed first frame", false, RecordingFirstFrameDelayAsync),
         new("target=_blank popup is adopted as a new session tab", true, PopupAsync),
         new("blank popup adopts a legitimate delayed navigation", true, DelayedPopupAsync),
         new("native popup rejected at the tab cap closes only its pending target", true, RejectedPopupAsync),
@@ -235,6 +236,7 @@ internal sealed class ChromiumSuite : IDisposable
         internal sealed record World(string Frame, int ContextId, string? Session);
         public string Id => inner.Id;
         public List<World> Worlds { get; } = [];
+        public Func<string, CancellationToken, Task>? BeforeSendAsync { get; set; }
         public Action<string, JsonElement, JsonElement>? AfterSend { get; set; }
         public event EventHandler<BrowserProtocolEvent>? ProtocolEvent
         {
@@ -243,6 +245,7 @@ internal sealed class ChromiumSuite : IDisposable
         }
         public async Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken cancellationToken, string? sessionId = null)
         {
+            if (BeforeSendAsync is not null) await BeforeSendAsync(method, cancellationToken);
             var result = await inner.SendAsync(method, parameters, cancellationToken, sessionId);
             if (method == "Page.createIsolatedWorld")
                 Worlds.Add(new(BrowserJson.Element(parameters).GetProperty("frameId").GetString()!, result.GetProperty("executionContextId").GetInt32(), sessionId));
@@ -455,14 +458,43 @@ internal sealed class ChromiumSuite : IDisposable
         Equal("fixture-media.bin", media.MediaFileName, "Downloaded media name");
     }
 
-    private async Task RecordingAsync()
+    private Task RecordingAsync() => AssertRecordingAsync((verb, input) => CommandAsync(verb, input, _tab), 1500, 4);
+
+    private async Task RecordingFirstFrameDelayAsync()
     {
-        await CommandAsync("record_start", D(("maxDurationMs", 1500), ("fps", 4)), _tab);
+        var tab = "recording-probe-" + Guid.NewGuid().ToString("N");
+        var page = new ObservingPage(await _host.CreatePageAsync(_session, tab, _ct));
+        try
+        {
+            using var engine = new CdpBrowserAutomation(page);
+            async Task<BrowserActionResult> Run(string verb, Dictionary<string, object?>? input)
+            {
+                var result = await engine.ExecuteAsync(new BrowserCommandAction(verb, BrowserJson.Element(input ?? D())), _ct);
+                Check(result.Ok, $"Recording probe '{verb}' failed: {result.Error}");
+                return result;
+            }
+            await Run("navigate", D(("url", _fixture.Url())));
+            var delayed = false;
+            page.BeforeSendAsync = async (method, ct) =>
+            {
+                if (method != "Page.captureScreenshot" || delayed) return;
+                delayed = true;
+                await Task.Delay(250, ct);
+            };
+            await AssertRecordingAsync(Run, 100, 30);
+            Check(delayed, "The delayed first recording frame probe did not run.");
+        }
+        finally { await _host.ClosePageAsync(tab, CancellationToken.None); }
+    }
+
+    private async Task AssertRecordingAsync(Func<string, Dictionary<string, object?>?, Task<BrowserActionResult>> run, int duration, int fps)
+    {
+        await run("record_start", D(("maxDurationMs", duration), ("fps", fps)));
         BrowserActionResult? completed = null;
         var clock = Stopwatch.StartNew();
         while (clock.Elapsed < TimeSpan.FromSeconds(30))
         {
-            var status = await CommandAsync("record_status", tab: _tab);
+            var status = await run("record_status", null);
             var state = Structured(status).GetProperty("state").GetString();
             Check(state is "recording" or "completed", "Unexpected recording state: " + state);
             if (state == "completed") { completed = status; break; }

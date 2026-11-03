@@ -227,13 +227,18 @@ public sealed class CdpConnectionTests
             OnSend = (text, _) => text.Contains("Runtime.terminateExecution", StringComparison.Ordinal)
                 ? Task.FromException(new IOException("drain send failed")) : Task.CompletedTask
         };
-        using var connection = new CdpConnection(TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(30));
+        using var connection = new CdpConnection(drainWindow: TimeSpan.FromMilliseconds(30));
         await connection.ConnectAsync(wire, TestUri, default);
-        await Assert.ThrowsAsync<TimeoutException>(() => connection.SendAsync("Runtime.evaluate", null, default, "S1"));
+        using var cancellation = new CancellationTokenSource();
+        var pending = connection.SendAsync("Runtime.evaluate", null, cancellation.Token, "S1");
+        await WaitForAsync(() => wire.Snapshot().Count == 1);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
         Assert.Equal(0, PendingCount(connection));
         foreach (var frame in Parse(wire.Snapshot())) wire.Push("{\"id\":" + frame.Id + ",\"result\":{}}");
         wire.OnSend = null;
         var next = connection.SendAsync("Page.enable", null, default);
+        await WaitForAsync(() => wire.Snapshot().Count == 3);
         var id = Parse(wire.Snapshot())[^1].Id;
         wire.Push("{\"id\":" + id + ",\"result\":{}}");
         await next.WaitAsync(TimeSpan.FromSeconds(5));

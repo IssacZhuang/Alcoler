@@ -306,6 +306,12 @@ public class SystemPromptAssemblyTests
             new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "hello"),
             CancellationToken.None);
         Assert.True(ack.Accepted);
+        await WaitForRequestsAsync(capturing, expectedCount: 1);
+        using (var current = runtime.Subscribe(session.Id))
+        {
+            await projection.WaitUntilSequenceAsync(current.Snapshot().Sequence)
+                .WaitAsync(TimeSpan.FromSeconds(30));
+        }
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
         return Assert.Single(capturing.Requests);
     }

@@ -352,6 +352,26 @@ public sealed class CdpBrowserAutomationTests
     }
 
     [Fact]
+    public async Task RecordingRejectsEmptyMediaInsteadOfCompleting()
+    {
+        using var page = new FakePage { RecordingMedia = "" };
+        using var engine = new CdpBrowserAutomation(page);
+        var start = await Execute(engine, "record_start", "{\"maxDurationMs\":100,\"fps\":10}");
+        Assert.True(start.Ok, start.Error);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        BrowserActionResult status;
+        do
+        {
+            await Task.Delay(10, deadline.Token);
+            status = await engine.ExecuteAsync(new BrowserCommandAction("record_status", Parse("{}")), deadline.Token);
+        } while (status.Ok && status.Media is null);
+        Assert.False(status.Ok);
+        Assert.Contains("Recording did not produce media", status.Error);
+        Assert.Null(status.Media);
+        Assert.Equal("failed", Parse(status.StructuredOutput!).GetProperty("state").GetString());
+    }
+
+    [Fact]
     public async Task SnapshotScopeCanReuseExistingReferenceBeforeInvalidation()
     {
         using var page = new FakePage();
@@ -629,6 +649,7 @@ public sealed class CdpBrowserAutomationTests
         public Action<string>? AfterSend { get; set; }
         public string? FailFunction { get; init; }
         public bool FailRetirement { get; set; }
+        public string RecordingMedia { get; init; } = "AQID";
         public Func<CancellationToken, Task<JsonElement>>? Release { get; set; }
         public List<bool> ReleaseTokensWereCanceled { get; } = [];
         public HashSet<string> AcquiredObjects { get; } = [];
@@ -722,7 +743,7 @@ public sealed class CdpBrowserAutomationTests
                 if (function.Contains("inspect.call")) return Parse("{\"result\":{\"value\":{\"connected\":true,\"visible\":true,\"enabled\":true,\"editable\":true,\"hit\":true,\"x\":50,\"y\":20,\"left\":10,\"top\":10,\"width\":80,\"height\":20}}}");
                 if (function.Contains("credentials:'include'")) return Parse("{\"result\":{\"value\":{\"type\":\"image/png\",\"data\":\"AQID\"}}}");
                 if (function.Contains("No WebM")) return Parse("{\"result\":{\"value\":{\"mimeType\":\"video/webm\",\"width\":800,\"height\":600}}}");
-                if (function.Contains("return data.slice")) return Value("AQID");
+                if (function.Contains("return data.slice")) return Value(RecordingMedia);
                 return Value(true);
             }
             return Parse("{}");

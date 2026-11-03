@@ -12,6 +12,7 @@ using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tests.EndToEnd;
+using Alcoler.Kernel.Tests.Models;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.Runtime;
@@ -34,8 +35,8 @@ public class SessionActivitySignalTests
 
         var session = await runtime.CreateSessionAsync(
             new SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
-        var notifications = new List<SessionId>();
-        activity.SessionActivityChanged += id => notifications.Add(id);
+        var notifications = new ConcurrentQueue<SessionId>();
+        activity.SessionActivityChanged += notifications.Enqueue;
         var initial = Assert.IsType<SessionActivitySnapshot>(activity.GetSessionActivity(session.Id));
         Assert.Equal(TurnPhase.Idle, initial.Phase);
         Assert.Null(initial.LastOutcome);
@@ -54,15 +55,16 @@ public class SessionActivitySignalTests
 
         release.TrySetResult();
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+        await WaitUntilAsync(() => notifications.Count >= 2);
         Assert.Equal(2, notifications.Count);
 
         ack = await runtime.SubmitAsync(
             new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "fail"), CancellationToken.None);
         Assert.True(ack.Accepted, ack.RejectionReason);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Failed });
-        Assert.True(notifications.Count >= 4);
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Failed });
+        await WaitUntilAsync(() => notifications.Count >= 4);
         Assert.All(notifications, id => Assert.Equal(session.Id, id));
     }
 
@@ -96,7 +98,7 @@ public class SessionActivitySignalTests
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase
             is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
     }
 
     [Fact]
@@ -143,7 +145,7 @@ public class SessionActivitySignalTests
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase
             is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
     }
 
     [Fact]
@@ -175,7 +177,7 @@ public class SessionActivitySignalTests
             is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
         await WaitUntilAsync(() => projection.Snapshot().State.PlanEnabled is false);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
     }
 
     [Fact]
@@ -184,8 +186,9 @@ public class SessionActivitySignalTests
         await using var harness = TestHarness.Create(
             ToolCall("Write", new { file_path = "notes.txt", content = "Hello Alcoler" }),
             Reply());
+        var clock = new ManualTimeProvider();
         await using var runtime = harness.BuildRuntime(
-            options => options with { InteractionTimeout = TimeSpan.FromSeconds(1) });
+            options => options with { Clock = clock, InteractionTimeout = TimeSpan.FromSeconds(1) });
         var session = await runtime.CreateSessionAsync(
             new SessionOptions(harness.Root, PermissionMode: PermissionMode.Build), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
@@ -198,18 +201,22 @@ public class SessionActivitySignalTests
         await WaitForPermissionAsync(projection);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingPermission);
 
-        await WaitUntilAsync(() => projection.Snapshot().State.PendingPermission is null
-            && activity.GetSessionActivity(session.Id)?.Phase
-                is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+        // Pending state is visible before the broker registers its timeout timer.
+        await WaitUntilAsync(() =>
+        {
+            clock.Advance(TimeSpan.FromSeconds(1));
+            return projection.Snapshot().State.PendingPermission is null
+                && activity.GetSessionActivity(session.Id)?.Phase
+                    is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction);
+        });
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
 
         await using var store = new SqliteSessionStore(harness.DatabasePath);
         await store.InitializeAsync(CancellationToken.None);
         var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
         var resolved = Assert.Single(events.Select(sequenced => sequenced.Event).OfType<PermissionResolvedEvent>());
         Assert.Equal(PermissionOutcome.Denied, resolved.Decision.Outcome);
-
-        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
     }
 
     [Fact]
@@ -233,8 +240,9 @@ public class SessionActivitySignalTests
                 },
             }),
             Reply());
+        var clock = new ManualTimeProvider();
         await using var runtime = harness.BuildRuntime(
-            options => options with { InteractionTimeout = TimeSpan.FromSeconds(2) });
+            options => options with { Clock = clock, InteractionTimeout = TimeSpan.FromSeconds(2) });
         var session = await runtime.CreateSessionAsync(
             new SessionOptions(harness.Root, PermissionMode: PermissionMode.Yolo), CancellationToken.None);
         using var projection = runtime.Subscribe(session.Id);
@@ -248,18 +256,22 @@ public class SessionActivitySignalTests
         Assert.Null(projection.Snapshot().State.PendingPermission);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingInteraction);
 
-        await WaitUntilAsync(() => projection.Snapshot().State.PendingInteraction is null
-            && activity.GetSessionActivity(session.Id)?.Phase
-                is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
+        // Pending state is visible before the broker registers its timeout timer.
+        await WaitUntilAsync(() =>
+        {
+            clock.Advance(TimeSpan.FromSeconds(2));
+            return projection.Snapshot().State.PendingInteraction is null
+                && activity.GetSessionActivity(session.Id)?.Phase
+                    is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction);
+        });
+        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
 
         await using var store = new SqliteSessionStore(harness.DatabasePath);
         await store.InitializeAsync(CancellationToken.None);
         var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
         var resolved = Assert.Single(events.Select(sequenced => sequenced.Event).OfType<InteractionResolvedEvent>());
         Assert.Empty(resolved.Answer.Answers);
-
-        await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
     }
 
     private static async Task<PermissionRequest> WaitForPermissionAsync(IConversationProjection projection)

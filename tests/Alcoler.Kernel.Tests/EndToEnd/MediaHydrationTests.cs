@@ -46,11 +46,7 @@ public class MediaHydrationTests
             new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "look at the pixel"), CancellationToken.None);
         Assert.True(ack.Accepted);
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        while (projection.Snapshot() is { State.Phase: not TurnPhase.Idle })
-        {
-            await Task.Delay(10, timeout.Token);
-        }
+        await WaitForReplyAsync(projection, "seen");
 
         Assert.Equal(2, harness.Model.Requests.Count);
         Assert.Empty(harness.Model.Requests[0].Messages.SelectMany(ImageBlocks));

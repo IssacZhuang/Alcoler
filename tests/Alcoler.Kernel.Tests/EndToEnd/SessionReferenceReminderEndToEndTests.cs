@@ -1,4 +1,5 @@
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
@@ -21,7 +22,7 @@ public class SessionReferenceReminderEndToEndTests
             new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "continue from #sess_abc123 please"),
             CancellationToken.None);
 
-        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle);
+        await WaitForReplyAsync(projection, "done");
 
         var request = Assert.Single(harness.Model.Requests);
         var reminders = RequestTexts(request)
@@ -47,7 +48,7 @@ public class SessionReferenceReminderEndToEndTests
             new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "just keep working"),
             CancellationToken.None);
 
-        await WaitForAsync(() => projection.Snapshot().State.Phase == TurnPhase.Idle);
+        await WaitForReplyAsync(projection, "done");
 
         var request = Assert.Single(harness.Model.Requests);
         Assert.DoesNotContain("The user referenced prior Alcoler session(s)", RequestTexts(request), StringComparison.Ordinal);
@@ -56,10 +57,12 @@ public class SessionReferenceReminderEndToEndTests
     private static string RequestTexts(ModelRequest request) =>
         string.Join("\n", request.Messages.SelectMany(message => message.Content.OfType<InputTextBlock>()).Select(block => block.Text));
 
-    private static async Task WaitForAsync(Func<bool> condition)
+    private static async Task WaitForReplyAsync(IConversationProjection projection, string text)
     {
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
-        while (!condition())
+        while (projection.Snapshot() is var snapshot && (snapshot.State.Phase != TurnPhase.Idle
+            || !snapshot.Rows.OfType<AssistantMessageRow>().Any(row =>
+                row.Parts.OfType<TextPart>().Any(part => part.Text == text))))
         {
             if (DateTimeOffset.UtcNow > deadline)
                 throw new TimeoutException("condition was not met within 30 seconds");
