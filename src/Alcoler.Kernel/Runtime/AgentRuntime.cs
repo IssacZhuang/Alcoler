@@ -131,6 +131,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             PlanEnabled: options.PlanEnabled);
         await _options.Store.UpsertSessionAsync(record, cancellationToken).ConfigureAwait(false);
         await CreateRuntimeAsync(record, isNewSession: true, cancellationToken).ConfigureAwait(false);
+        SessionListChanged?.Invoke();
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
     }
 
@@ -298,6 +299,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             }
             throw;
         }
+        SessionListChanged?.Invoke();
         return new SessionHandle(child.Id, child.WorkspaceRoot, child.Title);
     }
 
@@ -320,10 +322,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         if (_sessions.TryGetValue(sessionId, out var runtime))
         {
             await runtime.SetArchivedAsync(archived, cancellationToken).ConfigureAwait(false);
+            SessionListChanged?.Invoke();
             return;
         }
 
         await _options.Store.SetSessionArchivedAsync(sessionId, archived, cancellationToken).ConfigureAwait(false);
+        SessionListChanged?.Invoke();
     }
 
     public async ValueTask<int> ArchiveStaleSessionsAsync(
@@ -345,8 +349,11 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             excluded.Add(open);
         }
 
-        return await _options.Store.ArchiveSessionsUpdatedBeforeAsync(cutoff, excluded, cancellationToken)
+        var archivedCount = await _options.Store.ArchiveSessionsUpdatedBeforeAsync(cutoff, excluded, cancellationToken)
             .ConfigureAwait(false);
+        if (archivedCount > 0)
+            SessionListChanged?.Invoke();
+        return archivedCount;
     }
 
     public async ValueTask<int> UnloadIdleSessionsAsync(
@@ -506,6 +513,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             }
         }
 
+        if (deletion.DeletedSessionIds.Count > 0)
+            SessionListChanged?.Invoke();
         return deletion.ArchivedTaskCount;
     }
 
@@ -568,6 +577,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     public event Action<SessionId>? SessionActivityChanged;
 
     public event Action<SessionId, string>? SessionTitleChanged;
+
+    public event Action? SessionListChanged;
 
     public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId) =>
         !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime) && runtime.StopBackgroundJob(jobId);

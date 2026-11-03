@@ -95,6 +95,13 @@ public interface IAgentRuntime : IAsyncDisposable
         remove { }
     }
 
+    /// <summary>Raised after the persisted session set changes; listeners re-query ListSessionsAsync.</summary>
+    event Action? SessionListChanged
+    {
+        add { }
+        remove { }
+    }
+
     IConversationProjection Subscribe(SessionId sessionId);
 
     IConversationProjection? TryObserve(SessionId sessionId);

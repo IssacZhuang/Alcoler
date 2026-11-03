@@ -410,6 +410,24 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task SessionCreatedOutsideTheUi_RefreshesSidebarThroughSessionListChanged()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+
+        var handle = await runtime.CreateSessionAsync(new SessionOptions(_root, "From remote"), CancellationToken.None);
+
+        Assert.Empty(workbench.Sidebar.Groups);
+        scheduler.RunPending();
+        await WaitUntilAsync(() => workbench.Sidebar.Groups
+            .SelectMany(group => group.Sessions)
+            .Any(summary => summary.Id == handle.Id), scheduler);
+    }
+
+    [Fact]
     public async Task UnsentMode_AfterRuntimeRestart_RestoresSelectionWithoutChangingPersistedSessionPolicy()
     {
         var configPath = Path.Combine(_root, "config.json");

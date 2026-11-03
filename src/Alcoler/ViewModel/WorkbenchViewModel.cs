@@ -57,6 +57,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     private readonly IGitService _gitService = new LibGit2GitService();
     private readonly Dictionary<SessionId, string> _sessionRoots = [];
     private readonly List<Dictionary<SessionId, string>> _refreshTitleOverrides = [];
+    private bool _sessionListRefreshActive;
+    private bool _sessionListRefreshRetriggered;
     private readonly Dictionary<string, DraftConversationViewModel> _drafts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<SessionId, SessionDraft> _sessionDrafts = [];
     private readonly HashSet<SessionId> _autoOpenedBrowserSessions = [];
@@ -110,6 +112,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _hub = new SessionProjectionHub(runtime, scheduler, coalesceWindow: TimeSpan.FromMilliseconds(30));
         Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync);
         runtime.SessionTitleChanged += OnSessionTitleChanged;
+        runtime.SessionListChanged += OnSessionListChanged;
         if (runtime is ISessionActivityRuntime activities)
         {
             _activities = activities;
@@ -360,6 +363,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
         _autoOpenedBrowserSessions.Clear();
         _runtime.SessionTitleChanged -= OnSessionTitleChanged;
+        _runtime.SessionListChanged -= OnSessionListChanged;
         _refreshTitleOverrides.Clear();
         if (_activities is not null)
         {
@@ -1156,6 +1160,47 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 active.Title = title;
             }
         });
+    }
+
+    // Session-list mutations can originate off the UI thread (remote gateway, maintenance
+    // tick); refresh to quiescence so a change landing mid-refresh is not lost.
+    private void OnSessionListChanged()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _scheduler.Post(() =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            if (_sessionListRefreshActive)
+            {
+                _sessionListRefreshRetriggered = true;
+                return;
+            }
+            _ = RefreshSessionListAsync();
+        });
+    }
+
+    private async Task RefreshSessionListAsync()
+    {
+        _sessionListRefreshActive = true;
+        try
+        {
+            do
+            {
+                _sessionListRefreshRetriggered = false;
+                await Sidebar.RefreshAsync();
+            }
+            while (_sessionListRefreshRetriggered);
+        }
+        finally
+        {
+            _sessionListRefreshActive = false;
+        }
     }
 
     private void OnSessionActivityChanged(SessionId sessionId)
