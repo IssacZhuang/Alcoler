@@ -1133,6 +1133,44 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
     }
 
     [AvaloniaFact]
+    public async Task JumpToLatest_TracksConversationCenterWhenStatusPanelReservesSpace()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 260);
+        try
+        {
+            var filler = Enumerable.Range(0, 30).Select(i => new RowAppended(
+                new UserMessageRow($"u{i}", $"line {i} " + new string('x', 120), DateTimeOffset.UtcNow))).ToArray();
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), filler, Reset: false));
+            await RenderAsync(window);
+            view.Scroller.Offset = new Vector(0, 0);
+            await RenderAsync(window);
+
+            var jump = view.FindControl<Button>("JumpToLatestButton")!;
+            var anchor = view.FindControl<ConversationLayout>("JumpToLatestAnchor")!;
+            Assert.True(jump.IsEffectivelyVisible);
+            Assert.InRange(Center(jump), view.Bounds.Width / 2 - 1, view.Bounds.Width / 2 + 1);
+
+            ConversationLayout.SetReserveStatusPanelSpace(view, true);
+            await RenderAsync(window);
+
+            var shift = Assert.IsType<TranslateTransform>(anchor.RenderTransform).X;
+            Assert.InRange(shift, -168.5, -167.5);
+            Assert.InRange(Center(jump), view.Bounds.Width / 2 - 169, view.Bounds.Width / 2 - 167);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+
+        double Center(Control control) =>
+            control.TranslatePoint(new Point(control.Bounds.Width / 2, 0), view)!.Value.X;
+    }
+
+    [AvaloniaFact]
     public async Task AutoScroll_StreamingUpsertDoesNotMoveReaderAwayFromEarlierMessages()
     {
         EnsureFluentTheme();
@@ -1809,7 +1847,7 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
         var window = Host(view, 900, 600);
         try
         {
-            var layout = Assert.Single(view.GetVisualDescendants().OfType<ConversationLayout>());
+            var layout = view.FindControl<ConversationLayout>("TimelineLayout")!;
             var initialWidth = layout.Bounds.Width;
             var text = string.Join("\n\n", Enumerable.Range(0, 60).Select(index =>
                 $"Paragraph {index}. Streaming output must not take control of a scrollbar while the reader is dragging it."));

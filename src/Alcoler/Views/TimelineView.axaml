@@ -682,13 +682,16 @@
                  TextAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
     </StackPanel>
 
-    <Button x:Name="JumpToLatestButton" Classes="jumpLatest" IsVisible="False"
-            HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,16"
-            Click="OnJumpToLatestClick" AutomationProperties.Name="{loc:Loc timeline_jump_to_latest}">
-      <StackPanel Orientation="Horizontal" Spacing="6">
-        <controls:Icon Width="16" Height="16" Data="{StaticResource AlcolerIconChevronDown}" />
-        <TextBlock Text="{loc:Loc timeline_jump_to_latest}" FontSize="13" FontWeight="Medium" VerticalAlignment="Center" />
-      </StackPanel>
-    </Button>
+    <controls:ConversationLayout x:Name="JumpToLatestAnchor" HorizontalAlignment="Stretch"
+                                 VerticalAlignment="Bottom" Padding="0,0,0,16">
+      <Button x:Name="JumpToLatestButton" Classes="jumpLatest" IsVisible="False"
+              HorizontalAlignment="Center" VerticalAlignment="Bottom"
+              Click="OnJumpToLatestClick" AutomationProperties.Name="{loc:Loc timeline_jump_to_latest}">
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <controls:Icon Width="16" Height="16" Data="{StaticResource AlcolerIconChevronDown}" />
+          <TextBlock Text="{loc:Loc timeline_jump_to_latest}" FontSize="13" FontWeight="Medium" VerticalAlignment="Center" />
+        </StackPanel>
+      </Button>
+    </controls:ConversationLayout>
   </Grid>
 </UserControl>
