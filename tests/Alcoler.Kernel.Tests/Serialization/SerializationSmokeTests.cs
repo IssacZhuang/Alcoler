@@ -124,13 +124,16 @@ public class SerializationSmokeTests
 
         var file = new FilePart(StrongId.NewPartId(), "alcoler-artifact://session/pixel.png", "image/png", "pixel.png");
         var queued = new QueuedInput(command.CommandId, "", DateTimeOffset.UtcNow, [file],
-            PermissionMode.Edit, new ModelSelection("provider", "model"), SendTextDelivery.Guide);
+            PermissionMode.Edit, new ModelSelection("provider", "model"), SendTextDelivery.Guide,
+            PlanEnabled: true, Workflows: ["orchestrator"]);
         var queuedReplay = Assert.IsType<InputQueuedEvent>(AlcolerJson.Deserialize<SessionEvent>(
             AlcolerJson.Serialize<SessionEvent>(new InputQueuedEvent(queued)))).Input;
         Assert.Equal(file, Assert.Single(queuedReplay.Images!));
         Assert.Equal(queued.Mode, queuedReplay.Mode);
         Assert.Equal(queued.ModelSelection, queuedReplay.ModelSelection);
         Assert.Equal(SendTextDelivery.Guide, queuedReplay.Delivery);
+        Assert.True(queuedReplay.PlanEnabled);
+        Assert.Equal(queued.Workflows, queuedReplay.Workflows);
         var legacyQueue = AlcolerJson.Deserialize<QueuedInput>(
             $$"""{"commandId":"{{command.CommandId.Value}}","text":"old","queuedAt":"2026-01-01T00:00:00Z"}""");
         Assert.NotNull(legacyQueue);
@@ -138,6 +141,8 @@ public class SerializationSmokeTests
         Assert.Null(legacyQueue.Mode);
         Assert.Null(legacyQueue.ModelSelection);
         Assert.Equal(SendTextDelivery.Queue, legacyQueue.Delivery);
+        Assert.Null(legacyQueue.PlanEnabled);
+        Assert.Null(legacyQueue.Workflows);
 
         ConversationRow row = new UserMessageRow("user", "", DateTimeOffset.UtcNow, [file]);
         var rowReplay = Assert.IsType<UserMessageRow>(AlcolerJson.Deserialize<ConversationRow>(AlcolerJson.Serialize(row)));

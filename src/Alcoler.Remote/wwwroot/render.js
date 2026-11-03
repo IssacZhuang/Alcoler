@@ -450,13 +450,15 @@ export function toolCallHtml(row, state = rowState()) {
   const canonical = Object.hasOwn(TOOL_ALIASES, key) ? TOOL_ALIASES[key] : key;
   const presentation = Object.hasOwn(TOOL_PRESENTATION, canonical) ? TOOL_PRESENTATION[canonical] : null;
   const fields = toolFields(row);
-  const summary = fields[0];
+  const fileTool = ['read', 'edit', 'write'].includes(canonical);
+  const compact = fileTool || canonical === 'bash';
+  const summary = (fileTool && (inputField(row.input, 'file_path') || inputField(row.input, 'path'))) || fields[0];
   const path = isPathField(summary) ? pathParts(summary.value) : null;
-  const context = (path?.parent ? `<span class="tool-context tool-path-parent">${esc(path.parent)}</span>` : '')
+  const context = compact ? '' : (path?.parent ? `<span class="tool-context tool-path-parent">${esc(path.parent)}</span>` : '')
     + fields.slice(1).map(contextHtml).join('');
-  const summaryText = path ? truncate(path.name, 160) : toolSummary(row.input) || toolSummary({ description: summary?.value });
+  const summaryText = path ? truncate(path.name, 160) : toolSummary({ description: summary?.value });
   const dur = fmtDuration(row.duration);
-  let head = `<summary class="tool-head"><span class="tool-icon">${presentation ? toolGlyph(presentation[1]) : icon('wrench')}</span><span class="tool-title"><span class="tool-label"><span class="tool-name" title="${esc(name)}">${esc(presentation ? presentation[0] : name)}</span>${summary ? `<span class="tool-summary${path ? ' is-path' : ''}">${esc(summaryText)}</span>` : ''}</span>${context}</span><span class="tool-meta">`;
+  let head = `<summary class="tool-head${compact ? ' is-compact' : ''}"><span class="tool-icon">${presentation ? toolGlyph(presentation[1]) : icon('wrench')}</span><span class="tool-title"><span class="tool-label"><span class="tool-name" title="${esc(name)}">${esc(presentation ? presentation[0] : name)}</span>${summary ? `<span class="tool-summary${path ? ' is-path' : ''}">${esc(summaryText)}</span>` : ''}</span>${context}</span><span class="tool-meta">`;
   const change = row.fileChange;
   if (Number(change?.added) > 0) head += `<span class="tool-add" aria-label="${esc(fmtNum(change.added))} lines added">+${fmtNum(change.added)}</span>`;
   if (Number(change?.removed) > 0) head += `<span class="tool-del" aria-label="${esc(fmtNum(change.removed))} lines removed">\u2212${fmtNum(change.removed)}</span>`;
@@ -625,14 +627,39 @@ export function hydrateThumbs(scope, root, onChange = () => {}) {
   });
 }
 
-export function renderQueue(container, queue) {
-  const items = Array.isArray(queue) ? queue : [];
+export function renderQueue(container, queue, ctx) {
   container.textContent = '';
-  for (const q of items) {
-    const chip = document.createElement('span');
-    chip.className = 'qchip';
-    chip.textContent = 'queued: ' + truncate(q.text || '', 60);
-    container.appendChild(chip);
+  for (const q of queue) {
+    const item = document.createElement('div');
+    item.className = 'qitem';
+    item.dataset.commandId = q.commandId;
+    const text = document.createElement('span');
+    text.className = 'qtext';
+    const images = q.images?.length || 0;
+    const label = q.text || (images ? `${images} image${images === 1 ? '' : 's'}` : 'Empty message');
+    text.textContent = truncate(label, 160);
+    text.title = label;
+    item.appendChild(text);
+    const actions = document.createElement('div');
+    actions.className = 'qactions';
+    for (const [action, name, glyph, title] of [
+      ['steer', 'Steer queued message', 'send', 'Stop the current turn and send this message now'],
+      ['edit', 'Edit queued message', 'edit', ctx.editHint || 'Move this message back to the composer for editing'],
+      ['delete', 'Delete queued message', 'close', 'Delete this queued message'],
+    ]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'qaction';
+      button.dataset.queueAction = action;
+      button.setAttribute('aria-label', name);
+      button.title = title;
+      button.innerHTML = icon(glyph);
+      button.disabled = !ctx.ready || ctx.pending.has(q.commandId) || (action === 'edit' && !ctx.canEdit);
+      button.addEventListener('click', () => ctx.onAction(action, q.commandId));
+      actions.appendChild(button);
+    }
+    item.appendChild(actions);
+    container.appendChild(item);
   }
 }
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using Alcoler.Contracts.Models;
 using Alcoler.Remote.Tests.Infrastructure;
 using Xunit;
 
@@ -11,6 +12,69 @@ public sealed class SessionEndpointTests
     private readonly GatewayHarness _harness;
 
     public SessionEndpointTests(GatewayHarness harness) => _harness = harness;
+
+    [Fact]
+    public async Task Models_WithoutConfiguredCatalog_ReturnsEmptyCatalog()
+    {
+        var (_, token) = await _harness.PairAsync();
+
+        using var response = await _harness.GetWithTokenAsync("api/models", token);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Equal("""{"models":[],"defaultSelection":null}""", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Models_ReadsCurrentCatalogOnEveryAuthenticatedRequest()
+    {
+        var calls = 0;
+        var catalog = new RemoteModelCatalog(
+            [
+                new RemoteModelChoice("provider-a", "Friendly Provider", "model-a", "Alpha", ["low", "high"]),
+                new RemoteModelChoice("provider-b", "Other Provider", "model-b", "Beta", []),
+            ],
+            new ModelSelection("provider-a", "model-a", new ModelCallOptions("high", 8192)));
+        var harness = new ModelCatalogGatewayHarness(() =>
+        {
+            Interlocked.Increment(ref calls);
+            return Volatile.Read(ref catalog);
+        });
+        await harness.InitializeAsync();
+        try
+        {
+            using var unauthorized = await harness.Client.GetAsync("api/models");
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+            Assert.Equal(0, Volatile.Read(ref calls));
+            var (_, token) = await harness.PairAsync();
+
+            using var first = await harness.GetWithTokenAsync("api/models", token);
+
+            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+            Assert.Equal("no-store", first.Headers.CacheControl?.ToString());
+            Assert.Equal(
+                """{"models":[{"providerId":"provider-a","providerLabel":"Friendly Provider","modelId":"model-a","displayName":"Alpha","reasoningLevels":["low","high"]},{"providerId":"provider-b","providerLabel":"Other Provider","modelId":"model-b","displayName":"Beta","reasoningLevels":[]}],"defaultSelection":{"providerId":"provider-a","modelId":"model-a","options":{"reasoningLevel":"high","maxOutputTokens":8192}}}""",
+                await first.Content.ReadAsStringAsync());
+            Assert.Equal(1, Volatile.Read(ref calls));
+
+            Volatile.Write(ref catalog, new RemoteModelCatalog(
+                [new RemoteModelChoice("provider-c", "Updated Provider", "model-c", "Gamma", ["medium"])], null));
+
+            using var second = await harness.GetWithTokenAsync("api/models", token);
+
+            Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+            Assert.Equal("no-store", second.Headers.CacheControl?.ToString());
+            Assert.Equal(
+                """{"models":[{"providerId":"provider-c","providerLabel":"Updated Provider","modelId":"model-c","displayName":"Gamma","reasoningLevels":["medium"]}],"defaultSelection":null}""",
+                await second.Content.ReadAsStringAsync());
+            Assert.Equal(2, Volatile.Read(ref calls));
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
 
     [Fact]
     public async Task CreateSession_RoundTripsWorkspaceTitleAndYoloMode()
@@ -165,6 +229,18 @@ public sealed class SessionEndpointTests
         using var document = await response.ReadJsonAsync();
         Assert.Equal(sessionId.Value, document.RootElement.GetProperty("id").GetString());
         Assert.Equal("resumable", document.RootElement.GetProperty("title").GetString());
+    }
+
+    private sealed class ModelCatalogGatewayHarness(Func<RemoteModelCatalog> modelCatalog) : GatewayHarness
+    {
+        protected override RemoteGatewayOptions CreateOptions(int port) => new()
+        {
+            Runtime = () => Runtime,
+            Port = port,
+            DataDirectory = DataDirectory,
+            ProductVersion = Version,
+            ModelCatalog = modelCatalog,
+        };
     }
 
     private static IEnumerable<JsonElement> EnumerateSessions(JsonElement root) =>

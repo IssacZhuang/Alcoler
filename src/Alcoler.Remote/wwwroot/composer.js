@@ -18,7 +18,14 @@ export class Composer {
     this.modeSelect = root.querySelector('.mode-select');
     this.modeIcon = root.querySelector('.mode-icon');
     this.planBadge = root.querySelector('.plan-badge');
+    this.modelSelect = root.querySelector('.model-select');
+    this.effortSelect = root.querySelector('.effort-select');
+    this.effortPicker = root.querySelector('.effort-picker');
+    this.models = [];
+    this.defaultSelection = null;
+    this.modelSelection = null;
     this.images = [];
+    this.pendingFiles = 0;
     this.ready = false;
     this.disabled = false;
     this.disposed = false;
@@ -62,6 +69,23 @@ export class Composer {
       if (this.opts.onModeChange) this.opts.onModeChange(value);
     };
 
+    this._onModelChange = () => {
+      const model = this.models[Number(this.modelSelect?.value)];
+      if (!model || this.disabled) return;
+      this.setModelSelection({
+        providerId: model.providerId,
+        modelId: model.modelId,
+        options: { reasoningLevel: model.reasoningLevels.at(-1) ?? null },
+      });
+      if (this.opts.onModelSelectionChange) this.opts.onModelSelectionChange(this.getModelSelection());
+    };
+    this._onEffortChange = () => {
+      const selection = this.getModelSelection();
+      if (!selection || this.disabled) return;
+      this.setModelSelection({ ...selection, options: { ...selection.options, reasoningLevel: this.effortSelect.value } });
+      if (this.opts.onModelSelectionChange) this.opts.onModelSelectionChange(this.getModelSelection());
+    };
+
     if (this.input) {
       this.input.addEventListener('input', this._onInput);
       this.input.addEventListener('keydown', this._onKeyDown);
@@ -70,6 +94,8 @@ export class Composer {
     if (this.attachBtn) this.attachBtn.addEventListener('click', this._onAttachClick);
     if (this.fileInput) this.fileInput.addEventListener('change', this._onFilesChange);
     if (this.modeSelect) this.modeSelect.addEventListener('change', this._onModeChange);
+    if (this.modelSelect) this.modelSelect.addEventListener('change', this._onModelChange);
+    if (this.effortSelect) this.effortSelect.addEventListener('change', this._onEffortChange);
 
     this.renderAttachRow();
     this.update();
@@ -140,6 +166,79 @@ export class Composer {
     if (picker) picker.classList.toggle('full-access', this.modeSelect.value === 'yolo');
   }
 
+  setModels(catalog) {
+    this.models = (Array.isArray(catalog?.models) ? catalog.models : [])
+      .filter(model => typeof model?.providerId === 'string' && typeof model.modelId === 'string')
+      .map(model => ({ ...model, reasoningLevels: Array.isArray(model.reasoningLevels)
+        ? [...new Set(model.reasoningLevels.filter(level => typeof level === 'string' && level))] : [] }));
+    this.defaultSelection = catalog?.defaultSelection || null;
+    if (this.modelSelect) {
+      this.modelSelect.textContent = '';
+      if (!this.models.length) {
+        this.addOption(this.modelSelect, '', catalog ? 'No models configured' : 'Models unavailable');
+        this.modelSelect.title = catalog ? 'Configure models in the desktop app' : 'Refresh sessions to retry';
+      }
+      this.models.forEach((model, index) => {
+        const label = model.displayName || model.modelId;
+        this.addOption(this.modelSelect, String(index), model.providerLabel ? `${label} — ${model.providerLabel}` : label);
+      });
+    }
+    this.setModelSelection(this.modelSelection);
+  }
+
+  addOption(select, value, text) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = text;
+    select.appendChild(option);
+  }
+
+  setModelSelection(selection) {
+    this.modelSelection = selection ? { ...selection, options: { ...selection.options } } : null;
+    const matches = candidate => this.models.findIndex(model =>
+      model.providerId === candidate?.providerId && model.modelId === candidate?.modelId);
+    let index = matches(this.modelSelection);
+    if (index < 0) {
+      index = matches(this.defaultSelection);
+      this.modelSelection = index >= 0 ? this.defaultSelection : null;
+    }
+    if (index < 0 && this.models.length) index = 0;
+    const model = this.models[index];
+    if (model) {
+      const options = this.modelSelection?.options || {};
+      this.modelSelection = {
+        providerId: model.providerId,
+        modelId: model.modelId,
+        options: {
+          reasoningLevel: model.reasoningLevels.includes(options.reasoningLevel)
+            ? options.reasoningLevel : model.reasoningLevels[0] ?? null,
+          maxOutputTokens: Number.isInteger(options.maxOutputTokens) && options.maxOutputTokens > 0
+            ? options.maxOutputTokens : null,
+        },
+      };
+      if (this.modelSelect) {
+        this.modelSelect.value = String(index);
+        this.modelSelect.title = `${model.providerLabel || model.providerId}: ${model.modelId}`;
+      }
+    } else if (selection) {
+      this.modelSelection = { ...selection, options: { ...selection.options } };
+    }
+    if (this.effortSelect) {
+      this.effortSelect.textContent = '';
+      for (const level of model?.reasoningLevels || []) {
+        this.addOption(this.effortSelect, level, level.charAt(0).toUpperCase() + level.slice(1));
+      }
+      this.effortSelect.value = this.modelSelection?.options?.reasoningLevel ?? '';
+    }
+    if (this.effortPicker) this.effortPicker.hidden = !model?.reasoningLevels.length;
+    this.update();
+  }
+
+  getModelSelection() {
+    if (!this.models.length || !this.modelSelection) return null;
+    return { ...this.modelSelection, options: { ...this.modelSelection.options } };
+  }
+
   setPlan(enabled) {
     if (this.planBadge) this.planBadge.hidden = !enabled;
   }
@@ -170,7 +269,10 @@ export class Composer {
   }
 
   update() {
-    if (this.disposed || !this.sendBtn) return;
+    if (this.disposed) return;
+    if (this.modelSelect) this.modelSelect.disabled = this.disabled || !this.ready || !this.models.length;
+    if (this.effortSelect) this.effortSelect.disabled = this.disabled || !this.ready || !this.models.length || !!this.effortPicker?.hidden;
+    if (!this.sendBtn) return;
     const busy = this.isBusy();
     const hasContent = this.hasContent();
     const wantsStop = busy && !hasContent;
@@ -183,8 +285,9 @@ export class Composer {
     let disabled = this.disabled || !this.ready;
     if (!disabled && wantsStop) disabled = !canStop;
     else if (!disabled && !showStop) disabled = !hasContent;
-    this.sendBtn.disabled = disabled;
+    this.sendBtn.disabled = disabled || this.pendingFiles > 0;
     this.autosize();
+    if (this.opts.onChange) this.opts.onChange();
   }
 
   dispose() {
@@ -197,6 +300,8 @@ export class Composer {
     if (this.attachBtn) this.attachBtn.removeEventListener('click', this._onAttachClick);
     if (this.fileInput) this.fileInput.removeEventListener('change', this._onFilesChange);
     if (this.modeSelect) this.modeSelect.removeEventListener('change', this._onModeChange);
+    if (this.modelSelect) this.modelSelect.removeEventListener('change', this._onModelChange);
+    if (this.effortSelect) this.effortSelect.removeEventListener('change', this._onEffortChange);
     this.revokeImages();
     this.images = [];
   }
@@ -210,7 +315,7 @@ export class Composer {
   }
 
   canSend() {
-    return this.ready && !this.disabled && this.hasContent();
+    return this.ready && !this.disabled && this.pendingFiles === 0 && this.hasContent();
   }
 
   emitSend() {
@@ -221,7 +326,7 @@ export class Composer {
       base64Data: image.base64Data,
       previewUrl: image.previewUrl,
     }));
-    if (this.opts.onSend) this.opts.onSend(text, images);
+    if (this.opts.onSend) this.opts.onSend(text, images, this.getModelSelection());
   }
 
   autosize() {
@@ -265,7 +370,9 @@ export class Composer {
   }
 
   async addFile(file) {
-    if (!file || !String(file.type || '').startsWith('image/')) return;
+    if (this.disabled || !file || !String(file.type || '').startsWith('image/')) return;
+    this.pendingFiles++;
+    this.update();
     try {
       const blob = await downscaleImage(file);
       const base64Data = await blobToBase64(blob);
@@ -278,6 +385,10 @@ export class Composer {
       this.renderAttachRow();
       this.update();
     } catch { /* unreadable image: skip it */ }
+    finally {
+      this.pendingFiles--;
+      this.update();
+    }
   }
 }
 

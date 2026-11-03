@@ -49,14 +49,15 @@ test('summary follows desktop precedence, string rules, first line, and 160-char
   assert.equal(toolSummary(null), '');
 });
 
-test('file operations expose their path while collapsed without raw JSON', () => {
-  for (const toolName of ['Read', 'Write', 'Edit']) {
-    const html = toolCallHtml(tool({ toolName }));
+test('file operations show only the filename in a compact header, including aliases', () => {
+  for (const toolName of ['Read', 'Write', 'Edit', 'ReadFile', 'WriteFile', 'EditFile']) {
+    const row = tool({ toolName });
+    const html = toolCallHtml(row);
+    assert.match(html, /class="tool-head is-compact"/);
     assert.match(html, /class="tool-summary is-path">Example\.cs<\/span>/);
-    assert.match(html, /class="tool-context tool-path-parent">C:\\Projects\\Alcoler\\src\\<\/span>/);
-    assert.match(html, new RegExp(`class="tool-name"[^>]*>${toolName}</span>`));
+    assert.doesNotMatch(html, /tool-context|C:\\Projects|"file_path"|first output|<pre/);
     assert.match(html, /<div class="tool-body"><\/div>/);
-    assert.doesNotMatch(html, /"file_path"|first output|<pre/);
+    assert.ok(toolBodyHtml(row).includes('C:\\Projects\\Alcoler\\src\\Example.cs'));
   }
 });
 
@@ -70,13 +71,22 @@ test('headers use friendly desktop labels while preserving the actual tool name'
   assert.match(toolCallHtml(tool({ toolName: 'toString' })), />toString<\/span>/);
 });
 
-test('Terminal describes its work and Search shows both scope and search pattern', () => {
-  const terminal = toolCallHtml(tool({ toolName: 'Bash', input: {
-    description: 'Run focused tests\nnot in the header', command: 'dotnet test --filter Focused',
-  } }));
-  assert.match(terminal, /Run focused tests/);
-  assert.match(terminal, /Command:<\/span> dotnet test --filter Focused/);
-  assert.doesNotMatch(terminal, /not in the header/);
+test('Terminal shows only its title and keeps command details available when expanded', () => {
+  for (const toolName of ['Bash', 'Shell', 'Terminal', 'RunCommand']) {
+    const row = tool({ toolName, input: {
+      description: 'Run focused tests\nnot in the header', command: 'dotnet test --filter Focused',
+    } });
+    const html = toolCallHtml(row);
+    assert.match(html, /class="tool-head is-compact"/);
+    assert.match(html, /Run focused tests/);
+    assert.doesNotMatch(html, /tool-context|Command:|dotnet test|not in the header/);
+    assert.match(toolBodyHtml(row), />Command<\/div>/);
+    assert.match(toolBodyHtml(row), /dotnet test --filter Focused/);
+  }
+  assert.match(toolCallHtml(tool({ toolName: 'Bash', input: { command: 'pwd\nls' } })), />pwd<\/span>/);
+});
+
+test('Search still shows both scope and search pattern', () => {
   for (const toolName of ['Grep', 'Glob']) {
     const search = toolCallHtml(tool({ toolName, input: { path: '/workspace/src', pattern: '**/*.cs' } }));
     assert.match(search, /class="tool-summary is-path">src<\/span>/);
@@ -85,15 +95,12 @@ test('Terminal describes its work and Search shows both scope and search pattern
   }
 });
 
-test('long absolute paths keep the basename primary, one short parent context, and full expanded detail', () => {
+test('long absolute paths show only the basename and retain full expanded detail', () => {
   const path = 'C:\\' + 'long-directory\\'.repeat(100) + 'ImportantFile.cs';
   const row = tool({ input: { file_path: path } });
   const header = toolCallHtml(row);
   assert.match(header, /class="tool-summary is-path">ImportantFile\.cs<\/span>/);
-  const parent = /class="tool-context tool-path-parent">([^<]*)<\/span>/.exec(header)?.[1];
-  assert.ok(parent.startsWith('...'));
-  assert.ok(parent.endsWith('long-directory\\'));
-  assert.ok(parent.length <= 36);
+  assert.doesNotMatch(header, /tool-context|tool-path-parent|long-directory/);
   assert.doesNotMatch(header, /C:\\long-directory/);
   assert.ok(header.length < 4000);
   const preview = toolBodyHtml(row);
@@ -103,18 +110,17 @@ test('long absolute paths keep the basename primary, one short parent context, a
   assert.ok(toolBodyHtml(row, expanded('context:file_path')).includes(path));
 });
 
-test('short relative paths and path context accompanying a description remain readable', () => {
-  assert.match(toolCallHtml(tool({ input: { file_path: 'src/Feature.cs' } })),
-    /class="tool-summary is-path">Feature\.cs<\/span>/);
-  assert.match(toolCallHtml(tool({ input: { file_path: 'src/Feature.cs' } })),
-    /class="tool-context tool-path-parent">src\/<\/span>/);
-  assert.doesNotMatch(toolCallHtml(tool({ input: { file_path: 'Feature.cs' } })), /tool-path-parent/);
-  const html = toolCallHtml(tool({ input: { description: 'Inspect the implementation',
-    file_path: '/very-long-temporary-root/'.repeat(20) + 'src/Feature.cs' } }));
-  assert.match(html, /Inspect the implementation/);
-  assert.match(html, /class="tool-file-name">Feature\.cs<\/span>/);
-  assert.match(html, /class="tool-file-parent">\.\.\..*src\/<\/span>/);
-  assert.doesNotMatch(html, /very-long-temporary-root\/\/very-long/);
+test('relative file paths prefer the filename over descriptions without a second line', () => {
+  for (const input of [
+    { file_path: 'src/Feature.cs' },
+    { file_path: 'Feature.cs' },
+    { path: 'src/Feature.cs' },
+    { description: 'Inspect the implementation', file_path: '/very-long-temporary-root/'.repeat(20) + 'src/Feature.cs' },
+  ]) {
+    const html = toolCallHtml(tool({ input }));
+    assert.match(html, /class="tool-summary is-path">Feature\.cs<\/span>/);
+    assert.doesNotMatch(html, /tool-context|src\/|very-long-temporary-root|Inspect the implementation/);
+  }
 });
 
 test('header strings, tool names, input, output, and media metadata stay escaped', () => {

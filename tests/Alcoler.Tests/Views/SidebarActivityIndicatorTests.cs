@@ -3,9 +3,13 @@ using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Controls;
 using Alcoler.ViewModel;
+using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Media;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Xunit;
@@ -167,6 +171,52 @@ public sealed class SidebarActivityIndicatorTests
     }
 
     [AvaloniaFact]
+    public async Task Sidebar_RunningIndicatorUsesThemeAccentAndKeepsTime()
+    {
+        using var viewModel = ShellSmokeTests.CreateWorkbench();
+        var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Active", @"C:\ws\alpha", DateTimeOffset.UtcNow);
+        viewModel.Sidebar.ApplySummaries([session]);
+        session.Indicator = SessionActivityIndicator.Running;
+
+        var window = new MainWindow(viewModel);
+        window.Show();
+        try
+        {
+            await Task.Yield();
+            Dispatcher.UIThread.RunJobs();
+            var sidebar = Assert.Single(window.GetVisualDescendants().OfType<Alcoler.Views.SidebarView>());
+            var spinner = Assert.Single(sidebar.GetVisualDescendants().OfType<Icon>(),
+                icon => icon.Name == "PART_RunningIndicator");
+            var time = Assert.Single(sidebar.GetVisualDescendants().OfType<TextBlock>(),
+                text => text.Name == "PART_SessionTime");
+            var badge = Assert.Single(sidebar.GetVisualDescendants().OfType<Border>(),
+                border => border.Name == "PART_AwaitingIndicator");
+
+            foreach (var theme in new[] { ThemeVariant.Dark, ThemeVariant.Light })
+            {
+                window.RequestedThemeVariant = theme;
+                Dispatcher.UIThread.RunJobs();
+
+                Assert.Equal(theme, spinner.ActualThemeVariant);
+                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(spinner.FindResource(theme, "AlcolerAccent")).Color,
+                    Assert.IsAssignableFrom<ISolidColorBrush>(spinner.Stroke).Color);
+                Assert.True(spinner.IsVisible);
+                Assert.Contains("running", spinner.Classes);
+                Assert.IsType<RotateTransform>(spinner.RenderTransform);
+                Assert.Equal("Running", ToolTip.GetTip(spinner));
+                Assert.Equal("Running", AutomationProperties.GetName(spinner));
+                Assert.True(time.IsVisible);
+                Assert.Equal(session.UpdatedAtText, time.Text);
+                Assert.False(badge.IsVisible);
+            }
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
     public async Task Sidebar_ShowsWaitingBadgeInsteadOfTime()
     {
         using var viewModel = ShellSmokeTests.CreateWorkbench();
@@ -193,6 +243,10 @@ public sealed class SidebarActivityIndicatorTests
             Assert.False(time.IsVisible);
             Assert.True(spinner.IsVisible);
             Assert.Equal("Waiting for confirmation", label.Text);
+            Assert.Equal(label.Text, ToolTip.GetTip(spinner));
+            Assert.Equal(label.Text, AutomationProperties.GetName(spinner));
+            Assert.Equal(label.Text, ToolTip.GetTip(badge));
+            Assert.Equal(label.Text, AutomationProperties.GetName(badge));
         }
         finally
         {

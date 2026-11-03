@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Alcoler.Remote.Tests.Infrastructure;
 using Xunit;
@@ -29,9 +30,33 @@ public sealed class StaticShellTests
         Assert.Contains("class=\"sidebar\"", body);
         Assert.Contains("data-composer=\"draft\"", body);
         Assert.Contains("data-composer=\"session\"", body);
+        Assert.Equal(2, body.Split("class=\"model-select\"").Length - 1);
+        Assert.Equal(2, body.Split("class=\"effort-select\"").Length - 1);
         Assert.Matches("class=\"pair-logo\"[^>]*>\\s*<img src=\"icons/favicon.svg\"", body);
         Assert.Matches("class=\"sb-brand\"><img class=\"sb-brand-icon\" src=\"icons/favicon.svg\"", body);
         Assert.Contains("class=\"sb-brand-icon\" src=\"icons/favicon.svg\" alt=\"Alcoler\"", body);
+    }
+
+    [Fact]
+    public async Task TranscriptStyles_KeepToolRowsAtDesktopDensity()
+    {
+        using var response = await _harness.Client.GetAsync("styles.css");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var css = await response.Content.ReadAsStringAsync();
+        var header = Assert.Single(Regex.Matches(css, @"(?m)^\s*\.tool-head\s*\{([^}]*)\}").Cast<Match>()).Groups[1].Value;
+        Assert.Contains("min-height: 28px;", header);
+        Assert.Contains("padding: 3px 0;", header);
+        Assert.Contains("grid-template-columns: 16px minmax(0, 1fr) auto 16px;", header);
+        foreach (var selector in new[] { "tool", "thinking" })
+        {
+            var rule = Assert.Single(Regex.Matches(css, $@"(?m)^\s*\.{selector}\s*\{{([^}}]*)\}}").Cast<Match>()).Groups[1].Value;
+            Assert.Contains("margin: 0 0 4px;", rule);
+        }
+        var reasoning = Assert.Single(Regex.Matches(css, @"(?m)^\s*\.row-assistant:has\(> \.thinking:only-child\)\s*\{([^}]*)\}").Cast<Match>()).Groups[1].Value;
+        Assert.Contains("margin: 0 0 20px;", Assert.Single(Regex.Matches(css, @"(?m)^\s*\.row-assistant\s*\{([^}]*)\}").Cast<Match>()).Groups[1].Value);
+        Assert.Contains("margin-bottom: 4px;", reasoning);
+        var label = Assert.Single(Regex.Matches(css, @"(?m)^\s*\.tool-label\s*\{([^}]*)\}").Cast<Match>()).Groups[1].Value;
+        Assert.Contains("flex-wrap: nowrap;", label);
     }
 
     [Fact]
@@ -51,6 +76,7 @@ public sealed class StaticShellTests
     [Theory]
     [InlineData("wwwroot/session-list.js")]
     [InlineData("wwwroot/composer.js")]
+    [InlineData("wwwroot/queue.js")]
     public async Task WwwRoot_ServesShellModules(string path)
     {
         using var response = await _harness.Client.GetAsync(path);

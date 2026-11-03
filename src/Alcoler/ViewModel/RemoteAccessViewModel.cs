@@ -29,6 +29,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
     private readonly string _dataDirectory;
     private readonly Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> _artifactLoader;
     private readonly string? _productVersion;
+    private readonly Func<RemoteModelCatalog>? _modelCatalog;
     private readonly SemaphoreSlim _operations = new(1, 1);
     private readonly string _fallbackConnectionCode = RemoteConnectionCode.Generate();
     private RemoteGateway? _gateway;
@@ -40,12 +41,14 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         Func<IAgentRuntime> runtimeFactory,
         string dataDirectory,
         Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> artifactLoader,
-        string? productVersion)
+        string? productVersion,
+        Func<RemoteModelCatalog>? modelCatalog = null)
     {
         _runtimeFactory = runtimeFactory;
         _dataDirectory = dataDirectory;
         _artifactLoader = artifactLoader;
         _productVersion = productVersion;
+        _modelCatalog = modelCatalog;
     }
 
     [ObservableProperty]
@@ -373,6 +376,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         DataDirectory = _dataDirectory,
         ArtifactLoader = _artifactLoader,
         ProductVersion = _productVersion,
+        ModelCatalog = _modelCatalog,
     };
 
     private void SetPort(int port)

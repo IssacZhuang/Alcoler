@@ -11,12 +11,15 @@ public sealed class AuthenticationTests
 
     public AuthenticationTests(GatewayHarness harness) => _harness = harness;
 
-    [Fact]
-    public async Task ApiRequest_WithoutToken_IsUnauthorized()
+    [Theory]
+    [InlineData("api/sessions")]
+    [InlineData("api/models")]
+    public async Task ApiRequest_WithoutToken_IsUnauthorized(string path)
     {
-        using var response = await _harness.Client.GetAsync("api/sessions");
+        using var response = await _harness.Client.GetAsync(path);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
         using var document = await response.ReadJsonAsync();
         Assert.Equal("unauthorized", document.RootElement.GetProperty("error").GetString());
     }

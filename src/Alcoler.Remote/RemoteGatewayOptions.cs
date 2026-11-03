@@ -1,6 +1,18 @@
 using Alcoler.Contracts;
+using Alcoler.Contracts.Models;
 
 namespace Alcoler.Remote;
+
+public sealed record RemoteModelCatalog(
+    IReadOnlyList<RemoteModelChoice> Models,
+    ModelSelection? DefaultSelection);
+
+public sealed record RemoteModelChoice(
+    string ProviderId,
+    string ProviderLabel,
+    string ModelId,
+    string DisplayName,
+    IReadOnlyList<string> ReasoningLevels);
 
 public sealed class RemoteGatewayOptions
 {
@@ -9,6 +21,7 @@ public sealed class RemoteGatewayOptions
     public string? DataDirectory { get; init; }
     public Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>>? ArtifactLoader { get; init; }
     public string? ProductVersion { get; init; }
+    public Func<RemoteModelCatalog>? ModelCatalog { get; init; }
     public bool AllowNonPrivateClients { get; init; }
     public string? ConnectionCode { get; init; }
 }

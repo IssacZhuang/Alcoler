@@ -25,6 +25,7 @@ internal static class GatewayEndpoints
     public static void Map(WebApplication app, GatewayState state)
     {
         MapInfo(app, state);
+        MapModels(app, state);
         MapSessions(app, state);
         MapCommands(app, state);
         MapArtifacts(app, state);
@@ -40,6 +41,12 @@ internal static class GatewayEndpoints
             writer.WriteString("product", "Alcoler");
             writer.WriteString("version", version);
         })));
+    }
+
+    private static void MapModels(WebApplication app, GatewayState state)
+    {
+        app.MapGet("/api/models", () => GatewayJson.Data(
+            state.Options.ModelCatalog?.Invoke() ?? new RemoteModelCatalog([], null)));
     }
 
     private static void MapSessions(WebApplication app, GatewayState state)

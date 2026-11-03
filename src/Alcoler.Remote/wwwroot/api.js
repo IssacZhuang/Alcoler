@@ -80,6 +80,7 @@ async function json(path, opts) {
 }
 
 export const getInfo = () => json('/api/info', { auth: false });
+export const getModels = () => json('/api/models');
 
 export function pair(pairingToken, deviceName) {
   return json('/api/pair', { method: 'POST', auth: false, body: { pairingToken, deviceName } });
@@ -110,6 +111,13 @@ export function sendCommand(id, command) {
 // bounded size so long conversations cannot accumulate without end.
 const artifactCache = new Map();
 
+export async function artifactBlob(uri, mime) {
+  if (!uri) throw new ApiError(0, 'invalid', 'Missing artifact URI');
+  const res = await raw(`/api/artifacts?uri=${encodeURIComponent(uri)}&mime=${encodeURIComponent(mime || '')}`);
+  if (!res.ok) throw await errorFrom(res);
+  return res.blob();
+}
+
 export function artifactObjectUrl(uri, mime) {
   if (!uri) return Promise.reject(new ApiError(0, 'invalid', 'Missing artifact URI'));
   let p = artifactCache.get(uri);
@@ -121,11 +129,7 @@ export function artifactObjectUrl(uri, mime) {
         if (artifactCache.size < 50) break;
       }
     }
-    p = (async () => {
-      const res = await raw(`/api/artifacts?uri=${encodeURIComponent(uri)}&mime=${encodeURIComponent(mime || '')}`);
-      if (!res.ok) throw await errorFrom(res);
-      return URL.createObjectURL(await res.blob());
-    })();
+    p = artifactBlob(uri, mime).then(blob => URL.createObjectURL(blob));
     p.catch(() => artifactCache.delete(uri));
     artifactCache.set(uri, p);
   }

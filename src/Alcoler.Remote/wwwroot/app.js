@@ -3,7 +3,6 @@ import { StreamClient } from './ws.js';
 import {
   Transcript,
   renderPending,
-  renderQueue,
   phaseLabel,
   activityLabel,
   isBusy,
@@ -11,6 +10,7 @@ import {
 } from './render.js';
 import { SessionList, sessionListErrorMessage } from './session-list.js';
 import { Composer } from './composer.js';
+import { QueuedMessages } from './queue.js';
 import { icon, uuid, copyText, workspaceTail } from './util.js';
 
 const appEl = document.getElementById('app');
@@ -177,6 +177,9 @@ function createShell() {
     listRefreshTimer: 0,
     refreshSeq: 0,
     refreshInFlight: false,
+    modelRefreshInFlight: false,
+    modelsFetchedAt: 0,
+    modelCatalogSignature: '',
     draftWorkspace: '',
     draftMode: 'build',
     draftSending: false,
@@ -205,7 +208,7 @@ function createShell() {
   sh.draftComposer = new Composer(document.querySelector('[data-composer="draft"]'), {
     getBusy: () => false,
     canStop: () => false,
-    onSend: (text, images) => sendDraft(sh, text, images),
+    onSend: (text, images, selection) => sendDraft(sh, text, images, selection),
     onStop: () => { },
     onModeChange: mode => {
       sh.draftMode = mode;
@@ -216,9 +219,22 @@ function createShell() {
   sh.sessionComposer = new Composer(document.querySelector('[data-composer="session"]'), {
     getBusy: () => !!(convo && convo.state && isBusy(convo.state.phase)),
     canStop: () => !!(convo && convo.snapshotReady),
-    onSend: (text, images) => sendSessionMessage(text, images),
+    onSend: (text, images, selection) => sendSessionMessage(text, images, selection),
     onStop: () => sendSessionStop(),
     onModeChange: mode => sendSessionMode(mode),
+    onModelSelectionChange: selection => {
+      if (convo?.draftIntent) convo.draftIntent.modelSelection = selection;
+    },
+    onChange: () => {
+      if (!convo) return;
+      if (convo.draftIntent && sh.sessionComposer && !sh.sessionComposer.hasContent() && !sh.sessionComposer.disabled) {
+        convo.draftIntent = null;
+        sh.sessionComposer.setMode(modeValue(convo.state?.mode));
+        sh.sessionComposer.setPlan(!!convo.state?.planEnabled);
+      }
+      if (convo.queueView) convo.queueView.refresh();
+      if (convo.updateConn) convo.updateConn();
+    },
   });
 
   const storedMode = storageGet(MODE_KEY);
@@ -284,9 +300,11 @@ function disposeShell() {
   stopPolling(sh);
   if (sh.listRefreshTimer) clearTimeout(sh.listRefreshTimer);
   disposeConversation();
-  for (const restore of pendingRestores.values()) {
-    for (const image of (restore && restore.images) || []) {
-      if (image && image.previewUrl) URL.revokeObjectURL(image.previewUrl);
+  for (const drafts of pendingRestores.values()) {
+    for (const restore of drafts) {
+      for (const image of restore.images || []) {
+        if (image?.previewUrl) URL.revokeObjectURL(image.previewUrl);
+      }
     }
   }
   pendingRestores.clear();
@@ -365,15 +383,26 @@ function goNewTask(workspaceRoot, focus) {
 }
 
 function navigateToSession(id, restore) {
-  if (restore) pendingRestores.set(id, restore);
+  if (restore) savePendingRestore(id, restore);
   const hash = '#/session/' + encodeURIComponent(id);
   if (location.hash === hash) route();
   else location.hash = hash;
 }
 
+function savePendingRestore(id, restore) {
+  const drafts = pendingRestores.get(id) || [];
+  drafts.push(restore);
+  pendingRestores.set(id, drafts);
+  if (convo?.sessionId === id && convo.updateConn) convo.updateConn();
+}
+
 function takePendingRestore(id) {
-  const restore = pendingRestores.get(id);
-  if (restore) pendingRestores.delete(id);
+  const composer = shell?.sessionComposer;
+  if (convo?.sessionId === id && composer &&
+      (composer.hasContent() || composer.pendingFiles > 0 || composer.disabled)) return null;
+  const drafts = pendingRestores.get(id);
+  const restore = drafts?.shift();
+  if (!drafts?.length) pendingRestores.delete(id);
   return restore;
 }
 
@@ -399,9 +428,33 @@ function onOnline() {
   if (shell) refreshSessions({ silent: true });
 }
 
+async function refreshModels(sh, force = false) {
+  if (sh.modelRefreshInFlight || (!force && Date.now() - sh.modelsFetchedAt < 30_000)) return;
+  sh.modelRefreshInFlight = true;
+  try {
+    const catalog = await api.getModels();
+    if (shell !== sh) return;
+    sh.modelsFetchedAt = Date.now();
+    const signature = JSON.stringify(catalog);
+    if (signature === sh.modelCatalogSignature) return;
+    sh.modelCatalogSignature = signature;
+    sh.draftComposer.setModels(catalog);
+    sh.sessionComposer.setModels(catalog);
+  } catch {
+    if (shell === sh && !sh.modelCatalogSignature) {
+      sh.draftComposer.setModels(null);
+      sh.sessionComposer.setModels(null);
+    }
+  } finally {
+    sh.modelRefreshInFlight = false;
+  }
+}
+
 async function refreshSessions({ silent = false } = {}) {
   const sh = shell;
-  if (!sh || !api.getToken() || sh.refreshInFlight) return;
+  if (!sh || !api.getToken()) return;
+  refreshModels(sh, !silent);
+  if (sh.refreshInFlight) return;
   sh.refreshInFlight = true;
   const seq = ++sh.refreshSeq;
   if (!silent || sh.listState !== 'ready') {
@@ -630,7 +683,7 @@ function setDraftSending(sh, sending) {
   if (sh.draftComposer) sh.draftComposer.setDisabled(sending);
 }
 
-async function sendDraft(sh, text, images) {
+async function sendDraft(sh, text, images, modelSelection) {
   if (sh.draftSending) return;
   const message = String(text || '').trim();
   const imageList = Array.isArray(images) ? images : [];
@@ -673,6 +726,7 @@ async function sendDraft(sh, text, images) {
     baseRevision: 0,
     text: message,
   };
+  if (modelSelection) command.modelSelection = modelSelection;
   if (uploads.length) command.images = uploads;
 
   let ack = null;
@@ -699,7 +753,7 @@ async function sendDraft(sh, text, images) {
   const error = sendError && sendError.status === 0
     ? 'Could not reach the desktop app. Your message was restored here so you can retry.'
     : 'The desktop did not accept the message. It was restored here so you can retry.';
-  navigateToSession(handle.id, { text: message, images: restorableImages, error });
+  navigateToSession(handle.id, { text: message, images: restorableImages, modelSelection, error });
 }
 
 function openSession(id, restore) {
@@ -753,9 +807,12 @@ function startConversation(sh, id, restore) {
     followLatest: true,
     layoutFrame: 0,
     lastPendingKey: null,
-    lastQueueKey: null,
+    queueView: null,
+    draftIntent: null,
     lastTitle: null,
     lastPhase: null,
+    lastModelSelectionKey: null,
+    restoreModelSelection: restore?.modelSelection || null,
     restoreError: '',
     connStatus: 'offline',
     disposed: false,
@@ -787,6 +844,7 @@ function startConversation(sh, id, restore) {
   sh.sessionComposer.clear();
   sh.sessionComposer.setReady(false);
   sh.sessionComposer.setPlan(false);
+  sh.sessionComposer.setModelSelection(null);
 
   const nearBottom = () => els.scroll.scrollHeight - els.scroll.scrollTop - els.scroll.clientHeight < 80;
   const toBottom = () => {
@@ -859,6 +917,21 @@ function startConversation(sh, id, restore) {
       };
       return;
     }
+    const recovered = pendingRestores.get(id)?.length || 0;
+    if (recovered) {
+      const occupied = sh.sessionComposer.hasContent() || sh.sessionComposer.pendingFiles > 0 || sh.sessionComposer.disabled;
+      els.banner.hidden = false;
+      els.banner.className = 'conn-banner';
+      els.banner.textContent = occupied
+        ? `${recovered} recovered draft${recovered === 1 ? '' : 's'} kept — send or clear the current draft first`
+        : `${recovered} recovered draft${recovered === 1 ? '' : 's'} ready — tap to restore`;
+      els.banner.onclick = () => {
+        const draft = takePendingRestore(id);
+        if (draft) applyRestore(st, draft);
+        st.updateConn();
+      };
+      return;
+    }
     if (st.connStatus === 'online') {
       els.banner.hidden = true;
       els.banner.textContent = '';
@@ -882,6 +955,7 @@ function startConversation(sh, id, restore) {
     els.dot.title = status === 'online' ? 'Live updates connected' : status === 'offline' ? 'Disconnected' : 'Connecting to live updates';
     els.dot.setAttribute('aria-label', els.dot.title);
     sh.sessionComposer.setReady(st.snapshotReady && status === 'online');
+    updateQueue();
     st.updateConn();
   };
 
@@ -903,6 +977,47 @@ function startConversation(sh, id, restore) {
     if (!st.disposed) applyAckRevision(st, ack);
     scheduleListRefresh(600);
   };
+
+  st.queueView = new QueuedMessages(els.queueChips, {
+    composer: sh.sessionComposer,
+    sendCommand: (type, targetCommandId) => api.sendCommand(id, {
+      $type: type,
+      commandId: uuid(),
+      sessionId: id,
+      baseRevision: st.revision,
+      targetCommandId,
+    }),
+    onAck: ack => {
+      if (st.disposed || convo !== st) return;
+      applyAckRevision(st, ack);
+      if (ack?.accepted) {
+        st.restoreError = '';
+        st.updateConn();
+        scheduleListRefresh(400);
+      }
+    },
+    onError: message => {
+      st.restoreError = message;
+      st.updateConn();
+    },
+    onRestore: draft => {
+      if (shell === sh && convo === st && !st.disposed) {
+        applyRestore(st, draft);
+        sh.sessionComposer.focus();
+      } else {
+        savePendingRestore(id, draft);
+      }
+    },
+  });
+
+  function updateQueue() {
+    const state = st.state || {};
+    const queue = Array.isArray(state.queue) ? state.queue : [];
+    els.queueBadge.hidden = queue.length === 0;
+    els.queueBadge.textContent = queue.length ? `${queue.length} queued` : '';
+    els.queueStrip.hidden = queue.length === 0;
+    st.queueView.update(queue, st.snapshotReady && st.connStatus === 'online', !state.pendingInteraction);
+  }
 
   st.pendingCtx = {
     sent: st.sent,
@@ -946,15 +1061,7 @@ function startConversation(sh, id, restore) {
       sh.list.updateActivity(id, { phase });
     }
 
-    const queue = Array.isArray(state.queue) ? state.queue : [];
-    const queueKey = JSON.stringify(queue);
-    if (st.lastQueueKey !== queueKey) {
-      st.lastQueueKey = queueKey;
-      els.queueBadge.hidden = queue.length === 0;
-      els.queueBadge.textContent = queue.length ? `${queue.length} queued` : '';
-      els.queueStrip.hidden = queue.length === 0;
-      renderQueue(els.queueChips, queue);
-    }
+    updateQueue();
 
     const label = activityLabel(phase);
     const showActivity = !!label;
@@ -964,8 +1071,14 @@ function startConversation(sh, id, restore) {
     const paused = phase === 'awaitingPermission' || phase === 'awaitingInteraction';
     if (els.activityDots) els.activityDots.className = 'activity-dots' + (paused ? ' paused' : '');
 
-    sh.sessionComposer.setPlan(!!state.planEnabled);
-    sh.sessionComposer.setMode(modeValue(state.mode));
+    sh.sessionComposer.setPlan(st.draftIntent?.planEnabled ?? !!state.planEnabled);
+    sh.sessionComposer.setMode(modeValue(st.draftIntent?.mode ?? state.mode));
+    const selectionKey = JSON.stringify(state.modelSelection ?? null);
+    if (st.lastModelSelectionKey !== selectionKey) {
+      const restored = st.lastModelSelectionKey === null ? st.restoreModelSelection : null;
+      if (!st.draftIntent?.modelSelection) sh.sessionComposer.setModelSelection(restored || state.modelSelection);
+      st.lastModelSelectionKey = selectionKey;
+    }
     sh.sessionComposer.update();
     updatePending();
 
@@ -976,7 +1089,7 @@ function startConversation(sh, id, restore) {
     st.lastPhase = phase;
   }
 
-  st.sendMessage = async (text, images) => {
+  st.sendMessage = async (text, images, modelSelection) => {
     if (!st.snapshotReady || st.disposed) return;
     const message = String(text || '').trim();
     const imageList = Array.isArray(images) ? images : [];
@@ -986,6 +1099,9 @@ function startConversation(sh, id, restore) {
       .filter(image => image.base64Data);
     const backupText = message;
     const backupImages = uploads.slice();
+    const intent = st.draftIntent;
+    st.draftIntent = null;
+    sh.sessionComposer.setDisabled(true);
     sh.sessionComposer.clear();
     const command = {
       $type: 'send_text',
@@ -994,6 +1110,14 @@ function startConversation(sh, id, restore) {
       baseRevision: st.revision,
       text: message,
     };
+    if (intent) {
+      command.mode = intent.mode;
+      command.planEnabled = intent.planEnabled;
+      command.delivery = intent.delivery;
+      command.workflows = intent.workflows;
+    }
+    const selection = intent ? intent.modelSelection : modelSelection;
+    if (selection) command.modelSelection = selection;
     if (uploads.length) command.images = uploads;
     let ack = null;
     try {
@@ -1001,11 +1125,21 @@ function startConversation(sh, id, restore) {
     } catch {
       ack = null;
     }
-    if (shell !== sh || convo !== st || st.disposed) return;
+    const failedDraft = !ack || ack.accepted === false ? {
+      text: backupText,
+      images: backupImages,
+      modelSelection: selection,
+      intent,
+      error: ack?.rejectionReason || 'Delivery could not be confirmed. Your draft was kept; check the conversation before sending again.',
+    } : null;
+    if (shell !== sh || convo !== st || st.disposed) {
+      if (failedDraft) savePendingRestore(id, failedDraft);
+      return;
+    }
     applyAckRevision(st, ack);
-    if (!ack || ack.accepted === false) {
-      sh.sessionComposer.setText(backupText);
-      sh.sessionComposer.setImages(backupImages);
+    sh.sessionComposer.setDisabled(false);
+    if (failedDraft) {
+      applyRestore(st, failedDraft);
       return;
     }
     if (st.restoreError) {
@@ -1032,6 +1166,10 @@ function startConversation(sh, id, restore) {
 
   st.sendMode = async mode => {
     const wireMode = mode === 'edit' ? 'Edit' : mode === 'yolo' ? 'Yolo' : 'Build';
+    if (st.draftIntent) {
+      st.draftIntent.mode = wireMode;
+      return;
+    }
     let ack = null;
     try {
       ack = await api.sendCommand(id, {
@@ -1114,13 +1252,22 @@ function applyRestore(st, restore) {
   const sh = shell;
   if (!sh || !restore || st.disposed) return;
   const composer = sh.sessionComposer;
+  if (composer.hasContent() || composer.pendingFiles > 0) {
+    savePendingRestore(st.sessionId, restore);
+    return;
+  }
   composer.clear();
   if (typeof restore.text === 'string') composer.setText(restore.text);
-  if (Array.isArray(restore.images) && restore.images.length) composer.setImages(restore.images);
-  if (restore.error) {
-    st.restoreError = String(restore.error);
-    st.updateConn();
+  if (restore.modelSelection) {
+    st.restoreModelSelection = restore.modelSelection;
+    composer.setModelSelection(restore.modelSelection);
   }
+  if (Array.isArray(restore.images) && restore.images.length) composer.setImages(restore.images);
+  st.draftIntent = restore.intent || null;
+  if (st.draftIntent?.mode != null) composer.setMode(modeValue(st.draftIntent.mode));
+  if (st.draftIntent?.planEnabled != null) composer.setPlan(st.draftIntent.planEnabled);
+  if (restore.error) st.restoreError = String(restore.error);
+  st.updateConn();
 }
 
 function disposeConversation() {
@@ -1128,6 +1275,7 @@ function disposeConversation() {
   if (!st) return;
   convo = null;
   st.disposed = true;
+  if (st.queueView) st.queueView.dispose();
   if (st.ws) st.ws.close();
   if (st.layoutFrame) cancelAnimationFrame(st.layoutFrame);
   if (st.resizeObserver) st.resizeObserver.disconnect();
@@ -1139,6 +1287,7 @@ function disposeConversation() {
     st.els.scroll.removeEventListener('scroll', st.onScroll);
   }
   if (shell && shell.sessionComposer) {
+    shell.sessionComposer.setDisabled(false);
     shell.sessionComposer.clear();
     shell.sessionComposer.setReady(false);
     shell.sessionComposer.setPlan(false);
@@ -1172,8 +1321,8 @@ function disposeConversation() {
   document.title = 'Alcoler Remote';
 }
 
-function sendSessionMessage(text, images) {
-  if (convo && convo.sendMessage) convo.sendMessage(text, images);
+function sendSessionMessage(text, images, selection) {
+  if (convo && convo.sendMessage) convo.sendMessage(text, images, selection);
 }
 
 function sendSessionStop() {

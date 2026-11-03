@@ -13,6 +13,7 @@ using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tests.Models;
+using Alcoler.Kernel.Workflows;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.EndToEnd;
@@ -511,8 +512,10 @@ public class TurnSemanticsTests
             .SelectMany(row => row.Images ?? [])));
     }
 
-    [Fact]
-    public async Task Resume_RestoresCancelledPendingImageQueueAndDeliversOldestBeforeNewInput()
+    [Theory]
+    [InlineData(SendTextDelivery.Queue)]
+    [InlineData(SendTextDelivery.Guide)]
+    public async Task Resume_RestoresCancelledPendingImageQueueWithWorkflowsAndDeliversOldestBeforeNewInput(SendTextDelivery delivery)
     {
         const string png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
         await using var harness = ScriptedCallHarness.Create(
@@ -526,12 +529,14 @@ public class TurnSemanticsTests
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var selection = new ModelSelection("scripted", "test-model", new ModelCallOptions(MaxOutputTokens: 1234));
         var command = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "", Mode: PermissionMode.Edit,
-            ModelSelection: selection, Delivery: SendTextDelivery.Guide, Images: [new("image/png", png)],
-            PlanEnabled: true);
+            ModelSelection: selection, Delivery: delivery, Images: [new("image/png", png)],
+            Workflows: [OrchestratorWorkflow.Id], PlanEnabled: true);
         Assert.True((await runtime.SubmitAsync(command, CancellationToken.None)).Accepted);
         var queuedSnapshot = await WaitForProjectionAsync(projection,
             snapshot => snapshot.State.Queue.Any(input => input.CommandId == command.CommandId));
-        var artifact = Assert.Single(Assert.Single(queuedSnapshot.State.Queue).Images!);
+        var queued = Assert.Single(queuedSnapshot.State.Queue);
+        var artifact = Assert.Single(queued.Images!);
+        Assert.Equal(command.Workflows, queued.Workflows);
         await runtime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
         await WaitForProjectionAsync(projection, snapshot => snapshot.State.Phase == TurnPhase.Idle);
         await runtime.DisposeAsync();
@@ -544,7 +549,9 @@ public class TurnSemanticsTests
         Assert.Equal(artifact, Assert.Single(restored.Images!));
         Assert.Equal(PermissionMode.Edit, restored.Mode);
         Assert.Equal(selection, restored.ModelSelection);
-        Assert.Equal(SendTextDelivery.Guide, restored.Delivery);
+        Assert.Equal(delivery, restored.Delivery);
+        Assert.True(restored.PlanEnabled);
+        Assert.Equal(command.Workflows, restored.Workflows);
         Assert.Single(harness.Model.Requests);
         Assert.True((await resumed.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
             "fresh input"), CancellationToken.None)).Accepted);
@@ -556,8 +563,10 @@ public class TurnSemanticsTests
         Assert.Equal(png, Assert.Single(imageRequest.Messages.SelectMany(message => message.Content).OfType<InputImageBlock>()).Base64Data);
         Assert.Equal(1234, imageRequest.Options.MaxOutputTokens);
         Assert.Contains("Plan mode is active.", RequestTexts(imageRequest), StringComparison.Ordinal);
+        Assert.Contains("Orchestrator mode is active.", RequestTexts(imageRequest), StringComparison.Ordinal);
         Assert.DoesNotContain("fresh input", RequestTexts(imageRequest), StringComparison.Ordinal);
         Assert.Contains("fresh input", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
+        Assert.DoesNotContain("# Orchestrator mode", RequestTexts(harness.Model.Requests[2]), StringComparison.Ordinal);
         Assert.Empty(completed.State.Queue);
         await using var store = harness.OpenStore();
         var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
@@ -763,7 +772,7 @@ public class TurnSemanticsTests
         await runtime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None);
 
         await WaitForAsync(() => runtime.GetSessionActivity(session.Id) is
-            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Cancelled });
+        { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Cancelled });
         Assert.Single(harness.Model.Requests);
         release.TrySetResult();
 

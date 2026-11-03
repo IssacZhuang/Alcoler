@@ -627,6 +627,101 @@ public sealed class RemoteSettingsTests
     }
 
     [Fact]
+    public async Task RemoteAccess_ModelCatalogReadsLatestConfigWithoutRestarting()
+    {
+        var provider = new WorkbenchProviderConfig("openai-responses", "https://private-provider.example/v1", "private-provider-key",
+            [
+                new("named-model", DisplayName: "Friendly model", ReasoningLevels: ["low", "high"]),
+                new("no-reasoning", ReasoningLevels: []),
+                new("gpt-6.1-terra"),
+                new("disabled-model", Enabled: false),
+            ], Id: "custom-provider", Name: "Friendly provider");
+        var currentConfig = SampleConfig() with
+        {
+            Providers =
+            [
+                new("anthropic", "https://disabled-provider.example", "disabled-key",
+                    [new("disabled-provider-model")], Id: "disabled-provider", Enabled: false),
+                provider,
+            ],
+            DefaultModel = new("custom-provider", "named-model"),
+        };
+        var calls = 0;
+        await using var context = new RemoteTestContext(() =>
+        {
+            Interlocked.Increment(ref calls);
+            return Composition.BuildRemoteModelCatalog(Volatile.Read(ref currentConfig));
+        });
+        var port = AllocateFreePort();
+        await context.RemoteAccess.ApplyConfigAsync(new WorkbenchRemoteConfig(true, port, FirstCode));
+        Assert.True(context.RemoteAccess.IsRunning);
+        Assert.Equal(0, Volatile.Read(ref calls));
+        var token = await PairAsync(port, FirstCode);
+        using var client = CreateClient(port);
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        using (var response = await client.GetAsync("api/models"))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("private-provider-key", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("https://private-provider.example", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("search-key", body, StringComparison.Ordinal);
+            using var document = JsonDocument.Parse(body);
+            var models = document.RootElement.GetProperty("models").EnumerateArray().ToArray();
+            Assert.Equal(["custom-provider", "custom-provider", "custom-provider"],
+                models.Select(model => model.GetProperty("providerId").GetString()));
+            Assert.All(models, model => Assert.Equal("Friendly provider", model.GetProperty("providerLabel").GetString()));
+            Assert.Equal(["named-model", "no-reasoning", "gpt-6.1-terra"],
+                models.Select(model => model.GetProperty("modelId").GetString()));
+            Assert.Equal(["Friendly model", "custom-provider:no-reasoning", "custom-provider:gpt-6.1-terra"],
+                models.Select(model => model.GetProperty("displayName").GetString()));
+            Assert.Equal(["low", "high"],
+                models[0].GetProperty("reasoningLevels").EnumerateArray().Select(level => level.GetString()));
+            Assert.Empty(models[1].GetProperty("reasoningLevels").EnumerateArray());
+            Assert.Equal(WorkbenchModelCatalog.Resolve(provider, provider.Models[2]).ReasoningLevels ?? [],
+                models[2].GetProperty("reasoningLevels").EnumerateArray().Select(level => level.GetString()));
+            var selection = document.RootElement.GetProperty("defaultSelection");
+            Assert.Equal("custom-provider", selection.GetProperty("providerId").GetString());
+            Assert.Equal("named-model", selection.GetProperty("modelId").GetString());
+            Assert.Equal("high", selection.GetProperty("options").GetProperty("reasoningLevel").GetString());
+        }
+        Assert.Equal(1, Volatile.Read(ref calls));
+
+        Volatile.Write(ref currentConfig, currentConfig with
+        {
+            Providers = [new("anthropic", "https://latest-provider.example", "latest-key", [new("latest-model", ReasoningLevels: [])])],
+            DefaultModel = new("disabled-provider", "disabled-provider-model"),
+        });
+
+        using (var response = await client.GetAsync("api/models"))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var model = Assert.Single(document.RootElement.GetProperty("models").EnumerateArray());
+            Assert.Equal("anthropic", model.GetProperty("providerId").GetString());
+            Assert.Equal("anthropic", model.GetProperty("providerLabel").GetString());
+            Assert.Equal("latest-model", model.GetProperty("modelId").GetString());
+            Assert.Equal("anthropic:latest-model", model.GetProperty("displayName").GetString());
+            Assert.Empty(model.GetProperty("reasoningLevels").EnumerateArray());
+            var selection = document.RootElement.GetProperty("defaultSelection");
+            Assert.Equal("anthropic", selection.GetProperty("providerId").GetString());
+            Assert.Equal("latest-model", selection.GetProperty("modelId").GetString());
+            Assert.Equal(JsonValueKind.Null, selection.GetProperty("options").GetProperty("reasoningLevel").ValueKind);
+        }
+        Assert.Equal(2, Volatile.Read(ref calls));
+
+        Volatile.Write(ref currentConfig, currentConfig with { Providers = [] });
+
+        using var empty = await client.GetAsync("api/models");
+        Assert.Equal(HttpStatusCode.OK, empty.StatusCode);
+        Assert.Equal("""{"models":[],"defaultSelection":null}""", await empty.Content.ReadAsStringAsync());
+        Assert.Equal(3, Volatile.Read(ref calls));
+        Assert.True(context.RemoteAccess.IsRunning);
+    }
+
+    [Fact]
     public async Task RemoteAccess_ApplyDisabledNewPortAndCode_ReenableBindsNewListener()
     {
         await using var context = new RemoteTestContext();
@@ -782,14 +877,15 @@ public sealed class RemoteSettingsTests
         private readonly string _directory = Path.Combine(
             Path.GetTempPath(), "alcoler-remote-settings-tests-" + Guid.NewGuid().ToString("N"));
 
-        public RemoteTestContext()
+        public RemoteTestContext(Func<RemoteModelCatalog>? modelCatalog = null)
         {
             Directory.CreateDirectory(_directory);
             RemoteAccess = new RemoteAccessViewModel(
                 static () => throw new InvalidOperationException("Runtime not needed"),
                 RemoteDirectory,
                 static (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>?>(null),
-                "remote-settings-tests");
+                "remote-settings-tests",
+                modelCatalog);
         }
 
         public string ConfigPath => Path.Combine(_directory, "config.json");

@@ -71,12 +71,12 @@ function row(container, id) {
 const phases = ['ProcessingInput', 'AwaitingModel', 'Streaming', 'ExecutingTools', 'Completing'];
 for (const phase of phases) {
   for (const value of [phase, phase[0].toLowerCase() + phase.slice(1)]) {
-    test(`${value} shows an accessible Running badge instead of the previous failure`, () => {
+    test(`${value} shows only a spinner with an accessible running description`, () => {
       const { container } = createList([session('one', { phase: value, lastOutcome: 'Failed' })]);
       const element = row(container, 'one');
       assert.equal(element.dataset.status, 'running');
-      assert.equal(element.querySelector('.sl-status').textContent, 'Running');
-      assert.equal(element.querySelector('.sl-status').hidden, false);
+      assert.equal(element.querySelector('.sl-status').textContent, '');
+      assert.equal(element.querySelector('.sl-status').hidden, true);
       assert.equal(element.querySelector('.sr-time').hidden, true);
       assert.match(element.getAttribute('aria-label'), /Task one, Running:/);
       assert.ok(element.querySelector('.sl-spinner'));

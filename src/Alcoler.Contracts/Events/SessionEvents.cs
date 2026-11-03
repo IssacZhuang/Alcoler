@@ -138,7 +138,8 @@ public sealed record QueuedInput(
     PermissionMode? Mode = null,
     ModelSelection? ModelSelection = null,
     SendTextDelivery Delivery = SendTextDelivery.Queue,
-    bool? PlanEnabled = null);
+    bool? PlanEnabled = null,
+    IReadOnlyList<string>? Workflows = null);
 
 public sealed record InputQueuedEvent(QueuedInput Input) : SessionEvent;
 

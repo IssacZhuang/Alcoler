@@ -51,6 +51,7 @@
       <Setter Property="Stroke" Value="{DynamicResource AlcolerSuccess}" />
     </Style>
     <Style Selector="controls|Icon.sessionSpinner.running">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerAccent}" />
       <Style.Animations>
         <Animation Duration="0:0:0.9" IterationCount="INFINITE">
           <KeyFrame Cue="0%"><Setter Property="RotateTransform.Angle" Value="0" /></KeyFrame>
@@ -171,7 +172,7 @@
                                       ToolTip.Tip="{loc:Loc sidebar_failed}" AutomationProperties.Name="{loc:Loc sidebar_failed}" />
                               <controls:Icon x:Name="PART_RunningIndicator" Classes="icon small sessionSpinner"
                                              Classes.running="{Binding IsBusy}" IsVisible="{Binding IsBusy}"
-                                             RenderTransformOrigin="50%,50%" Stroke="{DynamicResource AlcolerTextSecondary}"
+                                             RenderTransformOrigin="50%,50%" Stroke="{DynamicResource AlcolerAccent}"
                                              Data="M12 3a9 9 0 1 0 9 9" ToolTip.Tip="{Binding ActivityLabel}"
                                              AutomationProperties.Name="{Binding ActivityLabel}">
                                 <controls:Icon.RenderTransform>

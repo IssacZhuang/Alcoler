@@ -339,7 +339,7 @@ export class SessionList {
     status.textContent = state.label;
     status.title = state.description;
     status.hidden = !state.label;
-    row.querySelector('.sr-time').hidden = !!state.label;
+    row.querySelector('.sr-time').hidden = state.kind === 'running' || !!state.label;
     row.dataset.status = state.kind;
     row.setAttribute('aria-label', `${sessionDisplayTitle(session)}, ${state.description}`);
     row.title = `${sessionDisplayTitle(session)}\n${state.description}`;
@@ -381,7 +381,7 @@ function activityState(activity, active) {
   }
   if (phase === 'error') return { kind: 'failed', label: 'Failed', description: 'Failed' };
   if (['processingInput', 'awaitingModel', 'streaming', 'executingTools', 'completing'].includes(phase)) {
-    return { kind: 'running', label: 'Running', description: `Running: ${phaseLabel(phase)}` };
+    return { kind: 'running', label: '', description: `Running: ${phaseLabel(phase)}` };
   }
   if (outcome === 'failed') return { kind: 'failed', label: 'Failed', description: 'Failed' };
   if (outcome === 'completed' && !active) return { kind: 'completed', label: '', description: 'Completed' };

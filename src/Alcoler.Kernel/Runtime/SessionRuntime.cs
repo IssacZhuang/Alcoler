@@ -681,7 +681,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             await EmitAsync(new InputQueuedEvent(new QueuedInput(command.CommandId, command.Text,
                 _deps.Clock.GetUtcNow(), input.Images, command.Mode, command.ModelSelection, command.Delivery,
-                command.PlanEnabled)),
+                command.PlanEnabled, command.Workflows)),
                 persist: true).ConfigureAwait(false);
             BumpRevision();
         }
@@ -2494,7 +2494,8 @@ public sealed class SessionRuntime : IAsyncDisposable
         foreach (var (_, queued) in queuedInputs.Values.OrderBy(entry => entry.Sequence))
         {
             var command = new SendTextCommand(queued.CommandId, _record.Id, 0, queued.Text,
-                queued.Mode, queued.ModelSelection, queued.Delivery, PlanEnabled: queued.PlanEnabled);
+                queued.Mode, queued.ModelSelection, queued.Delivery, Workflows: queued.Workflows,
+                PlanEnabled: queued.PlanEnabled);
             _pendingInputs.Enqueue(new PendingTurnInput(command, null, queued.Images));
             EmitForReplay(new InputQueuedEvent(queued));
         }

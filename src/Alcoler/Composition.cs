@@ -12,6 +12,7 @@ using Alcoler.Kernel.Tools;
 using Alcoler.Logging;
 using Alcoler.Auth;
 using Alcoler.Git;
+using Alcoler.Remote;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
 using System.Reflection;
@@ -95,7 +96,8 @@ public static class Composition
             () => runtime,
             Path.Combine(WorkbenchDataPaths.Root, "remote"),
             new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath).TryLoadAsync,
-            ProductVersion);
+            ProductVersion,
+            () => BuildRemoteModelCatalog(Volatile.Read(ref currentConfig)));
         if (config.Remote?.Enabled == true)
         {
             // Start failures surface through the settings status line, not startup.
@@ -227,6 +229,20 @@ public static class Composition
         }
     }
 
+    internal static RemoteModelCatalog BuildRemoteModelCatalog(WorkbenchConfig config)
+    {
+        var models = config.Providers.Where(provider => provider.Enabled)
+            .SelectMany(provider => provider.Models.Where(model => model.Enabled)
+                .Select(model => new RemoteModelChoice(
+                    provider.EffectiveId,
+                    provider.Label,
+                    model.ModelId,
+                    model.DisplayName ?? $"{provider.EffectiveId}:{model.ModelId}",
+                    WorkbenchModelCatalog.Resolve(provider, model).ReasoningLevels ?? [])))
+            .ToArray();
+        return new RemoteModelCatalog(models, WorkbenchModelCatalog.DefaultSelection(config));
+    }
+
     internal static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config, ChatGptAccountService? chatGptAccount = null) =>
         [.. config.Providers.Where(provider => provider.Enabled).Select(provider => BuildProvider(provider, chatGptAccount))];
 
@@ -243,10 +259,10 @@ public static class Composition
                 provider.ApiKey ?? string.Empty,
                 modelProperties: ToProperties(provider),
                 providerId: provider.EffectiveId),
+            // The account channel resolves its bearer per request; the static
+            // key stays empty so nothing but the OAuth token is ever sent.
             "openai-responses" when provider.AccessType == ProviderTemplate.ChatGptAccount => new OpenAiResponsesModelProvider(
                 provider.BaseUrl,
-                // The account channel resolves its bearer per request; the static
-                // key stays empty so nothing but the OAuth token is ever sent.
                 string.Empty,
                 modelProperties: ToProperties(provider),
                 providerId: provider.EffectiveId,
