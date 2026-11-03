@@ -1,9 +1,12 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
@@ -158,10 +161,34 @@ public sealed class RemoteGateway : IAsyncDisposable
         }
     }
 
+    private static Socket CreateExclusiveListenSocket(EndPoint endpoint)
+    {
+        if (endpoint is not IPEndPoint ipEndpoint)
+            return SocketTransportOptions.CreateDefaultBoundListenSocket(endpoint);
+        var socket = new Socket(ipEndpoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+        try
+        {
+            // Windows dual-stack binds can otherwise succeed while IPv4 is owned by another listener.
+            socket.ExclusiveAddressUse = true;
+            if (ipEndpoint.Address.Equals(IPAddress.IPv6Any))
+                socket.DualMode = true;
+            socket.Bind(endpoint);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
     private WebApplication BuildApplication(GatewayState state)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
+        if (OperatingSystem.IsWindows())
+            builder.Services.Configure<SocketTransportOptions>(options =>
+                options.CreateBoundListenSocket = CreateExclusiveListenSocket);
         builder.WebHost.UseKestrel(server => server.ListenAnyIP(state.Options.Port));
         WebHostConfiguration?.Invoke(builder.WebHost);
         var app = builder.Build();

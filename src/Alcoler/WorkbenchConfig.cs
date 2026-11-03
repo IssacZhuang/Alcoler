@@ -73,7 +73,8 @@ public sealed record WorkbenchBrowserConfig(
 // Remote gates the LAN mobile-control gateway; a null or disabled section keeps it off.
 public sealed record WorkbenchRemoteConfig(
     bool? Enabled = null,
-    int? Port = null)
+    int? Port = null,
+    string? ConnectionCode = null)
 {
     public const int DefaultPort = 8757;
 

@@ -1,16 +1,21 @@
-using System.Security.Cryptography;
-
 namespace Alcoler.Remote;
 
 internal sealed class PairingTokenStore
 {
-    private const int TokenLength = 8;
     private static readonly TimeSpan TimeToLive = TimeSpan.FromMinutes(10);
-    // Crockford base32: no I, L, O or U, so 0/O and 1/I cannot be confused on screen.
-    private const string Alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
     private readonly object _lock = new();
+    private readonly string? _connectionCode;
     private readonly List<(string Token, DateTimeOffset ExpiresAt)> _outstanding = [];
+
+    public PairingTokenStore(string? connectionCode = null)
+    {
+        if (!string.IsNullOrEmpty(connectionCode) && !RemoteConnectionCode.IsValid(connectionCode))
+            throw new ArgumentException(
+                "Connection code must contain between 8 and 64 ASCII letters, digits, '-' or '_'.",
+                nameof(connectionCode));
+        _connectionCode = string.IsNullOrEmpty(connectionCode) ? null : connectionCode;
+    }
 
     public DateTimeOffset? ExpiresAt
     {
@@ -25,7 +30,9 @@ internal sealed class PairingTokenStore
 
     public string Issue(DateTimeOffset now)
     {
-        var token = new string(RandomNumberGenerator.GetItems<char>(Alphabet, TokenLength));
+        if (_connectionCode is not null)
+            return _connectionCode;
+        var token = RemoteConnectionCode.Generate();
         lock (_lock)
         {
             // Issuing a new code invalidates every prior one; only the latest is redeemable.
@@ -39,6 +46,8 @@ internal sealed class PairingTokenStore
     {
         if (token.Length == 0)
             return false;
+        if (_connectionCode is not null)
+            return TokenHasher.FixedTimeTextEquals(token, _connectionCode);
         lock (_lock)
         {
             _outstanding.RemoveAll(entry => entry.ExpiresAt <= now);

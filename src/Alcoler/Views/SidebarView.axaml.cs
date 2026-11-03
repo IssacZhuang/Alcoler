@@ -133,8 +133,7 @@ public partial class SidebarView : UserControl
             return;
         }
         var current = WorkbenchConfig.LoadOrDefault();
-        if (await SettingsDialog.ShowAsync(owner, current, viewModel.ChatGptAccount, viewModel,
-                viewModel.Remote) is not { } saved)
+        if (await SettingsDialog.ShowAsync(owner, current, viewModel.ChatGptAccount, viewModel) is not { } saved)
         {
             return;
         }
@@ -144,6 +143,15 @@ public partial class SidebarView : UserControl
         if (AppliedSettingsBanner(current, saved) is { } banner)
         {
             viewModel.Banner = banner;
+        }
+    }
+
+    private async void OnRemoteControlClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is WorkbenchViewModel { Remote: { } remote }
+            && TopLevel.GetTopLevel(this) is Window owner)
+        {
+            await RemoteControlDialog.ShowAsync(owner, WorkbenchConfig.LoadOrDefault(), remote);
         }
     }
 
@@ -169,16 +177,8 @@ public partial class SidebarView : UserControl
         {
             return Loc.Get("sidebar_browser_banner");
         }
-        if (RemoteSettingsChanged(before, after))
-        {
-            return Loc.Get("sidebar_remote_banner");
-        }
         return null;
     }
-
-    internal static bool RemoteSettingsChanged(WorkbenchConfig before, WorkbenchConfig after) =>
-        before.Remote?.Enabled != after.Remote?.Enabled
-        || before.Remote?.EffectivePort != after.Remote?.EffectivePort;
 
     internal static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
         SerializeProviderSettings(before) != SerializeProviderSettings(after);

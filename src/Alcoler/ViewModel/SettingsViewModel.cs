@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.Text;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Tools;
@@ -198,56 +197,28 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private bool _initialEmbeddedBrowserView;
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ShowRemoteLive))]
-    private bool _remoteEnabled;
-
-    [ObservableProperty]
-    private int _remotePort = WorkbenchRemoteConfig.DefaultPort;
-
-    private readonly bool _initialRemoteEnabled;
-    private readonly int _initialRemotePort;
-
-    public RemoteAccessViewModel? RemoteAccess { get; }
-
-    public bool ShowRemoteLive => RemoteEnabled && RemoteAccess is not null;
-
-    public bool RemoteIsRunning => RemoteAccess?.IsRunning == true;
-
-    public bool ShowRemotePairing => RemoteEnabled && RemoteAccess?.IsRunning == true;
-
     public SettingsViewModel(WorkbenchConfig config)
         : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows())
     {
     }
 
     internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount,
-        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null,
-        RemoteAccessViewModel? remoteAccess = null)
+        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null)
         : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount, skillsCatalog,
-            archivedSessions, remoteAccess)
+            archivedSessions)
     {
     }
 
     internal SettingsViewModel(WorkbenchConfig config, IReadOnlyList<ShellEnvironment> shells, bool isWindows,
         Auth.ChatGptAccountService? chatGptAccount = null, SkillsCatalog? skillsCatalog = null,
-        IArchivedSessionMaintenance? archivedSessions = null, RemoteAccessViewModel? remoteAccess = null)
+        IArchivedSessionMaintenance? archivedSessions = null)
     {
         _config = config;
         _archivedSessions = archivedSessions;
-        RemoteAccess = remoteAccess;
         SupportsShellSelection = isWindows;
         SupportsEmbeddedBrowserView = isWindows;
         EmbeddedBrowserView = config.Browser?.EmbeddedView ?? isWindows;
         _initialEmbeddedBrowserView = EmbeddedBrowserView;
-        RemoteEnabled = config.Remote?.Enabled == true;
-        RemotePort = config.Remote?.EffectivePort ?? WorkbenchRemoteConfig.DefaultPort;
-        _initialRemoteEnabled = RemoteEnabled;
-        _initialRemotePort = RemotePort;
-        if (remoteAccess is not null)
-        {
-            remoteAccess.PropertyChanged += OnRemoteAccessPropertyChanged;
-        }
         ChatGpt = chatGptAccount is null ? null : new ChatGptAccountViewModel(chatGptAccount, ApplyChatGptModels);
         var choices = new List<ShellChoice> { new(Loc.Get("settings_shell_auto")) };
         choices.AddRange(shells.Select(shell => new ShellChoice(
@@ -471,21 +442,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             provider.Models.Add(provider.CreateModel(new WorkbenchModelConfig(modelId)));
     }
 
-    private void OnRemoteAccessPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        if (e.PropertyName == nameof(RemoteAccessViewModel.IsRunning))
-        {
-            OnPropertyChanged(nameof(RemoteIsRunning));
-            OnPropertyChanged(nameof(ShowRemotePairing));
-        }
-    }
-
     public void Dispose()
     {
-        if (RemoteAccess is not null)
-        {
-            RemoteAccess.PropertyChanged -= OnRemoteAccessPropertyChanged;
-        }
         foreach (var provider in Providers) provider.Usage.Dispose();
     }
 
@@ -547,7 +505,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         AutoArchiveSessions = AutoArchiveSessions,
         AutoArchiveOlderThanDays = Math.Clamp(AutoArchiveOlderThanDays, 1, 365),
         Browser = BuildBrowserConfig(),
-        Remote = BuildRemoteConfig(),
     };
 
     // The switch exists only where WebView2 can; elsewhere the file keeps whatever it says.
@@ -558,21 +515,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         if (!SupportsEmbeddedBrowserView) return _config.Browser;
         if (EmbeddedBrowserView == _initialEmbeddedBrowserView && _config.Browser is null) return null;
         return (_config.Browser ?? new WorkbenchBrowserConfig()) with { EmbeddedView = EmbeddedBrowserView };
-    }
-
-    // Same delta pattern as the browser section: an untouched config gains nothing, while a
-    // prior section records an explicit disable.
-    private WorkbenchRemoteConfig? BuildRemoteConfig()
-    {
-        if (RemoteEnabled == _initialRemoteEnabled && RemotePort == _initialRemotePort && _config.Remote is null)
-        {
-            return null;
-        }
-        return (_config.Remote ?? new WorkbenchRemoteConfig()) with
-        {
-            Enabled = RemoteEnabled,
-            Port = Math.Clamp(RemotePort, 1, 65535),
-        };
     }
 
     private void LoadUserSkills(SkillsCatalog catalog)

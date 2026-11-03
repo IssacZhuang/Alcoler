@@ -16,6 +16,7 @@ public class GatewayHarness : IAsyncLifetime
     public const string Version = "9.9.9-remote-tests";
 
     public FakeAgentRuntime Runtime { get; } = new();
+    public string? ConnectionCode { get; init; }
     public RemoteGateway Gateway { get; private set; } = null!;
     public HttpClient Client { get; private set; } = null!;
     public string BaseAddress { get; private set; } = "";
@@ -28,6 +29,7 @@ public class GatewayHarness : IAsyncLifetime
         Port = port,
         DataDirectory = DataDirectory,
         ProductVersion = Version,
+        ConnectionCode = ConnectionCode,
     };
 
     public async Task InitializeAsync()

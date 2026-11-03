@@ -465,10 +465,6 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 await Sidebar.ShowNewSessionAsync();
                 break;
-            case Key.OemComma:
-                e.Handled = true;
-                await Sidebar.ShowSettingsAsync();
-                break;
             case Key.B:
                 if (e.KeyModifiers.HasFlag(KeyModifiers.Alt))
                 {

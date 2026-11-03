@@ -22,16 +22,17 @@ public sealed partial class RemotePairedDeviceViewModel(Action<RemotePairedDevic
     private void Revoke() => revoke(this);
 }
 
-// Owns the desktop-side RemoteGateway. The gateway is created lazily on first enable so the
-// settings section stays functional while remote control is off; lifecycle failures are
-// captured in Error instead of propagating to startup or the UI thread.
+// The gateway is lazy; lifecycle failures must not escape startup or UI configuration updates.
 public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly Func<IAgentRuntime> _runtimeFactory;
     private readonly string _dataDirectory;
     private readonly Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> _artifactLoader;
     private readonly string? _productVersion;
+    private readonly SemaphoreSlim _operations = new(1, 1);
+    private readonly string _fallbackConnectionCode = RemoteConnectionCode.Generate();
     private RemoteGateway? _gateway;
+    private RemoteGatewayOptions? _gatewayOptions;
     private int _appliedPort = WorkbenchRemoteConfig.DefaultPort;
     private bool _disposed;
 
@@ -74,8 +75,10 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
             {
                 return;
             }
+            var previous = _qrImage;
             _qrImage = value;
             OnPropertyChanged();
+            (previous as IDisposable)?.Dispose();
         }
     }
 
@@ -113,7 +116,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
             }
             if (PairingTokenExpiresAt is not { } expiresAt)
             {
-                return Loc.Get("settings_remote_pairing_expires_static");
+                return string.Empty;
             }
             var remaining = expiresAt - DateTimeOffset.UtcNow;
             return remaining <= TimeSpan.Zero
@@ -136,67 +139,106 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
 
     public async Task ApplyConfigAsync(WorkbenchRemoteConfig? config, CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        await _operations.WaitAsync(cancellationToken).ConfigureAwait(true);
+        try
         {
-            return;
-        }
-        var enabled = config?.Enabled == true;
-        var port = config?.EffectivePort ?? WorkbenchRemoteConfig.DefaultPort;
-        if (!enabled)
-        {
-            _appliedPort = port;
-            OnPropertyChanged(nameof(Port));
-            if (_gateway is { IsRunning: true } stopping)
+            if (_disposed)
             {
-                await RunGatewayOperationAsync(stopping.StopAsync).ConfigureAwait(true);
+                return;
             }
-            RefreshState();
-            return;
-        }
-        if (_gateway is null)
-        {
-            _appliedPort = port;
-            OnPropertyChanged(nameof(Port));
-            _gateway = new RemoteGateway(BuildOptions(port));
-            await StartAsync(cancellationToken).ConfigureAwait(true);
-            RefreshState();
-            return;
-        }
-        if (_appliedPort != port)
-        {
-            _appliedPort = port;
-            OnPropertyChanged(nameof(Port));
-            var restarting = _gateway;
-            await RunGatewayOperationAsync(() => restarting.RestartAsync(BuildOptions(port))).ConfigureAwait(true);
-            if (!restarting.IsRunning)
+            var enabled = config?.Enabled == true;
+            var port = config?.EffectivePort ?? WorkbenchRemoteConfig.DefaultPort;
+            var connectionCode = config?.ConnectionCode ?? _fallbackConnectionCode;
+            try
             {
-                await StartAsync(cancellationToken).ConfigureAwait(true);
+                if (!enabled)
+                {
+                    if (_gateway is { IsRunning: true } stopping)
+                    {
+                        await stopping.StopAsync().ConfigureAwait(true);
+                    }
+                }
+                else
+                {
+                    if (_gateway is { } previous && (_gatewayOptions?.Port != port
+                        || !string.Equals(_gatewayOptions?.ConnectionCode, connectionCode, StringComparison.Ordinal)))
+                    {
+                        await previous.DisposeAsync().ConfigureAwait(true);
+                        _gateway = null;
+                        _gatewayOptions = null;
+                        IsRunning = false;
+                        ClearPairing();
+                    }
+                    if (_gateway is null)
+                    {
+                        var options = BuildOptions(port, connectionCode);
+                        _gateway = new RemoteGateway(options);
+                        _gatewayOptions = options;
+                    }
+                    if (!_gateway.IsRunning)
+                    {
+                        ClearPairing();
+                        await _gateway.StartAsync(cancellationToken).ConfigureAwait(true);
+                        Console.WriteLine($"remote gateway listening on port {port}");
+                    }
+                }
+                Error = null;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                Error = exception.Message;
+                Console.WriteLine($"remote gateway configuration failed on port {port}: {exception}");
+            }
+            finally
+            {
+                SetPort(_gateway is { IsRunning: true } && _gatewayOptions is { } options ? options.Port : port);
+                RefreshStateCore();
+            }
+            if (enabled && IsRunning && PairingToken is null)
+            {
+                GeneratePairingTokenCore();
             }
         }
-        else if (!_gateway.IsRunning)
+        finally
         {
-            await StartAsync(cancellationToken).ConfigureAwait(true);
+            _operations.Release();
         }
-        RefreshState();
     }
 
-    // Re-reads gateway state for the UI; the settings dialog ticks this while its remote
-    // section is visible so expiry and last-seen values stay current.
+    // Live status refreshes must not rotate the current pairing code or race lifecycle changes.
     public void RefreshState()
     {
-        if (_disposed)
+        if (!_operations.Wait(0))
         {
             return;
+        }
+        try
+        {
+            if (!_disposed)
+            {
+                RefreshStateCore();
+            }
+        }
+        finally
+        {
+            _operations.Release();
+        }
+    }
+
+    private void RefreshStateCore()
+    {
+        IsRunning = _gateway?.IsRunning == true;
+        if (!IsRunning)
+        {
+            ClearPairing();
         }
         if (_gateway is not { } gateway)
         {
-            IsRunning = false;
             Devices = [];
             return;
         }
         try
         {
-            IsRunning = gateway.IsRunning;
             Devices = gateway.Devices.Select(device => new RemotePairedDeviceViewModel(RemoveDevice)
             {
                 Id = device.Id,
@@ -213,106 +255,135 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
                 OnPropertyChanged(nameof(PairingExpiryText));
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception exception)
         {
-            Error = Loc.Get("settings_remote_status_error", exception.Message);
+            Error = exception.Message;
         }
     }
 
     [RelayCommand(CanExecute = nameof(CanPair))]
     private void GeneratePairingToken()
     {
+        if (!_operations.Wait(0))
+        {
+            return;
+        }
+        try
+        {
+            if (!_disposed)
+            {
+                GeneratePairingTokenCore();
+            }
+        }
+        finally
+        {
+            _operations.Release();
+        }
+    }
+
+    private void GeneratePairingTokenCore()
+    {
         if (_gateway is not { IsRunning: true } gateway)
         {
             return;
         }
-        PairingToken = gateway.GeneratePairingToken();
-        PairingTokenExpiresAt = gateway.PairingTokenExpiresAt;
-        RebuildPairingUrls();
+        try
+        {
+            PairingToken = gateway.GeneratePairingToken();
+            PairingTokenExpiresAt = gateway.PairingTokenExpiresAt;
+            OnPropertyChanged(nameof(PairingToken));
+            OnPropertyChanged(nameof(PairingTokenExpiresAt));
+            RebuildPairingUrls();
+        }
+        catch (Exception exception)
+        {
+            ClearPairing();
+            Error = exception.Message;
+        }
     }
 
-    private bool CanPair() => _gateway is { IsRunning: true };
+    private bool CanPair() => !_disposed && IsRunning;
 
     private void RemoveDevice(RemotePairedDeviceViewModel device) => _ = RevokeDeviceAsync(device);
 
     private async Task RevokeDeviceAsync(RemotePairedDeviceViewModel device)
     {
-        if (_gateway is not { } gateway || _disposed)
-        {
-            return;
-        }
+        await _operations.WaitAsync().ConfigureAwait(true);
         try
         {
-            await gateway.RevokeDeviceAsync(device.Id).ConfigureAwait(true);
+            if (_gateway is not { } gateway || _disposed)
+            {
+                return;
+            }
+            try
+            {
+                await gateway.RevokeDeviceAsync(device.Id).ConfigureAwait(true);
+            }
+            catch (Exception exception)
+            {
+                Error = Loc.Get("settings_remote_revoke_error", exception.Message);
+            }
+            RefreshStateCore();
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        finally
         {
-            Error = Loc.Get("settings_remote_revoke_error", exception.Message);
+            _operations.Release();
         }
-        RefreshState();
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        await _operations.WaitAsync().ConfigureAwait(true);
+        try
         {
-            return;
+            if (_disposed)
+            {
+                return;
+            }
+            _disposed = true;
+            ClearPairing();
+            if (_gateway is { } gateway)
+            {
+                try
+                {
+                    await gateway.DisposeAsync().ConfigureAwait(true);
+                }
+                catch (Exception)
+                {
+                    // Shutdown must proceed even if the listener is already gone.
+                }
+            }
+            IsRunning = _gateway?.IsRunning == true;
+            Devices = [];
+            _gateway = null;
+            _gatewayOptions = null;
         }
-        _disposed = true;
-        ClearPairing();
-        if (_gateway is { } gateway)
+        finally
         {
-            try
-            {
-                await gateway.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Shutdown must proceed even if the listener is already gone.
-            }
+            // Queued callers must still acquire the gate after disposal to observe _disposed.
+            _operations.Release();
         }
-        IsRunning = false;
     }
 
-    private RemoteGatewayOptions BuildOptions(int port) => new()
+    private RemoteGatewayOptions BuildOptions(int port, string? connectionCode) => new()
     {
         Runtime = _runtimeFactory,
         Port = port,
+        ConnectionCode = connectionCode,
         DataDirectory = _dataDirectory,
         ArtifactLoader = _artifactLoader,
         ProductVersion = _productVersion,
     };
 
-    private async Task StartAsync(CancellationToken cancellationToken)
+    private void SetPort(int port)
     {
-        if (_gateway is not { } gateway)
+        if (_appliedPort == port)
         {
             return;
         }
-        try
-        {
-            await gateway.StartAsync(cancellationToken).ConfigureAwait(true);
-            Error = null;
-            Console.WriteLine($"remote gateway listening on port {_appliedPort}");
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            Error = exception.Message;
-            Console.WriteLine($"remote gateway failed to start on port {_appliedPort}: {exception}");
-        }
-    }
-
-    private async Task RunGatewayOperationAsync(Func<Task> operation)
-    {
-        try
-        {
-            await operation().ConfigureAwait(true);
-        }
-        catch (Exception exception)
-        {
-            Error = exception.Message;
-            Console.WriteLine($"remote gateway operation failed: {exception}");
-        }
+        _appliedPort = port;
+        OnPropertyChanged(nameof(Port));
+        OnPropertyChanged(nameof(StatusText));
     }
 
     private void RebuildPairingUrls()
@@ -322,7 +393,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
             ClearPairing();
             return;
         }
-        var token = PairingToken;
+        var token = Uri.EscapeDataString(PairingToken);
         PairingUrls = EnumeratePrivateIPv4Addresses()
             .Select(address => $"http://{address}:{_appliedPort}/#pair={token}")
             .ToArray();
@@ -336,7 +407,8 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         PairingTokenExpiresAt = null;
         PairingUrls = [];
         QrImage = null;
-        OnPropertyChanged(nameof(PairingUrl));
+        OnPropertyChanged(nameof(PairingToken));
+        OnPropertyChanged(nameof(PairingTokenExpiresAt));
         OnPropertyChanged(nameof(PairingExpiryText));
     }
 
@@ -347,7 +419,8 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
             using var generator = new QRCodeGenerator();
             using var data = generator.CreateQrCode(payload, QRCodeGenerator.ECCLevel.M);
             var png = new PngByteQRCode(data).GetGraphic(8);
-            return new Bitmap(new MemoryStream(png));
+            using var stream = new MemoryStream(png);
+            return new Bitmap(stream);
         }
         catch (Exception)
         {

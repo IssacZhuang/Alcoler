@@ -17,11 +17,12 @@ internal sealed class GatewayState(
 
     public static GatewayState Create(RemoteGatewayOptions options)
     {
+        var pairingTokens = new PairingTokenStore(options.ConnectionCode);
         var dataDirectory = options.DataDirectory ?? DefaultDataDirectory();
         return new GatewayState(
             options,
             DeviceRegistry.Load(dataDirectory),
-            new PairingTokenStore(),
+            pairingTokens,
             new AuditLog(dataDirectory),
             new FailureRateLimiter(MaxPairFailuresPerMinute, TimeSpan.FromMinutes(1)));
     }

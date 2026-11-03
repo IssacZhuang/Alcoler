@@ -10,4 +10,5 @@ public sealed class RemoteGatewayOptions
     public Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>>? ArtifactLoader { get; init; }
     public string? ProductVersion { get; init; }
     public bool AllowNonPrivateClients { get; init; }
+    public string? ConnectionCode { get; init; }
 }

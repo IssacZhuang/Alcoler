@@ -168,13 +168,6 @@
             <TextBlock Text="{loc:Loc settings_sessions}" />
           </StackPanel>
         </RadioButton>
-        <RadioButton x:Name="RemoteTab" Classes="settingsTab" GroupName="SettingsSection"
-                     Tag="remote" IsCheckedChanged="OnSectionChanged">
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <controls:Icon Classes="icon" Data="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm5 16h.01" />
-            <TextBlock Text="{loc:Loc settings_remote}" />
-          </StackPanel>
-        </RadioButton>
         <TextBlock Classes="description" Text="{loc:Loc settings_agent_capabilities}" Margin="10,24,0,4" />
         <RadioButton x:Name="McpTab" Classes="settingsTab" GroupName="SettingsSection"
                      Tag="mcp" IsCheckedChanged="OnSectionChanged">
@@ -606,111 +599,6 @@
                           AutomationProperties.Name="{loc:Loc settings_delete_all_archived}" />
                 </Grid>
               </Border>
-            </StackPanel>
-          </ScrollViewer>
-
-          <ScrollViewer x:Name="RemotePanel" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
-            <StackPanel Spacing="20">
-              <TextBlock Classes="sectionTitle" Text="{loc:Loc settings_remote}" />
-              <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
-                      CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16">
-                <StackPanel Spacing="16">
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                    <StackPanel Spacing="4" VerticalAlignment="Center">
-                      <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_remote_enable}" />
-                      <TextBlock Classes="description" Text="{loc:Loc settings_remote_enable_description}" />
-                    </StackPanel>
-                    <ToggleSwitch Grid.Column="1" IsChecked="{Binding RemoteEnabled, Mode=TwoWay}"
-                                  VerticalAlignment="Center" AutomationProperties.Name="{loc:Loc settings_remote_enable}" />
-                  </Grid>
-                  <Grid ColumnDefinitions="*,224" ColumnSpacing="16">
-                    <StackPanel Spacing="4" VerticalAlignment="Center">
-                      <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_remote_port}" />
-                      <TextBlock Classes="description" Text="{loc:Loc settings_remote_port_description}" />
-                    </StackPanel>
-                    <NumericUpDown Grid.Column="1" Value="{Binding RemotePort, Mode=TwoWay}" Minimum="1" Maximum="65535"
-                                   Increment="1" FormatString="0" HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                                   AutomationProperties.Name="{loc:Loc settings_remote_port}" />
-                  </Grid>
-                </StackPanel>
-              </Border>
-              <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
-                      CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16"
-                      IsVisible="{Binding !RemoteEnabled}">
-                <TextBlock Classes="description" Text="{loc:Loc settings_remote_disabled_note}" TextWrapping="Wrap" />
-              </Border>
-              <StackPanel Spacing="20" IsVisible="{Binding ShowRemoteLive}">
-                <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
-                        CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16">
-                  <StackPanel Spacing="4">
-                    <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_remote_status}" />
-                    <TextBlock Text="{Binding RemoteAccess.StatusText}" TextWrapping="Wrap" />
-                  </StackPanel>
-                </Border>
-                <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
-                        CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16"
-                        IsVisible="{Binding !RemoteIsRunning}">
-                  <TextBlock Classes="description" Text="{loc:Loc settings_remote_save_hint}" TextWrapping="Wrap" />
-                </Border>
-                <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
-                        CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16"
-                        IsVisible="{Binding ShowRemotePairing}">
-                  <StackPanel Spacing="12" DataContext="{Binding RemoteAccess}">
-                    <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_remote_pairing}" />
-                    <TextBlock Classes="description" Text="{loc:Loc settings_remote_pairing_description}" TextWrapping="Wrap" />
-                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
-                      <Border Width="224" Height="224" Background="White"
-                              CornerRadius="{DynamicResource AlcolerRadiusLarge}" Padding="12">
-                        <Image Width="200" Height="200" Source="{Binding QrImage}" Stretch="Uniform" />
-                      </Border>
-                      <StackPanel Grid.Column="1" Spacing="10" VerticalAlignment="Center">
-                        <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_remote_pairing_url}" />
-                        <ItemsControl ItemsSource="{Binding PairingUrls}">
-                          <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="x:String">
-                              <TextBlock Text="{Binding}" FontFamily="{DynamicResource AlcolerFontMonospace}"
-                                         FontSize="{DynamicResource AlcolerFontSmall}" TextTrimming="CharacterEllipsis"
-                                         ToolTip.Tip="{Binding}" />
-                            </DataTemplate>
-                          </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                          <Button Classes="secondary action" Content="{loc:Loc settings_remote_copy_url}"
-                                  Click="OnCopyPairingUrlClick" AutomationProperties.Name="{loc:Loc settings_remote_copy_url}" />
-                          <Button Classes="primary action" Content="{loc:Loc settings_remote_pairing_new}"
-                                  Command="{Binding GeneratePairingTokenCommand}"
-                                  AutomationProperties.Name="{loc:Loc settings_remote_pairing_new}" />
-                        </StackPanel>
-                        <TextBlock Classes="description" Text="{Binding PairingExpiryText}" />
-                      </StackPanel>
-                    </Grid>
-                  </StackPanel>
-                </Border>
-                <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
-                        CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16"
-                        DataContext="{Binding RemoteAccess}">
-                  <StackPanel Spacing="12">
-                    <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_remote_devices}" />
-                    <TextBlock Classes="description" Text="{loc:Loc settings_remote_devices_empty}"
-                               IsVisible="{Binding !Devices.Count}" />
-                    <ItemsControl ItemsSource="{Binding Devices}">
-                      <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:RemotePairedDeviceViewModel">
-                          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" Margin="0,0,0,10">
-                            <StackPanel Spacing="2" VerticalAlignment="Center">
-                              <TextBlock Text="{Binding Name}" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
-                              <TextBlock Classes="description" Text="{Binding LastSeenText}" />
-                            </StackPanel>
-                            <Button Grid.Column="1" Classes="ghost action" Content="{loc:Loc settings_remote_revoke}"
-                                    Command="{Binding RevokeCommand}" Foreground="{DynamicResource AlcolerError}"
-                                    VerticalAlignment="Center" AutomationProperties.Name="{loc:Loc settings_remote_revoke}" />
-                          </Grid>
-                        </DataTemplate>
-                      </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                  </StackPanel>
-                </Border>
-              </StackPanel>
             </StackPanel>
           </ScrollViewer>
 

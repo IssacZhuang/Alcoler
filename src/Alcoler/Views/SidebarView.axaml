@@ -47,6 +47,9 @@
                      Button.sidebarAction:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.sidebarAction:focus-visible /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AlcolerSurfaceHigh}" />
     </Style>
+    <Style Selector="Button.remoteControl.running controls|Icon.icon, Button.remoteControl.running:pointerover controls|Icon.icon">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerSuccess}" />
+    </Style>
     <Style Selector="controls|Icon.sessionSpinner.running">
       <Style.Animations>
         <Animation Duration="0:0:0.9" IterationCount="INFINITE">
@@ -94,15 +97,20 @@
         </Button>
       </StackPanel>
     </Grid>
-    <Border DockPanel.Dock="Bottom" Padding="8,8,8,12">
+    <Grid DockPanel.Dock="Bottom" Margin="8,8,8,12" ColumnDefinitions="*,Auto" ColumnSpacing="4">
       <Button x:Name="PART_Settings" Classes="sidebarAction" Click="OnSettingsClick" AutomationProperties.Name="{loc:Loc settings_title}">
-        <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="8">
+        <Grid ColumnDefinitions="16,*" ColumnSpacing="8">
           <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconSettings}" />
           <TextBlock Grid.Column="1" Text="{loc:Loc sidebar_preferences}" FontSize="{DynamicResource AlcolerFontBase}" VerticalAlignment="Center" />
-          <TextBlock Grid.Column="2" Text="Ctrl+," FontSize="{DynamicResource AlcolerFontXs}" Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
         </Grid>
       </Button>
-    </Border>
+      <Button x:Name="PART_RemoteControl" Grid.Column="1" Classes="icon remoteControl" Width="32" Height="32"
+              Classes.running="{Binding Remote.IsRunning}" Click="OnRemoteControlClick"
+              IsEnabled="{Binding Remote, Converter={x:Static ObjectConverters.IsNotNull}}"
+              ToolTip.Tip="{loc:Loc settings_remote}" AutomationProperties.Name="{loc:Loc settings_remote}">
+        <controls:Icon Classes="icon" Data="{StaticResource AlcolerIconRemote}" />
+      </Button>
+    </Grid>
     <Grid>
       <TextBlock x:Name="PART_SidebarEmpty" Text="{Binding Sidebar.EmptyText}" HorizontalAlignment="Center" VerticalAlignment="Top"
                  Margin="0,20,0,0" FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}"
