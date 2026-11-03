@@ -1306,6 +1306,23 @@ svg {
   margin-top: 8px;
 }
 
+.tool-image-previews {
+  margin: 8px 0 8px 28px;
+}
+
+.tool-image-previews .thumb {
+  height: 120px;
+  width: 160px;
+}
+
+.tool-image-previews .thumb img {
+  object-fit: contain;
+}
+
+.tool-images-more {
+  margin: 0 0 8px 28px;
+}
+
 .thumb {
   align-items: center;
   background: var(--surface);
@@ -3327,6 +3344,13 @@ svg {
   padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
   position: fixed;
   z-index: 30;
+}
+
+.overlay-feedback {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .img-overlay img {

@@ -904,6 +904,8 @@ function startConversation(sh, id, restore) {
     activityDots: document.querySelector('.activity-dots'),
     overlay: $('img-overlay'),
     overlayImg: $('overlay-img'),
+    overlayStatus: $('overlay-status'),
+    overlayRetry: $('overlay-retry'),
     overlayClose: $('overlay-close'),
   };
   if (!els.scroll || !els.transcript) return;
@@ -1065,6 +1067,7 @@ function startConversation(sh, id, restore) {
       st.restoringViewport = false;
       updateJump();
       maybeLoadHistory();
+      if (!st.restoringReading) st.transcript.resumeImages?.();
     });
   };
   st.refreshLayout = refreshLayout;
@@ -1077,6 +1080,8 @@ function startConversation(sh, id, restore) {
     }
   };
   st.transcript = new Transcript(els.transcript, {
+    scrollRoot: els.scroll,
+    deferImages: true,
     onBeforeChange: () => {
       if (!st.snapshotReady || st.followLatest || st.applyingSnapshot) return;
       if (!st.restoringReading && !st.restoringViewport) st.readingAnchor = captureReadingAnchor(st);
@@ -1093,14 +1098,58 @@ function startConversation(sh, id, restore) {
 
   const closeOverlay = () => {
     els.overlay.hidden = true;
+    els.overlayImg.onload = els.overlayImg.onerror = null;
     els.overlayImg.src = '';
+    els.overlayImg.hidden = true;
+    els.overlayStatus.hidden = true;
+    els.overlayRetry.hidden = true;
     st.overlayLease?.release();
     st.overlayLease = null;
+    st.overlaySource = null;
   };
   st.closeOverlay = closeOverlay;
+  const openImage = async (uri, mime, name) => {
+    closeOverlay();
+    const lease = api.acquireArtifactObjectUrl?.(uri, mime) || {
+      promise: api.artifactObjectUrl(uri, mime), release() {},
+    };
+    st.overlayLease = lease;
+    st.overlaySource = { uri, mime, name };
+    els.overlayImg.alt = name || 'Attached image';
+    els.overlayStatus.textContent = 'Loading image\u2026';
+    els.overlayStatus.hidden = false;
+    els.overlay.hidden = false;
+    const current = () => !st.disposed && convo === st && st.overlayLease === lease && !els.overlay.hidden;
+    const fail = () => {
+      if (!current()) return;
+      els.overlayImg.onload = els.overlayImg.onerror = null;
+      els.overlayImg.src = '';
+      els.overlayImg.hidden = true;
+      els.overlayStatus.textContent = 'Image unavailable';
+      els.overlayStatus.hidden = false;
+      els.overlayRetry.hidden = false;
+      lease.release();
+      st.overlayLease = null;
+    };
+    try {
+      const url = await lease.promise;
+      if (!current()) return;
+      els.overlayImg.onload = () => {
+        if (!current()) return;
+        els.overlayStatus.hidden = true;
+        els.overlayImg.hidden = false;
+      };
+      els.overlayImg.onerror = fail;
+      els.overlayImg.src = url;
+    } catch { fail(); }
+  };
+  els.overlayRetry.onclick = () => {
+    const source = st.overlaySource;
+    if (source) void openImage(source.uri, source.mime, source.name);
+  };
 
   const onTranscriptClick = async event => {
-    if (event.target.closest('summary, .out-more')) {
+    if (event.target.closest('summary, .out-more, .tool-images-more')) {
       st.followLatest = false;
       st.restoringReading = false;
       st.ignoredScrollTop = null;
@@ -1117,12 +1166,10 @@ function startConversation(sh, id, restore) {
       setTimeout(() => { copyBtn.textContent = old; }, 1200);
       return;
     }
-    const thumb = event.target.closest('.thumb[data-url]');
-    if (thumb) {
-      closeOverlay();
-      st.overlayLease = api.acquireArtifactObjectUrl?.(thumb.dataset.artifact, thumb.dataset.mime) || null;
-      els.overlayImg.src = thumb.dataset.url;
-      els.overlay.hidden = false;
+    const thumb = event.target.closest('.thumb[data-artifact]');
+    if (thumb && !thumb.classList.contains('thumb-error')) {
+      event.preventDefault();
+      await openImage(thumb.dataset.artifact, thumb.dataset.mime, thumb.dataset.name);
     }
   };
 
@@ -1723,9 +1770,7 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape') {
     const overlay = $('img-overlay');
     if (overlay && !overlay.hidden) {
-      overlay.hidden = true;
-      const img = overlay.querySelector('img');
-      if (img) img.src = '';
+      convo?.closeOverlay?.();
       return;
     }
     if (shell && shell.workspaceMenuOpen) closeWorkspaceMenu(shell);

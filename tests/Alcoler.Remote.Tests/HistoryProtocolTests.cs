@@ -160,7 +160,8 @@ public sealed class HistoryProtocolTests(GatewayHarness harness)
             if (toolMetadata)
                 rows[index * 3 + 1] = Tool(index) with
                 {
-                    ToolName = new string('n', 50_000), Status = ToolCallStatus.Failed,
+                    ToolName = new string('n', 50_000),
+                    Status = ToolCallStatus.Failed,
                     FileChange = new FileChangeStats(int.MaxValue, int.MinValue),
                 };
             else
@@ -193,11 +194,135 @@ public sealed class HistoryProtocolTests(GatewayHarness harness)
         socket.Abort();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreviewMetadata_IsIncludedInToolBudget_WithTheSameBoundsAndEscapingAsTheWire(bool escaped)
+    {
+        var baseline = Tool(0) with { Output = null };
+        var suffix = string.Concat(Enumerable.Repeat(escaped ? "中<&" : "x", 500));
+        var images = Enumerable.Range(0, CompactImagePreviews.MaxCount).Select(index =>
+            new ToolResultMedia($"alcoler-artifact://session/{index}/{suffix}", " IMAGE/PNG; charset=binary ", suffix)).ToArray();
+        var tool = baseline with
+        {
+            Output = [new ToolResultText(new string('t', 1_000_000)), .. images,
+                new ToolResultMedia("alcoler-artifact://session/" + new string('x', CompactImagePreviews.MaxUriLength), "image/png")],
+        };
+        var metadataBytes = CompactHistoryBudget.RowBytes(tool) - CompactHistoryBudget.RowBytes(baseline);
+        var wireBytes = WireBytes(tool) - WireBytes(baseline);
+        Assert.True(metadataBytes >= wireBytes, $"Preview budget {metadataBytes} bytes versus wire {wireBytes}.");
+        Assert.True(wireBytes > 0);
+        var invalidOnly = baseline with { Output = [new ToolResultMedia("data:image/png;base64,AA==", "image/png")] };
+        Assert.True(CompactHistoryBudget.RowBytes(invalidOnly) - CompactHistoryBudget.RowBytes(baseline)
+            >= WireBytes(invalidOnly) - WireBytes(baseline));
+
+        static int WireBytes(ToolCallRow row) => CompactJson.SnapshotFrame(0, 0,
+            [new CompactWireRow(new CompactRowEntry(row))], State()).Length;
+    }
+
     [Fact]
-    public void InitialWindow_DoesNotHashOrReadHiddenToolPayloads()
+    public async Task WireBudget_IncludesBoundedImagePreviews_InSnapshotsAndOlderPages()
+    {
+        var (session, token) = await harness.NewSessionAsync();
+        var rows = Turns(0, 60);
+        for (var index = 0; index < 60; index++)
+        {
+            var images = Enumerable.Range(0, CompactImagePreviews.MaxCount).Select(image =>
+            {
+                var prefix = $"alcoler-artifact://session/{index}/{image}/";
+                return new ToolResultMedia(prefix + new string('p', CompactImagePreviews.MaxUriLength - prefix.Length),
+                    "image/png", new string('f', CompactImagePreviews.MaxFileNameLength));
+            }).ToArray();
+            rows[index * 3 + 1] = Tool(index) with { Status = ToolCallStatus.Failed, Output = images };
+        }
+        harness.Runtime.SetTranscript(session, rows, State());
+        using var socket = await Connect(session, token);
+        using var initial = await Receive(socket);
+        Assert.True(Encoding.UTF8.GetByteCount(initial.RootElement.GetRawText()) <= CompactHistoryBudget.MaxBytes);
+        var client = new Window(initial.RootElement.GetProperty("snapshot"));
+        Assert.InRange(client.Rows.Count(row => Type(row) == "tool_call"), 1, 4);
+        Assert.Equal(0, client.Rows.Count % 3);
+        Assert.All(client.Rows.Where(row => Type(row) == "tool_call"), row =>
+        {
+            Assert.Equal(CompactImagePreviews.MaxCount, row.GetProperty("imagePreviews").GetArrayLength());
+            Assert.True(row.GetProperty("detailsDeferred").GetBoolean());
+            Assert.False(row.TryGetProperty("output", out _));
+        });
+        await Send(socket, new { type = "history", requestId = 1, before = client.Before });
+        using var older = await Receive(socket);
+        Assert.True(Encoding.UTF8.GetByteCount(older.RootElement.GetRawText()) <= CompactHistoryBudget.MaxBytes);
+        var page = older.RootElement.GetProperty("page");
+        Assert.Equal(0, page.GetProperty("rows").GetArrayLength() % 3);
+        Assert.All(page.GetProperty("rows").EnumerateArray().Where(row => Type(row) == "tool_call"), row =>
+            Assert.Equal(CompactImagePreviews.MaxCount, row.GetProperty("imagePreviews").GetArrayLength()));
+        client.Page(page);
+        Assert.Equal(client.Rows.Count, client.Ids.Distinct().Count());
+        socket.Abort();
+    }
+
+    [Fact]
+    public async Task ImageSnapshotsHistoryAndTurnExpansion_OnlySendMetadata_AndNeverCallImageLoaders()
+    {
+        var images = new NonHydratingGatewayHarness();
+        try
+        {
+            await images.InitializeAsync();
+            var (session, token) = await images.NewSessionAsync();
+            var rows = Turns(0, 80);
+            for (var index = 0; index < 80; index++)
+                rows[index * 3 + 1] = Tool(index) with
+                {
+                    Status = index == 55 ? ToolCallStatus.Failed : ToolCallStatus.Succeeded,
+                    Output = [new ToolResultText("hidden image tool output"),
+                        new ToolResultMedia($"alcoler-artifact://session/image-{index}.png", "image/png", $"image-{index}.png")],
+                };
+            rows[^1] = Assistant(79, "streaming") with { IsStreaming = true };
+            images.Runtime.SetTranscript(session, rows, State() with { Phase = TurnPhase.Streaming, ActiveTurn = new TurnId("active") });
+            using var socket = await WebSocketFrames.ConnectAsync(
+                new Uri($"{images.BaseAddress}api/sessions/{session.Value}/stream?token={Uri.EscapeDataString(token)}&{Paged}"), CancellationToken.None);
+            using var initial = await Receive(socket);
+            var snapshot = initial.RootElement.GetProperty("snapshot");
+            var activeTool = snapshot.GetProperty("rows").EnumerateArray().Single(row => Type(row) == "tool_call");
+            Assert.Equal("alcoler-artifact://session/image-79.png", activeTool.GetProperty("imagePreviews")[0].GetProperty("artifactUri").GetString());
+            Assert.All(snapshot.GetProperty("rows").EnumerateArray().Where(row => Type(row) == "turn_summary"), row =>
+                Assert.False(row.TryGetProperty("imagePreviews", out _)));
+            var client = new Window(snapshot);
+            await Send(socket, new { type = "history", requestId = 1, before = client.Before });
+            using var older = await Receive(socket);
+            var historyTool = Assert.Single(older.RootElement.GetProperty("page").GetProperty("rows").EnumerateArray(), row => Type(row) == "tool_call");
+            Assert.Equal("alcoler-artifact://session/image-55.png", historyTool.GetProperty("imagePreviews")[0].GetProperty("artifactUri").GetString());
+            client.Page(older.RootElement.GetProperty("page"));
+            await Send(socket, new { type = "history", requestId = 2, before = client.Before });
+            using var foldedPage = await Receive(socket);
+            Assert.DoesNotContain("alcoler-artifact://", foldedPage.RootElement.GetRawText());
+            Assert.All(foldedPage.RootElement.GetProperty("page").GetProperty("rows").EnumerateArray(), row =>
+                Assert.Equal("turn_summary", Type(row)));
+            using var details = await images.GetWithTokenAsync($"api/sessions/{session.Value}/turns/u-0", token);
+            Assert.Equal(HttpStatusCode.OK, details.StatusCode);
+            using var expanded = await details.ReadJsonAsync();
+            var child = Assert.Single(expanded.RootElement.GetProperty("rows").EnumerateArray());
+            Assert.Equal("alcoler-artifact://session/image-0.png", child.GetProperty("imagePreviews")[0].GetProperty("artifactUri").GetString());
+            Assert.True(child.GetProperty("detailsDeferred").GetBoolean());
+            Assert.False(child.TryGetProperty("output", out _));
+            Assert.Equal(0, images.ArtifactLoads);
+            Assert.Equal(0, images.ThumbnailGenerations);
+            socket.Abort();
+        }
+        finally
+        {
+            await images.DisposeAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InitialWindow_DoesNotHashOrReadHiddenToolPayloads(bool images)
     {
         var rows = Turns(0, 80);
-        var payloads = Enumerable.Range(0, 80).Select(_ => new CountingOutput()).ToArray();
+        var payloads = Enumerable.Range(0, 80).Select(_ => new CountingOutput(images
+            ? new ToolResultMedia("alcoler-artifact://session/hidden.png", "image/png", "hidden.png")
+            : new ToolResultText("deferred payload"))).ToArray();
         for (var index = 0; index < payloads.Length; index++)
             rows[index * 3 + 1] = Tool(index) with { Output = payloads[index] };
         var transcript = new CompactTranscript(new ConversationSnapshot(0, 0, rows, State()), paged: true);
@@ -703,11 +828,34 @@ public sealed class HistoryProtocolTests(GatewayHarness harness)
         }
     }
 
-    private sealed class CountingOutput : IReadOnlyList<ToolResultBlock>
+    private sealed class NonHydratingGatewayHarness : GatewayHarness
+    {
+        public int ArtifactLoads { get; private set; }
+        public int ThumbnailGenerations { get; private set; }
+
+        protected override RemoteGatewayOptions CreateOptions(int port) => new()
+        {
+            Runtime = () => Runtime,
+            Port = port,
+            DataDirectory = DataDirectory,
+            ArtifactLoader = (_, _) =>
+            {
+                ArtifactLoads++;
+                throw new InvalidOperationException("Compact protocol must not hydrate image artifacts.");
+            },
+            ArtifactThumbnailGenerator = (_, _) =>
+            {
+                ThumbnailGenerations++;
+                throw new InvalidOperationException("Compact protocol must not generate image thumbnails.");
+            },
+        };
+    }
+
+    private sealed class CountingOutput(ToolResultBlock block) : IReadOnlyList<ToolResultBlock>
     {
         public int Reads { get; private set; }
         public int Count { get { Reads++; return 1; } }
-        public ToolResultBlock this[int index] { get { Reads++; return new ToolResultText("deferred payload"); } }
+        public ToolResultBlock this[int index] { get { Reads++; return block; } }
         public IEnumerator<ToolResultBlock> GetEnumerator()
         {
             Reads++;

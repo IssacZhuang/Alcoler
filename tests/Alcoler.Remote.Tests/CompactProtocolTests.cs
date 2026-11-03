@@ -48,7 +48,8 @@ public sealed class CompactProtocolTests(GatewayHarness harness, ITestOutputHelp
             new FilePart(new PartId("file"), "alcoler-artifact://session/file", "image/png", "preview.png"),
             new ToolCallPart(new PartId("final-call"), tool.Id, tool.ToolName, input),
             new ToolResultPart(new PartId("final-result"), tool.Id, tool.Output!),
-            new AttachmentPart(new PartId("final-attachment"), AttachmentKind.SystemReminder, InputSecret)) with { CanFork = true };
+            new AttachmentPart(new PartId("final-attachment"), AttachmentKind.SystemReminder, InputSecret)) with
+        { CanFork = true };
         ConversationRow[] rows =
         [
             User("user"), process, tool, answer,
@@ -115,6 +116,161 @@ public sealed class CompactProtocolTests(GatewayHarness harness, ITestOutputHelp
         legacy.Abort();
         compact.Abort();
         reconnect.Abort();
+    }
+
+    [Theory]
+    [InlineData("Read")]
+    [InlineData("Browser")]
+    public async Task CompactImageTools_ExposePreviewsInSnapshotsDeltasAndTurnDetails_WithoutOpeningCompletedTurns(string toolName)
+    {
+        var (session, token) = await harness.NewSessionAsync();
+        var image = new ToolResultMedia("alcoler-artifact://session/preview.png", "image/png", "preview.png");
+        ToolResultBlock[] blocks =
+        [
+            new ToolResultText(OutputSecret + new string('o', 1_000_000)), image,
+            new ToolResultMedia("alcoler-artifact://session/audio.mp3", "audio/mpeg", "audio.mp3"),
+        ];
+        var tool = Tool("image-tool", JsonSerializer.SerializeToElement(new
+        {
+            path = "preview.png",
+            content = InputSecret + new string('i', 500_000),
+        })) with
+        { ToolName = toolName, Output = blocks };
+        var streaming = Assistant("answer", new TextPart(new PartId("answer-text"), "streaming"),
+            new ToolResultPart(new PartId("hidden-result"), tool.Id, blocks)) with
+        { IsStreaming = true };
+        harness.Runtime.SetTranscript(session, [User("user"), tool, streaming],
+            State() with { Phase = TurnPhase.Streaming, ActiveTurn = new TurnId("active") });
+        using var socket = await Connect(session, token);
+        var snapshotText = await ReceiveText(socket);
+        AssertNoHiddenPayload(snapshotText);
+        using var snapshot = JsonDocument.Parse(snapshotText);
+        var rows = snapshot.RootElement.GetProperty("snapshot").GetProperty("rows");
+        Assert.Equal(new[] { "user", "image-tool", "answer" }, Ids(rows));
+        AssertToolHeader(rows[1]);
+        AssertPreview(Assert.Single(rows[1].GetProperty("imagePreviews").EnumerateArray()), image);
+        Assert.False(rows[1].TryGetProperty("imagePreviewsTruncated", out _));
+        Assert.DoesNotContain("audio.mp3", snapshotText);
+        var updatedImage = image with { ArtifactUri = "alcoler-artifact://session/updated.webp", MimeType = "image/webp", FileName = "updated.webp" };
+        var updatedTool = tool with { Output = [blocks[0], updatedImage] };
+        harness.Runtime.Publish(session, new RowUpserted(updatedTool));
+        var deltaText = await ReceiveText(socket);
+        AssertNoHiddenPayload(deltaText);
+        using var delta = JsonDocument.Parse(deltaText);
+        var header = Assert.Single(delta.RootElement.GetProperty("delta").GetProperty("ops").EnumerateArray()).GetProperty("row");
+        AssertToolHeader(header);
+        AssertPreview(Assert.Single(header.GetProperty("imagePreviews").EnumerateArray()), updatedImage);
+        harness.Runtime.Publish(session, new RowUpserted(Assistant("answer", new TextPart(new PartId("answer-text"), "finished"))),
+            new StatePatched(State()));
+        var completionText = await ReceiveText(socket);
+        AssertNoHiddenPayload(completionText);
+        Assert.DoesNotContain("imagePreviews", completionText);
+        Assert.DoesNotContain(updatedImage.ArtifactUri, completionText);
+        using var completion = JsonDocument.Parse(completionText);
+        var summary = Assert.Single(completion.RootElement.GetProperty("delta").GetProperty("ops").EnumerateArray(),
+            op => Type(op) == "row_upserted").GetProperty("row");
+        Assert.Equal("turn_summary", Type(summary));
+        Assert.Equal("user", summary.GetProperty("rowId").GetString());
+        using var detailsResponse = await Get(session, "turns/user", token, summary.GetProperty("detailVersion").GetString());
+        Assert.Equal(HttpStatusCode.OK, detailsResponse.StatusCode);
+        var detailsText = await detailsResponse.Content.ReadAsStringAsync();
+        AssertNoHiddenPayload(detailsText);
+        using var details = JsonDocument.Parse(detailsText);
+        var child = Assert.Single(details.RootElement.GetProperty("rows").EnumerateArray());
+        AssertToolHeader(child);
+        AssertPreview(Assert.Single(child.GetProperty("imagePreviews").EnumerateArray()), updatedImage);
+        using var reconnect = await Connect(session, token);
+        var foldedText = await ReceiveText(reconnect);
+        Assert.DoesNotContain("imagePreviews", foldedText);
+        Assert.DoesNotContain(updatedImage.ArtifactUri, foldedText);
+        using var folded = JsonDocument.Parse(foldedText);
+        Assert.Equal("turn_summary", Type(Assert.Single(folded.RootElement.GetProperty("snapshot").GetProperty("rows").EnumerateArray())));
+        reconnect.Abort();
+        socket.Abort();
+    }
+
+    [Fact]
+    public void CompactImagePreviews_NormalizeSafeMimeTypes_Deduplicate_AndBoundFileNames()
+    {
+        var longFileName = new string('f', CompactImagePreviews.MaxFileNameLength - 4) + "\U0001F600" + new string('f', 5000);
+        var uri = "alcoler-artifact://session/" + new string('p', CompactImagePreviews.MaxUriLength - "alcoler-artifact://session/".Length);
+        ToolResultMedia[] images =
+        [
+            new(uri, "IMAGE/PNG", longFileName),
+            new("alcoler-artifact://session/photo.jpeg", "Image/Jpeg"),
+            new("ALCOLER-ARTIFACT://session/animation.gif", "image/GIF", "animation.gif"),
+            new("alcoler-artifact://session/photo.webp", "IMAGE/WEBP", "photo.webp"),
+        ];
+        var tool = Tool("images") with { Output = [.. images, images[0] with { MimeType = "image/png" }] };
+        using var snapshot = ToolSnapshot(tool);
+        var header = snapshot.RootElement.GetProperty("snapshot").GetProperty("rows")[0];
+        AssertToolHeader(header);
+        var previews = header.GetProperty("imagePreviews");
+        Assert.Equal(4, previews.GetArrayLength());
+        Assert.Equal(new[] { "image/png", "image/jpeg", "image/gif", "image/webp" },
+            previews.EnumerateArray().Select(preview => preview.GetProperty("mimeType").GetString()));
+        Assert.Equal(uri, previews[0].GetProperty("artifactUri").GetString());
+        Assert.Equal(new string('f', CompactImagePreviews.MaxFileNameLength - 4) + "...", previews[0].GetProperty("fileName").GetString());
+        Assert.Equal(JsonValueKind.Null, previews[1].GetProperty("fileName").ValueKind);
+        Assert.False(header.TryGetProperty("imagePreviewsTruncated", out _));
+        Assert.All(previews.EnumerateArray(), preview => Assert.Equal(new[] { "artifactUri", "mimeType", "fileName" },
+            preview.EnumerateObject().Select(property => property.Name)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompactImagePreviews_CapUniqueDescriptors_AndFlagOversizedUrisWithoutTruncatingThem(bool oversizedUri)
+    {
+        var oversized = "alcoler-artifact://session/" + new string('x', CompactImagePreviews.MaxUriLength);
+        var images = Enumerable.Range(0, oversizedUri ? CompactImagePreviews.MaxCount : CompactImagePreviews.MaxCount + 1)
+            .Select(index => new ToolResultMedia($"alcoler-artifact://session/image-{index}.png", "image/png", $"image-{index}.png")).ToArray();
+        var tool = Tool("images") with
+        {
+            Output = oversizedUri ? [new ToolResultMedia(oversized, "image/png"), .. images] : images,
+        };
+        using var snapshot = ToolSnapshot(tool);
+        var header = snapshot.RootElement.GetProperty("snapshot").GetProperty("rows")[0];
+        AssertToolHeader(header);
+        Assert.Equal(images.Take(CompactImagePreviews.MaxCount).Select(image => image.ArtifactUri),
+            header.GetProperty("imagePreviews").EnumerateArray().Select(preview => preview.GetProperty("artifactUri").GetString()));
+        Assert.True(header.GetProperty("imagePreviewsTruncated").GetBoolean());
+        Assert.DoesNotContain(new string('x', 100), header.GetRawText());
+    }
+
+    [Theory]
+    [InlineData("IMAGE/PNG; charset=binary")]
+    [InlineData("  IMAGE/PNG  ; charset=binary  ")]
+    [InlineData("\timage/png\r\n")]
+    public void CompactImagePreviews_AcceptSafeMimeEssenceWithParametersAndWhitespace(string mimeType)
+    {
+        var image = new ToolResultMedia("alcoler-artifact://session/image.png", mimeType, "image.png");
+        using var snapshot = ToolSnapshot(Tool("image") with { Output = [image] });
+        var header = snapshot.RootElement.GetProperty("snapshot").GetProperty("rows")[0];
+        AssertToolHeader(header);
+        AssertPreview(Assert.Single(header.GetProperty("imagePreviews").EnumerateArray()), image with { MimeType = "image/png" });
+        Assert.False(header.TryGetProperty("imagePreviewsTruncated", out _));
+    }
+
+    [Theory]
+    [InlineData("https://example.test/image.png", "image/png", true)]
+    [InlineData("file:///C:/image.png", "image/png", true)]
+    [InlineData("data:image/png;base64,aGVsbG8=", "image/png", true)]
+    [InlineData("javascript:alert(1)", "image/png", true)]
+    [InlineData("alcoler-artifact://", "image/png", true)]
+    [InlineData("alcoler-artifact://session/image.svg", "image/svg+xml", true)]
+    [InlineData("alcoler-artifact://session/image.unknown", " IMAGE/UNKNOWN; encoding=binary ", true)]
+    [InlineData("alcoler-artifact://session/audio.mp3", "audio/mpeg", false)]
+    [InlineData("alcoler-artifact://session/document.pdf", "application/pdf", false)]
+    public void CompactImagePreviews_ExcludeUnsafeAndNonImageMedia(string uri, string mimeType, bool truncated)
+    {
+        using var snapshot = ToolSnapshot(Tool("image") with { Output = [new ToolResultMedia(uri, mimeType)] });
+        var header = snapshot.RootElement.GetProperty("snapshot").GetProperty("rows")[0];
+        AssertToolHeader(header);
+        Assert.False(header.TryGetProperty("imagePreviews", out _));
+        Assert.Equal(truncated, header.TryGetProperty("imagePreviewsTruncated", out var flag));
+        if (truncated) Assert.True(flag.GetBoolean());
+        Assert.DoesNotContain(uri, header.GetRawText());
     }
 
     [Theory]
@@ -684,12 +840,24 @@ public sealed class CompactProtocolTests(GatewayHarness harness, ITestOutputHelp
         Assert.DoesNotContain("private-signature", json);
     }
 
+    private static JsonDocument ToolSnapshot(ToolCallRow tool) => JsonDocument.Parse(CompactJson.SnapshotFrame(0, 0,
+        [new CompactWireRow(new CompactRowEntry(tool))], State()));
+
+    private static void AssertPreview(JsonElement preview, ToolResultMedia image)
+    {
+        Assert.Equal(new[] { "artifactUri", "mimeType", "fileName" }, preview.EnumerateObject().Select(property => property.Name));
+        Assert.Equal(image.ArtifactUri, preview.GetProperty("artifactUri").GetString());
+        Assert.Equal(image.MimeType, preview.GetProperty("mimeType").GetString());
+        Assert.Equal(image.FileName, preview.GetProperty("fileName").GetString());
+    }
+
     private static void AssertToolHeader(JsonElement tool)
     {
         Assert.Equal("tool_call", Type(tool));
         Assert.True(tool.GetProperty("detailsDeferred").GetBoolean());
         Assert.False(string.IsNullOrEmpty(tool.GetProperty("detailVersion").GetString()));
         Assert.False(tool.TryGetProperty("output", out _));
+        Assert.False(tool.TryGetProperty("text", out _));
         Assert.True(tool.TryGetProperty("fileChange", out _));
     }
 

@@ -219,6 +219,159 @@ test('large blobs retain their exact original bytes and MIME with authenticated 
   lease.release();
 });
 
+test('thumbnail leases encode authenticated thumbnail requests and never alias an original or another MIME', async t => {
+  const api = await artifacts(t);
+  const uri = 'alcoler-artifact://fixture/中文 & full image.png';
+  const thumbnail = new Blob(['thumbnail webp bytes'], { type: 'image/webp' });
+  const original = new Blob(['lossless original png bytes'], { type: 'image/png' });
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return blobResponse(new URL(url, 'https://paired.example').searchParams.has('thumbnail') ? thumbnail : original);
+  };
+  const thumb = api.acquireThumbnailObjectUrl(uri, 'image/png');
+  const shared = api.acquireArtifactObjectUrl(uri, 'image/png', { thumbnail: true });
+  const full = api.acquireArtifactObjectUrl(uri, 'image/png');
+  assert.equal(shared.promise, thumb.promise);
+  assert.notEqual(full.promise, thumb.promise);
+  const [thumbUrl, fullUrl] = await Promise.all([thumb.promise, full.promise]);
+  assert.notEqual(thumbUrl, fullUrl);
+  assert.equal(api.created.get(thumbUrl), thumbnail);
+  assert.equal(api.created.get(fullUrl), original);
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    const url = new URL(request.url, 'https://paired.example');
+    assert.equal(url.pathname, '/api/artifacts');
+    assert.equal(url.searchParams.get('uri'), uri);
+    assert.equal(url.searchParams.get('mime'), 'image/png');
+    assert.equal(url.searchParams.has('token'), false);
+    assert.equal(request.options.headers.Authorization, 'Bearer paired-device-token');
+    assert.equal(request.options.cache, 'no-store');
+    assert.equal(request.options.method, 'GET');
+  }
+  assert.equal(new URL(requests[0].url, 'https://paired.example').searchParams.get('thumbnail'), '1');
+  assert.equal(new URL(requests[1].url, 'https://paired.example').searchParams.has('thumbnail'), false);
+  const otherMime = api.acquireThumbnailObjectUrl(uri, 'image/jpeg');
+  assert.notEqual(otherMime.promise, thumb.promise);
+  await otherMime.promise;
+  assert.equal(requests.length, 3);
+  thumb.release(); shared.release(); full.release(); otherMime.release();
+});
+
+test('thumbnail and original body consumption share one four-wide scheduler and queued cancellation', async t => {
+  const api = await artifacts(t), bodies = [];
+  globalThis.fetch = async (url, options) => {
+    const body = deferred();
+    options.signal.addEventListener('abort', () => body.reject(options.signal.reason), { once: true });
+    bodies.push({ url, options, ...body });
+    return { ok: true, status: 200, blob: () => body.promise };
+  };
+  const leases = Array.from({ length: 12 }, (_, index) => index % 2
+    ? api.acquireArtifactObjectUrl(`mixed-limit-${index}`, 'image/png')
+    : api.acquireThumbnailObjectUrl(`mixed-limit-${index}`, 'image/png'));
+  const shared = api.acquireThumbnailObjectUrl('mixed-limit-0', 'image/png');
+  const settled = Promise.allSettled(leases.map(lease => lease.promise));
+  await flush();
+  assert.equal(bodies.length, 4);
+  assert.equal(shared.promise, leases[0].promise);
+  assert.equal(bodies.filter(body => body.url.includes('thumbnail=1')).length, 2);
+  leases[0].release();
+  leases[10].release();
+  assert.equal(bodies[0].options.signal.aborted, false);
+  bodies[0].resolve(new Blob(['thumb'], { type: 'image/webp' }));
+  await shared.promise;
+  await flush();
+  assert.equal(bodies.length, 5);
+  assert.match(bodies[4].url, /mixed-limit-4/);
+  assert.match(bodies[4].url, /thumbnail=1/);
+  for (const lease of leases) lease.release();
+  shared.release();
+  await settled;
+  await flush();
+  assert.equal(bodies.length, 5);
+  assert.equal(bodies.some(body => body.url.includes('mixed-limit-10')), false);
+  assert.ok(bodies.slice(1).every(body => body.options.signal.aborted));
+});
+
+test('thumbnail failures stay retryable without fetching full originals as a fallback', async t => {
+  const api = await artifacts(t);
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return requests.length === 1
+      ? { ok: false, status: 404, json: async () => ({ error: 'thumbnail_unavailable' }) }
+      : blobResponse(new Blob(['retry thumbnail'], { type: 'image/webp' }));
+  };
+  const first = api.acquireThumbnailObjectUrl('thumbnail-retry', 'image/png');
+  await assert.rejects(first.promise, { status: 404, code: 'thumbnail_unavailable' });
+  first.release();
+  assert.equal(api.created.size, 0);
+  assert.equal(requests.length, 1);
+  const retry = api.acquireThumbnailObjectUrl('thumbnail-retry', 'image/png');
+  await retry.promise;
+  retry.release();
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every(request => request.url.includes('thumbnail=1')));
+  assert.equal(api.created.size, 1);
+});
+
+test('the shared sixteen-MiB byte cache evicts the least-recently-used unpinned variant before its entry-count bound', async t => {
+  const api = await artifacts(t), chunk = new Uint8Array(4 * 1024 * 1024);
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return blobResponse(new Blob([chunk], { type: url.includes('thumbnail=1') ? 'image/webp' : 'image/png' }));
+  };
+  const acquire = (uri, thumbnail) => api.acquireArtifactObjectUrl(uri, 'image/png', { thumbnail });
+  const entries = [];
+  for (const [uri, thumbnail] of [['bytes-a', true], ['bytes-a', false], ['bytes-b', true], ['bytes-b', false]]) {
+    const lease = acquire(uri, thumbnail), url = await lease.promise;
+    entries.push({ lease, url });
+    lease.release();
+  }
+  assert.equal(api.created.size, 4);
+  assert.equal(api.revoked.length, 0);
+  const touched = api.acquireThumbnailObjectUrl('bytes-a', 'image/png');
+  assert.equal(touched.promise, entries[0].lease.promise);
+  touched.release();
+  const pressure = api.acquireThumbnailObjectUrl('bytes-c', 'image/png');
+  await pressure.promise;
+  pressure.release();
+  assert.equal(api.created.size, 5);
+  assert.deepEqual(api.revoked, [entries[1].url]);
+  const cachedThumb = api.acquireThumbnailObjectUrl('bytes-a', 'image/png');
+  assert.equal(cachedThumb.promise, entries[0].lease.promise);
+  assert.equal(await cachedThumb.promise, entries[0].url);
+  cachedThumb.release();
+  const evictedOriginal = api.acquireArtifactObjectUrl('bytes-a', 'image/png');
+  assert.notEqual(evictedOriginal.promise, entries[1].lease.promise);
+  assert.notEqual(await evictedOriginal.promise, entries[1].url);
+  evictedOriginal.release();
+  assert.equal(requests.length, 6);
+  assert.equal(new Set(api.revoked).size, api.revoked.length);
+});
+
+test('oversized originals stay pinned alongside thumbnails and are evicted as soon as their last lease releases', async t => {
+  const api = await artifacts(t);
+  const large = new Blob([new Uint8Array(16 * 1024 * 1024 + 1)], { type: 'image/png' });
+  const small = new Blob(['small thumbnail'], { type: 'image/webp' });
+  globalThis.fetch = async url => blobResponse(url.includes('thumbnail=1') ? small : large);
+  const original = api.acquireArtifactObjectUrl('oversized-pinned', 'image/png');
+  const fullUrl = await original.promise;
+  const overlay = api.acquireArtifactObjectUrl('oversized-pinned', 'image/png');
+  const thumb = api.acquireThumbnailObjectUrl('oversized-pinned', 'image/png');
+  const thumbUrl = await thumb.promise;
+  assert.equal(overlay.promise, original.promise);
+  assert.equal(api.revoked.length, 0);
+  original.release();
+  assert.equal(api.revoked.length, 0);
+  overlay.release();
+  overlay.release();
+  assert.deepEqual(api.revoked, [fullUrl]);
+  const sharedThumb = api.acquireThumbnailObjectUrl('oversized-pinned', 'image/png');
+  assert.equal(sharedThumb.promise, thumb.promise);
+  assert.equal(await sharedThumb.promise, thumbUrl);
+  thumb.release(); sharedThumb.release();
+  assert.equal(api.revoked.includes(thumbUrl), false);
+});
+
 test('older cached render modules retain promise-based object URL imports and deduplication', async t => {
   const api = await artifacts(t);
   globalThis.fetch = async () => blobResponse();
@@ -253,13 +406,44 @@ test('service worker never caches native credential-bearing artifact GETs, inclu
     caches: { open() { assert.fail('artifact credentials reached the shell cache'); } },
     fetch: async request => { fetched.push(request); if (offline) throw new Error('offline'); return new Response('original-bytes'); },
   });
-  const request = { method: 'GET', url: 'https://paired.example/api/artifacts?uri=encoded&token=private-device-token' };
-  let response;
-  handlers.get('fetch')({ request, respondWith: value => { response = value; } });
-  assert.equal(await (await response).text(), 'original-bytes');
-  assert.equal(fetched[0], request);
-  offline = true;
-  handlers.get('fetch')({ request, respondWith: value => { response = value; } });
-  assert.equal((await response).status, 503);
-  assert.deepEqual(await (await response).json(), { error: 'offline' });
+  for (const path of ['/api', '/api/sessions/fixture/rows/tool', '/api/artifacts?uri=encoded&token=private-device-token',
+    '/api/artifacts?uri=encoded&mime=image%2Fpng&thumbnail=1']) {
+    const request = { method: 'GET', url: `https://paired.example${path}` };
+    let response;
+    offline = false;
+    handlers.get('fetch')({ request, respondWith: value => { response = value; } });
+    assert.equal(await (await response).text(), 'original-bytes');
+    assert.equal(fetched.at(-1), request);
+    offline = true;
+    handlers.get('fetch')({ request, respondWith: value => { response = value; } });
+    assert.equal((await response).status, 503);
+    assert.deepEqual(await (await response).json(), { error: 'offline' });
+  }
+});
+
+test('service worker v16 installs the image-preview shell and removes older caches on activation', async () => {
+  const handlers = new Map(), opened = [], removed = [], shell = [];
+  const source = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/sw.js', import.meta.url), 'utf8');
+  let skipped = 0, claimed = 0;
+  runInNewContext(source, {
+    URL, Response, JSON,
+    self: { location: { origin: 'https://paired.example' }, addEventListener: (name, fn) => handlers.set(name, fn),
+      skipWaiting: async () => skipped++, clients: { claim: async () => claimed++ } },
+    caches: {
+      open: async name => { opened.push(name); return { addAll: async paths => shell.push(...paths) }; },
+      keys: async () => ['alcoler-shell-v14', 'alcoler-shell-v15', 'alcoler-shell-v16'],
+      delete: async name => { removed.push(name); return true; },
+    },
+  });
+  let work;
+  handlers.get('install')({ waitUntil: promise => { work = promise; } });
+  await work;
+  assert.deepEqual(opened, ['alcoler-shell-v16']);
+  assert.equal(skipped, 1);
+  for (const asset of ['./app.js', './api.js', './render.js', './index.html', './styles.css']) assert.ok(shell.includes(asset));
+  assert.equal(shell.some(path => path.startsWith('/api')), false);
+  handlers.get('activate')({ waitUntil: promise => { work = promise; } });
+  await work;
+  assert.deepEqual(removed, ['alcoler-shell-v14', 'alcoler-shell-v15']);
+  assert.equal(claimed, 1);
 });

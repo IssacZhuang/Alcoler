@@ -29,6 +29,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
     private readonly Func<IAgentRuntime> _runtimeFactory;
     private readonly string _dataDirectory;
     private readonly Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> _artifactLoader;
+    private readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<ArtifactThumbnail?>>? _artifactThumbnailGenerator;
     private readonly string? _productVersion;
     private readonly Func<RemoteModelCatalog>? _modelCatalog;
     private readonly Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>>? _slashCatalog;
@@ -45,11 +46,13 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> artifactLoader,
         string? productVersion,
         Func<RemoteModelCatalog>? modelCatalog = null,
-        Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>>? slashCatalog = null)
+        Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>>? slashCatalog = null,
+        Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<ArtifactThumbnail?>>? artifactThumbnailGenerator = null)
     {
         _runtimeFactory = runtimeFactory;
         _dataDirectory = dataDirectory;
         _artifactLoader = artifactLoader;
+        _artifactThumbnailGenerator = artifactThumbnailGenerator;
         _productVersion = productVersion;
         _modelCatalog = modelCatalog;
         _slashCatalog = slashCatalog;
@@ -379,6 +382,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         ConnectionCode = connectionCode,
         DataDirectory = _dataDirectory,
         ArtifactLoader = _artifactLoader,
+        ArtifactThumbnailGenerator = _artifactThumbnailGenerator,
         ProductVersion = _productVersion,
         ModelCatalog = _modelCatalog,
         SlashCatalog = _slashCatalog,

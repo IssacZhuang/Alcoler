@@ -19,12 +19,15 @@ public sealed record RemoteSlashEntry(string Name, string Description, string Ki
 
 public sealed record RemoteSlashCatalog(IReadOnlyList<RemoteSlashEntry> Entries);
 
+public sealed record ArtifactThumbnail(ReadOnlyMemory<byte> Bytes, string MimeType);
+
 public sealed class RemoteGatewayOptions
 {
     public required Func<Contracts.Projections.IAgentRuntime> Runtime { get; init; }
     public int Port { get; init; } = 8757;
     public string? DataDirectory { get; init; }
     public Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>>? ArtifactLoader { get; init; }
+    public Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<ArtifactThumbnail?>>? ArtifactThumbnailGenerator { get; init; }
     public string? ProductVersion { get; init; }
     public Func<RemoteModelCatalog>? ModelCatalog { get; init; }
     public Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>>? SlashCatalog { get; init; }

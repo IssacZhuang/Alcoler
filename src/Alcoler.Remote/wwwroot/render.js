@@ -7,8 +7,8 @@ import { renderMarkdown } from './markdown.js';
 import * as api from './api.js';
 
 // A previously active shell worker can serve mixed module revisions during its update.
-const acquireArtifactObjectUrl = api.acquireArtifactObjectUrl || ((uri, mime) => ({
-  promise: api.artifactObjectUrl(uri, mime), release() {},
+const acquireThumbnailObjectUrl = api.acquireThumbnailObjectUrl || (() => ({
+  promise: Promise.reject(new Error('Refresh to update image previews')), release() {},
 }));
 const artifactUrl = api.artifactUrl || ((uri, mime) => {
   const token = api.getToken();
@@ -166,8 +166,41 @@ function viewRows(state) {
   return state.rows.slice(0, VIEW_STATE_ROWS).filter(row => typeof row?.rowId === 'string' && row.rowId.length <= 512);
 }
 
+export class ThumbnailViewport {
+  constructor(root = null, deferred = false) {
+    this.targets = new Map();
+    this.enabled = !deferred;
+    this.observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
+      if (!this.enabled) return;
+      for (const entry of entries) this.targets.get(entry.target)?.(entry.isIntersecting);
+    }, { root, rootMargin: '320px 0px' }) : null;
+  }
+
+  observe(target, onVisible) {
+    this.targets.set(target, onVisible);
+    if (this.enabled) this.observer?.observe(target);
+    return () => {
+      this.observer?.unobserve(target);
+      this.targets.delete(target);
+    };
+  }
+
+  resume() {
+    if (this.enabled) return;
+    this.enabled = true;
+    for (const target of this.targets.keys()) this.observer?.observe(target);
+  }
+
+  dispose() {
+    this.enabled = false;
+    this.observer?.disconnect();
+    for (const onVisible of this.targets.values()) onVisible(false);
+    this.targets.clear();
+  }
+}
+
 export class Transcript {
-  constructor(el, { onChange, onBeforeChange, loadTurn, loadRow, _detailCache } = {}) {
+  constructor(el, { onChange, onBeforeChange, loadTurn, loadRow, scrollRoot, deferImages = false, _detailCache, _thumbnails } = {}) {
     this.el = el;
     this.supportsCompact = true;
     this.supportsHistory = true;
@@ -177,6 +210,8 @@ export class Transcript {
     this.loads = new Map();
     this.cache = _detailCache || new DetailCache();
     this.ownsCache = !_detailCache;
+    this.thumbnails = _thumbnails || new ThumbnailViewport(scrollRoot || null, deferImages);
+    this.ownsThumbnails = !_thumbnails;
     this.loadTurn = loadTurn;
     this.loadRow = loadRow;
     this.timers = new Map();
@@ -267,7 +302,7 @@ export class Transcript {
     this.beforeChange();
     this.els.set(row.rowId, el);
     this.el.appendChild(el);
-    hydrateThumbs(this.el, el, this.notify, this.beforeChange);
+    hydrateThumbs(this.el, el, this.notify, this.beforeChange, this.thumbnails);
     if (notify) { this.notify(); this.activate(el); }
   }
 
@@ -290,7 +325,7 @@ export class Transcript {
       this.els.set(row.rowId, el);
       added.set(row.rowId, el);
       this.el.insertBefore(el, anchor);
-      hydrateThumbs(this.el, el, this.notify, this.beforeChange);
+      hydrateThumbs(this.el, el, this.notify, this.beforeChange, this.thumbnails);
     }
     if (!added.size) return;
     if (prepend) this.els = new Map([...added, ...this.els]);
@@ -381,7 +416,7 @@ export class Transcript {
     releaseArtifacts(existing);
     this.els.set(row.rowId, el);
     existing.replaceWith(el);
-    hydrateThumbs(this.el, el, this.notify, this.beforeChange);
+    hydrateThumbs(this.el, el, this.notify, this.beforeChange, this.thumbnails);
     if (notify) { this.notify(); this.activate(el); }
     return true;
   }
@@ -452,8 +487,8 @@ export class Transcript {
     entry.value = value;
     entry.body.dataset.loaded = '1';
     if (entry.kind === 'tool') {
-      entry.body.innerHTML = toolBodyHtml(value.row, this.state(entry.id));
-      hydrateThumbs(this.el, entry.body, this.notify, this.beforeChange);
+      entry.body.innerHTML = toolBodyHtml(value.row, this.state(entry.id), rowSources.get(entry.el)?.imagePreviews);
+      hydrateThumbs(this.el, entry.body, this.notify, this.beforeChange, this.thumbnails);
       this.notify();
       return;
     }
@@ -464,7 +499,7 @@ export class Transcript {
       return;
     }
     entry.child = new Transcript(entry.body, {
-      loadTurn: this.loadTurn, loadRow: this.loadRow, _detailCache: this.cache,
+      loadTurn: this.loadTurn, loadRow: this.loadRow, _detailCache: this.cache, _thumbnails: this.thumbnails,
       onBeforeChange: this.beforeChange, onChange: this.notify,
     });
     entry.child.restoreState(this.turnStates.get(entry.id));
@@ -522,7 +557,7 @@ export class Transcript {
         this.beforeChange();
         body.innerHTML = toolBodyHtml(row, state);
         body.dataset.loaded = '1';
-        hydrateThumbs(this.el, body, this.notify, this.beforeChange);
+        hydrateThumbs(this.el, body, this.notify, this.beforeChange, this.thumbnails);
         changed = true;
       } else if (!detail.open && (body.dataset.loaded || this.loads.has(row.rowId))) {
         this.beforeChange();
@@ -538,6 +573,16 @@ export class Transcript {
 
   showAll(event) {
     if (this.disposed) return;
+    const moreImages = event.target.closest?.('.tool-images-more');
+    if (moreImages) {
+      const el = moreImages.closest('.row');
+      if (!el || this.els.get(el.dataset.rowId) !== el) return;
+      event.preventDefault();
+      const detail = el.querySelector('details[data-disclosure="tool"]');
+      detail.open = true;
+      this.toggle({ target: detail });
+      return;
+    }
     const retry = event.target.closest?.('.detail-retry');
     if (retry) {
       const el = retry.closest('.row');
@@ -561,11 +606,11 @@ export class Transcript {
       state.all.add(key);
       const body = el.querySelector('.tool-body');
       const replacement = document.createElement('div');
-      replacement.innerHTML = toolBodyHtml(row, state);
+      replacement.innerHTML = toolBodyHtml(row, state, rowSources.get(el)?.imagePreviews);
       preserveArtifacts(body, replacement);
       releaseArtifacts(body);
       body.replaceChildren(...replacement.childNodes);
-      hydrateThumbs(this.el, body, this.notify, this.beforeChange);
+      hydrateThumbs(this.el, body, this.notify, this.beforeChange, this.thumbnails);
     } else {
       const text = toolSectionText(row, key);
       const block = button.closest('.tool-text-block');
@@ -648,6 +693,10 @@ export class Transcript {
     this.timers.delete(rowId);
   }
 
+  resumeImages() {
+    if (!this.disposed) this.thumbnails.resume();
+  }
+
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
@@ -663,6 +712,7 @@ export class Transcript {
     this.states.clear();
     this.turnStates.clear();
     if (this.ownsCache) this.cache.clear();
+    if (this.ownsThumbnails) this.thumbnails.dispose();
   }
 }
 
@@ -847,7 +897,10 @@ function toolGlyph(path, strokeWidth = 1.8) {
 function toolDisclosureHtml(row, head, state, error) {
   const open = state.open.has('tool');
   const loaded = open && !row.detailsDeferred;
-  return `<details class="tool${error ? ' is-error' : ''}" data-disclosure="tool"${open ? ' open' : ''}>${head}<div class="tool-body"${loaded ? ' data-loaded="1"' : ''}>${loaded ? toolBodyHtml(row, state) : ''}</div></details>`;
+  const images = Array.isArray(row.imagePreviews) ? row.imagePreviews.slice(0, 8) : [];
+  const previews = images.length ? `<div class="msg-images tool-image-previews">${images.map(imgThumb).join('')}</div>` : '';
+  const more = row.imagePreviewsTruncated ? '<button type="button" class="link-btn tool-images-more">View more images in tool details</button>' : '';
+  return `<details class="tool${error ? ' is-error' : ''}" data-disclosure="tool"${open ? ' open' : ''}>${head}<div class="tool-body"${loaded ? ' data-loaded="1"' : ''}>${loaded ? toolBodyHtml(row, state) : ''}</div></details>${previews}${more}`;
 }
 
 function agentCallHtml(row, state, status, error, name) {
@@ -959,7 +1012,8 @@ function toolSectionText(row, key) {
     ? row.output[Number(match[1])].text : null;
 }
 
-export function toolBodyHtml(row, state = rowState()) {
+export function toolBodyHtml(row, state = rowState(), imagePreviews = row.imagePreviews) {
+  const previewUris = new Set((imagePreviews || []).map(image => image.artifactUri));
   let body = toolFields(row).map(field => {
     const key = 'context:' + field.key;
     return textBlockHtml(CONTEXT_LABELS[field.key], key, textPreview(field.value, state.all.has(key)), 'tool-context-detail');
@@ -979,7 +1033,9 @@ export function toolBodyHtml(row, state = rowState()) {
       const preview = textPreview(out.text, state.all.has(key), Math.min(TEXT_PREVIEW, budget));
       budget = Math.max(0, budget - preview.text.length);
       body += textBlockHtml(outs.length > 1 ? 'Output ' + (i + 1) : 'Output', key, preview, 'out-text');
-    } else if (out.artifactUri) body += `<div class="msg-images tool-media">${artifactHtml(out)}</div>`;
+    } else if (out.artifactUri && !previewUris.has(out.artifactUri)) {
+      body += `<div class="msg-images tool-media">${artifactHtml(out)}</div>`;
+    }
   }
   if (count < outs.length) body += `<button type="button" class="link-btn out-more" data-section="outputs">Show all output blocks (${fmtNum(outs.length - count)} more)</button>`;
   if (!outs.length) body += '<div class="tool-empty">No output yet</div>';
@@ -1023,33 +1079,45 @@ export function releaseArtifacts(root) {
   for (const target of root.querySelectorAll(artifactSelector)) artifactBindings.get(target)?.dispose();
 }
 
-export function hydrateThumbs(scope, root, onChange = () => {}, onBeforeChange = () => {}) {
+export function hydrateThumbs(scope, root, onChange = () => {}, onBeforeChange = () => {}, viewport = null) {
   const el = root || scope;
+  let images = viewport;
   el.querySelectorAll(artifactSelector).forEach(target => {
     if (artifactBindings.has(target)) return;
     let disposed = false;
     let lease = null;
+    let image = null;
+    let generation = 0;
+    let stopObserving = null;
     const listeners = [];
     const listen = (element, name, handler) => {
       element.addEventListener(name, handler);
       listeners.push(() => element.removeEventListener(name, handler));
     };
-    const binding = { dispose() {
-      if (disposed) return;
-      disposed = true;
-      for (const remove of listeners) remove();
-      listeners.length = 0;
-      if (target.matches('.thumb')) {
-        for (const image of target.querySelectorAll('img')) image.removeAttribute('src');
+    const clearImage = () => {
+      generation++;
+      if (image) {
+        image.onload = image.onerror = null;
+        image.removeAttribute('src');
+        image = null;
       }
       lease?.release();
       lease = null;
+      delete target.dataset.url;
+    };
+    const binding = { dispose() {
+      if (disposed) return;
+      disposed = true;
+      stopObserving?.();
+      if (!viewport && images && !images.targets.size) images.dispose();
+      for (const remove of listeners) remove();
+      listeners.length = 0;
+      clearImage();
       if (target.matches('audio,video') && target.getAttribute('src')) {
         target.pause();
         target.removeAttribute('src');
         target.load();
       }
-      delete target.dataset.url;
       artifactBindings.delete(target);
     } };
     artifactBindings.set(target, binding);
@@ -1061,9 +1129,10 @@ export function hydrateThumbs(scope, root, onChange = () => {}, onBeforeChange =
       onBeforeChange();
       if (target.matches('.thumb')) {
         target.classList.add('thumb-error');
+        target.setAttribute('title', 'Image unavailable — tap to retry');
         const span = document.createElement('span');
         span.className = 'thumb-fail';
-        span.textContent = 'unavailable';
+        span.textContent = 'Unavailable — tap to retry';
         target.replaceChildren(span);
       } else {
         target.classList.add('artifact-error');
@@ -1105,20 +1174,44 @@ export function hydrateThumbs(scope, root, onChange = () => {}, onBeforeChange =
         } catch { fail(); }
       });
     } else if (target.matches('.thumb')) {
-      lease = acquireArtifactObjectUrl(uri, target.dataset.mime);
-      lease.promise.then(url => {
+      images ||= new ThumbnailViewport(scope.closest?.('.transcript-scroll') || null);
+      const placeholder = () => {
+        target.classList.remove('thumb-error');
+        target.removeAttribute('title');
+        target.innerHTML = `<span class="thumb-loading">${icon('camera')}</span>`;
+      };
+      const load = () => {
+        if (!alive() || lease) return;
+        placeholder();
+        const ticket = ++generation;
+        const current = acquireThumbnailObjectUrl(uri, target.dataset.mime);
+        lease = current;
+        const failed = () => {
+          if (!alive() || ticket !== generation) return;
+          clearImage();
+          fail();
+        };
+        current.promise.then(url => {
+          if (!alive() || ticket !== generation) return;
+          target.dataset.url = url;
+          image = new Image();
+          image.alt = target.dataset.name || 'image';
+          image.decoding = 'async';
+          image.onload = () => { if (ticket === generation) notify(); };
+          image.onerror = failed;
+          image.src = url;
+          target.replaceChildren(image);
+          notify();
+        }).catch(failed);
+      };
+      stopObserving = images.observe(target, visible => {
         if (!alive()) { binding.dispose(); return; }
-        onBeforeChange();
-        target.dataset.url = url;
-        const img = new Image();
-        img.alt = target.dataset.name || 'image';
-        img.decoding = 'async';
-        listen(img, 'load', notify);
-        listen(img, 'error', fail);
-        img.src = url;
-        target.replaceChildren(img);
-        notify();
-      }).catch(fail);
+        if (visible) load();
+        else if (lease || image) { clearImage(); placeholder(); }
+      });
+      listen(target, 'click', event => {
+        if (!event.defaultPrevented && (target.classList.contains?.('thumb-error') || !images.observer)) load();
+      });
     }
   });
 }

@@ -210,9 +210,13 @@
             </div>
           </div>
         </div>
-        <div id="img-overlay" class="img-overlay" hidden>
+        <div id="img-overlay" class="img-overlay" role="dialog" aria-modal="true" aria-label="Image viewer" hidden>
           <button id="overlay-close" type="button" class="icon-btn overlay-close" aria-label="Close image"></button>
-          <img id="overlay-img" alt="Attached image">
+          <div class="overlay-feedback">
+            <span id="overlay-status" role="status" hidden></span>
+            <button id="overlay-retry" type="button" class="btn" hidden>Retry</button>
+          </div>
+          <img id="overlay-img" alt="Attached image" hidden>
         </div>
       </section>
     </main>

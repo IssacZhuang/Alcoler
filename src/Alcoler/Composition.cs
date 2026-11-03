@@ -108,7 +108,11 @@ public static class Composition
                     workspaceRoot = session.WorkspaceRoot;
                 }
                 return BuildRemoteSlashCatalog(workspaceRoot, Volatile.Read(ref currentConfig).DisabledSkillPaths);
-            });
+            },
+            artifactThumbnailGenerator: async (bytes, cancellationToken) =>
+                await ArtifactImageThumbnail.GenerateAsync(bytes, cancellationToken) is { } thumbnail
+                    ? new ArtifactThumbnail(thumbnail, ArtifactImageThumbnail.MimeType)
+                    : null);
         if (config.Remote?.Enabled == true)
         {
             // Start failures surface through the settings status line, not startup.

@@ -14,8 +14,6 @@ namespace Alcoler.Remote;
 
 internal static class GatewayEndpoints
 {
-    private const string ArtifactSchemePrefix = "alcoler-artifact://";
-
     private static readonly Dictionary<Type, string> CommandDiscriminators = typeof(ConversationCommand)
         .GetCustomAttributes<JsonDerivedTypeAttribute>()
         .ToDictionary(
@@ -30,7 +28,7 @@ internal static class GatewayEndpoints
         MapSessions(app, state);
         CompactDetailEndpoints.Map(app, state);
         MapCommands(app, state);
-        MapArtifacts(app, state);
+        ArtifactEndpoints.Map(app, state);
         MapPair(app, state);
         MapStream(app, state);
     }
@@ -223,27 +221,6 @@ internal static class GatewayEndpoints
                 sessionId: sessionId,
                 detail: $"{DiscriminatorOf(command)}:accepted={(ack.Accepted ? "true" : "false")}");
             return GatewayJson.Data(ack);
-        });
-    }
-
-    private static void MapArtifacts(WebApplication app, GatewayState state)
-    {
-        app.MapGet("/api/artifacts", async (HttpRequest request, HttpContext context, CancellationToken cancellationToken) =>
-        {
-            var loader = state.Options.ArtifactLoader;
-            if (loader is null)
-                return GatewayJson.Error(501, "not_supported", "artifact_loader");
-            var uri = request.Query["uri"].ToString();
-            if (!uri.StartsWith(ArtifactSchemePrefix, StringComparison.OrdinalIgnoreCase))
-                return GatewayJson.Error(400, "bad_request", "uri");
-            var bytes = await loader(uri, cancellationToken);
-            if (bytes is null)
-                return GatewayJson.Error(404, "not_found", "artifact");
-            state.Audit.Write("artifact_access", deviceId: GatewayAuthentication.Device(context)?.Id, detail: uri);
-            var mime = request.Query["mime"].ToString();
-            if (mime.Length == 0)
-                mime = "application/octet-stream";
-            return GatewayJson.Raw(bytes.Value, mime, enableRanges: true);
         });
     }
 

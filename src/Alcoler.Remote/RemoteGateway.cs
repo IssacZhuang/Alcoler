@@ -187,6 +187,8 @@ public sealed class RemoteGateway : IAsyncDisposable
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
+        builder.Services.AddSingleton(_ => new ArtifactThumbnailService(
+            state.Options.ArtifactLoader, state.Options.ArtifactThumbnailGenerator));
         // Idle WebSocket streams never complete on their own, and without a bound
         // shutdown timeout the host waits for them far longer than desktop exit can afford.
         builder.Services.Configure<HostOptions>(options =>

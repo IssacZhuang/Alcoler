@@ -7,7 +7,10 @@ import { prepareSubmission } from '../../../src/Alcoler.Remote/wwwroot/submissio
 const source = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/app.js', import.meta.url), 'utf8');
 const controllerStart = source.indexOf('const appEl =');
 const startupStart = source.indexOf("window.addEventListener('hashchange'");
+const keyboardStart = source.indexOf("document.addEventListener('keydown'");
+const keyboardEnd = source.indexOf("window.addEventListener('online'", keyboardStart);
 assert.ok(controllerStart >= 0 && startupStart > controllerStart);
+assert.ok(keyboardStart > startupStart && keyboardEnd > keyboardStart);
 
 const loadController = new Function('dependencies', `
   const { api, Composer, StreamClient, Transcript, SessionList, QueuedMessages,
@@ -17,6 +20,7 @@ const loadController = new Function('dependencies', `
     icon, uuid, workspaceTail, isBusy, normKey, phaseLabel, activityLabel, renderPending } = dependencies;
   ${source.slice(controllerStart, startupStart)}
   shell = createShell();
+  ${source.slice(keyboardStart, keyboardEnd)}
   return {
     get shell() { return shell; }, get convo() { return convo; },
     get pendingRestores() { return pendingRestores; },
@@ -89,18 +93,25 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
   const frames = new Map();
   const node = key => {
     if (!nodes.has(key)) nodes.set(key, {
-      hidden: false, textContent: '', className: '', dataset: {},
+      hidden: ['img-overlay', 'overlay-img', 'overlay-status', 'overlay-retry'].includes(key),
+      textContent: '', className: '', dataset: {}, src: '', onload: null, onerror: null, listeners: new Map(),
       scrollHeight: 100, scrollTop: 0, clientHeight: 100,
-      classList: { toggle: noop }, setAttribute: noop, addEventListener: noop,
-      removeEventListener: noop, querySelector: () => null,
+      classList: { toggle: noop }, setAttribute: noop, querySelector: () => null,
+      addEventListener(name, handler) {
+        if (!this.listeners.has(name)) this.listeners.set(name, new Set());
+        this.listeners.get(name).add(handler);
+      },
+      removeEventListener(name, handler) { this.listeners.get(name)?.delete(handler); },
+      fire(name, event) { for (const handler of this.listeners.get(name) || []) handler(event); },
     });
     return nodes.get(key);
   };
   const storage = new Map([['alcoler.lastWorkspace', 'C:/workspace']]);
   if (storedMode !== undefined) storage.set('alcoler.lastMode', storedMode);
   const location = { hash: '#/new' };
-  const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], history: [], reconnects: 0 };
+  const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], history: [], artifacts: [], images: [], reconnects: 0 };
   const handlers = {
+    acquireArtifactObjectUrl: () => { throw new Error('Unexpected original image request'); },
     createSession: async () => ({ id: 'created' }),
     sendCommand: async () => accepted(),
     getSlashCatalog: async () => catalog,
@@ -111,6 +122,11 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
   };
   const api = {
     getToken: () => 'paired-token',
+    acquireArtifactObjectUrl(...args) {
+      const lease = handlers.acquireArtifactObjectUrl(...args);
+      calls.artifacts.push({ args, lease });
+      return lease;
+    },
     async getSlashCatalog(query) { calls.catalogs.push(query); return handlers.getSlashCatalog(query); },
     async createSession(body) { calls.creates.push(structuredClone(body)); return handlers.createSession(body); },
     async sendCommand(id, command) {
@@ -129,7 +145,8 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
   const schedule = () => ++serial;
   const controller = loadController({
     api, Composer: FakeComposer, prepareSubmission,
-    document: { getElementById: node, querySelector: node, hidden: true },
+    document: { getElementById: node, querySelector: node, hidden: true,
+      addEventListener: (name, handler) => node('document').addEventListener(name, handler) },
     matchMedia: () => ({ matches: true }), location,
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     setTimeout: schedule, clearTimeout: noop, setInterval: schedule, clearInterval: noop,
@@ -188,11 +205,15 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
       exportState() { return structuredClone(this.viewState); }
       restoreState(state) { this.viewState = structuredClone(state); }
       hasPendingDetails() { return this.pendingDetails === true; }
+      resumeImages() {
+        assert.notEqual(this.disposed, true);
+        calls.images.push({ transcript: this, scrollTop: node('transcript-scroll').scrollTop });
+      }
       append(row) { calls.transcript.push(['append', structuredClone(row)]); }
       upsert(row) { calls.transcript.push(['upsert', structuredClone(row)]); }
       appendText(op) { calls.transcript.push(['text', structuredClone(op)]); return op.rowId !== 'missing'; }
       remove(rowId) { calls.transcript.push(['remove', rowId]); }
-      dispose() {}
+      dispose() { this.disposed = true; }
     },
     SessionList: class { setActive() {} updateTitle() {} updateActivity() {} },
     QueuedMessages: class { constructor(_root, opts) { this.opts = opts; } update() {} refresh() {} dispose() {} },
@@ -230,6 +251,310 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
   };
   return fixture;
 }
+
+const flushImages = () => new Promise(resolve => setImmediate(resolve));
+
+function originalImageLease() {
+  const pending = deferred();
+  return { ...pending, releases: 0, release() { this.releases++; } };
+}
+
+function imageThumb(name, { error = false, url } = {}) {
+  const thumb = {
+    dataset: { artifact: `alcoler-artifact://overlay/${name}`, mime: 'image/png', name: `${name}.png` },
+    classList: { contains: value => value === 'thumb-error' && error },
+    closest: selector => selector === '.thumb[data-artifact]' ? thumb : null,
+  };
+  if (url !== undefined) thumb.dataset.url = url;
+  return thumb;
+}
+
+function clickImage(fixture, thumb) {
+  const event = { target: thumb, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  return { event, done: fixture.convo.onTranscriptClick(event) };
+}
+
+function assertOverlayClosed(fixture) {
+  assert.equal(fixture.node('img-overlay').hidden, true);
+  assert.equal(fixture.node('overlay-img').hidden, true);
+  assert.equal(fixture.node('overlay-img').src, '');
+  assert.equal(fixture.node('overlay-img').onload, null);
+  assert.equal(fixture.node('overlay-img').onerror, null);
+  assert.equal(fixture.node('overlay-status').hidden, true);
+  assert.equal(fixture.node('overlay-retry').hidden, true);
+}
+
+test('the image viewer shell provides separate accessible loading status and local retry nodes', () => {
+  const html = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="img-overlay"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*hidden/);
+  assert.match(html, /id="overlay-status"[^>]*role="status"[^>]*hidden/);
+  assert.match(html, /<button[^>]*id="overlay-retry"[^>]*type="button"[^>]*hidden>Retry<\/button>/);
+  assert.match(html, /<img[^>]*id="overlay-img"[^>]*hidden/);
+});
+
+test('image observation resumes only in the first coalesced layout after the latest scroll position is applied', () => {
+  const f = createFixture(), scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2400, clientHeight: 200 });
+  f.location.hash = '#/session/first';
+  f.controller.route();
+  const st = f.convo;
+  assert.equal(st.transcript.opts.scrollRoot, scroll);
+  assert.equal(st.transcript.opts.deferImages, true);
+  st.refreshLayout();
+  f.flushLayout();
+  assert.equal(f.calls.images.length, 0);
+  st.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(), rows: [{ rowId: 'last' }] });
+  st.refreshLayout();
+  st.transcript.opts.onChange();
+  assert.equal(f.calls.images.length, 0);
+  assert.equal(f.calls.details.length, 0);
+  assert.equal(f.calls.artifacts.length, 0);
+  f.flushLayout();
+  assert.deepEqual(f.calls.images, [{ transcript: st.transcript, scrollTop: 2400 }]);
+  assert.equal(st.snapshotReady, true);
+});
+
+test('restored nested reading positions defer images through pending details and resume only at the restored anchor', () => {
+  const f = createFixture(), scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const rows = [{ rowId: 'parent', layoutY: 0 }, { rowId: 'nested', layoutY: 500 }, { rowId: 'after', layoutY: 1000 }];
+  const original = f.open('first', {}, rows);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  original.onScroll();
+  f.open('other');
+  f.location.hash = '#/session/first';
+  f.controller.route();
+  const st = f.convo;
+  st.transcript.pendingDetails = true;
+  st.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(), rows: [rows[0], { rowId: 'after', layoutY: 200 }] });
+  f.calls.images.length = 0;
+  f.flushLayout();
+  assert.equal(st.restoringReading, true);
+  assert.equal(st.readingAnchor.rowId, 'nested');
+  assert.equal(f.calls.images.length, 0);
+  st.transcript.pendingDetails = false;
+  st.transcript.rebuild(rows.map(row => ({ ...row, layoutY: row.layoutY + 200 })));
+  assert.equal(f.calls.images.length, 0);
+  f.flushLayout();
+  assert.equal(scroll.scrollTop, 750);
+  assert.equal(st.restoringReading, false);
+  assert.deepEqual(f.calls.images, [{ transcript: st.transcript, scrollTop: 750 }]);
+});
+
+test('switching sessions before the first layout cannot resume the disposed transcript viewport', () => {
+  const f = createFixture(), first = f.open('first'), second = f.open('second');
+  first.refreshLayout();
+  assert.equal(first.transcript.disposed, true);
+  assert.equal(f.calls.images.length, 0);
+  f.flushLayout();
+  assert.equal(f.calls.images.length, 1);
+  assert.equal(f.calls.images[0].transcript, second.transcript);
+});
+
+test('clicking an unhydrated thumbnail leases the original and keeps the overlay loading until image decode succeeds', async () => {
+  const f = createFixture(), lease = originalImageLease();
+  f.handlers.acquireArtifactObjectUrl = () => lease;
+  f.open();
+  const thumb = imageThumb('not-hydrated');
+  assert.equal(thumb.dataset.url, undefined);
+  const click = clickImage(f, thumb), image = f.node('overlay-img');
+  assert.equal(click.event.defaultPrevented, true);
+  assert.deepEqual(f.calls.artifacts[0].args, [thumb.dataset.artifact, 'image/png']);
+  assert.equal(f.node('img-overlay').hidden, false);
+  assert.equal(image.hidden, true);
+  assert.equal(image.src, '');
+  assert.equal(image.alt, 'not-hydrated.png');
+  assert.equal(f.node('overlay-status').hidden, false);
+  assert.match(f.node('overlay-status').textContent, /Loading image/);
+  assert.equal(f.node('overlay-retry').hidden, true);
+  lease.resolve('blob:original-not-thumbnail');
+  await click.done;
+  assert.equal(image.src, 'blob:original-not-thumbnail');
+  assert.equal(image.hidden, true);
+  assert.equal(f.node('overlay-status').hidden, false);
+  assert.equal(typeof image.onload, 'function');
+  assert.equal(typeof image.onerror, 'function');
+  image.onload();
+  assert.equal(image.hidden, false);
+  assert.equal(f.node('overlay-status').hidden, true);
+  assert.equal(f.node('overlay-retry').hidden, true);
+  assert.equal(lease.releases, 0);
+  f.node('overlay-close').onclick();
+  assertOverlayClosed(f);
+  assert.equal(lease.releases, 1);
+});
+
+test('the overlay ignores thumbnail blob URLs and leaves error-thumbnail clicks available for their own retry binding', async () => {
+  const f = createFixture(), lease = originalImageLease();
+  f.handlers.acquireArtifactObjectUrl = () => lease;
+  f.open();
+  const thumb = imageThumb('loaded-thumb', { url: 'blob:small-preview-must-not-open' });
+  const click = clickImage(f, thumb);
+  assert.deepEqual(f.calls.artifacts[0].args, [thumb.dataset.artifact, 'image/png']);
+  lease.resolve('blob:full-size');
+  await click.done;
+  assert.equal(f.node('overlay-img').src, 'blob:full-size');
+  f.node('overlay-img').onload();
+  const failed = clickImage(f, imageThumb('failed-thumb', { error: true, url: 'blob:failed-preview' }));
+  await failed.done;
+  assert.equal(failed.event.defaultPrevented, false);
+  assert.equal(f.calls.artifacts.length, 1);
+  assert.equal(lease.releases, 0);
+  assert.equal(f.node('overlay-img').src, 'blob:full-size');
+  f.convo.closeOverlay();
+});
+
+for (const method of ['button', 'backdrop', 'escape']) {
+  test(`${method} close releases a pending original, clears handlers, and ignores its late completion`, async () => {
+    const f = createFixture(), lease = originalImageLease();
+    f.handlers.acquireArtifactObjectUrl = () => lease;
+    f.open();
+    const click = clickImage(f, imageThumb(`pending-${method}`));
+    let closes = 0;
+    const close = f.convo.closeOverlay;
+    f.convo.closeOverlay = () => { closes++; close(); };
+    if (method === 'button') f.node('overlay-close').onclick();
+    else if (method === 'backdrop') {
+      f.node('img-overlay').onclick({ target: f.node('overlay-img') });
+      assert.equal(lease.releases, 0);
+      f.node('img-overlay').onclick({ target: f.node('img-overlay') });
+    } else f.node('document').fire('keydown', { key: 'Escape' });
+    if (method === 'escape') assert.equal(closes, 1);
+    assertOverlayClosed(f);
+    assert.equal(lease.releases, 1);
+    assert.equal(f.convo.overlaySource, null);
+    lease.resolve('blob:late-after-close');
+    await click.done;
+    assertOverlayClosed(f);
+    f.node('overlay-retry').onclick();
+    assert.equal(f.calls.artifacts.length, 1);
+  });
+}
+
+for (const completion of ['resolve', 'reject']) {
+  test(`switching overlay sources releases the old original and ignores its late ${completion}`, async () => {
+    const f = createFixture(), first = originalImageLease(), second = originalImageLease();
+    const leases = [first, second];
+    f.handlers.acquireArtifactObjectUrl = () => leases.shift();
+    f.open();
+    const old = clickImage(f, imageThumb('old-source'));
+    const current = clickImage(f, imageThumb('current-source'));
+    assert.equal(first.releases, 1);
+    assert.equal(second.releases, 0);
+    assert.equal(f.node('overlay-img').alt, 'current-source.png');
+    if (completion === 'resolve') first.resolve('blob:obsolete-original');
+    else first.reject(new Error('obsolete request failure'));
+    await old.done;
+    assert.equal(f.node('overlay-img').src, '');
+    assert.equal(f.node('overlay-status').hidden, false);
+    assert.match(f.node('overlay-status').textContent, /Loading image/);
+    assert.equal(f.node('overlay-retry').hidden, true);
+    second.resolve('blob:current-original');
+    await current.done;
+    f.node('overlay-img').onload();
+    assert.equal(f.node('overlay-img').src, 'blob:current-original');
+    assert.equal(f.node('overlay-img').hidden, false);
+    assert.equal(first.releases, 1);
+    f.convo.closeOverlay();
+    assert.equal(second.releases, 1);
+  });
+}
+
+test('stale image onload and onerror callbacks cannot hide or fail another image, including after close', async () => {
+  const f = createFixture(), first = originalImageLease(), second = originalImageLease(), leases = [first, second];
+  f.handlers.acquireArtifactObjectUrl = () => leases.shift();
+  f.open();
+  const old = clickImage(f, imageThumb('decoded-old'));
+  first.resolve('blob:decoded-old');
+  await old.done;
+  const image = f.node('overlay-img'), oldLoad = image.onload, oldError = image.onerror;
+  const current = clickImage(f, imageThumb('decoded-current'));
+  assert.equal(image.onload, null);
+  assert.equal(image.onerror, null);
+  assert.equal(image.src, '');
+  oldLoad(); oldError();
+  assert.match(f.node('overlay-status').textContent, /Loading image/);
+  assert.equal(f.node('overlay-retry').hidden, true);
+  second.resolve('blob:decoded-current');
+  await current.done;
+  const currentLoad = image.onload, currentError = image.onerror;
+  oldLoad(); oldError();
+  assert.equal(image.hidden, true);
+  assert.equal(image.src, 'blob:decoded-current');
+  currentLoad();
+  assert.equal(image.hidden, false);
+  oldError();
+  assert.equal(image.hidden, false);
+  f.convo.closeOverlay();
+  currentLoad(); currentError(); oldLoad(); oldError();
+  assertOverlayClosed(f);
+  assert.equal(first.releases, 1);
+  assert.equal(second.releases, 1);
+});
+
+for (const failure of ['fetch', 'decode']) {
+  test(`an original ${failure} failure offers a local retry of the same URI without changing conversation state`, async () => {
+    const f = createFixture(), first = originalImageLease(), retry = originalImageLease(), leases = [first, retry];
+    f.handlers.acquireArtifactObjectUrl = () => leases.shift();
+    const st = f.open();
+    const thumb = imageThumb(`retry-${failure}`), click = clickImage(f, thumb);
+    if (failure === 'fetch') first.reject(new Error('image network failure'));
+    else first.resolve('blob:invalid-original');
+    await click.done;
+    if (failure === 'decode') f.node('overlay-img').onerror();
+    assert.equal(f.node('img-overlay').hidden, false);
+    assert.equal(f.node('overlay-img').src, '');
+    assert.equal(f.node('overlay-img').hidden, true);
+    assert.equal(f.node('overlay-img').onload, null);
+    assert.equal(f.node('overlay-img').onerror, null);
+    assert.equal(f.node('overlay-status').textContent, 'Image unavailable');
+    assert.equal(f.node('overlay-status').hidden, false);
+    assert.equal(f.node('overlay-retry').hidden, false);
+    assert.equal(first.releases, 1);
+    assert.equal(st.overlayLease, null);
+    assert.deepEqual(st.overlaySource, { uri: thumb.dataset.artifact, mime: 'image/png', name: thumb.dataset.name });
+    assert.equal(f.composer.ready, true);
+    assert.equal(f.calls.reconnects, 0);
+    assert.equal(f.calls.details.length, 0);
+    f.node('overlay-retry').onclick();
+    assert.equal(f.calls.artifacts.length, 2);
+    assert.deepEqual(f.calls.artifacts[1].args, f.calls.artifacts[0].args);
+    assert.equal(f.node('overlay-retry').hidden, true);
+    assert.match(f.node('overlay-status').textContent, /Loading image/);
+    retry.resolve('blob:retried-original');
+    await flushImages();
+    f.node('overlay-img').onload();
+    assert.equal(f.node('overlay-img').hidden, false);
+    assert.equal(f.node('overlay-img').src, 'blob:retried-original');
+    assert.equal(f.node('overlay-status').hidden, true);
+    f.convo.closeOverlay();
+    assert.equal(first.releases, 1);
+    assert.equal(retry.releases, 1);
+  });
+}
+
+test('navigation releases the original lease and an obsolete rejection cannot fail the next session image', async () => {
+  const f = createFixture(), first = originalImageLease(), second = originalImageLease(), leases = [first, second];
+  f.handlers.acquireArtifactObjectUrl = () => leases.shift();
+  const original = f.open('first'), old = clickImage(f, imageThumb('departing-session'));
+  f.open('second');
+  assert.equal(original.disposed, true);
+  assert.equal(first.releases, 1);
+  assertOverlayClosed(f);
+  const current = clickImage(f, imageThumb('arriving-session'));
+  first.reject(new Error('late disconnected image'));
+  await old.done;
+  assert.equal(f.node('overlay-retry').hidden, true);
+  assert.match(f.node('overlay-status').textContent, /Loading image/);
+  second.resolve('blob:active-session-original');
+  await current.done;
+  f.node('overlay-img').onload();
+  assert.equal(f.node('overlay-img').src, 'blob:active-session-original');
+  f.node('document').fire('keydown', { key: 'Escape' });
+  assertOverlayClosed(f);
+  assert.equal(second.releases, 1);
+});
 
 test('switching sessions restores disclosure metadata and a row-relative reading position', () => {
   const f = createFixture();

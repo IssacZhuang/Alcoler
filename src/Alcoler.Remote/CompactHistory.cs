@@ -68,7 +68,8 @@ internal static class CompactHistoryBudget
     {
         UserMessageRow user => StringBytes(user.Text) + (user.Images?.Sum(image => PartBytes(image, true)) ?? 0),
         AssistantMessageRow assistant => StringBytes(assistant.Id.Value) + assistant.Parts.Sum(part => PartBytes(part, includeReasoning)),
-        ToolCallRow tool => 8 * 256 * 6 + 1024 + StringBytes(tool.Id.Value) + StringBytes(tool.ToolName),
+        ToolCallRow tool => 8 * 256 * 6 + 1024 + StringBytes(tool.Id.Value) + StringBytes(tool.ToolName)
+            + CompactImagePreviews.Extract(tool.Output).BudgetBytes,
         FileChangeSummaryRow files => files.Files.Sum(file => 128 + StringBytes(file.Path)),
         SystemNoticeRow notice => StringBytes(notice.Kind) + StringBytes(notice.Text) + (notice.Subagent is { } agent
             ? 512 + StringBytes(agent.Id.Value) + StringBytes(agent.ChildSessionId.Value) + StringBytes(agent.Description)
@@ -88,7 +89,7 @@ internal static class CompactHistoryBudget
         _ => 0,
     };
 
-    private static long StringBytes(string? text)
+    internal static long StringBytes(string? text)
     {
         if (text is null)
             return 4;

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  Transcript, rowElement, toolSummary, toolCallHtml, toolBodyHtml, jsonPreview, hydrateThumbs, releaseArtifacts,
+  Transcript, ThumbnailViewport, rowElement, toolSummary, toolCallHtml, toolBodyHtml, jsonPreview, hydrateThumbs, releaseArtifacts,
 } from '../../../src/Alcoler.Remote/wwwroot/render.js';
 
 const tool = (overrides = {}) => ({
@@ -886,15 +886,493 @@ const turn = (overrides = {}) => ({ $type: 'turn_summary', rowId: 'user-1',
 
 const flushArtifacts = () => new Promise(resolve => setImmediate(resolve));
 
-test('mixed cached API modules still support new rendering without missing named exports', () => {
+function thumbnailObserver(t) {
+  const previous = globalThis.IntersectionObserver;
+  const observers = [];
+  globalThis.IntersectionObserver = class {
+    constructor(callback, options) {
+      Object.assign(this, { callback, options, targets: new Set(), observed: [], unobserved: [], disconnects: 0 });
+      observers.push(this);
+    }
+    observe(target) { this.targets.add(target); this.observed.push(target); }
+    unobserve(target) { this.targets.delete(target); this.unobserved.push(target); }
+    disconnect() { this.targets.clear(); this.disconnects++; }
+    emit(target, isIntersecting) { this.callback([{ target, isIntersecting }]); }
+  };
+  t.after(() => { if (previous === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = previous; });
+  return observers;
+}
+
+function thumbnailTransport(t, { abortable = true } = {}) {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = { getItem: () => 'lazy-preview-token' };
+  t.after(() => { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous; });
+  const requests = [], created = [], revoked = [];
+  t.mock.method(globalThis, 'fetch', (url, options) => {
+    const reply = deferred();
+    requests.push({ url, options, ...reply });
+    if (abortable) options.signal.addEventListener('abort', () => reply.reject(options.signal.reason), { once: true });
+    return reply.promise;
+  });
+  t.mock.method(URL, 'createObjectURL', blob => {
+    const url = `blob:lazy-preview-${created.length}`;
+    created.push({ url, blob });
+    return url;
+  });
+  t.mock.method(URL, 'revokeObjectURL', url => revoked.push(url));
+  return { requests, created, revoked, complete(index, text = 'thumbnail bytes') {
+    requests[index].resolve({ ok: true, status: 200, blob: async () => new Blob([text], { type: 'image/webp' }) });
+  } };
+}
+
+const preview = (name, overrides = {}) => ({ artifactUri: `alcoler-artifact://lazy/${name}`,
+  mimeType: 'image/png', fileName: `${name}.png`, ...overrides });
+
+test('compact image metadata renders outside the disclosure without visiting output or serializing input', () => withDom(async root => {
+  const attack = '<img src=x onerror="alert(1)">&\'';
+  const images = Array.from({ length: 8 }, (_, index) => preview(`metadata-${index}`, index ? {} : { fileName: attack }));
+  Object.defineProperty(images, 8, { get() { throw new Error('must not visit previews beyond the strip bound'); } });
+  images.length = 100;
+  for (const toolName of ['Browser', 'Agent', 'Grep']) {
+    const row = compactTool({ toolName, imagePreviews: images, imagePreviewsTruncated: true,
+      input: { description: 'Capture result', toJSON() { throw new Error('must not serialize input'); } } });
+    Object.defineProperty(row, 'output', { get() { throw new Error('must not visit output for metadata previews'); } });
+    root.innerHTML = toolCallHtml(row);
+    const detail = root.querySelector('details'), strip = root.querySelector('.tool-image-previews');
+    assert.equal(detail.open, false);
+    assert.equal(detail.querySelectorAll('.thumb').length, 0);
+    assert.equal(detail.querySelector('.tool-body').childNodes.length, 0);
+    assert.equal(strip.parentNode, root);
+    assert.equal(strip.querySelectorAll('.thumb').length, 8);
+    assert.equal(root.querySelector('.tool-images-more').parentNode, root);
+    assert.equal(strip.querySelector('.thumb').dataset.name, attack);
+    assert.equal(strip.querySelector('img'), null);
+    assert.doesNotMatch(root.innerHTML, /data-url=|<img src=x|onerror="alert/);
+    assert.ok(root.innerHTML.length < 12_000);
+  }
+  root.innerHTML = toolCallHtml(compactTool());
+  assert.equal(root.querySelector('.tool-image-previews'), null);
+  assert.equal(root.querySelector('.tool-images-more'), null);
+}));
+
+test('tool bodies omit only previewed artifact URIs and preserve ordinary output and non-preview media', () => withDom(async root => {
+  const shown = preview('body-shown'), extra = preview('body-extra');
+  const row = tool({ imagePreviews: [shown], output: [
+    { text: 'before preview' }, shown, { ...shown, mimeType: 'IMAGE/PNG' }, { text: 'after preview' }, extra,
+    { artifactUri: 'artifact:body-audio', mimeType: 'audio/wav' },
+    { artifactUri: 'artifact:body-video', mimeType: 'video/webm' },
+    { artifactUri: 'artifact:body-file', mimeType: 'application/pdf' },
+  ] });
+  for (const html of [toolBodyHtml(row), toolBodyHtml({ ...row, imagePreviews: undefined }, expanded(), [shown])]) {
+    root.innerHTML = html;
+    assert.deepEqual(root.querySelectorAll('.thumb').map(node => node.dataset.artifact), [extra.artifactUri]);
+    assert.match(root.textContent, /before preview[\s\S]*after preview/);
+    assert.ok(root.querySelector('audio'));
+    assert.ok(root.querySelector('video'));
+    assert.ok(root.querySelector('.artifact-link'));
+  }
+  root.innerHTML = toolBodyHtml(row, expanded(), []);
+  assert.equal(root.querySelectorAll('.thumb').length, 3);
+  root.innerHTML = toolCallHtml(row, expanded());
+  assert.equal(root.querySelectorAll('.thumb').filter(node => node.dataset.artifact === shown.artifactUri).length, 1);
+  assert.equal(root.querySelector('.tool-image-previews').closest('details'), null);
+}));
+
+test('ThumbnailViewport honors the supplied root, defers observing until resume, and ignores removed targets', t => {
+  const observers = thumbnailObserver(t), scrollRoot = {};
+  const viewport = new ThumbnailViewport(scrollRoot, true);
+  const observer = observers[0], first = {}, second = {}, calls = [];
+  assert.equal(observer.options.root, scrollRoot);
+  assert.equal(observer.options.rootMargin, '320px 0px');
+  const stop = viewport.observe(first, visible => calls.push(['first', visible]));
+  viewport.observe(second, visible => calls.push(['second', visible]));
+  assert.equal(observer.targets.size, 0);
+  observer.emit(first, true);
+  assert.deepEqual(calls, []);
+  stop();
+  viewport.resume();
+  viewport.resume();
+  assert.deepEqual(observer.observed, [second]);
+  observer.emit(first, true);
+  observer.emit(second, false);
+  observer.emit(second, true);
+  assert.deepEqual(calls, [['second', false], ['second', true]]);
+  viewport.dispose();
+  observer.emit(second, true);
+  assert.equal(viewport.targets.size, 0);
+  assert.equal(observer.disconnects, 1);
+  assert.deepEqual(calls, [['second', false], ['second', true], ['second', false]]);
+});
+
+test('deferred transcripts request neither tool details nor offscreen images before the first visible observation', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t), scrollRoot = new DomElement();
+  let details = 0;
+  const transcript = new Transcript(root, { scrollRoot, deferImages: true, loadRow: () => { details++; throw new Error('closed tool'); } });
+  t.after(() => transcript.dispose());
+  transcript.rebuild([compactTool({ imagePreviews: [preview('first-layout')] })]);
+  const observer = observers[0], thumb = root.querySelector('.thumb');
+  assert.equal(observer.options.root, scrollRoot);
+  assert.equal(observer.targets.size, 0);
+  observer.emit(thumb, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 0);
+  assert.equal(details, 0);
+  transcript.resumeImages();
+  assert.equal(observer.targets.has(thumb), true);
+  observer.emit(thumb, false);
+  thumb.fire('click');
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 0);
+  observer.emit(thumb, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 1);
+  assert.equal(new URL(transport.requests[0].url, 'https://paired.example').searchParams.get('thumbnail'), '1');
+  assert.equal(details, 0);
+  transcript.dispose();
+  assert.equal(transport.requests[0].options.signal.aborted, true);
+  observer.emit(thumb, true);
+  transcript.resumeImages();
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 1);
+  assert.equal(observer.disconnects, 1);
+}));
+
+test('without IntersectionObserver images remain placeholders until explicitly clicked and retry failed requests', t => withDom(async root => {
+  const previous = globalThis.IntersectionObserver;
+  delete globalThis.IntersectionObserver;
+  t.after(() => { if (previous !== undefined) globalThis.IntersectionObserver = previous; });
+  const transport = thumbnailTransport(t);
+  const transcript = new Transcript(root);
+  t.after(() => transcript.dispose());
+  transcript.rebuild([{ $type: 'user_message', rowId: 'fallback', text: 'Images', images: [preview('fallback-one'), preview('fallback-two')] }]);
+  transcript.resumeImages();
+  await flushArtifacts();
+  const [first, second] = root.querySelectorAll('.thumb');
+  assert.equal(transport.requests.length, 0);
+  first.fire('click');
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 1);
+  transport.requests[0].reject(new Error('temporary network failure'));
+  await flushArtifacts();
+  assert.equal(first.classList.contains('thumb-error'), true);
+  assert.match(first.textContent, /retry/i);
+  assert.equal(second.querySelector('img'), null);
+  const retry = first.fire('click');
+  assert.equal(retry.defaultPrevented, false);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 2);
+  assert.equal(first.classList.contains('thumb-error'), false);
+  transport.complete(1);
+  await flushArtifacts();
+  const image = first.querySelector('img');
+  assert.ok(image);
+  assert.equal(image.decoding, 'async');
+  assert.equal(image.alt, 'fallback-one.png');
+  image.onload();
+  assert.equal(transport.created.length, 1);
+  assert.equal(second.querySelector('img'), null);
+  transcript.dispose();
+  assert.equal(image.src, null);
+  assert.equal(image.onload, null);
+  assert.equal(image.onerror, null);
+  assert.equal(first.dataset.url, undefined);
+}));
+
+test('offscreen thumbnails release decoded nodes and stale image callbacks cannot mutate their replacement', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t);
+  let changes = 0;
+  const transcript = new Transcript(root, { onChange: () => changes++ });
+  t.after(() => transcript.dispose());
+  transcript.rebuild([compactTool({ imagePreviews: [preview('decoded-release')] })]);
+  const thumb = root.querySelector('.thumb'), observer = observers[0];
+  observer.emit(thumb, true);
+  await flushArtifacts();
+  transport.complete(0);
+  await flushArtifacts();
+  const image = thumb.querySelector('img'), oldLoad = image.onload, oldError = image.onerror;
+  image.onload();
+  observer.emit(thumb, false);
+  assert.equal(image.src, null);
+  assert.equal(image.onload, null);
+  assert.equal(image.onerror, null);
+  assert.equal(image.isConnected, false);
+  assert.equal(thumb.querySelector('img'), null);
+  assert.equal(thumb.dataset.url, undefined);
+  const offscreenChanges = changes;
+  oldLoad();
+  oldError();
+  assert.equal(changes, offscreenChanges);
+  assert.equal(thumb.classList.contains('thumb-error'), false);
+  observer.emit(thumb, true);
+  await flushArtifacts();
+  const replacement = thumb.querySelector('img');
+  assert.notEqual(replacement, image);
+  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.created.length, 1);
+  assert.equal(replacement.src, transport.created[0].url);
+  transcript.dispose();
+  const disposedChanges = changes;
+  replacement.onload?.();
+  oldLoad();
+  oldError();
+  observer.emit(thumb, true);
+  await flushArtifacts();
+  assert.equal(changes, disposedChanges);
+  assert.equal(replacement.src, null);
+}));
+
+test('offscreen, removed, and disposed pending thumbnails ignore transport completions after cancellation', async t => {
+  for (const action of ['offscreen', 'remove', 'dispose']) await t.test(action, child => withDom(async root => {
+    const observers = thumbnailObserver(child), transport = thumbnailTransport(child, { abortable: false });
+    let changes = 0;
+    const transcript = new Transcript(root, { onChange: () => changes++ });
+    child.after(() => transcript.dispose());
+    transcript.rebuild([compactTool({ imagePreviews: [preview(`cancel-${action}`)] })]);
+    const thumb = root.querySelector('.thumb'), observer = observers[0];
+    observer.emit(thumb, true);
+    await flushArtifacts();
+    assert.equal(transport.requests.length, 1);
+    if (action === 'offscreen') observer.emit(thumb, false);
+    else if (action === 'remove') transcript.remove('tool-1');
+    else transcript.dispose();
+    assert.equal(transport.requests[0].options.signal.aborted, true);
+    const stopped = changes;
+    transport.complete(0);
+    if (action !== 'offscreen') observer.emit(thumb, true);
+    await flushArtifacts();
+    assert.equal(transport.created.length, 0);
+    assert.equal(thumb.querySelector('img'), null);
+    assert.equal(thumb.dataset.url, undefined);
+    assert.equal(changes, stopped);
+    assert.equal(transport.requests.length, 1);
+  }));
+});
+
+test('thumbnail decode failures release the image and retry locally without a stale error poisoning the retry', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t);
+  const transcript = new Transcript(root);
+  t.after(() => transcript.dispose());
+  transcript.rebuild([compactTool({ imagePreviews: [preview('decode-retry')] })]);
+  const thumb = root.querySelector('.thumb');
+  observers[0].emit(thumb, true);
+  await flushArtifacts();
+  transport.complete(0);
+  await flushArtifacts();
+  const image = thumb.querySelector('img'), staleError = image.onerror;
+  image.onerror();
+  assert.equal(image.src, null);
+  assert.equal(image.onload, null);
+  assert.equal(image.onerror, null);
+  assert.equal(thumb.classList.contains('thumb-error'), true);
+  assert.equal(thumb.dataset.url, undefined);
+  thumb.fire('click');
+  await flushArtifacts();
+  const retry = thumb.querySelector('img');
+  assert.notEqual(retry, image);
+  staleError();
+  assert.equal(thumb.querySelector('img'), retry);
+  assert.equal(thumb.classList.contains('thumb-error'), false);
+  retry.onload();
+  assert.equal(root.querySelector('.tool').open, false);
+  assert.equal(transport.requests.length, 1);
+}));
+
+test('loaded previews share bytes and preserve their image nodes across deltas, snapshots, and disclosure changes', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t), imagePreview = preview('loaded-identity');
+  const rows = [compactTool({ rowId: 'first-image', imagePreviews: [imagePreview] }),
+    { $type: 'user_message', rowId: 'second-image', text: 'same image', images: [imagePreview] }];
+  const transcript = new Transcript(root, { loadRow: () => ({ version: 'tool-v1', row: tool({ rowId: 'first-image', output: [imagePreview] }) }) });
+  t.after(() => transcript.dispose());
+  transcript.rebuild(rows);
+  const [first, second] = root.querySelectorAll('.thumb');
+  observers[0].emit(first, true);
+  observers[0].emit(second, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 1);
+  transport.complete(0);
+  await flushArtifacts();
+  const firstImage = first.querySelector('img'), secondImage = second.querySelector('img');
+  assert.equal(firstImage.src, secondImage.src);
+  assert.equal(transport.created.length, 1);
+  const writes = root.writes;
+  transcript.rebuild(structuredClone(rows));
+  assert.equal(root.writes, writes);
+  transcript.upsert({ ...rows[0], input: { description: 'Updated compact summary' } });
+  transcript.upsert({ ...rows[1], text: 'updated user text' });
+  assert.equal(root.querySelectorAll('.thumb')[0], first);
+  assert.equal(root.querySelectorAll('.thumb')[1], second);
+  assert.equal(first.querySelector('img'), firstImage);
+  assert.equal(second.querySelector('img'), secondImage);
+  setDisclosure(transcript.els.get('first-image'), 'tool', true);
+  await flushArtifacts();
+  assert.equal(root.querySelectorAll('.thumb').length, 2);
+  setDisclosure(transcript.els.get('first-image'), 'tool', false);
+  assert.equal(first.querySelector('img'), firstImage);
+  transcript.remove('first-image');
+  assert.equal(firstImage.src, null);
+  assert.equal(secondImage.src, transport.created[0].url);
+  assert.equal(transport.revoked.length, 0);
+  assert.equal(transport.requests.length, 1);
+}));
+
+test('truncated preview controls open details and Show all never duplicates the strip or reloads its thumbnails', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t), shown = preview('truncated-shown'), extra = preview('truncated-extra');
+  let details = 0;
+  const transcript = new Transcript(root, { loadRow: () => {
+    details++;
+    return { version: 'tool-v1', row: tool({ output: [shown, { text: 'x'.repeat(2000) + ' full tail' },
+      ...Array.from({ length: 24 }, (_, index) => ({ text: `output-${index}` })), shown, extra] }) };
+  } });
+  t.after(() => transcript.dispose());
+  transcript.rebuild([compactTool({ imagePreviews: [shown], imagePreviewsTruncated: true })]);
+  const node = transcript.els.get('tool-1'), thumb = node.querySelector('.thumb');
+  assert.equal(details, 0);
+  assert.equal(transport.requests.length, 0);
+  observers[0].emit(thumb, true);
+  await flushArtifacts();
+  transport.complete(0);
+  await flushArtifacts();
+  const image = thumb.querySelector('img');
+  const event = node.querySelector('.tool-images-more').fire('click');
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(node.querySelector('.tool').open, true);
+  await flushArtifacts();
+  const body = node.querySelector('.tool-body');
+  assert.equal(details, 1);
+  assert.equal(body.querySelectorAll('.thumb').length, 0);
+  body.querySelector('.out-more[data-section="output-1"]').fire('click');
+  assert.match(body.textContent, /full tail/);
+  body.querySelector('.out-more[data-section="outputs"]').fire('click');
+  assert.deepEqual(body.querySelectorAll('.thumb').map(target => target.dataset.artifact), [extra.artifactUri]);
+  assert.equal(node.querySelector('.tool-image-previews').querySelector('.thumb'), thumb);
+  assert.equal(thumb.querySelector('img'), image);
+  assert.equal(transport.requests.length, 1);
+  setDisclosure(node, 'tool', false);
+  assert.equal(body.childNodes.length, 0);
+  assert.equal(thumb.querySelector('img'), image);
+  node.querySelector('.tool-images-more').fire('click');
+  await flushArtifacts();
+  assert.equal(details, 1);
+  assert.deepEqual(body.querySelectorAll('.thumb').map(target => target.dataset.artifact), [extra.artifactUri]);
+  assert.equal(transport.requests.length, 1);
+}));
+
+test('nested turns share their deferred scroll viewport and collapse cancels only the disappearing thumbnails', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t), scrollRoot = new DomElement();
+  const outer = preview('nested-outer'), strip = preview('nested-strip'), detailImage = preview('nested-detail');
+  const transcript = new Transcript(root, { scrollRoot, deferImages: true,
+    loadTurn: () => ({ version: 'turn-v1', rows: [compactTool({ imagePreviews: [strip] })] }),
+    loadRow: () => ({ version: 'tool-v1', row: tool({ output: [strip, detailImage] }) }),
+  });
+  t.after(() => transcript.dispose());
+  transcript.rebuild([turn({ user: { $type: 'user_message', rowId: 'user-1', text: 'Question', images: [outer] } })]);
+  const turnNode = root.querySelector('.row');
+  setDisclosure(turnNode, 'turn', true);
+  await flushArtifacts();
+  const child = transcript.loads.get('user-1').child;
+  assert.equal(child.thumbnails, transcript.thumbnails);
+  assert.equal(observers.length, 1);
+  assert.equal(observers[0].options.root, scrollRoot);
+  assert.equal(observers[0].targets.size, 0);
+  assert.equal(transport.requests.length, 0);
+  transcript.resumeImages();
+  const outerThumb = turnNode.querySelector('.thumb'), stripThumb = child.el.querySelector('.thumb');
+  observers[0].emit(outerThumb, true);
+  observers[0].emit(stripThumb, true);
+  setDisclosure(child.el, 'tool', true);
+  await flushArtifacts();
+  const bodyThumb = child.el.querySelector('.tool-body .thumb');
+  assert.ok(bodyThumb);
+  observers[0].emit(bodyThumb, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 3);
+  setDisclosure(child.el, 'tool', false);
+  assert.equal(transport.requests[2].options.signal.aborted, true);
+  assert.equal(transport.requests[1].options.signal.aborted, false);
+  assert.equal(observers[0].targets.has(stripThumb), true);
+  observers[0].emit(bodyThumb, true);
+  setDisclosure(turnNode, 'turn', false);
+  assert.equal(child.disposed, true);
+  assert.equal(transport.requests[1].options.signal.aborted, true);
+  assert.equal(transport.requests[0].options.signal.aborted, false);
+  assert.equal(observers[0].targets.has(stripThumb), false);
+  assert.equal(observers[0].disconnects, 0);
+  observers[0].emit(stripThumb, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 3);
+  transcript.dispose();
+  assert.equal(transport.requests[0].options.signal.aborted, true);
+  assert.equal(observers[0].disconnects, 1);
+}));
+
+test('disposing a standalone thumbnail viewport releases decoded images and cancels its pending leases', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t);
+  root.innerHTML = toolCallHtml(compactTool({ imagePreviews: [preview('manager-loaded'), preview('manager-pending')] }));
+  const viewport = new ThumbnailViewport(root);
+  hydrateThumbs(root, null, () => {}, () => {}, viewport);
+  const [loaded, pending] = root.querySelectorAll('.thumb');
+  observers[0].emit(loaded, true);
+  observers[0].emit(pending, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 2);
+  transport.complete(0);
+  await flushArtifacts();
+  const image = loaded.querySelector('img');
+  assert.ok(image);
+  viewport.dispose();
+  assert.equal(transport.requests[1].options.signal.aborted, true);
+  assert.equal(image.src, null);
+  assert.equal(image.onload, null);
+  assert.equal(image.onerror, null);
+  assert.equal(loaded.querySelector('img'), null);
+  assert.equal(loaded.dataset.url, undefined);
+  assert.equal(pending.querySelector('img'), null);
+  assert.equal(viewport.targets.size, 0);
+  observers[0].emit(loaded, true);
+  observers[0].emit(pending, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 2);
+  releaseArtifacts(root);
+}));
+
+test('many visible preview requests stay four-wide and offscreen entries cancel both active and queued work', t => withDom(async root => {
+  const observers = thumbnailObserver(t), transport = thumbnailTransport(t);
+  const rows = Array.from({ length: 4 }, (_, row) => compactTool({ rowId: `many-${row}`,
+    imagePreviews: Array.from({ length: 8 }, (_, column) => preview(`many-${row}-${column}`)) }));
+  const transcript = new Transcript(root);
+  t.after(() => transcript.dispose());
+  transcript.rebuild(rows);
+  const thumbs = root.querySelectorAll('.thumb');
+  assert.equal(thumbs.length, 32);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 0);
+  for (const thumb of thumbs.slice(0, 24)) observers[0].emit(thumb, true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 4);
+  for (const thumb of thumbs.slice(0, 24)) observers[0].emit(thumb, false);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 4);
+  assert.ok(transport.requests.every(request => request.options.signal.aborted));
+  assert.equal(transport.created.length, 0);
+  observers[0].emit(thumbs[31], true);
+  await flushArtifacts();
+  assert.equal(transport.requests.length, 5);
+  transport.complete(4);
+  await flushArtifacts();
+  assert.equal(root.querySelectorAll('img').length, 1);
+  assert.equal(thumbs[31].querySelector('img').src, transport.created[0].url);
+}));
+
+test('mixed cached API modules still support new rendering without fetching full images as thumbnails', async () => {
   const source = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/render.js', import.meta.url), 'utf8');
   const compatibility = source.slice(source.indexOf('// A previously active'), source.indexOf('export const PHASE_LABEL'));
-  const promise = Promise.resolve('blob:legacy');
-  const api = { artifactObjectUrl: () => promise, getToken: () => 'legacy-token' };
-  const bridge = new Function('api', `${compatibility}; return { acquireArtifactObjectUrl, artifactUrl };`)(api);
-  const lease = bridge.acquireArtifactObjectUrl('legacy', 'image/png');
-  assert.equal(lease.promise, promise);
-  lease.release();
+  let originals = 0;
+  const api = { artifactObjectUrl: () => { originals++; return Promise.resolve('blob:legacy'); }, getToken: () => 'legacy-token' };
+  const bridge = new Function('api', `${compatibility}; return { acquireThumbnailObjectUrl, artifactUrl };`)(api);
+  const thumbnail = bridge.acquireThumbnailObjectUrl('legacy', 'image/png');
+  await assert.rejects(thumbnail.promise, /Refresh to update image previews/);
+  thumbnail.release();
+  assert.equal(originals, 0);
   const url = new URL(bridge.artifactUrl('https://untrusted.example/value', 'video/webm'), 'https://paired.example');
   assert.equal(url.origin, 'https://paired.example');
   assert.equal(url.pathname, '/api/artifacts');
@@ -962,6 +1440,10 @@ test('detaching one thumbnail keeps shared hydration alive; disposing the last c
   const second = artifactTarget('thumb', first.dataset.artifact);
   let changes = 0;
   hydrateThumbs({ querySelectorAll: () => [first, second] }, null, () => changes++);
+  await flushArtifacts();
+  assert.equal(requests.length, 0);
+  first.fire('click');
+  second.fire('click');
   await flushArtifacts();
   assert.equal(requests.length, 1);
   releaseArtifacts({ querySelectorAll: () => [first] });
@@ -1424,6 +1906,9 @@ test('equivalent snapshots preserve thumbnail leases, changed rows preserve matc
   transcript.rebuild([row]);
   await flushArtifacts();
   const thumb = root.querySelector('.thumb');
+  assert.equal(requests.length, 0);
+  thumb.fire('click');
+  await flushArtifacts();
   assert.equal(requests.length, 1);
   transcript.rebuild([structuredClone(row)]);
   assert.equal(root.querySelector('.thumb'), thumb);
@@ -1722,6 +2207,9 @@ test('history pages retain nested loaded details, cached payloads, playing media
   const toolEntry = child.loads.get('tool-1'), body = toolEntry.body;
   body.querySelector('.out-more[data-section="output-0"]').fire('click');
   const audio = body.querySelector('audio'), thumb = body.querySelector('.thumb');
+  assert.equal(requests.length, 0);
+  thumb.fire('click');
+  await flushArtifacts();
   audio.src = '/playing-history-audio';
   audio.currentTime = 42;
   const cacheEntries = [...transcript.cache.entries];
@@ -1841,6 +2329,10 @@ test('paged rebuilds retain nested disclosures across latest and page-back witho
   const toolEntry = child.loads.get('tool-1');
   toolEntry.body.querySelector('.out-more[data-section="output-0"]').fire('click');
   const audio = toolEntry.body.querySelector('audio');
+  assert.equal(requests.length, 0);
+  toolEntry.body.querySelector('.thumb').fire('click');
+  await flushArtifacts();
+  assert.equal(requests.length, 1);
   audio.src = '/playing-history-roundtrip';
   audio.currentTime = 19;
   transcript.state('historical').open.add('unknown-disclosure');
@@ -1884,6 +2376,9 @@ test('paged rebuilds retain nested disclosures across latest and page-back witho
   assert.equal(restored.querySelector('.out-more[data-section="output-0"]'), null);
   assert.equal(turnLoads, 2);
   assert.equal(toolLoads, 2);
+  assert.equal(requests.length, 1);
+  restored.querySelector('.thumb').fire('click');
+  await flushArtifacts();
   assert.equal(requests.length, 2);
   assert.equal(requests[1].options.signal.aborted, false);
   transcript.rebuild([latest], { retainState: true });

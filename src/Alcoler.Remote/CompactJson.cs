@@ -221,6 +221,7 @@ internal static class CompactJson
         writer.WriteString("startedAt", tool.StartedAt);
         writer.WritePropertyName("fileChange");
         JsonSerializer.Serialize(writer, tool.FileChange, GatewayJson.Options);
+        CompactImagePreviews.Extract(tool.Output).Write(writer);
         writer.WriteBoolean("detailsDeferred", true);
         writer.WriteString("detailVersion", version);
         writer.WriteEndObject();

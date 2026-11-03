@@ -129,11 +129,13 @@ export function sendCommand(id, command) {
 const artifactCache = new Map();
 const artifactQueue = [];
 const ARTIFACT_CONCURRENCY = 4;
+const ARTIFACT_CACHE_BYTES = 16 * 1024 * 1024;
 let activeArtifacts = 0;
+let artifactBytes = 0;
 
-function artifactPath(uri, mime) {
+function artifactPath(uri, mime, thumbnail = false) {
   if (!uri) throw new ApiError(0, 'invalid', 'Missing artifact URI');
-  return `/api/artifacts?uri=${encodeURIComponent(uri)}&mime=${encodeURIComponent(mime || '')}`;
+  return `/api/artifacts?uri=${encodeURIComponent(uri)}&mime=${encodeURIComponent(mime || '')}${thumbnail ? '&thumbnail=1' : ''}`;
 }
 
 export function artifactUrl(uri, mime) {
@@ -155,11 +157,11 @@ function drainArtifacts() {
   }
 }
 
-export function artifactBlob(uri, mime, { signal } = {}) {
+export function artifactBlob(uri, mime, { signal, thumbnail = false } = {}) {
   return new Promise((resolve, reject) => {
     const job = { signal, resolve, reject, run: async () => {
       signal?.throwIfAborted();
-      const res = await raw(artifactPath(uri, mime), { signal });
+      const res = await raw(artifactPath(uri, mime, thumbnail), { signal });
       if (!res.ok) throw await errorFrom(res);
       const blob = await res.blob();
       signal?.throwIfAborted();
@@ -178,44 +180,54 @@ export function artifactBlob(uri, mime, { signal } = {}) {
   });
 }
 
-function retireArtifact(uri, entry) {
-  if (artifactCache.get(uri) === entry) artifactCache.delete(uri);
+function retireArtifact(key, entry) {
+  if (artifactCache.get(key) === entry) artifactCache.delete(key);
+  artifactBytes -= entry.size;
+  entry.size = 0;
   if (!entry.settled) entry.controller.abort();
   if (entry.url) { URL.revokeObjectURL(entry.url); entry.url = null; }
 }
 
 function trimArtifacts() {
-  if (artifactCache.size <= 80) return;
-  for (const [uri, entry] of artifactCache) {
+  if (artifactCache.size <= 80 && artifactBytes <= ARTIFACT_CACHE_BYTES) return;
+  for (const [key, entry] of artifactCache) {
     if (entry.consumers) continue;
-    retireArtifact(uri, entry);
-    if (artifactCache.size <= 50) break;
+    retireArtifact(key, entry);
+    if (artifactCache.size <= 50 && artifactBytes <= ARTIFACT_CACHE_BYTES) break;
   }
 }
 
-export function artifactObjectUrl(uri, mime) {
-  const lease = acquireArtifactObjectUrl(uri, mime);
+export function artifactObjectUrl(uri, mime, options) {
+  const lease = acquireArtifactObjectUrl(uri, mime, options);
   lease.promise.then(lease.release, lease.release);
   return lease.promise;
 }
 
-export function acquireArtifactObjectUrl(uri, mime) {
-  let entry = artifactCache.get(uri);
+export function acquireThumbnailObjectUrl(uri, mime) {
+  return acquireArtifactObjectUrl(uri, mime, { thumbnail: true });
+}
+
+export function acquireArtifactObjectUrl(uri, mime, { thumbnail = false } = {}) {
+  const key = JSON.stringify([uri, mime || '', thumbnail]);
+  let entry = artifactCache.get(key);
   if (!entry) {
-    entry = { consumers: 0, settled: false, url: null, controller: new AbortController() };
-    entry.promise = artifactBlob(uri, mime, { signal: entry.controller.signal }).then(blob => {
+    entry = { consumers: 0, settled: false, size: 0, url: null, controller: new AbortController() };
+    entry.promise = artifactBlob(uri, mime, { signal: entry.controller.signal, thumbnail }).then(blob => {
       entry.controller.signal.throwIfAborted();
       entry.url = URL.createObjectURL(blob);
+      entry.size = blob.size;
+      artifactBytes += entry.size;
       entry.settled = true;
+      trimArtifacts();
       return entry.url;
     }).catch(error => {
       entry.settled = true;
-      if (artifactCache.get(uri) === entry) artifactCache.delete(uri);
+      retireArtifact(key, entry);
       throw error;
     });
     entry.promise.catch(() => {});
-    artifactCache.set(uri, entry);
-  }
+  } else artifactCache.delete(key);
+  artifactCache.set(key, entry);
   entry.consumers++;
   trimArtifacts();
   let released = false;
@@ -226,7 +238,7 @@ export function acquireArtifactObjectUrl(uri, mime) {
       released = true;
       entry.consumers--;
       // A cache slot cannot keep an abandoned request or a detached decoder alive.
-      if (!entry.consumers && !entry.settled) retireArtifact(uri, entry);
+      if (!entry.consumers && !entry.settled) retireArtifact(key, entry);
       else trimArtifacts();
     },
   };
