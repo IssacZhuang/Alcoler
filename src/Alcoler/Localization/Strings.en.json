@@ -334,6 +334,7 @@
   "workbench_terminal_error": "Could not start terminal. {0}",
 
   "timeline_thinking": "Thinking",
+  "timeline_jump_to_latest": "Jump to latest",
   "timeline_edit_from_here": "Edit from here",
   "timeline_rewind_a11y": "Rewind to this message",
   "timeline_copy_message": "Copy message",

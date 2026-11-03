@@ -334,6 +334,7 @@
   "workbench_terminal_error": "无法启动终端。{0}",
 
   "timeline_thinking": "思考中",
+  "timeline_jump_to_latest": "跳转到最新",
   "timeline_edit_from_here": "从此处编辑",
   "timeline_rewind_a11y": "回退到此消息",
   "timeline_copy_message": "复制消息",

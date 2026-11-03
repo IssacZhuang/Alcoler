@@ -1079,6 +1079,60 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
     }
 
     [AvaloniaFact]
+    public async Task JumpToLatest_AppearsWhenReadingEarlierRowsAndReturnsToFollowingLatest()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 420, 260);
+        try
+        {
+            var filler = Enumerable.Range(0, 30).Select(i => new RowAppended(
+                new UserMessageRow($"u{i}", $"line {i} " + new string('x', 120), DateTimeOffset.UtcNow))).ToArray();
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), filler, Reset: false));
+            await RenderAsync(window);
+
+            var jump = view.FindControl<Button>("JumpToLatestButton")!;
+            Assert.False(jump.IsVisible);
+            var scroller = view.Scroller;
+            Assert.True(scroller.Offset.Y > 0);
+
+            scroller.Offset = new Vector(0, 0);
+            await RenderAsync(window);
+
+            Assert.True(jump.IsEffectivelyVisible);
+            Assert.Contains(jump.GetVisualDescendants().OfType<TextBlock>(),
+                block => block.Text == "Jump to latest");
+            Assert.Equal("Jump to latest", Avalonia.Automation.AutomationProperties.GetName(jump));
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(),
+                [new RowAppended(new UserMessageRow("u30", "line 30", DateTimeOffset.UtcNow))], Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(0, scroller.Offset.Y);
+            Assert.True(jump.IsVisible);
+
+            await ClickAsync(window, jump);
+            await RenderAsync(window);
+
+            Assert.InRange(scroller.Extent.Height - scroller.Viewport.Height - scroller.Offset.Y, 0, 1);
+            Assert.True(viewModel.CaptureReadingState().FollowLatest);
+            Assert.False(jump.IsVisible);
+
+            var scrollCount = view.AutoScrollCount;
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(),
+                [new RowAppended(new UserMessageRow("u31", "line 31 " + new string('x', 120), DateTimeOffset.UtcNow))], Reset: false));
+            await RenderAsync(window);
+            Assert.Equal(scrollCount + 1, view.AutoScrollCount);
+            Assert.InRange(scroller.Extent.Height - scroller.Viewport.Height - scroller.Offset.Y, 0, 1);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
     public async Task AutoScroll_StreamingUpsertDoesNotMoveReaderAwayFromEarlierMessages()
     {
         EnsureFluentTheme();

@@ -79,7 +79,10 @@ public partial class TimelineView : UserControl
         _scrollBarInteracting = false;
         _followingTail = _conversation?.ReadingState.FollowLatest ?? true;
         if (_conversation is null)
+        {
+            UpdateJumpToLatest();
             return;
+        }
         _conversation.TimelineAppended += OnTimelineAppended;
         _conversation.TimelineChanging += PreserveReadingPosition;
         _conversation.ReadingStateCapturing += CaptureReadingPosition;
@@ -94,6 +97,7 @@ public partial class TimelineView : UserControl
             if (_conversation.ReadingState.Anchor is { } anchor)
                 RequestAnchorRestore(anchor);
         }
+        UpdateJumpToLatest();
     }
 
     private void UnsubscribeConversation()
@@ -156,10 +160,12 @@ public partial class TimelineView : UserControl
     {
         if (!_followingTail || _scrollBarInteracting || !IsNearBottom())
         {
+            UpdateJumpToLatest();
             return;
         }
         AutoScrollCount++;
         RequestScrollToEndAfterLayout();
+        UpdateJumpToLatest();
     }
 
     private void OnTimelineScrollChanged(object? sender, ScrollChangedEventArgs e)
@@ -190,6 +196,7 @@ public partial class TimelineView : UserControl
             if (!_followingTail)
                 _pendingScrollToEnd = false;
         }
+        UpdateJumpToLatest();
         CaptureReadingPosition();
     }
 
@@ -202,6 +209,7 @@ public partial class TimelineView : UserControl
             _followingTail = false;
             _pendingScrollToEnd = false;
         }
+        UpdateJumpToLatest();
     }
 
     private void OnTimelinePointerPressed(object? sender, PointerPressedEventArgs e)
@@ -236,6 +244,7 @@ public partial class TimelineView : UserControl
             return;
         _scrollBarInteracting = false;
         _followingTail = IsNearBottom();
+        UpdateJumpToLatest();
         CaptureReadingPosition();
     }
 
@@ -264,6 +273,7 @@ public partial class TimelineView : UserControl
         ClearPendingAnchor();
         // ScrollToEnd retains an infinite base value that re-coerces to the new tail as content grows.
         TimelineScroll.SetCurrentValue(ScrollViewer.OffsetProperty, TimelineScroll.Offset);
+        UpdateJumpToLatest();
         CaptureReadingPosition();
     }
 
@@ -335,7 +345,24 @@ public partial class TimelineView : UserControl
                 }
             }
         }
+        UpdateJumpToLatest();
         CaptureReadingPosition();
+    }
+
+    private void UpdateJumpToLatest()
+    {
+        JumpToLatestButton.IsVisible = _conversation is not null && !IsNearBottom();
+    }
+
+    private void OnJumpToLatestClick(object? sender, RoutedEventArgs e)
+    {
+        _followingTail = true;
+        _pendingScrollToEnd = false;
+        ClearPendingAnchor();
+        TimelineScroll.SetCurrentValue(ScrollViewer.OffsetProperty, TimelineScroll.Offset);
+        RequestScrollToEndAfterLayout();
+        UpdateJumpToLatest();
+        e.Handled = true;
     }
 
     private void OnOpenPlanClick(object? sender, RoutedEventArgs e)
