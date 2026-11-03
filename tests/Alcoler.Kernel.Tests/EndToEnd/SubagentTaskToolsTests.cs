@@ -134,6 +134,21 @@ public class SubagentTaskToolsTests
             text.Contains($"<task-id>{state.Id.Value}</task-id>", StringComparison.Ordinal)
             && text.Contains("<tool-use-id>followup</tool-use-id>", StringComparison.Ordinal)
             && text.Contains("followup-result", StringComparison.Ordinal)));
+        var events = await runtime.Options.Store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        var notification = Assert.Single(events, evt => evt.Event is UserMessageCommittedEvent committed
+            && committed.Message.Source == MessageSource.TaskNotification
+            && committed.Message.Parts.OfType<AttachmentPart>().Any(part =>
+                part.Content.Contains($"<task-id>{state.Id.Value}</task-id>", StringComparison.Ordinal)
+                && part.Content.Contains("<tool-use-id>followup</tool-use-id>", StringComparison.Ordinal)
+                && part.Content.Contains("followup-result", StringComparison.Ordinal)));
+        var terminal = events.Last(evt => evt.Sequence < notification.Sequence
+            && evt.Event is SubagentStatusChangedEvent changed && changed.State.Id == state.Id);
+        var terminalState = Assert.IsType<SubagentStatusChangedEvent>(terminal.Event).State;
+        Assert.Equal(SubagentStatus.Completed, terminalState.Status);
+        Assert.Equal("followup-result", terminalState.ResultSummary);
+        Assert.Equal("Continue the child task", terminalState.Description);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await projection.WaitUntilSequenceAsync(notification.Sequence, timeout.Token);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
         Assert.Equal(SubagentStatus.Completed, Assert.Single(Subagents(projection)).Status);
     }

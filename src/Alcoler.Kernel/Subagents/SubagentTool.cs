@@ -30,6 +30,8 @@ public sealed class SubagentTool : ITool, ISubagentTasks
 
     public SubagentTaskInfo? Find(string taskId) => Tasks?.Find(taskId);
 
+    public Task? TryGetCompletion(string taskId) => Tasks?.TryGetCompletion(taskId);
+
     public bool TryMarkNotified(string taskId) => Tasks?.TryMarkNotified(taskId) ?? false;
 
     public ValueTask<bool> TryStopAsync(string taskId, CancellationToken cancellationToken) =>

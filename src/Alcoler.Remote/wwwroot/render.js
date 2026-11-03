@@ -4,7 +4,17 @@
 
 import { esc, fmtDuration, fmtNum, icon, truncate } from './util.js';
 import { renderMarkdown } from './markdown.js';
-import { artifactObjectUrl } from './api.js';
+import * as api from './api.js';
+
+// A previously active shell worker can serve mixed module revisions during its update.
+const acquireArtifactObjectUrl = api.acquireArtifactObjectUrl || ((uri, mime) => ({
+  promise: api.artifactObjectUrl(uri, mime), release() {},
+}));
+const artifactUrl = api.artifactUrl || ((uri, mime) => {
+  const token = api.getToken();
+  if (!token) throw new Error('Device not paired');
+  return `/api/artifacts?uri=${encodeURIComponent(uri)}&mime=${encodeURIComponent(mime || '')}&token=${encodeURIComponent(token)}`;
+});
 
 export const PHASE_LABEL = {
   idle: 'Idle',
@@ -83,6 +93,7 @@ export class Transcript {
     this.els = new Map();
     this.states = new Map();
     this.timers = new Map();
+    this.textBuffers = new Map();
     this.disposed = false;
     this.notify = () => { if (!this.disposed) onChange?.(); };
     this.onToggle = event => this.toggle(event);
@@ -110,19 +121,23 @@ export class Transcript {
     for (const [id, el] of this.els) this.capture(id, el);
     for (const t of this.timers.values()) clearTimeout(t.timer);
     this.timers.clear();
+    this.textBuffers.clear();
     const changed = this.el.childNodes.length > 0;
-    this.els.clear();
+    const previous = this.els;
+    this.els = new Map();
     const states = new Map();
     const frag = document.createDocumentFragment();
     for (const row of rows || []) {
       if (!row || !row.rowId) continue;
       const state = this.state(row.rowId);
       const el = rowElement(row, state);
+      if (previous.has(row.rowId)) preserveArtifacts(previous.get(row.rowId), el);
       states.set(row.rowId, state);
       this.els.set(row.rowId, el);
       frag.appendChild(el);
     }
     this.states = states;
+    releaseArtifacts(this.el);
     this.el.replaceChildren(frag);
     hydrateThumbs(this.el, null, this.notify);
     if (changed || this.els.size) this.notify();
@@ -140,6 +155,7 @@ export class Transcript {
 
   upsert(row) {
     if (!row || !row.rowId || this.disposed) return;
+    this.textBuffers.delete(row.rowId);
     const existing = this.els.get(row.rowId);
     if (!existing) { this.append(row); return; }
     const status = normKey(row.status);
@@ -150,6 +166,34 @@ export class Transcript {
     }
     this.cancelTimer(row.rowId);
     this.replace(existing, row);
+  }
+
+  appendText(op) {
+    if (this.disposed || typeof op.delta !== 'string') return false;
+    const existing = this.els.get(op.rowId);
+    if (!existing) return false;
+    let buffer = this.textBuffers.get(op.rowId);
+    if (!buffer) {
+      const row = this.timers.get(op.rowId)?.row || rowSources.get(existing);
+      if (row?.$type !== 'assistant_message' || !row.isStreaming || !row.parts?.some(p => p?.$type === 'text')) return false;
+      buffer = { row, chunks: [], at: row.at };
+      this.textBuffers.set(op.rowId, buffer);
+    }
+    buffer.chunks.push(op.delta);
+    buffer.at = op.at;
+    this.upsertThrottled(buffer.row, existing);
+    return true;
+  }
+
+  materializeText(rowId) {
+    const buffer = this.textBuffers.get(rowId);
+    if (!buffer || !buffer.chunks.length) return null;
+    const parts = [...buffer.row.parts];
+    const index = parts.findIndex(p => p?.$type === 'text');
+    parts[index] = { ...parts[index], text: parts[index].text + buffer.chunks.join('') };
+    buffer.row = { ...buffer.row, parts, at: buffer.at };
+    buffer.chunks.length = 0;
+    return buffer.row;
   }
 
   upsertThrottled(row, existing) {
@@ -164,7 +208,7 @@ export class Transcript {
     if (wait <= 0) {
       t.last = performance.now();
       t.row = null;
-      this.replace(existing, row);
+      this.replace(existing, this.materializeText(row.rowId) || row);
       return;
     }
     t.timer = setTimeout(() => {
@@ -175,12 +219,14 @@ export class Transcript {
       tt.row = null;
       tt.last = performance.now();
       const current = this.els.get(row.rowId);
-      if (current && pending) this.replace(current, pending);
+      if (current && pending) this.replace(current, this.materializeText(row.rowId) || pending);
     }, wait);
   }
 
   replace(existing, row) {
     const el = rowElement(row, this.capture(row.rowId, existing));
+    preserveArtifacts(existing, el);
+    releaseArtifacts(existing);
     this.els.set(row.rowId, el);
     existing.replaceWith(el);
     hydrateThumbs(this.el, el, this.notify);
@@ -205,6 +251,7 @@ export class Transcript {
         hydrateThumbs(this.el, body, this.notify);
         changed = true;
       } else if (!detail.open && body.dataset.loaded) {
+        releaseArtifacts(body);
         body.replaceChildren();
         delete body.dataset.loaded;
         changed = true;
@@ -225,7 +272,11 @@ export class Transcript {
     if (key === 'outputs') {
       state.all.add(key);
       const body = el.querySelector('.tool-body');
-      body.innerHTML = toolBodyHtml(row, state);
+      const replacement = document.createElement('div');
+      replacement.innerHTML = toolBodyHtml(row, state);
+      preserveArtifacts(body, replacement);
+      releaseArtifacts(body);
+      body.replaceChildren(...replacement.childNodes);
       hydrateThumbs(this.el, body, this.notify);
     } else {
       const text = toolSectionText(row, key);
@@ -241,8 +292,9 @@ export class Transcript {
 
   remove(rowId) {
     this.cancelTimer(rowId);
+    this.textBuffers.delete(rowId);
     const el = this.els.get(rowId);
-    if (el) el.remove();
+    if (el) { releaseArtifacts(el); el.remove(); }
     this.els.delete(rowId);
     this.states.delete(rowId);
     if (el) this.notify();
@@ -260,6 +312,8 @@ export class Transcript {
     this.el.removeEventListener('click', this.onClick);
     for (const t of this.timers.values()) clearTimeout(t.timer);
     this.timers.clear();
+    this.textBuffers.clear();
+    releaseArtifacts(this.el);
     this.els.clear();
     this.states.clear();
   }
@@ -313,10 +367,10 @@ function artifactHtml(media) {
   if (mime.startsWith('image/')) return imgThumb(media);
   const name = truncate(media.fileName || 'attachment', 256);
   const attrs = `data-artifact="${esc(media.artifactUri || '')}" data-mime="${esc(media.mimeType || '')}"`;
-  const link = `<a class="artifact-link" ${attrs} download="${esc(name)}" aria-disabled="true">${esc(name)}<span class="artifact-mime">${esc(mime || 'Download file')}</span></a>`;
+  const link = `<a class="artifact-link" href="#" ${attrs} download="${esc(name)}" referrerpolicy="no-referrer">${esc(name)}<span class="artifact-mime">${esc(mime || 'Download file')}</span></a>`;
   const kind = mime.startsWith('audio/') ? 'audio' : mime.startsWith('video/') ? 'video' : '';
   if (!kind) return link;
-  return `<figure class="media-attachment"><${kind} controls preload="none" ${attrs} aria-label="${esc(name)}"></${kind}><figcaption>${link}</figcaption></figure>`;
+  return `<figure class="media-attachment"><${kind} controls preload="none" ${attrs} aria-label="${esc(name)}"></${kind}><button type="button" class="link-btn media-play" aria-label="${esc('Play ' + name)}">Play ${kind}</button><figcaption>${link}</figcaption></figure>`;
 }
 
 function userHtml(row) {
@@ -583,15 +637,66 @@ function fileChangeHtml(row) {
   return `<div class="fcs"><div class="fcs-total"><span class="fcs-add">+${fmtNum(added)}</span> <span class="fcs-del">\u2212${fmtNum(removed)}</span><span class="fcs-count">across ${files.length} ${files.length === 1 ? 'file' : 'files'}</span></div>${listHtml ? `<ul class="fcs-list">${listHtml}</ul>` : ''}</div>`;
 }
 
+const artifactBindings = new WeakMap();
+const artifactSelector = '.thumb[data-artifact],.artifact-link[data-artifact],audio[data-artifact],video[data-artifact]';
+
+function preserveArtifacts(previous, next) {
+  const available = new Map();
+  const key = target => {
+    const source = target.matches('.media-attachment') ? target.querySelector('audio,video') : target;
+    return JSON.stringify([source.tagName, source.dataset.artifact, source.dataset.mime, source.dataset.name, source.getAttribute('aria-label')]);
+  };
+  const selector = '.thumb[data-artifact],.media-attachment';
+  for (const target of previous.querySelectorAll(selector)) {
+    const id = key(target);
+    if (!available.has(id)) available.set(id, []);
+    available.get(id).push(target);
+  }
+  for (const target of next.querySelectorAll(selector)) {
+    const retained = available.get(key(target))?.shift();
+    if (retained) target.replaceWith(retained);
+  }
+}
+
+export function releaseArtifacts(root) {
+  for (const target of root.querySelectorAll(artifactSelector)) artifactBindings.get(target)?.dispose();
+}
+
 export function hydrateThumbs(scope, root, onChange = () => {}) {
   const el = root || scope;
-  const selector = ['.thumb', '.artifact-link', 'audio', 'video']
-    .map(s => s + '[data-artifact]:not([data-hydrated])').join(',');
-  el.querySelectorAll(selector).forEach(target => {
-    target.dataset.hydrated = '1';
-    const notify = () => { if (target.isConnected) onChange(); };
+  el.querySelectorAll(artifactSelector).forEach(target => {
+    if (artifactBindings.has(target)) return;
+    let disposed = false;
+    let lease = null;
+    const listeners = [];
+    const listen = (element, name, handler) => {
+      element.addEventListener(name, handler);
+      listeners.push(() => element.removeEventListener(name, handler));
+    };
+    const binding = { dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const remove of listeners) remove();
+      listeners.length = 0;
+      if (target.matches('.thumb')) {
+        for (const image of target.querySelectorAll('img')) image.removeAttribute('src');
+      }
+      lease?.release();
+      lease = null;
+      if (target.matches('audio,video') && target.getAttribute('src')) {
+        target.pause();
+        target.removeAttribute('src');
+        target.load();
+      }
+      delete target.dataset.url;
+      artifactBindings.delete(target);
+    } };
+    artifactBindings.set(target, binding);
+    const alive = () => !disposed && target.isConnected;
+    const notify = () => { if (alive()) onChange(); };
+    const play = target.matches('audio,video') ? target.closest('.media-attachment')?.querySelector('.media-play') : null;
     const fail = () => {
-      if (!target.isConnected) return;
+      if (!alive()) return;
       if (target.matches('.thumb')) {
         target.classList.add('thumb-error');
         const span = document.createElement('span');
@@ -601,33 +706,57 @@ export function hydrateThumbs(scope, root, onChange = () => {}) {
       } else {
         target.classList.add('artifact-error');
         target.setAttribute('title', 'Attachment unavailable');
-        if (target.matches('a')) target.append(' (unavailable)');
+        const hint = target.querySelector('.artifact-mime');
+        if (hint) hint.textContent = 'Unavailable — tap to retry';
+        if (play) { play.hidden = false; play.textContent = 'Retry playback'; }
       }
       notify();
     };
     const uri = target.dataset.artifact;
     if (!uri) { fail(); return; }
-    artifactObjectUrl(uri, target.dataset.mime).then(url => {
-      if (!target.isConnected) return;
-      if (target.matches('.thumb')) {
+    if (target.matches('a')) {
+      listen(target, 'click', event => {
+        try {
+          target.href = artifactUrl(uri, target.dataset.mime);
+          target.classList.remove('artifact-error');
+          target.removeAttribute('title');
+          const hint = target.querySelector('.artifact-mime');
+          if (hint) hint.textContent = target.dataset.mime || 'Download file';
+        } catch { event.preventDefault(); fail(); }
+      });
+    } else if (play) {
+      listen(target, 'loadedmetadata', notify);
+      listen(target, 'playing', () => {
+        if (!alive()) return;
+        play.hidden = true;
+        target.classList.remove('artifact-error');
+        target.removeAttribute('title');
+      });
+      listen(target, 'error', fail);
+      listen(play, 'click', () => {
+        if (!alive()) return;
+        try {
+          if (!target.getAttribute('src') || target.error) target.src = artifactUrl(uri, target.dataset.mime);
+          // Playback must start inside the trusted gesture, before any asynchronous work.
+          const started = target.play();
+          started?.catch(() => { if (alive()) { play.hidden = false; notify(); } });
+        } catch { fail(); }
+      });
+    } else if (target.matches('.thumb')) {
+      lease = acquireArtifactObjectUrl(uri, target.dataset.mime);
+      lease.promise.then(url => {
+        if (!alive()) { binding.dispose(); return; }
         target.dataset.url = url;
         const img = new Image();
         img.alt = target.dataset.name || 'image';
         img.decoding = 'async';
-        img.addEventListener('load', notify, { once: true });
-        img.addEventListener('error', fail, { once: true });
+        listen(img, 'load', notify);
+        listen(img, 'error', fail);
         img.src = url;
         target.replaceChildren(img);
-      } else if (target.matches('a')) {
-        target.href = url;
-        target.removeAttribute('aria-disabled');
-      } else {
-        target.addEventListener('loadedmetadata', notify, { once: true });
-        target.addEventListener('error', fail, { once: true });
-        target.src = url;
-      }
-      notify();
-    }).catch(fail);
+        notify();
+      }).catch(fail);
+    }
   });
 }
 

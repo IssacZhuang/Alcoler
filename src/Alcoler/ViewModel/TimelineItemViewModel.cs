@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
@@ -59,9 +58,11 @@ public sealed record AssistantMarkdownChunk(string Text);
 
 public sealed partial class AssistantMessageItemViewModel : TimelineItemViewModel
 {
-    private readonly StringBuilder _textBuilder = new();
     private readonly List<string> _reasoning = [];
+    private readonly List<string> _textSegments = [];
     private IReadOnlyList<MessagePart>? _lastParts;
+    private string? _markdownText = string.Empty;
+    private int _textLength;
     private int _chunkStart;
     private int _scanOffset;
     private int _candidateBoundary = -1;
@@ -75,8 +76,26 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
 
     public DateTimeOffset At { get; private set; }
 
-    [ObservableProperty]
-    private string _markdownText = string.Empty;
+    public string MarkdownText
+    {
+        get
+        {
+            if (_markdownText is not null)
+                return _markdownText;
+            _markdownText = string.Create(_textLength, this, static (destination, item) =>
+            {
+                var offset = 0;
+                foreach (var segment in item._textSegments)
+                {
+                    segment.AsSpan().CopyTo(destination[offset..]);
+                    offset += segment.Length;
+                }
+            });
+            return _markdownText;
+        }
+    }
+
+    public bool HasText => _textLength > 0;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasReasoning))]
@@ -118,45 +137,28 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
     public void UpdateFrom(AssistantMessageRow row)
     {
         At = row.At;
-        // Reference-equal parts plus unchanged streaming/fork flags imply this call
-        // would rebuild identical state; parts are immutable records, so the list
-        // instance pins its content.
         if (ReferenceEquals(row.Parts, _lastParts) && row.IsStreaming == IsStreaming && row.CanFork == CanFork)
-        {
             return;
-        }
+
+        var previous = MarkdownText;
+        var text = ReferenceEquals(row.Parts, _lastParts) ? previous : ReadParts(row.Parts, previous);
         _lastParts = row.Parts;
-        var textBuilder = _textBuilder;
-        textBuilder.Clear();
-        var reasoning = _reasoning;
-        reasoning.Clear();
-        var firstText = true;
-        foreach (var part in row.Parts)
+        var textChanged = !string.Equals(previous, text, StringComparison.Ordinal);
+        var hadText = HasText;
+        _textLength = text.Length;
+        _markdownText = text;
+        _textSegments.Clear();
+        if (row.IsStreaming && (textChanged || !IsStreaming))
         {
-            switch (part)
+            if (!IsStreaming || !text.StartsWith(previous, StringComparison.Ordinal))
             {
-                case TextPart textPart:
-                    if (!firstText)
-                        textBuilder.Append("\n\n");
-                    textBuilder.Append(textPart.Text);
-                    firstText = false;
-                    break;
-                case ReasoningPart reasoningPart:
-                    reasoning.Add(reasoningPart.Text);
-                    break;
-            }
-        }
-        var text = textBuilder.ToString();
-        var textChanged = !string.Equals(MarkdownText, text, StringComparison.Ordinal);
-        if (textChanged)
-        {
-            if (row.IsStreaming)
-            {
-                if (!IsStreaming || !text.StartsWith(MarkdownText, StringComparison.Ordinal))
-                    ResetStreamingState();
+                ResetStreamingState();
                 ScanStreaming(text);
             }
-            MarkdownText = text;
+            else
+            {
+                ScanStreaming(string.Concat(StreamingTail.AsSpan(), text.AsSpan(previous.Length)));
+            }
         }
 
         if (row.IsStreaming)
@@ -168,31 +170,105 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
         {
             if (!string.Equals(FinalMarkdown, text, StringComparison.Ordinal))
                 FinalMarkdown = text;
-            if (StreamingChunks.Count > 0)
-                StreamingChunks.Clear();
-            if (StreamingTail.Length > 0)
-                StreamingTail = string.Empty;
-            if (StreamingTailIsCode)
-                StreamingTailIsCode = false;
+            ResetStreamingState();
         }
-
-        var reasoningUnchanged = ReasoningBlocks.Count == reasoning.Count;
-        if (reasoningUnchanged)
-        {
-            for (var index = 0; index < reasoning.Count; index++)
-            {
-                if (!string.Equals(ReasoningBlocks[index], reasoning[index], StringComparison.Ordinal))
-                {
-                    reasoningUnchanged = false;
-                    break;
-                }
-            }
-        }
-        if (!reasoningUnchanged)
-            ReasoningBlocks = reasoning.ToArray();
 
         IsStreaming = row.IsStreaming;
         CanFork = row.CanFork;
+        if (hadText != HasText)
+            OnPropertyChanged(nameof(HasText));
+        if (textChanged)
+            OnPropertyChanged(nameof(MarkdownText));
+    }
+
+    public void AppendText(RowTextAppended appended)
+    {
+        At = appended.At;
+        if (appended.Delta.Length == 0)
+            return;
+        var hadText = HasText;
+        if (_textSegments.Count == 0)
+            _textSegments.Add(MarkdownText);
+        _textSegments.Add(appended.Delta);
+        _textLength += appended.Delta.Length;
+        _markdownText = null;
+        _lastParts = null;
+        ScanStreaming(string.Concat(StreamingTail, appended.Delta));
+        if (hadText != HasText)
+            OnPropertyChanged(nameof(HasText));
+        OnPropertyChanged(nameof(MarkdownText));
+    }
+
+    private string ReadParts(IReadOnlyList<MessagePart> parts, string previous)
+    {
+        _reasoning.Clear();
+        var textCount = 0;
+        var textLength = 0;
+        var singleText = string.Empty;
+        foreach (var part in parts)
+        {
+            switch (part)
+            {
+                case TextPart text:
+                    textCount++;
+                    textLength += text.Text.Length;
+                    singleText = text.Text;
+                    break;
+                case ReasoningPart reasoning:
+                    _reasoning.Add(reasoning.Text);
+                    break;
+            }
+        }
+        var reasoningUnchanged = ReasoningBlocks.Count == _reasoning.Count;
+        for (var index = 0; reasoningUnchanged && index < _reasoning.Count; index++)
+            reasoningUnchanged = string.Equals(ReasoningBlocks[index], _reasoning[index], StringComparison.Ordinal);
+        if (!reasoningUnchanged)
+            ReasoningBlocks = _reasoning.ToArray();
+        _reasoning.Clear();
+        if (textCount == 0)
+            return string.Empty;
+        if (textCount == 1)
+            return singleText;
+
+        textLength += (textCount - 1) * 2;
+        var matches = textLength == previous.Length;
+        var offset = 0;
+        var first = true;
+        foreach (var part in parts)
+        {
+            if (!matches)
+                break;
+            if (part is not TextPart text)
+                continue;
+            if (!first)
+            {
+                matches = previous.AsSpan(offset, 2).SequenceEqual("\n\n");
+                offset += 2;
+            }
+            matches &= previous.AsSpan(offset, text.Text.Length).SequenceEqual(text.Text);
+            offset += text.Text.Length;
+            first = false;
+        }
+        if (matches)
+            return previous;
+        return string.Create(textLength, parts, static (destination, source) =>
+        {
+            var isFirst = true;
+            var position = 0;
+            foreach (var part in source)
+            {
+                if (part is not TextPart text)
+                    continue;
+                if (!isFirst)
+                {
+                    "\n\n".AsSpan().CopyTo(destination[position..]);
+                    position += 2;
+                }
+                text.Text.AsSpan().CopyTo(destination[position..]);
+                position += text.Text.Length;
+                isFirst = false;
+            }
+        });
     }
 
     private void ResetStreamingState()
@@ -245,6 +321,10 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
 
         StreamingTail = _chunkStart >= text.Length ? string.Empty : text[_chunkStart..];
         StreamingTailIsCode = tailIsCode;
+        _scanOffset -= _chunkStart;
+        if (_candidateBoundary >= 0)
+            _candidateBoundary -= _chunkStart;
+        _chunkStart = 0;
     }
 
     private void ProcessLine(ReadOnlySpan<char> line, int lineEnd, string text)

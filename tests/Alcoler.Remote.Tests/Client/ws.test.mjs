@@ -39,6 +39,7 @@ function fixture(t, options = {}) {
     onSnapshot: value => snapshots.push(value),
     onDelta: value => deltas.push(value),
     onStatus: value => statuses.push(value),
+    appendText: true,
     ...options,
   });
   t.after(() => {
@@ -60,6 +61,7 @@ test('an already-running session receives subsequent chunks only after its snaps
   const { client, sockets, snapshots, deltas, statuses } = fixture(t);
   client.start();
   const socket = sockets[0];
+  assert.equal(new URL(socket.url).searchParams.get('appendText'), '1');
   socket.open();
   assert.equal(client.status, 'connecting');
   socket.message({ type: 'delta', delta: { sequence: 1 } });
@@ -70,6 +72,12 @@ test('an already-running session receives subsequent chunks only after its snaps
   assert.equal(snapshots[0].sequence, 20);
   assert.deepEqual(deltas.map(delta => delta.sequence), [21, 22]);
   assert.deepEqual(statuses, ['connecting', 'online']);
+});
+
+test('older callers never advertise append support without a capable transcript', t => {
+  const { client, sockets } = fixture(t, { appendText: undefined });
+  client.start();
+  assert.equal(new URL(sockets[0].url).searchParams.has('appendText'), false);
 });
 
 test('manual reconnect closes the old socket and ignores its queued callbacks', t => {

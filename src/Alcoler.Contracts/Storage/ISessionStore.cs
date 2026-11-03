@@ -98,6 +98,10 @@ public interface IArtifactStore
 
     ValueTask<ReadOnlyMemory<byte>?> TryLoadAsync(string artifactUri, CancellationToken cancellationToken);
 
+    // Stores with metadata access should override this to avoid reading payload bytes.
+    async ValueTask<bool> ExistsAsync(string artifactUri, CancellationToken cancellationToken) =>
+        await TryLoadAsync(artifactUri, cancellationToken).ConfigureAwait(false) is not null;
+
     ValueTask DeleteSessionArtifactsAsync(SessionId sessionId, CancellationToken cancellationToken) =>
         ValueTask.FromException(new NotSupportedException("This artifact store does not support deleting session artifacts."));
 }

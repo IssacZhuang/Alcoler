@@ -11,6 +11,7 @@ using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Workspace;
 using Alcoler.Kernel.Prompts;
+using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
 using Alcoler.Kernel.Workflows;
 using Microsoft.Extensions.Logging;
@@ -82,6 +83,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     private readonly object _resumeSync = new();
     private readonly Dictionary<SessionId, ResumeGate> _resumeGates = [];
     private readonly ConcurrentDictionary<(SessionId Parent, SessionId Child), WeakReference<AgentRuntime>> _subagentRuntimes = new();
+    private readonly ConcurrentDictionary<SubagentMessenger, byte> _subagentMessengers = new();
     private readonly ToolRegistry _tools;
     private readonly ConcurrentDictionary<(long Generation, string ProviderId, string ModelId), IChatModel> _modelCache = new();
     private readonly ILoggerFactory _logging;
@@ -142,11 +144,19 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     public async ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+        using var lease = await LockSessionLifecycleAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
         if (_sessions.TryGetValue(sessionId, out var active))
-        {
             return new SessionHandle(active.SessionId, active.WorkspaceRoot, active.Title);
-        }
 
+        var record = await _options.Store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Session {sessionId.Value} not found.");
+        await CreateRuntimeAsync(record, isNewSession: false, cancellationToken).ConfigureAwait(false);
+        return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
+    }
+
+    internal async ValueTask<IDisposable> LockSessionLifecycleAsync(SessionId sessionId, CancellationToken cancellationToken)
+    {
         ResumeGate gate;
         lock (_resumeSync)
         {
@@ -157,35 +167,35 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             }
             gate.Users++;
         }
-        var entered = false;
         try
         {
             await gate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            entered = true;
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
-            if (_sessions.TryGetValue(sessionId, out active))
-            {
-                return new SessionHandle(active.SessionId, active.WorkspaceRoot, active.Title);
-            }
-
-            var record = await _options.Store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException($"Session {sessionId.Value} not found.");
-            await CreateRuntimeAsync(record, isNewSession: false, cancellationToken).ConfigureAwait(false);
-            return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
+            return new SessionLease(this, sessionId, gate);
         }
-        finally
+        catch
         {
-            if (entered)
-                gate.Semaphore.Release();
-            lock (_resumeSync)
+            ReleaseSessionGate(sessionId, gate, entered: false);
+            throw;
+        }
+    }
+
+    private void ReleaseSessionGate(SessionId sessionId, ResumeGate gate, bool entered)
+    {
+        if (entered)
+            gate.Semaphore.Release();
+        lock (_resumeSync)
+        {
+            if (--gate.Users == 0)
             {
-                if (--gate.Users == 0)
-                {
-                    _resumeGates.Remove(sessionId);
-                    gate.Semaphore.Dispose();
-                }
+                _resumeGates.Remove(sessionId);
+                gate.Semaphore.Dispose();
             }
         }
+    }
+
+    private sealed class SessionLease(AgentRuntime runtime, SessionId sessionId, ResumeGate gate) : IDisposable
+    {
+        public void Dispose() => runtime.ReleaseSessionGate(sessionId, gate, entered: true);
     }
 
     public async ValueTask<SessionHandle> ForkSessionAsync(
@@ -346,39 +356,109 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
         var now = _options.Clock.GetUtcNow();
-        var unloaded = new List<SessionId>();
+        var unloaded = 0;
         foreach (var (sessionId, runtime) in _sessions.ToArray())
         {
-            // Subagent children stay resident while their parent is resident, so the
-            // parent-side transcript observe calls keep working.
+            // Resident parents keep child transcripts observable.
             if ((keepOpen is { } open && sessionId == open)
                 || !runtime.IsSafeToUnload
                 || now - runtime.LastActivityUtc < idleThreshold
                 || (runtime.ParentSessionId is { } parent && _sessions.ContainsKey(parent)))
-            {
                 continue;
-            }
-            if (_sessions.TryRemove(sessionId, out var removed))
-            {
-                await removed.DisposeAsync().ConfigureAwait(false);
-                unloaded.Add(sessionId);
-            }
+            if (await RemoveResidentSessionAsync(sessionId, runtime, idleThreshold, forgetSubagents: false,
+                    cancellationToken).ConfigureAwait(false))
+                unloaded++;
+        }
+        return unloaded;
+    }
+
+    private async ValueTask<bool> RemoveResidentSessionAsync(
+        SessionId sessionId,
+        SessionRuntime expected,
+        TimeSpan? idleThreshold,
+        bool forgetSubagents,
+        CancellationToken cancellationToken)
+    {
+        using var sessionLease = await LockSessionLifecycleAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        var leases = await LockSubagentChannelsAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        HashSet<AgentRuntime> children;
+        SessionRuntime? removed;
+        try
+        {
+            if (!_sessions.TryGetValue(sessionId, out var current) || !ReferenceEquals(current, expected))
+                return false;
+            if (idleThreshold is { } threshold && (!current.IsSafeToUnload
+                || _options.Clock.GetUtcNow() - current.LastActivityUtc < threshold
+                || (current.ParentSessionId is { } parent && _sessions.ContainsKey(parent))))
+                return false;
+            if (!_sessions.TryRemove(sessionId, out removed))
+                return false;
+            children = DetachSubagentRuntimes(sessionId, leases, forgetSubagents);
+        }
+        finally
+        {
+            foreach (var lease in leases)
+                lease.Dispose();
         }
 
+        // Terminal handlers also take delivery locks; disposal must not hold those locks.
+        await removed.DisposeAsync().ConfigureAwait(false);
+        foreach (var child in children)
+            await child.DisposeAsync().ConfigureAwait(false);
+        return true;
+    }
+
+    private async ValueTask<List<SubagentMessenger.ParentLease>> LockSubagentChannelsAsync(
+        SessionId parent, CancellationToken cancellationToken)
+    {
+        var leases = new List<SubagentMessenger.ParentLease>();
+        try
+        {
+            foreach (var messenger in _subagentMessengers.Keys)
+            {
+                if (await messenger.SuspendParentAsync(parent, cancellationToken).ConfigureAwait(false) is { } lease)
+                    leases.Add(lease);
+            }
+            return leases;
+        }
+        catch
+        {
+            foreach (var lease in leases)
+                lease.Dispose();
+            throw;
+        }
+    }
+
+    private HashSet<AgentRuntime> DetachSubagentRuntimes(
+        SessionId parent, IReadOnlyList<SubagentMessenger.ParentLease> leases, bool forget)
+    {
+        var children = new HashSet<AgentRuntime>();
+        foreach (var lease in leases)
+            children.UnionWith(lease.DetachRuntimes(forget));
         foreach (var (key, reference) in _subagentRuntimes.ToArray())
         {
-            if (!unloaded.Contains(key.Parent) || !_subagentRuntimes.TryRemove(key, out _))
-            {
-                continue;
-            }
-
-            if (reference.TryGetTarget(out var childRuntime))
-            {
-                await childRuntime.DisposeAsync().ConfigureAwait(false);
-            }
+            if (key.Parent == parent && _subagentRuntimes.TryRemove(key, out _) && reference.TryGetTarget(out var child))
+                children.Add(child);
         }
+        return children;
+    }
 
-        return unloaded.Count;
+    private async ValueTask DetachSubagentsAsync(SessionId parent, bool forget, CancellationToken cancellationToken)
+    {
+        using var sessionLease = await LockSessionLifecycleAsync(parent, cancellationToken).ConfigureAwait(false);
+        var leases = await LockSubagentChannelsAsync(parent, cancellationToken).ConfigureAwait(false);
+        HashSet<AgentRuntime> children;
+        try
+        {
+            children = DetachSubagentRuntimes(parent, leases, forget);
+        }
+        finally
+        {
+            foreach (var lease in leases)
+                lease.Dispose();
+        }
+        foreach (var child in children)
+            await child.DisposeAsync().ConfigureAwait(false);
     }
 
     public ValueTask<int> CountArchivedSessionsAsync(CancellationToken cancellationToken)
@@ -397,25 +477,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         var archivedIds = archived.Select(summary => summary.Id).ToHashSet();
         foreach (var (sessionId, runtime) in _sessions.ToArray())
         {
-            if ((runtime.IsArchived || archivedIds.Contains(sessionId)) &&
-                _sessions.TryRemove(sessionId, out var removed))
-            {
-                await removed.DisposeAsync().ConfigureAwait(false);
-            }
+            if (runtime.IsArchived || archivedIds.Contains(sessionId))
+                await RemoveResidentSessionAsync(sessionId, runtime, idleThreshold: null, forgetSubagents: true,
+                    cancellationToken).ConfigureAwait(false);
         }
-
-        foreach (var (key, reference) in _subagentRuntimes.ToArray())
-        {
-            if (!archivedIds.Contains(key.Parent) || !_subagentRuntimes.TryRemove(key, out _))
-            {
-                continue;
-            }
-
-            if (reference.TryGetTarget(out var childRuntime))
-            {
-                await childRuntime.DisposeAsync().ConfigureAwait(false);
-            }
-        }
+        foreach (var sessionId in archivedIds)
+            await DetachSubagentsAsync(sessionId, forget: true, cancellationToken).ConfigureAwait(false);
 
         var deletion = await _options.Store.DeleteArchivedSessionsAsync(cancellationToken).ConfigureAwait(false);
         foreach (var sessionId in deletion.DeletedSessionIds)
@@ -570,6 +637,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         runtime.ActivityChanged += OnSessionActivityChanged;
         runtime.TitleChanged += OnSessionTitleChanged;
         _sessions[runtime.SessionId] = runtime;
+        foreach (var messenger in _subagentMessengers.Keys)
+            messenger.ActivateParent(runtime.SessionId);
         return runtime;
     }
 
@@ -599,6 +668,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     }
 
     internal AgentRuntimeOptions Options => _options;
+
+    internal void RegisterSubagentMessenger(SubagentMessenger messenger) => _subagentMessengers.TryAdd(messenger, 0);
 
     internal void RegisterSubagentRuntime(SessionId parentSessionId, SessionId childSessionId, AgentRuntime runtime)
     {
@@ -649,11 +720,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             return;
         }
         _disposed = true;
+        foreach (var (sessionId, runtime) in _sessions.ToArray())
+            await RemoveResidentSessionAsync(sessionId, runtime, idleThreshold: null, forgetSubagents: true,
+                CancellationToken.None).ConfigureAwait(false);
+        foreach (var parent in _subagentMessengers.Keys.SelectMany(messenger => messenger.ParentIds).Distinct())
+            await DetachSubagentsAsync(parent, forget: true, CancellationToken.None).ConfigureAwait(false);
         _subagentRuntimes.Clear();
-        foreach (var runtime in _sessions.Values)
-        {
-            await runtime.DisposeAsync().ConfigureAwait(false);
-        }
-        _sessions.Clear();
+        _subagentMessengers.Clear();
     }
 }

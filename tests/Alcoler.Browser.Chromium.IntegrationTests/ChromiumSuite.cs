@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Alcoler.Browser;
+using Alcoler.Browser.Automation;
 using Alcoler.Browser.IntegrationTests;
 using Alcoler.Browser.Chromium;
 using Alcoler.Contracts.Browser;
@@ -56,6 +57,7 @@ internal sealed class ChromiumSuite : IDisposable
         new("capabilities advertise the chromium backend", false, CapabilitiesAsync),
         new("first action auto-creates a background tab and navigation tracks url and title", false, AutoCreateAsync),
         new("accessibility snapshot yields refs and ref clicks mutate the DOM", false, AccessibilityAsync),
+        new("renderer ref maps retire detached nodes and scoped epochs across OOPIF contexts", false, RendererReferencesAsync),
         new("locators, fill versus type, keyboard press and shadow DOM", false, LocatorsAsync),
         new("cross-origin iframe interaction through OOPIF flat sessions", false, CrossOriginFrameAsync),
         new("OOPIF swap rebinds frame interaction to the replacement host", false, OopifSwapAsync),
@@ -67,6 +69,8 @@ internal sealed class ChromiumSuite : IDisposable
         new("download_media returns exact fixture bytes", false, DownloadMediaAsync),
         new("bounded WebM recording completes with EBML media", false, RecordingAsync),
         new("target=_blank popup is adopted as a new session tab", true, PopupAsync),
+        new("blank popup adopts a legitimate delayed navigation", true, DelayedPopupAsync),
+        new("native popup rejected at the tab cap closes only its pending target", true, RejectedPopupAsync),
         new("per-session profile isolation for cookies and localStorage", false, SessionIsolationAsync),
         new("visibility show restores the window and screenshots keep working", true, VisibilityShowAsync),
         new("close_tab auto-creates the next tab and finalize keeps listed tabs", false, CloseAndFinalizeAsync),
@@ -145,6 +149,107 @@ internal sealed class ChromiumSuite : IDisposable
         await AssertJsAsync("document.body.dataset.refClicks === '1'");
         var dom = Structured(await CommandAsync("dom_snapshot", tab: _tab));
         Check(dom.ValueKind == JsonValueKind.Array && dom.GetArrayLength() > 5, "DOM snapshot did not return actual nodes.");
+    }
+
+    private async Task RendererReferencesAsync()
+    {
+        var tab = "ref-probe-" + Guid.NewGuid().ToString("N");
+        var page = new ObservingPage(await _host.CreatePageAsync(_session, tab, _ct));
+        try
+        {
+            using var engine = new CdpBrowserAutomation(page);
+            async Task<BrowserActionResult> Run(string verb, Dictionary<string, object?>? input = null)
+            {
+                var result = await engine.ExecuteAsync(new BrowserCommandAction(verb, BrowserJson.Element(input ?? D())), _ct);
+                Check(result.Ok, $"Ref-map probe '{verb}' failed: {result.Error}");
+                return result;
+            }
+            static string ButtonReference(BrowserActionResult result, string name)
+            {
+                var root = Structured(result);
+                var nodes = root.ValueKind == JsonValueKind.Array ? root.EnumerateArray() : root.GetProperty("nodes").EnumerateArray();
+                return nodes.First(node => node.GetProperty("role").GetString() == "button" && node.GetProperty("name").GetString() == name)
+                    .GetProperty("ref").GetString()!;
+            }
+            async Task AssertMapsEmpty()
+            {
+                foreach (var world in page.Worlds.Distinct())
+                {
+                    var result = await page.SendAsync("Runtime.evaluate", D(("expression", "globalThis.__alcolerAutomation.refs.size"),
+                        ("contextId", world.ContextId), ("returnByValue", true)), _ct, world.Session);
+                    Equal(0, result.GetProperty("result").GetProperty("value").GetInt32(), "Retired renderer map in " + world.Frame);
+                }
+            }
+            await Run("navigate", D(("url", _fixture.Url())));
+            await Run("evaluate", D(("expression", "(()=>{const e=document.createElement('button');e.id='detached-ref-probe';e.textContent='Detached reference probe';document.body.append(e);return true;})()")));
+            var snapshot = await Run("snapshot");
+            var reference = ButtonReference(snapshot, "Detached reference probe");
+            await Run("element_info", D(("ref", reference)));
+            await Run("evaluate", D(("expression", "document.querySelector('#detached-ref-probe').remove();true")));
+            snapshot = await Run("snapshot");
+            await AssertMapsEmpty();
+            var stale = await engine.ExecuteAsync(new BrowserCommandAction("element_info", BrowserJson.Element(D(("ref", reference)))), _ct);
+            Check(!stale.Ok && stale.Error?.Contains("Stale", StringComparison.Ordinal) == true, "A retired renderer ref was still accepted.");
+            reference = ButtonReference(snapshot, "Reference action");
+            var scoped = await Run("snapshot", D(("ref", reference)));
+            await AssertMapsEmpty();
+            var scopedDom = await Run("dom_snapshot", D(("ref", ButtonReference(scoped, "Reference action"))));
+            await Run("element_info", D(("ref", ButtonReference(scopedDom, "Reference action"))));
+            await Run("evaluate", D(("expression", "url=>{const e=document.createElement('iframe');e.id='ref-map-frame';e.src=url;document.body.append(e);return true;}"), ("arg", ForeignFrameUrl())));
+            await Run("wait_for", Target(D(("frame", "#ref-map-frame"), ("css", "#frame-click")), ("state", "visible"), ("timeoutMs", 15000)));
+            var child = await Run("snapshot", Target(D(("frame", "#ref-map-frame"), ("css", "#frame-click"))));
+            await Run("element_info", D(("ref", ButtonReference(child, "Frame action"))));
+            Check(page.Worlds.Any(world => world.Session is not null), "The ref-map probe did not create an OOPIF isolated world.");
+            for (var i = 0; i < 3; i++)
+            {
+                snapshot = await Run("snapshot");
+                await AssertMapsEmpty();
+                await Run("element_info", D(("ref", ButtonReference(snapshot, "Reference action"))));
+            }
+            await Run("dom_snapshot", Target(D(("frame", "#ref-map-frame"), ("css", "body"))));
+            await Run("snapshot", Target(D(("role", "button"), ("name", "Reference action"))));
+            await AssertMapsEmpty();
+            using var canceled = CancellationTokenSource.CreateLinkedTokenSource(_ct);
+            string? acquired = null;
+            page.AfterSend = (method, parameters, result) =>
+            {
+                if (method != "Runtime.evaluate" || !parameters.GetProperty("expression").GetString()!.StartsWith("__alcolerAutomation.select(", StringComparison.Ordinal)) return;
+                acquired = result.GetProperty("result").GetProperty("objectId").GetString();
+                canceled.Cancel();
+            };
+            var cancellationObserved = false;
+            try { await engine.ExecuteAsync(new BrowserCommandAction("element_info", BrowserJson.Element(D(("selector", "#css-click")))), canceled.Token); }
+            catch (OperationCanceledException) when (canceled.IsCancellationRequested) { cancellationObserved = true; }
+            finally { page.AfterSend = null; }
+            Check(cancellationObserved && acquired is not null, "The real renderer handle cancellation probe did not run.");
+            var released = false;
+            try { await page.SendAsync("Runtime.callFunctionOn", D(("objectId", acquired), ("functionDeclaration", "function(){return true;}"), ("returnByValue", true)), _ct); }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("object", StringComparison.OrdinalIgnoreCase)) { released = true; }
+            Check(released, "An already-acquired remote object survived canceled-action cleanup.");
+        }
+        finally { await _host.ClosePageAsync(tab, CancellationToken.None); }
+    }
+
+    private sealed class ObservingPage(IBrowserPage inner) : IBrowserPage
+    {
+        internal sealed record World(string Frame, int ContextId, string? Session);
+        public string Id => inner.Id;
+        public List<World> Worlds { get; } = [];
+        public Action<string, JsonElement, JsonElement>? AfterSend { get; set; }
+        public event EventHandler<BrowserProtocolEvent>? ProtocolEvent
+        {
+            add => inner.ProtocolEvent += value;
+            remove => inner.ProtocolEvent -= value;
+        }
+        public async Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken cancellationToken, string? sessionId = null)
+        {
+            var result = await inner.SendAsync(method, parameters, cancellationToken, sessionId);
+            if (method == "Page.createIsolatedWorld")
+                Worlds.Add(new(BrowserJson.Element(parameters).GetProperty("frameId").GetString()!, result.GetProperty("executionContextId").GetInt32(), sessionId));
+            AfterSend?.Invoke(method, BrowserJson.Element(parameters), result);
+            return result;
+        }
+        public void Dispose() { }
     }
 
     private async Task LocatorsAsync()
@@ -401,6 +506,60 @@ internal sealed class ChromiumSuite : IDisposable
             }
         }
         finally { _popup = null; }
+    }
+
+    private async Task DelayedPopupAsync()
+    {
+        _popup = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        string? popupId = null;
+        try
+        {
+            await CommandAsync("evaluate", D(("expression", "url=>{const e=document.createElement('button');e.id='delayed-popup-probe';e.textContent='Delayed popup';e.onclick=()=>{const popup=window.open('about:blank');if(popup)setTimeout(()=>{popup.location=url;},500);};document.body.append(e);return true;}"), ("arg", _fixture.Url("/popup"))), _tab);
+            await CommandAsync("visibility", D(("visible", true)), _tab);
+            await CommandAsync("click", Target(D(("css", "#delayed-popup-probe"))), _tab);
+            var opened = await _popup.Task.WaitAsync(TimeSpan.FromSeconds(30), _ct);
+            Check(opened.Result.Ok, "Delayed popup creation failed: " + opened.Result.Error);
+            Check(opened.Request.TargetId is not null, "Delayed popup was not adopted as a native target.");
+            Equal(_fixture.Url("/popup"), opened.Request.Url, "Delayed popup committed URL");
+            popupId = opened.Result.TabId!;
+            Equal("Popup fixture", Structured(await CommandAsync("evaluate", D(("expression", "document.title")), popupId)).GetString(), "Delayed popup page title");
+        }
+        finally
+        {
+            _popup = null;
+            if (popupId is not null) await RawAsync("close_tab", tab: popupId);
+            await RawAsync("evaluate", D(("expression", "document.querySelector('#delayed-popup-probe')?.remove();true")), _tab);
+            await RawAsync("select_tab", tab: _tab);
+        }
+    }
+
+    private async Task RejectedPopupAsync()
+    {
+        var added = new List<string>();
+        try
+        {
+            await CommandAsync("finalize", D(("keep", new[] { _tab })), _tab);
+            while ((_controller.GetStatus(_session)?.Tabs?.Count ?? 0) < 32)
+                added.Add((await CommandAsync("new_tab")).TabId!);
+            await CommandAsync("visibility", D(("visible", true)), _tab);
+            _popup = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            await CommandAsync("click", Target(D(("css", "#popup"))), _tab);
+            var rejected = await _popup.Task.WaitAsync(TimeSpan.FromSeconds(30), _ct);
+            Check(!rejected.Result.Ok && rejected.Result.Error?.Contains("32-tab limit", StringComparison.Ordinal) == true,
+                "The full controller did not reject its native popup.");
+            var page = await _host.CreatePageAsync(_session, _tab, _ct);
+            var targets = await page.SendAsync("Target.getTargets", null, _ct);
+            Check(!targets.GetProperty("targetInfos").EnumerateArray().Any(target => target.GetProperty("targetId").GetString() == rejected.Request.TargetId),
+                "The rejected popup native target survived cleanup.");
+            Equal(32, Tabs(await CommandAsync("tabs")).Length, "Retained tab count after popup rejection");
+            Equal("Alcoler native fixture", Structured(await CommandAsync("evaluate", D(("expression", "document.title")), _tab)).GetString(), "Retained opener after popup rejection");
+        }
+        finally
+        {
+            _popup = null;
+            foreach (var tab in added) await RawAsync("close_tab", tab: tab);
+            await RawAsync("select_tab", tab: _tab);
+        }
     }
 
     private async void OnNewTabRequested(object? sender, BrowserNewTabRequestedEventArgs e)

@@ -117,6 +117,8 @@ public sealed class ReadTool : ITool
         string[] lines;
         string[] selected;
         int totalLines;
+        int selectedLineCount;
+        long tokenCount;
         var selectedEnd = 0;
         if (fullRead)
         {
@@ -125,15 +127,17 @@ public sealed class ReadTool : ITool
             selectedEnd = (int)Math.Min((long)startLine - 1 + limit, lines.Length);
             selected = startLine - 1 < lines.Length ? lines[(startLine - 1)..selectedEnd] : [];
             totalLines = lines.Length;
+            selectedLineCount = selected.Length;
+            tokenCount = EstimateJoinedTokens(selected);
         }
         else
         {
             content = string.Empty;
-            (selected, totalLines) = await ReadLineRangeAsync(path, startLine, limit, cancellationToken).ConfigureAwait(false);
+            (selected, totalLines, selectedLineCount, tokenCount) = await ReadLineRangeAsync(path, startLine, limit, cancellationToken).ConfigureAwait(false);
             lines = [];
         }
 
-        if (selected.Length == 0)
+        if (selectedLineCount == 0)
         {
             var warning = totalLines == 0
                 ? EmptyFileReminder
@@ -143,7 +147,6 @@ public sealed class ReadTool : ITool
             return ToolExecutionResult.Text(warning);
         }
 
-        var tokenCount = EstimateJoinedTokens(selected);
         if (tokenCount > MaxOutputTokens)
         {
             // The token-cap partial view is reserved for initial whole-file reads; explicit
@@ -165,7 +168,7 @@ public sealed class ReadTool : ITool
         string path,
         string[] lines,
         string[] selected,
-        int tokenCount)
+        long tokenCount)
     {
         string notice;
         string numbered;
@@ -418,7 +421,7 @@ public sealed class ReadTool : ITool
         return lines.ToArray();
     }
 
-    private static async ValueTask<(string[] Lines, int TotalLines)> ReadLineRangeAsync(
+    private static async ValueTask<(string[] Lines, int TotalLines, int SelectedLineCount, long TokenCount)> ReadLineRangeAsync(
         string path,
         int startLine,
         int limit,
@@ -427,11 +430,20 @@ public sealed class ReadTool : ITool
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096);
+        return await ReadLineRangeAsync(reader, startLine, limit, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async ValueTask<(string[] Lines, int TotalLines, int SelectedLineCount, long TokenCount)> ReadLineRangeAsync(
+        TextReader reader,
+        int startLine,
+        int limit,
+        CancellationToken cancellationToken)
+    {
         var chars = ArrayPool<char>.Shared.Rent(4096);
-        var line = new StringBuilder();
-        var selected = new List<string>();
+        var selection = new RangeSelection();
         var lineNumber = 0;
         var anyContent = false;
+        var pendingCarriageReturn = false;
         try
         {
             while (true)
@@ -439,36 +451,87 @@ public sealed class ReadTool : ITool
                 var read = await reader.ReadAsync(chars.AsMemory(0, 4096), cancellationToken).ConfigureAwait(false);
                 if (read == 0)
                     break;
+                cancellationToken.ThrowIfCancellationRequested();
                 anyContent = true;
                 for (var index = 0; index < read; index++)
                 {
                     var c = chars[index];
-                    if (c != '\n')
+                    var isSelected = lineNumber + 1 >= startLine && selection.Count < limit;
+                    if (c == '\n')
                     {
-                        line.Append(c);
+                        if (isSelected)
+                            selection.EndLine();
+                        pendingCarriageReturn = false;
+                        lineNumber++;
+                        if (limit > 0 && selection.Count == limit)
+                            return (selection.ToArray(), -1, selection.Count, selection.TokenCount);
                         continue;
                     }
-                    if (line.Length > 0 && line[^1] == '\r')
-                        line.Length--;
-                    lineNumber++;
-                    if (lineNumber >= startLine && selected.Count < limit)
-                        selected.Add(line.ToString());
-                    line.Clear();
-                    if (limit > 0 && selected.Count == limit)
-                        return (selected.ToArray(), -1);
+                    if (!isSelected)
+                        continue;
+                    if (pendingCarriageReturn)
+                        selection.Append('\r');
+                    pendingCarriageReturn = c == '\r';
+                    if (!pendingCarriageReturn)
+                        selection.Append(c);
                 }
             }
             if (anyContent)
             {
                 lineNumber++;
-                if (lineNumber >= startLine && selected.Count < limit)
-                    selected.Add(line.ToString());
+                if (lineNumber >= startLine && selection.Count < limit)
+                {
+                    if (pendingCarriageReturn)
+                        selection.Append('\r');
+                    selection.EndLine();
+                }
             }
-            return (selected.ToArray(), lineNumber);
+            return (selection.ToArray(), lineNumber, selection.Count, selection.TokenCount);
         }
         finally
         {
             ArrayPool<char>.Shared.Return(chars);
+        }
+    }
+
+    private sealed class RangeSelection
+    {
+        private readonly List<string> _lines = [];
+        private readonly StringBuilder _line = new();
+        private long _weightedLength;
+        private bool _overBudget;
+
+        public int Count { get; private set; }
+        public long TokenCount => (_weightedLength + 2) / 3;
+
+        public void Append(char value)
+        {
+            _weightedLength += value is >= '\u4E00' and <= '\u9FFF' ? 2 : 1;
+            CheckBudget();
+            if (!_overBudget)
+                _line.Append(value);
+        }
+
+        public void EndLine()
+        {
+            if (Count > 0)
+                _weightedLength++;
+            Count++;
+            CheckBudget();
+            if (!_overBudget)
+                _lines.Add(_line.ToString());
+            _line.Clear();
+        }
+
+        public string[] ToArray() => _lines.ToArray();
+
+        private void CheckBudget()
+        {
+            if (_overBudget || _weightedLength <= MaxOutputTokens * 3L)
+                return;
+            _overBudget = true;
+            _lines.Clear();
+            _line.Clear();
         }
     }
 

@@ -354,7 +354,281 @@ public sealed class ChromiumBrowserHostTests
         Assert.False(new ChromiumBrowserOptions { Headless = false }.EffectiveHeadless);
     }
 
-    private static (ChromiumBrowserHost Host, ScriptedWire Wire, FakeProcess Process) CreateHost(bool headless = false)
+    [Fact]
+    public async Task StartupCancellationCleansTheOwnedAttemptWithoutRetrying()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var process = new FakeProcess { OnStart = ct => { cancellation.Cancel(); return Task.FromCanceled(ct); } };
+        var wire = new ScriptedWire();
+        using var host = CreateHost([process], [wire]);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => host.CreatePageAsync(_session, "tab_1", cancellation.Token));
+        Assert.Equal(1, process.StartCalls);
+        Assert.Equal(1, process.ShutdownCalls);
+        Assert.Equal(1, process.DisposeCalls);
+        Assert.False(process.ShutdownToken.IsCancellationRequested);
+        Assert.Null(wire.ConnectedUri);
+        host.Dispose();
+        Assert.Equal(1, process.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task FailedStartupRetryCleansTheAttemptAndIgnoresItsQueuedAndStaleExitCallbacks()
+    {
+        Action? staleExit = null;
+        var failed = new FakeProcess();
+        failed.OnStart = _ =>
+        {
+            staleExit = failed.CaptureExit();
+            failed.RaiseExited();
+            throw new InvalidOperationException("failed startup");
+        };
+        var successful = new FakeProcess();
+        using var host = CreateHost([failed, successful], [new ScriptedWire()]);
+        var page = await host.CreatePageAsync(_session, "tab_1", default);
+        var closed = false;
+        page.ProtocolEvent += (_, e) => { if (e.Method == "Host.closed") closed = true; };
+        Assert.Equal(1, failed.ShutdownCalls);
+        Assert.Equal(1, failed.DisposeCalls);
+        Assert.Equal(0, successful.ShutdownCalls);
+        Assert.Equal(0, successful.DisposeCalls);
+        staleExit!();
+        await Task.Delay(150);
+        Assert.False(closed);
+        Assert.Same(page, await host.CreatePageAsync(_session, "tab_1", default));
+        await host.ClosePageAsync("tab_1", default);
+        Assert.Equal(1, successful.ShutdownCalls);
+        Assert.Equal(1, successful.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task ExhaustedStartupRetriesPreserveTheStartupFailureWhenCleanupFails()
+    {
+        var original = new InvalidOperationException("original startup failure");
+        var attempts = Enumerable.Range(0, 5).Select(_ => new FakeProcess
+        {
+            OnStart = _ => Task.FromException(original),
+            OnShutdown = _ => Task.FromException(new OperationCanceledException("cleanup canceled")),
+        }).ToArray();
+        using var host = CreateHost(attempts, []);
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => host.CreatePageAsync(_session, "tab_1", default));
+        Assert.Same(original, failure);
+        Assert.All(attempts, process =>
+        {
+            Assert.Equal(1, process.StartCalls);
+            Assert.Equal(1, process.ShutdownCalls);
+            Assert.Equal(1, process.DisposeCalls);
+        });
+        host.Dispose();
+        Assert.All(attempts, process => Assert.Equal(1, process.DisposeCalls));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConnectionAndDiscoveryFailuresDisposeBothAttemptResourcesBeforeRetry(bool discovery)
+    {
+        var failed = new FakeProcess();
+        var successful = new FakeProcess();
+        var failedWire = new ScriptedWire
+        {
+            OnConnect = discovery ? null : _ => Task.FromException(new IOException("connection failed")),
+            FailMethod = discovery ? "Target.setDiscoverTargets" : null,
+        };
+        var wire = new ScriptedWire();
+        using var host = CreateHost([failed, successful], [failedWire, wire]);
+        await host.CreatePageAsync(_session, "tab_1", default);
+        Assert.Equal(1, failed.ShutdownCalls);
+        Assert.Equal(1, failed.DisposeCalls);
+        Assert.Equal(1, failedWire.DisposeCalls);
+        Assert.Equal(0, successful.DisposeCalls);
+        Assert.Equal(0, wire.DisposeCalls);
+        host.Dispose();
+        Assert.Equal(1, successful.DisposeCalls);
+        Assert.Equal(1, wire.DisposeCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConnectionCancellationDisposesBothAttemptResourcesWithoutRetrying(bool discovery)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var process = new FakeProcess();
+        var wire = new ScriptedWire
+        {
+            OnConnect = discovery ? null : ct => { cancellation.Cancel(); return Task.FromCanceled(ct); },
+            OnReply = (method, ct) =>
+            {
+                if (discovery && method == "Target.setDiscoverTargets") { cancellation.Cancel(); throw new OperationCanceledException(ct); }
+                return Task.CompletedTask;
+            },
+        };
+        using var host = CreateHost([process], [wire]);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => host.CreatePageAsync(_session, "tab_1", cancellation.Token));
+        Assert.Equal(1, process.StartCalls);
+        Assert.Equal(1, process.ShutdownCalls);
+        Assert.Equal(1, process.DisposeCalls);
+        Assert.Equal(1, wire.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task ShutdownCancellationStillDisposesTheSuccessfulProcessAndConnection()
+    {
+        var process = new FakeProcess { OnShutdown = _ => Task.FromException(new OperationCanceledException("shutdown canceled")) };
+        var wire = new ScriptedWire();
+        using var host = CreateHost([process], [wire]);
+        await host.CreatePageAsync(_session, "tab_1", default);
+        await host.ClosePageAsync("tab_1", default);
+        Assert.Equal(1, process.ShutdownCalls);
+        Assert.Equal(1, process.DisposeCalls);
+        Assert.Equal(1, wire.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task RejectionClosesOnlyStillPendingTargetsInTheOwningSession()
+    {
+        var (host, wire, _) = CreateHost();
+        using (host)
+        {
+            await host.CreatePageAsync(_session, "tab_1", default);
+            var raised = new TaskCompletionSource<BrowserNewTabRequestedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            host.NewTabRequested += (_, e) => raised.TrySetResult(e);
+            PushPopup(wire, "POP", "https://example.test/popup");
+            await raised.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await host.RejectPopupAsync(new SessionId("wrong-owner"), "POP", default);
+            Assert.DoesNotContain(Parse(wire.Snapshot()), frame => frame.Method == "Target.closeTarget");
+            await host.RejectPopupAsync(_session, "POP", default);
+            await host.RejectPopupAsync(_session, "POP", default);
+            Assert.Single(Parse(wire.Snapshot()), frame => frame.Method == "Target.closeTarget"
+                && frame.Parameters.GetProperty("targetId").GetString() == "POP");
+            await Assert.ThrowsAsync<InvalidOperationException>(() => host.CreatePageAsync(_session, "rejected", default, "POP"));
+        }
+    }
+
+    [Fact]
+    public async Task PendingBlankPopupExpiresWithoutNewBrowserActivityAndTimerStopsOnDispose()
+    {
+        var time = new ManualTimeProvider();
+        var (host, wire, _) = CreateHost(timeProvider: time);
+        using (host)
+        {
+            await host.CreatePageAsync(_session, "tab_1", default);
+            PushPopup(wire, "BLANK", "about:blank");
+            Assert.True(await WaitForAsync(() => time.ActiveTimers == 1));
+            time.Advance(TimeSpan.FromMinutes(2));
+            await WaitForFrameAsync(wire, frame => frame.Method == "Target.closeTarget"
+                && frame.Parameters.GetProperty("targetId").GetString() == "BLANK");
+            wire.Push("{\"method\":\"Target.targetDestroyed\",\"params\":{\"targetId\":\"BLANK\"}}");
+            PushPopup(wire, "LATER", "");
+            Assert.True(await WaitForAsync(() => time.ActiveTimers == 1));
+            host.Dispose();
+            Assert.Equal(0, time.ActiveTimers);
+            time.Advance(TimeSpan.FromMinutes(10));
+        }
+    }
+
+    [Fact]
+    public async Task DelayedNavigationCanAdoptBeforeTheLeaseAndExpiryCannotCloseTheAdoptedTarget()
+    {
+        var time = new ManualTimeProvider();
+        var (host, wire, _) = CreateHost(timeProvider: time);
+        using (host)
+        {
+            await host.CreatePageAsync(_session, "tab_1", default);
+            var raised = new TaskCompletionSource<BrowserNewTabRequestedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            host.NewTabRequested += (_, e) => raised.TrySetResult(e);
+            PushPopup(wire, "DELAYED", "about:blank");
+            Assert.True(await WaitForAsync(() => time.ActiveTimers == 1));
+            time.Advance(TimeSpan.FromSeconds(119));
+            wire.Push("{\"method\":\"Target.targetInfoChanged\",\"params\":{\"targetInfo\":{\"targetId\":\"DELAYED\",\"type\":\"page\",\"url\":\"https://example.test/late\"}}}");
+            await raised.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await host.CreatePageAsync(_session, "tab_2", default, "DELAYED");
+            await host.RejectPopupAsync(_session, "DELAYED", default);
+            time.Advance(TimeSpan.FromMinutes(10));
+            Assert.DoesNotContain(Parse(wire.Snapshot()), frame => frame.Method == "Target.closeTarget"
+                && frame.Parameters.GetProperty("targetId").GetString() == "DELAYED");
+        }
+    }
+
+    [Fact]
+    public async Task ExpiryWinningTheAdoptionRaceDoesNotCreateAnUnrelatedReplacementTab()
+    {
+        var time = new ManualTimeProvider();
+        var (host, wire, _) = CreateHost(timeProvider: time);
+        using (host)
+        {
+            await host.CreatePageAsync(_session, "tab_1", default);
+            PushPopup(wire, "EXPIRED", "about:blank");
+            Assert.True(await WaitForAsync(() => time.ActiveTimers == 1));
+            time.Advance(TimeSpan.FromMinutes(2));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => host.CreatePageAsync(_session, "late", default, "EXPIRED"));
+            await WaitForFrameAsync(wire, frame => frame.Method == "Target.closeTarget"
+                && frame.Parameters.GetProperty("targetId").GetString() == "EXPIRED");
+            Assert.Single(Parse(wire.Snapshot()), frame => frame.Method == "Target.createTarget");
+        }
+    }
+
+    [Fact]
+    public async Task PendingPopupCapClosesOverflowWithoutEvictingLegitimateDelayedTargets()
+    {
+        var time = new ManualTimeProvider();
+        var (host, wire, _) = CreateHost(timeProvider: time);
+        using (host)
+        {
+            await host.CreatePageAsync(_session, "tab_1", default);
+            for (var i = 0; i <= 32; i++) PushPopup(wire, "BLANK" + i, "about:blank");
+            await WaitForFrameAsync(wire, frame => frame.Method == "Target.closeTarget"
+                && frame.Parameters.GetProperty("targetId").GetString() == "BLANK32");
+            Assert.Single(Parse(wire.Snapshot()), frame => frame.Method == "Target.closeTarget");
+            await host.CreatePageAsync(_session, "tab_2", default, "BLANK0");
+            time.Advance(TimeSpan.FromMinutes(2));
+            Assert.True(await WaitForAsync(() => Parse(wire.Snapshot()).Count(frame => frame.Method == "Target.closeTarget") == 32));
+            Assert.DoesNotContain(Parse(wire.Snapshot()), frame => frame.Method == "Target.closeTarget"
+                && frame.Parameters.GetProperty("targetId").GetString() == "BLANK0");
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedPopupAttachmentClosesItsRemovedPendingNativeTarget(bool canceled)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var (host, wire, _) = CreateHost();
+        using (host)
+        {
+            await host.CreatePageAsync(_session, "tab_1", default);
+            var raised = new TaskCompletionSource<BrowserNewTabRequestedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+            host.NewTabRequested += (_, e) => raised.TrySetResult(e);
+            PushPopup(wire, "FAIL", "https://example.test/popup");
+            await raised.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            wire.FailMethod = canceled ? null : "Target.attachToTarget";
+            wire.OnReply = (method, ct) =>
+            {
+                if (canceled && method == "Target.attachToTarget") { cancellation.Cancel(); throw new OperationCanceledException(ct); }
+                return Task.CompletedTask;
+            };
+            if (canceled) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => host.CreatePageAsync(_session, "failed", cancellation.Token, "FAIL"));
+            else await Assert.ThrowsAsync<InvalidOperationException>(() => host.CreatePageAsync(_session, "failed", default, "FAIL"));
+            Assert.Contains(Parse(wire.Snapshot()), frame => frame.Method == "Target.closeTarget"
+                && frame.Parameters.GetProperty("targetId").GetString() == "FAIL");
+        }
+    }
+
+    private static void PushPopup(ScriptedWire wire, string targetId, string url) =>
+        wire.Push("{\"method\":\"Target.targetCreated\",\"params\":{\"targetInfo\":{\"targetId\":\"" + targetId
+            + "\",\"type\":\"page\",\"url\":\"" + url + "\",\"openerId\":\"T1\"}}}");
+
+    private static ChromiumBrowserHost CreateHost(FakeProcess[] processes, ScriptedWire[] wires)
+    {
+        var attempts = new Queue<FakeProcess>(processes);
+        var connections = new Queue<ScriptedWire>(wires);
+        return new ChromiumBrowserHost(Path.Combine(Path.GetTempPath(), "alcoler-chromium-host-" + Guid.NewGuid().ToString("N")),
+            binaryResolver: _ => Task.FromResult("/fake/chrome"),
+            processFactory: (_, _, _) => attempts.Dequeue(), wireFactory: () => connections.Dequeue());
+    }
+
+    private static (ChromiumBrowserHost Host, ScriptedWire Wire, FakeProcess Process) CreateHost(bool headless = false, TimeProvider? timeProvider = null)
     {
         var wire = new ScriptedWire();
         var process = new FakeProcess();
@@ -363,7 +637,7 @@ public sealed class ChromiumBrowserHostTests
             new ChromiumBrowserOptions { Headless = headless },
             binaryResolver: _ => Task.FromResult("/fake/chrome"),
             processFactory: (_, _, _) => process,
-            wireFactory: () => wire);
+            wireFactory: () => wire, timeProvider: timeProvider);
         return (host, wire, process);
     }
 
@@ -420,6 +694,10 @@ public sealed class ChromiumBrowserHostTests
 
         public List<string> Frames { get; } = [];
         public bool HoldEvaluations { get; set; }
+        public string? FailMethod { get; set; }
+        public Func<CancellationToken, Task>? OnConnect { get; init; }
+        public Func<string, CancellationToken, Task>? OnReply { get; set; }
+        public int DisposeCalls;
 
         public List<string> Snapshot()
         {
@@ -431,7 +709,7 @@ public sealed class ChromiumBrowserHostTests
         public Task ConnectAsync(Uri uri, CancellationToken cancellationToken)
         {
             ConnectedUri = uri;
-            return Task.CompletedTask;
+            return OnConnect?.Invoke(cancellationToken) ?? Task.CompletedTask;
         }
 
         public Task SendTextAsync(string text, CancellationToken cancellationToken)
@@ -441,10 +719,15 @@ public sealed class ChromiumBrowserHostTests
             var root = document.RootElement;
             if (!root.TryGetProperty("method", out var methodElement) || methodElement.GetString() is not { } method) return Task.CompletedTask;
             var parameters = root.TryGetProperty("params", out var parameterElement) ? parameterElement.Clone() : default;
+            if (method == FailMethod)
+            {
+                Push("{\"id\":" + root.GetProperty("id").GetInt64() + ",\"error\":{\"message\":\"deliberate protocol failure\"}}");
+                return Task.CompletedTask;
+            }
             if (method == "Runtime.evaluate" && HoldEvaluations) return Task.CompletedTask;
             var response = Respond(method, parameters);
             Push("{\"id\":" + root.GetProperty("id").GetInt64() + ",\"result\":" + BrowserJson.Serialize(response) + "}");
-            return Task.CompletedTask;
+            return OnReply?.Invoke(method, cancellationToken) ?? Task.CompletedTask;
         }
 
         private object? Respond(string method, JsonElement parameters) => method switch
@@ -465,12 +748,56 @@ public sealed class ChromiumBrowserHostTests
 
         public void Push(string message) => _inbound.Writer.TryWrite(message);
 
-        public void Dispose() { }
+        public void Dispose() => Interlocked.Increment(ref DisposeCalls);
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private readonly Lock _sync = new();
+        private readonly List<ManualTimer> _timers = [];
+        private DateTimeOffset _now = DateTimeOffset.UnixEpoch;
+        public int ActiveTimers { get { lock (_sync) return _timers.Count(timer => timer.Due is not null); } }
+        public override DateTimeOffset GetUtcNow() { lock (_sync) return _now; }
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state);
+            lock (_sync) _timers.Add(timer);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+        public void Advance(TimeSpan amount)
+        {
+            ManualTimer[] due;
+            lock (_sync)
+            {
+                _now += amount;
+                due = _timers.Where(timer => timer.Due <= _now).ToArray();
+                foreach (var timer in due) timer.Due = null;
+            }
+            foreach (var timer in due) timer.Fire();
+        }
+        private sealed class ManualTimer(ManualTimeProvider owner, TimerCallback callback, object? state) : ITimer
+        {
+            public DateTimeOffset? Due;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (owner._sync) Due = dueTime == Timeout.InfiniteTimeSpan ? null : owner._now + dueTime;
+                return true;
+            }
+            public void Fire() => callback(state);
+            public void Dispose() { lock (owner._sync) { Due = null; owner._timers.Remove(this); } }
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
     }
 
     private sealed class FakeProcess : IChromiumProcess
     {
         public int ShutdownCalls;
+        public int StartCalls;
+        public int DisposeCalls;
+        public CancellationToken ShutdownToken;
+        public Func<CancellationToken, Task>? OnStart { get; set; }
+        public Func<CancellationToken, Task>? OnShutdown { get; init; }
         private EventHandler? _exited;
 
         public Uri WsUri { get; } = new("ws://127.0.0.1:9222/devtools/browser/fake");
@@ -481,17 +808,27 @@ public sealed class ChromiumBrowserHostTests
             remove => _exited -= value;
         }
 
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref StartCalls);
+            return OnStart?.Invoke(cancellationToken) ?? Task.CompletedTask;
+        }
 
         public Task ShutdownAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref ShutdownCalls);
+            ShutdownToken = cancellationToken;
             RaiseExited();
-            return Task.CompletedTask;
+            return OnShutdown?.Invoke(cancellationToken) ?? Task.CompletedTask;
         }
 
+        public Action CaptureExit()
+        {
+            var handlers = _exited;
+            return () => handlers?.Invoke(this, EventArgs.Empty);
+        }
         public void RaiseExited() => _exited?.Invoke(this, EventArgs.Empty);
 
-        public void Dispose() { }
+        public void Dispose() => Interlocked.Increment(ref DisposeCalls);
     }
 }

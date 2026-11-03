@@ -1,4 +1,6 @@
 using System;
+using System.Collections.ObjectModel;
+using System.Runtime.CompilerServices;
 using System.Linq;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
@@ -13,6 +15,7 @@ using Alcoler.Views;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Presenters;
 using Avalonia.Controls.Shapes;
 using Avalonia.Controls.Templates;
 using Avalonia.Headless;
@@ -32,7 +35,7 @@ using Assert = Xunit.Assert;
 
 namespace Alcoler.Tests.Views;
 
-public class TimelineSmokeTests
+public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
 {
     private Window? _window;
 
@@ -1009,6 +1012,253 @@ public class TimelineSmokeTests
             store.Dispose();
         }
     }
+
+    [AvaloniaFact]
+    public void ConversationPanel_AttachedAddsGrowOffsetsWithoutPerRowArrayCopies()
+    {
+        EnsureFluentTheme();
+        var source = new ObservableCollection<object>(Enumerable.Range(0, 10_000).Select(_ => new object()));
+        var (items, panel, _, window) = HostPanel(source, new FuncDataTemplate<object>((_, _) => new Border { Height = 20 }));
+        try
+        {
+            var additions = Enumerable.Range(0, 1000).Select(_ => new object()).ToArray();
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            foreach (var addition in additions)
+                source.Add(addition);
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+            output.WriteLine($"10,000 attached rows plus 1,000 additions: {allocated:N0} bytes allocated.");
+            Assert.True(allocated < 8_000_000, $"Attached additions allocated {allocated:N0} bytes.");
+            var offsets = PanelOffsets(panel);
+            Assert.InRange(offsets.Length, source.Count + 1, (source.Count + 1) * 2);
+            Pump();
+            items.ScrollIntoView(source.Count - 1);
+            Pump();
+            Assert.Equal(offsets[source.Count], panel.DesiredSize.Height, precision: 5);
+            for (var index = 0; index < additions.Length; index++)
+                source.RemoveAt(source.Count - 1);
+            Pump();
+            Assert.Same(offsets, PanelOffsets(panel));
+            Assert.Equal(offsets[source.Count], panel.DesiredSize.Height, precision: 5);
+            source.Clear();
+            Pump();
+            Assert.Same(offsets, PanelOffsets(panel));
+            Assert.Equal(0, panel.DesiredSize.Height);
+            Assert.Empty(panel.Children);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void ConversationPanel_SpareOffsetCapacityPreservesFocusAndScrollIntoViewAcrossChanges()
+    {
+        EnsureFluentTheme();
+        var source = new ObservableCollection<Control>(Enumerable.Range(0, 48)
+            .Select(index => (Control)new Button { Height = 40, Content = $"Row {index}" }));
+        var (items, panel, scroll, window) = HostPanel(source);
+        try
+        {
+            for (var index = 0; index < source.Count; index++)
+                items.ScrollIntoView(index);
+            TracePanelHeights("After measuring every row", panel, source);
+            scroll.ScrollToHome();
+            Pump();
+            TracePanelHeights("After returning home", panel, source);
+            Assert.Equal(source.Count, PanelHeights(panel).Count);
+            Assert.All(PanelHeights(panel).Values, height => Assert.Equal(40, height));
+            var focused = source[5];
+            Assert.True(focused.Focus());
+            scroll.Offset = new Vector(0, 600);
+            Pump();
+            TracePanelHeights("After focus and scroll", panel, source);
+            Assert.True(focused.IsKeyboardFocusWithin);
+            source.Insert(1, new Button { Height = 40, Content = "Inserted" });
+            source.RemoveAt(3);
+            source.Move(30, 10);
+            Pump();
+            items.ScrollIntoView(1);
+            Pump();
+            TracePanelHeights("After mixed changes", panel, source);
+
+            Assert.Same(focused, items.ContainerFromIndex(source.IndexOf(focused)));
+            Assert.True(focused.IsKeyboardFocusWithin);
+            Assert.Equal(source.IndexOf(focused), items.IndexFromContainer(focused));
+            Assert.Equal(source.Count * 40, panel.DesiredSize.Height, precision: 5);
+            Assert.True(PanelOffsets(panel).Length > source.Count + 1);
+            items.ScrollIntoView(source.Count - 1);
+            Pump();
+            Assert.NotNull(items.ContainerFromIndex(source.Count - 1));
+            Assert.True(focused.IsKeyboardFocusWithin);
+            Assert.InRange(scroll.Offset.Y, 0, scroll.Extent.Height - scroll.Viewport.Height);
+            var rowIndices = panel.Children.Where(control => control.IsVisible).Select(items.IndexFromContainer).ToArray();
+            Assert.Equal(rowIndices.Order(), rowIndices);
+            source[^1].Height = 80;
+            Pump();
+            Assert.Equal(80, PanelHeights(panel)[source[^1]]);
+            Assert.Equal(source.Count * 40 + 40, panel.DesiredSize.Height, precision: 5);
+            Assert.True(focused.IsKeyboardFocusWithin);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConversationPanel_SourceClearReleasesMarkdownAndImageRowsWhilePanelStaysAlive(bool replacePanel)
+    {
+        EnsureFluentTheme();
+        var source = new ObservableCollection<object>();
+        var (items, panel, _, window) = HostPanel(source, new FuncDataTemplate<object>((_, _) => new Border { Height = 20 }));
+        try
+        {
+            var references = AddCollectiblePanelRows(source, items);
+            if (replacePanel)
+            {
+                items.ItemsPanel = new FuncTemplate<Panel?>(() => new ConversationPanel());
+                Pump();
+            }
+            source.Clear();
+            Pump();
+            Assert.Empty(panel.Children);
+            AssertPresentersAwaitRemovalFrame(references, items, panel, window, requireDirectDirtyRoot: !replacePanel);
+            // Detached visuals remain renderer-owned until the removal frame commits.
+            await RenderAsync(window);
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
+
+            Assert.All(references, reference => Assert.False(reference.IsAlive));
+            GC.KeepAlive(panel);
+            GC.KeepAlive(items);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void AssistantAppendText_UpdatesHasTextStyleAndAuthoritativeFinalVisibility()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 800);
+        try
+        {
+            var row = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), string.Empty)], true, DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowAppended(row)], false));
+            Pump();
+            var assistant = Assert.Single(view.GetVisualDescendants().OfType<StackPanel>(),
+                panel => panel.Classes.Contains("assistantRow"));
+            Assert.DoesNotContain("hasText", assistant.Classes);
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowTextAppended(row.RowId, "Live text", row.At.AddSeconds(1))], false));
+            Pump();
+            Assert.Contains("hasText", assistant.Classes);
+            Assert.Contains(assistant.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                text => text.IsEffectivelyVisible && text.Text == "Live text");
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(),
+                [new RowUpserted(row with
+                {
+                    Parts = [new TextPart(StrongId.NewPartId(), "Corrected final text")],
+                    IsStreaming = false,
+                })], false));
+            Pump();
+            Assert.Contains("hasText", assistant.Classes);
+            Assert.Equal("Corrected final text", Assert.Single(assistant.GetVisualDescendants().OfType<ConversationMarkdown>()).Markdown);
+            viewModel.ApplyUpdate(new ProjectionUpdate(4, TestSnapshots.State(),
+                [new RowUpserted(row with { IsStreaming = false })], false));
+            Pump();
+            Assert.DoesNotContain("hasText", assistant.Classes);
+            Assert.False(Assert.IsType<AssistantMessageItemViewModel>(Assert.Single(viewModel.Items)).HasFinalMarkdown);
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private WeakReference[] AddCollectiblePanelRows(ObservableCollection<object> source, ItemsControl items)
+    {
+        var markdown = new AssistantMessageItemViewModel("markdown", StrongId.NewMessageId());
+        markdown.UpdateFrom(new AssistantMessageRow(markdown.RowId, markdown.Id,
+            [new TextPart(StrongId.NewPartId(), new string('x', 100_000))], false, DateTimeOffset.UtcNow));
+        var image = new FilePart(StrongId.NewPartId(), "artifact://collectible-image", "image/png");
+        var user = new UserMessageItemViewModel("image", "Image", [image]);
+        source.Add(markdown);
+        source.Add(user);
+        Pump();
+        return [new WeakReference(markdown), new WeakReference(user), new WeakReference(image),
+            new WeakReference(items.ContainerFromIndex(0)!), new WeakReference(items.ContainerFromIndex(1)!)];
+    }
+
+    private (ItemsControl Items, ConversationPanel Panel, ScrollViewer Scroll, Window Window) HostPanel(
+        System.Collections.IEnumerable source, IDataTemplate? template = null)
+    {
+        var items = new ItemsControl
+        {
+            ItemsSource = source,
+            ItemsPanel = new FuncTemplate<Panel?>(() => new ConversationPanel()),
+            ItemTemplate = template,
+        };
+        var scroll = new ScrollViewer { Content = items, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        _window = new Window { Width = 900, Height = 320, Content = scroll };
+        _window.Show();
+        Pump();
+        return (items, Assert.Single(items.GetVisualDescendants().OfType<ConversationPanel>()), scroll, _window);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void AssertPresentersAwaitRemovalFrame(WeakReference[] references, ItemsControl items, ConversationPanel panel, Window window,
+        bool requireDirectDirtyRoot)
+    {
+        var renderer = ((Avalonia.Rendering.IRenderRoot)window).Renderer;
+        var dirty = (IEnumerable<Visual>)renderer.GetType()
+            .GetField("_dirty", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(renderer)!;
+        foreach (var reference in references.Skip(3))
+        {
+            var presenter = Assert.IsType<ContentPresenter>(reference.Target);
+            Assert.Null(presenter.Content);
+            Assert.Null(presenter.ContentTemplate);
+            Assert.Null(presenter.DataContext);
+            Assert.Null(presenter.GetVisualParent());
+            Assert.Null(presenter.Parent);
+            Assert.DoesNotContain(presenter, panel.Children);
+            Assert.DoesNotContain(presenter, items.GetLogicalChildren());
+            if (requireDirectDirtyRoot)
+                Assert.Contains(presenter, dirty);
+        }
+    }
+
+    private void TracePanelHeights(string stage, ConversationPanel panel, IReadOnlyList<Control> source)
+    {
+        var heights = PanelHeights(panel);
+        var width = typeof(ConversationPanel)
+            .GetField("_width", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(panel);
+        var rows = source.Select((row, index) => $"{index}:{(heights.TryGetValue(row, out var height) ? height.ToString() : "estimated48")}");
+        output.WriteLine($"{stage}: width={width}, extent={panel.DesiredSize.Height}, endpoint={PanelOffsets(panel)[source.Count]}, cached={heights.Count}/{source.Count}, rows=[{string.Join(", ", rows)}]");
+    }
+
+    private static Dictionary<object, double> PanelHeights(ConversationPanel panel) => (Dictionary<object, double>)typeof(ConversationPanel)
+        .GetField("_heights", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(panel)!;
+
+    private static double[] PanelOffsets(ConversationPanel panel) => (double[])typeof(ConversationPanel)
+        .GetField("_offsets", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(panel)!;
 
     [AvaloniaFact]
     public async Task ConversationPanel_PreloadedItemsKeepStreamingHeightAndReleaseReplacedPanel()

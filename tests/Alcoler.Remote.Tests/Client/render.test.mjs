@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
-  Transcript, rowElement, toolSummary, toolCallHtml, toolBodyHtml, jsonPreview,
+  Transcript, rowElement, toolSummary, toolCallHtml, toolBodyHtml, jsonPreview, hydrateThumbs, releaseArtifacts,
 } from '../../../src/Alcoler.Remote/wwwroot/render.js';
 
 const tool = (overrides = {}) => ({
@@ -489,7 +490,7 @@ test('row replacements and reconnect rebuilds retain disclosure and Show all sta
   transcript.append(row);
   transcript.state(row.rowId).all.add('output-0');
   const old = transcript.els.get(row.rowId);
-  old.querySelectorAll = () => [{ dataset: { disclosure: 'tool' }, open: true }];
+  old.querySelectorAll = selector => selector.startsWith('details') ? [{ dataset: { disclosure: 'tool' }, open: true }] : [];
   old.replaceWith = replacement => { root.childNodes = [replacement]; };
   transcript.upsert({ ...row, duration: 2500 });
   assert.match(transcript.els.get(row.rowId).innerHTML, /data-disclosure="tool" open/);
@@ -497,7 +498,7 @@ test('row replacements and reconnect rebuilds retain disclosure and Show all sta
   transcript.rebuild([{ ...row, duration: 3000 }]);
   assert.match(transcript.els.get(row.rowId).innerHTML, /data-disclosure="tool" open/);
   assert.match(transcript.els.get(row.rowId).innerHTML, /full tail/);
-  transcript.els.get(row.rowId).querySelectorAll = () => [{ dataset: { disclosure: 'tool' }, open: false }];
+  transcript.els.get(row.rowId).querySelectorAll = selector => selector.startsWith('details') ? [{ dataset: { disclosure: 'tool' }, open: false }] : [];
   transcript.rebuild([row]);
   assert.match(transcript.els.get(row.rowId).innerHTML, /<div class="tool-body"><\/div>/);
   assert.equal(transcript.state(row.rowId).all.has('output-0'), true);
@@ -579,4 +580,187 @@ test('assistant and active tool updates coalesce and completed rows bypass pendi
   t.mock.timers.tick(150);
   assert.equal(replacements.length, 5);
   transcript.dispose();
+});
+
+test('appended text buffers fine-grained chunks until render cadence and preserves immutable row metadata', t => withElements(() => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const transcript = new Transcript(container());
+  const row = { $type: 'assistant_message', rowId: 'append-row', id: 'message-id', isStreaming: true,
+    at: 'initial', canFork: false, parts: [{ $type: 'text', id: 'stable-part', text: 'prefix' }] };
+  transcript.append(row);
+  const rendered = [];
+  transcript.replace = (_, value) => rendered.push(value);
+  const chunks = Array.from({ length: 10_000 }, (_, i) => i % 2 ? ' \n' : '中文');
+  for (let i = 0; i < chunks.length; i++) {
+    assert.equal(transcript.appendText({ rowId: row.rowId, delta: chunks[i], at: `at-${i}` }), true);
+  }
+  assert.equal(rendered.length, 1);
+  assert.equal(transcript.textBuffers.get(row.rowId).chunks.length, 9999);
+  assert.equal(row.parts[0].text, 'prefix');
+  now += 150;
+  t.mock.timers.tick(150);
+  assert.equal(rendered.length, 2);
+  const final = rendered.at(-1);
+  assert.equal(final.parts[0].text, 'prefix' + chunks.join(''));
+  assert.equal(final.parts[0].id, 'stable-part');
+  assert.equal(final.id, row.id);
+  assert.equal(final.canFork, false);
+  assert.equal(final.at, 'at-9999');
+  assert.equal(transcript.textBuffers.get(row.rowId).chunks.length, 0);
+  transcript.dispose();
+  assert.equal(transcript.textBuffers.size, 0);
+}));
+
+test('corrections, commits, removal, reconnect snapshots and disposal retire appended-text buffers', t => withElements(() => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const transcript = new Transcript(container());
+  const row = { $type: 'assistant_message', rowId: 'reset-row', id: 'message', isStreaming: true,
+    parts: [{ $type: 'text', id: 'stable', text: 'first' }] };
+  transcript.append(row);
+  const rendered = [];
+  transcript.replace = (_, value) => rendered.push(value);
+  transcript.appendText({ rowId: row.rowId, delta: ' shown', at: 'shown' });
+  transcript.appendText({ rowId: row.rowId, delta: ' stale', at: 'stale' });
+  const correction = { ...row, parts: [{ ...row.parts[0], text: 'corrected' }] };
+  transcript.upsert(correction);
+  transcript.appendText({ rowId: row.rowId, delta: ' next', at: 'next' });
+  now += 150;
+  t.mock.timers.tick(150);
+  assert.equal(rendered.at(-1).parts[0].text, 'corrected next');
+  transcript.appendText({ rowId: row.rowId, delta: ' must not survive commit', at: 'stale' });
+  transcript.upsert({ ...row, isStreaming: false, canFork: true, parts: [{ $type: 'reasoning', text: 'final reasoning' }] });
+  t.mock.timers.tick(500);
+  assert.equal(rendered.at(-1).isStreaming, false);
+  assert.equal(rendered.at(-1).canFork, true);
+  assert.equal(transcript.textBuffers.size, 0);
+  transcript.rebuild([correction]);
+  transcript.appendText({ rowId: row.rowId, delta: ' reconnect-stale', at: 'stale' });
+  transcript.rebuild([row]);
+  assert.equal(transcript.textBuffers.size, 0);
+  assert.equal(transcript.timers.size, 0);
+  transcript.els.get(row.rowId).remove = () => {};
+  transcript.remove(row.rowId);
+  assert.equal(transcript.appendText({ rowId: row.rowId, delta: 'missing', at: 'missing' }), false);
+  transcript.dispose();
+  assert.equal(transcript.appendText({ rowId: row.rowId, delta: 'disposed' }), false);
+}));
+
+function artifactTarget(kind, uri) {
+  const listeners = new Map();
+  const attrs = new Map();
+  const target = {
+    dataset: { artifact: uri, mime: kind === 'thumb' ? 'image/png' : `${kind}/fixture`, name: 'fixture' },
+    isConnected: true, children: [], listeners, querySelectorAll: () => [], querySelector: () => null,
+    classList: { add() {}, remove() {} },
+    matches: selector => selector.split(',').some(value => value === (kind === 'thumb' ? '.thumb' : kind)),
+    addEventListener(name, fn) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(fn); },
+    removeEventListener(name, fn) { listeners.get(name)?.delete(fn); },
+    fire(name, event = {}) { for (const fn of listeners.get(name) || []) fn(event); },
+    setAttribute(name, value) { attrs.set(name, value); },
+    getAttribute: name => attrs.get(name) ?? null,
+    removeAttribute(name) { attrs.delete(name); },
+    replaceChildren(...children) { this.children = children; },
+    append() {}, pause() { this.pauses = (this.pauses || 0) + 1; }, load() { this.loads = (this.loads || 0) + 1; },
+  };
+  Object.defineProperty(target, 'src', { get: () => attrs.get('src'), set: value => attrs.set('src', value) });
+  return target;
+}
+
+const flushArtifacts = () => new Promise(resolve => setImmediate(resolve));
+
+test('mixed cached API modules still support new rendering without missing named exports', () => {
+  const source = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/render.js', import.meta.url), 'utf8');
+  const compatibility = source.slice(source.indexOf('// A previously active'), source.indexOf('export const PHASE_LABEL'));
+  const promise = Promise.resolve('blob:legacy');
+  const api = { artifactObjectUrl: () => promise, getToken: () => 'legacy-token' };
+  const bridge = new Function('api', `${compatibility}; return { acquireArtifactObjectUrl, artifactUrl };`)(api);
+  const lease = bridge.acquireArtifactObjectUrl('legacy', 'image/png');
+  assert.equal(lease.promise, promise);
+  lease.release();
+  const url = new URL(bridge.artifactUrl('https://untrusted.example/value', 'video/webm'), 'https://paired.example');
+  assert.equal(url.origin, 'https://paired.example');
+  assert.equal(url.pathname, '/api/artifacts');
+  assert.equal(url.searchParams.get('token'), 'legacy-token');
+});
+
+test('download links and media never hydrate eagerly and native actions remain in the user gesture', t => {
+  let fetches = 0;
+  t.mock.method(globalThis, 'fetch', async () => { fetches++; throw new Error('must not hydrate'); });
+  const storage = globalThis.localStorage;
+  globalThis.localStorage = { getItem: () => 'gesture-token' };
+  t.after(() => { if (storage === undefined) delete globalThis.localStorage; else globalThis.localStorage = storage; });
+  const link = artifactTarget('a', 'alcoler-artifact://lazy/download');
+  const audio = artifactTarget('audio', 'alcoler-artifact://lazy/audio');
+  const video = artifactTarget('video', 'alcoler-artifact://lazy/video');
+  const buttons = [];
+  let inGesture = false;
+  for (const media of [audio, video]) {
+    const button = artifactTarget('button', '');
+    buttons.push(button);
+    media.closest = () => ({ querySelector: () => button });
+    media.play = () => { assert.equal(inGesture, true); media.plays = (media.plays || 0) + 1; return Promise.resolve(); };
+  }
+  const scope = { querySelectorAll: () => [link, audio, video] };
+  hydrateThumbs(scope);
+  assert.equal(fetches, 0);
+  assert.equal(link.href, undefined);
+  assert.equal(audio.src, undefined);
+  assert.equal(video.src, undefined);
+  inGesture = true;
+  link.fire('click', { preventDefault() { assert.fail('native download was cancelled'); } });
+  buttons[0].fire('click');
+  buttons[1].fire('click');
+  inGesture = false;
+  for (const value of [link.href, audio.src, video.src]) {
+    assert.ok(value.startsWith('/api/artifacts?'));
+    assert.equal(new URL(value, 'https://paired.example').searchParams.get('token'), 'gesture-token');
+  }
+  assert.equal(audio.plays, 1);
+  assert.equal(video.plays, 1);
+  audio.fire('playing');
+  assert.equal(buttons[0].hidden, true);
+  audio.fire('error');
+  assert.equal(buttons[0].hidden, false);
+  assert.equal(buttons[0].textContent, 'Retry playback');
+  releaseArtifacts(scope);
+  assert.equal(audio.pauses, 1);
+  assert.equal(video.pauses, 1);
+  assert.equal(audio.src, undefined);
+  assert.equal(video.src, undefined);
+  assert.equal(link.listeners.get('click').size, 0);
+  assert.equal(fetches, 0);
+});
+
+test('detaching one thumbnail keeps shared hydration alive; disposing the last consumer aborts it', async t => {
+  const storage = globalThis.localStorage;
+  globalThis.localStorage = { getItem: () => 'thumbnail-token' };
+  t.after(() => { if (storage === undefined) delete globalThis.localStorage; else globalThis.localStorage = storage; });
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', (url, options) => new Promise((resolve, reject) => {
+    requests.push({ url, options });
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+  }));
+  const first = artifactTarget('thumb', 'alcoler-artifact://shared/dispose');
+  const second = artifactTarget('thumb', first.dataset.artifact);
+  let changes = 0;
+  hydrateThumbs({ querySelectorAll: () => [first, second] }, null, () => changes++);
+  await flushArtifacts();
+  assert.equal(requests.length, 1);
+  releaseArtifacts({ querySelectorAll: () => [first] });
+  first.isConnected = false;
+  assert.equal(requests[0].options.signal.aborted, false);
+  const root = container();
+  root.querySelectorAll = () => [second];
+  const transcript = new Transcript(root);
+  transcript.dispose();
+  second.isConnected = false;
+  assert.equal(requests[0].options.signal.aborted, true);
+  await flushArtifacts();
+  assert.equal(changes, 0);
+  assert.equal(first.children.length, 0);
+  assert.equal(second.children.length, 0);
 });

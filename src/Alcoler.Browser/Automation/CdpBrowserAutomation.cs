@@ -20,6 +20,8 @@ public sealed partial class CdpBrowserAutomation : IDisposable
     private readonly ConcurrentDictionary<string, string> _frameSessions = new();
     private readonly ConcurrentDictionary<string, FrameOwner> _frameOwners = new();
     private readonly ConcurrentDictionary<string, ElementReference> _references = new();
+    private readonly ConcurrentDictionary<FrameContext, byte> _referenceContexts = new();
+    private long _referenceEpoch;
     private readonly Dictionary<string, JsonObject> _downloads = new();
     private readonly Queue<string> _downloadOrder = new();
     private readonly Lock _downloadsLock = new();
@@ -334,7 +336,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                     _frameOwners[frame] = new(ownerContext.FrameId, node.GetProperty("backendNodeId").GetInt32());
                     context = await ContextAsync(frame, ct);
                 }
-                finally { await ReleaseAsync(owner, ownerContext.Session, ct); }
+                finally { await ReleaseAsync(owner, ownerContext.Session); }
             }
             return context;
         }
@@ -353,8 +355,9 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             {
                 var result = await SendAsync("DOM.resolveNode", D("backendNodeId", backend, "executionContextId", context.Id), ct, context.Session);
                 var objectId = String(result.GetProperty("object"), "objectId") ?? throw new InvalidOperationException("Referenced node is no longer available.");
-                try { await CallObjectAsync(context, objectId, "function(ref){globalThis.__alcolerAutomation.refs.set(ref,this);return true;}", [D("value", reference)], ct, true); }
-                finally { await ReleaseAsync(objectId, context.Session, ct); }
+                _referenceContexts[context] = 0;
+                try { await CallObjectAsync(context, objectId, "function(ref,epoch){globalThis.__alcolerAutomation.retire(epoch);globalThis.__alcolerAutomation.refs.set(ref,this);return true;}", [D("value", reference), D("value", _referenceEpoch)], ct, true); }
+                finally { await ReleaseAsync(objectId, context.Session); }
             }
         }
         return LocatorJson(input, locator);
@@ -397,7 +400,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         var context = await ContextForInputAsync(input, ct);
         var id = await ResolveObjectAsync(input, context, ct);
         try { return await CallObjectAsync(context, id, function, arguments, ct, byValue); }
-        finally { await ReleaseAsync(id, context.Session, ct); }
+        finally { await ReleaseAsync(id, context.Session); }
     }
 
     private async Task<JsonElement> EvaluateValueAsync(FrameContext context, string expression, CancellationToken ct)
@@ -437,6 +440,13 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             }
         }
         var result = await _page.SendAsync(method, parameters, ct, session);
+        if (result.TryGetProperty("exceptionDetails", out var details))
+        {
+            var exceptionId = details.TryGetProperty("exception", out var exception) ? String(exception, "objectId") : null;
+            var resultId = result.TryGetProperty("result", out var remote) ? String(remote, "objectId") : null;
+            if (exceptionId is not null) await ReleaseAsync(exceptionId, session);
+            if (resultId is not null && resultId != exceptionId) await ReleaseAsync(resultId, session);
+        }
         if (parameters is Dictionary<string, object?> released)
         {
             if (method == "Input.dispatchMouseEvent" && released.TryGetValue("type", out var mouseType) && mouseType is "mouseReleased") _pressedMouse = null;
@@ -464,11 +474,32 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException) { }
     }
 
-    private async Task ReleaseAsync(string id, string? session, CancellationToken ct)
+    private async Task ReleaseAsync(string id, string? session)
     {
-        if (ct.IsCancellationRequested || _lifetime.IsCancellationRequested) return;
-        try { await SendAsync("Runtime.releaseObject", D("objectId", id), ct, session); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { }
+        await CleanupAsync("Runtime.releaseObject", D("objectId", id), session);
+    }
+
+    private async Task<bool> CleanupAsync(string method, object parameters, string? session)
+    {
+        using var cleanup = new CancellationTokenSource(1000);
+        try
+        {
+            var result = await _page.SendAsync(method, parameters, cleanup.Token, session).WaitAsync(cleanup.Token);
+            CheckException(result);
+            return true;
+        }
+        catch (Exception) { return false; }
+    }
+
+    private async Task RetireReferencesAsync(long epoch)
+    {
+        _referenceEpoch = epoch;
+        _references.Clear();
+        await Task.WhenAll(_referenceContexts.Keys.Select(async context =>
+        {
+            if (await CleanupAsync("Runtime.evaluate", D(("expression", $"globalThis.__alcolerAutomation?.retire({epoch})"), ("contextId", context.Id), ("returnByValue", true)), context.Session))
+                _referenceContexts.TryRemove(context, out _);
+        }));
     }
 
     private static void CheckException(JsonElement result)
@@ -500,18 +531,38 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 {
                     _mainFrame = id;
                     Url = String(frame, "url");
+                    _referenceContexts.Clear();
                     InvalidateDocument();
                 }
-                else if (id is not null) { _contexts.TryRemove(id, out _); _references.Clear(); }
+                else if (id is not null)
+                {
+                    ForgetReferenceContexts(context => context.FrameId == id);
+                    _contexts.TryRemove(id, out _);
+                    _references.Clear();
+                }
                 break;
             case "Page.navigatedWithinDocument":
                 if (String(p, "frameId") == _mainFrame) Url = String(p, "url");
                 break;
-            case "DOM.documentUpdated":
-            case "Runtime.executionContextsCleared": InvalidateDocument(); break;
+            case "DOM.documentUpdated": InvalidateDocument(); break;
+            case "Runtime.executionContextsCleared":
+                ForgetReferenceContexts(context => context.Session == e.SessionId);
+                InvalidateDocument();
+                break;
+            case "Runtime.executionContextDestroyed":
+                if (p.TryGetProperty("executionContextId", out var destroyed))
+                {
+                    var contextId = destroyed.GetInt32();
+                    ForgetReferenceContexts(context => context.Id == contextId && context.Session == e.SessionId);
+                    foreach (var (frameId, context) in _contexts)
+                        if (context.Id == contextId && context.Session == e.SessionId) _contexts.TryRemove(frameId, out _);
+                    _references.Clear();
+                }
+                break;
             case "Page.frameDetached":
                 if (String(p, "frameId") is { } detached)
                 {
+                    ForgetReferenceContexts(context => context.FrameId == detached);
                     _contexts.TryRemove(detached, out _);
                     // An OOPIF swap can deliver Target.attachedToTarget for the replacement before this
                     // event; the fresh route must survive and the stale one is retired by
@@ -530,12 +581,15 @@ public sealed partial class CdpBrowserAutomation : IDisposable
                 break;
             case "Target.detachedFromTarget":
                 if (String(p, "sessionId") is { } retired)
+                {
+                    ForgetReferenceContexts(context => context.Session == retired);
                     foreach (var (mappedFrame, mappedSession) in _frameSessions)
                         if (mappedSession == retired)
                         {
                             _frameSessions.TryRemove(mappedFrame, out _);
                             _contexts.TryRemove(mappedFrame, out _);
                         }
+                }
                 break;
             case "Page.lifecycleEvent":
                 if (String(p, "frameId") is { } loadFrame && String(p, "name") is { } name)
@@ -585,6 +639,12 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             if (download) DownloadsChanged?.Invoke(this, EventArgs.Empty);
             else StateChanged?.Invoke(this, EventArgs.Empty);
         }
+    }
+
+    private void ForgetReferenceContexts(Func<FrameContext, bool> matches)
+    {
+        foreach (var context in _referenceContexts.Keys)
+            if (matches(context)) _referenceContexts.TryRemove(context, out _);
     }
 
     private void InvalidateDocument()
@@ -692,6 +752,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
         _page.ProtocolEvent -= OnProtocolEvent;
         _lifetime.Cancel();
         _recordingCancellation?.Cancel();
+        _referenceContexts.Clear();
         _references.Clear();
         _contexts.Clear();
         _frameOwners.Clear();

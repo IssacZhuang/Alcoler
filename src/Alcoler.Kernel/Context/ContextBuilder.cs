@@ -40,6 +40,39 @@ public static class ContextBuilder
     public static AssembledContext Assemble(ContextAssemblyInput input) =>
         AssembleCore(input, out _);
 
+    internal static Dictionary<string, MediaPayload>? DescribeMedia(IReadOnlyList<ConversationMessage> history)
+    {
+        Dictionary<string, MediaPayload>? media = null;
+        foreach (var message in history)
+        {
+            foreach (var part in message.Parts)
+            {
+                switch (part)
+                {
+                    case ToolResultPart result:
+                        foreach (var block in result.Content)
+                        {
+                            if (block is ToolResultMedia image)
+                                Add(image.ArtifactUri, image.MimeType, image.FileName);
+                        }
+                        break;
+                    case FilePart file:
+                        Add(file.ArtifactUri, file.MimeType, file.FileName);
+                        break;
+                }
+            }
+        }
+        return media;
+
+        void Add(string uri, string mimeType, string? fileName)
+        {
+            if (!mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                return;
+            media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
+            media.TryAdd(uri, new MediaPayload(mimeType, string.Empty, fileName));
+        }
+    }
+
     private static AssembledContext AssembleCore(
         ContextAssemblyInput input, out int requestTokens)
     {

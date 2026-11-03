@@ -4,11 +4,6 @@ using System.Text.RegularExpressions;
 
 namespace Alcoler.Adapters.Tools;
 
-/// <summary>
-/// Fallback engine: .NET regex over the managed file walker, used when the
-/// native alco-grep library is unavailable. Does not implement ignore-file
-/// rules; the native engine is the reference-aligned path.
-/// </summary>
 internal sealed class ManagedGrepEngine : IGrepEngine
 {
     private const int BinaryProbeBytes = 8192;
@@ -39,11 +34,11 @@ internal sealed class ManagedGrepEngine : IGrepEngine
 
         var globFilters = request.GlobPatterns.Select(static candidate => new GrepGlobFilter(candidate)).ToList();
         var typeFilter = request.TypeFilter is { } type ? GrepTypeMap.CreateFilter(type) : (GrepTypeFilter?)null;
-        List<string> candidates = request.IsSingleFile
+        IEnumerable<string> candidates = request.IsSingleFile
             ? [request.SearchPath]
-            : [.. FileSearchSupport.EnumerateFiles(request.SearchPath).OrderBy(static path => path, StringComparer.Ordinal)];
+            : FileSearchSupport.EnumerateFiles(request.SearchPath);
 
-        var result = new GrepEngineResult();
+        var result = new GrepResultCollector(request);
         foreach (var file in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -58,19 +53,13 @@ internal sealed class ManagedGrepEngine : IGrepEngine
             if (!TryReadNonBinaryText(file, out var content))
                 continue;
 
-            var search = request.Multiline
-                ? SearchMultilineContent(file, content, regex, request.OnlyMatching, request.BeforeContext, request.AfterContext)
-                : SearchLineContent(file, content, regex, request.OnlyMatching, request.BeforeContext, request.AfterContext);
-            if (search.MatchCount == 0)
-                continue;
-
-            result.MatchedFiles.Add(file);
-            if (request.Mode == "content")
-                result.ContentEntries.AddRange(search.Entries);
-            else if (request.Mode == "count")
-                result.CountEntries.Add((file, search.MatchCount));
+            var count = request.Multiline
+                ? SearchMultilineContent(file, content, regex, request, result, cancellationToken)
+                : SearchLineContent(file, content, regex, request, result, cancellationToken);
+            if (count > 0 && request.Mode != "content")
+                result.AddFile(file, count);
         }
-        return result;
+        return result.Complete();
     }
 
     private static Regex GetRegex(string pattern, RegexOptions options)
@@ -89,178 +78,184 @@ internal sealed class ManagedGrepEngine : IGrepEngine
         }
     }
 
-    private readonly record struct LineSearch(int MatchCount, List<GrepContentEntry> Entries);
-
-    private static LineSearch SearchLineContent(
+    private static long SearchLineContent(
         string file,
         string content,
         Regex regex,
-        bool onlyMatching,
-        int beforeContext,
-        int afterContext)
+        GrepEngineRequest request,
+        GrepResultCollector result,
+        CancellationToken cancellationToken)
     {
         var lines = SplitLines(content);
-        if (onlyMatching)
+        var flags = request.Mode == "content" ? new byte[lines.Length] : null;
+        var matchedLines = 0L;
+        for (var index = 0; index < lines.Length; index++)
         {
-            var entriesByLine = new List<GrepContentEntry>?[lines.Length];
-            var ranges = new List<(int Start, int End)>();
-            var flags = new byte[lines.Length];
-            var matchedLines = 0;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!regex.IsMatch(lines[index].Span))
+                continue;
+            matchedLines++;
+            if (flags is not null)
+                flags[index] |= MatchedLineFlag;
+        }
+        if (flags is null)
+            return matchedLines;
+
+        MarkContextLines(flags, request.BeforeContext, request.AfterContext);
+        if (request.OnlyMatching)
+        {
+            var emitter = new ContextEmitter(file, lines, flags, result);
             for (var index = 0; index < lines.Length; index++)
             {
-                foreach (Match match in regex.Matches(lines[index]))
+                cancellationToken.ThrowIfCancellationRequested();
+                if ((flags[index] & MatchedLineFlag) == 0)
+                    continue;
+                var line = lines[index].Span;
+                foreach (var match in regex.EnumerateMatches(line))
                 {
-                    if (entriesByLine[index] is null)
-                    {
-                        entriesByLine[index] = [];
-                        ranges.Add((index, index));
-                        flags[index] |= MatchedLineFlag;
-                        matchedLines++;
-                    }
-                    AppendOnlyMatchingEntries(entriesByLine[index]!, file, index + 1, match.Value);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    emitter.AddMatchParts(index + 1, line.Slice(match.Index, match.Length));
                 }
             }
-
-            return new(matchedLines, BuildContextEntries(file, lines, ranges, entriesByLine, flags, beforeContext, afterContext));
+            emitter.Complete();
         }
-
-        var matchingRanges = new List<(int Start, int End)>();
-        var matchingFlags = new byte[lines.Length];
-        for (var index = 0; index < lines.Length; index++)
+        else
         {
-            if (!regex.IsMatch(lines[index]))
-                continue;
-            matchingRanges.Add((index, index));
-            matchingFlags[index] |= MatchedLineFlag;
+            for (var index = 0; index < lines.Length; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if ((flags[index] & ContextLineFlag) != 0)
+                    result.AddContent(file, index + 1, lines[index].Span);
+            }
         }
-
-        MarkContextLines(matchingFlags, matchingRanges, beforeContext, afterContext);
-        var matchedEntries = new List<GrepContentEntry>(matchingRanges.Count);
-        for (var index = 0; index < lines.Length; index++)
-        {
-            if ((matchingFlags[index] & ContextLineFlag) != 0)
-                matchedEntries.Add(new GrepContentEntry(file, index + 1, lines[index]));
-        }
-        return new(matchingRanges.Count, matchedEntries);
+        return matchedLines;
     }
 
-    private static LineSearch SearchMultilineContent(
+    private static long SearchMultilineContent(
         string file,
         string content,
         Regex regex,
-        bool onlyMatching,
-        int beforeContext,
-        int afterContext)
+        GrepEngineRequest request,
+        GrepResultCollector result,
+        CancellationToken cancellationToken)
     {
-        if (!onlyMatching)
+        var matches = 0L;
+        var cursor = 0;
+        var lineNumber = 1;
+        if (!request.OnlyMatching || request.Mode != "content")
         {
-            var entries = new List<GrepContentEntry>();
-            foreach (Match match in regex.Matches(content))
-                entries.Add(new GrepContentEntry(file, LineNumberForIndex(content, match.Index), FirstLine(match.Value)));
-            return new(entries.Count, entries);
+            foreach (var match in regex.EnumerateMatches(content))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                matches++;
+                if (request.Mode != "content")
+                    continue;
+                AdvanceLineNumber(content, match.Index, ref cursor, ref lineNumber);
+                result.AddContent(file, lineNumber, FirstLine(content.AsSpan(match.Index, match.Length)));
+            }
+            return matches;
         }
 
         var lines = SplitLines(content);
-        var entriesByLine = new List<GrepContentEntry>?[lines.Length];
-        var ranges = new List<(int Start, int End)>();
         var flags = new byte[lines.Length];
-        var matchEntries = new List<GrepContentEntry>();
-        foreach (Match match in regex.Matches(content))
+        foreach (var match in regex.EnumerateMatches(content))
         {
-            var startLine = LineNumberForIndex(content, match.Index);
-            matchEntries.Clear();
-            AppendOnlyMatchingEntries(matchEntries, file, startLine, match.Value);
-            foreach (var entry in matchEntries)
+            cancellationToken.ThrowIfCancellationRequested();
+            matches++;
+            AdvanceLineNumber(content, match.Index, ref cursor, ref lineNumber);
+            var endLine = lineNumber + (match.Length == 0 ? 0 : content.AsSpan(match.Index, match.Length - 1).Count('\n'));
+            for (var index = lineNumber - 1; index <= Math.Min(flags.Length - 1, endLine - 1); index++)
+                flags[index] |= MatchedLineFlag;
+        }
+        MarkContextLines(flags, request.BeforeContext, request.AfterContext);
+        var emitter = new ContextEmitter(file, lines, flags, result);
+        cursor = 0;
+        lineNumber = 1;
+        foreach (var match in regex.EnumerateMatches(content))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AdvanceLineNumber(content, match.Index, ref cursor, ref lineNumber);
+            emitter.AddMatchParts(lineNumber, content.AsSpan(match.Index, match.Length));
+        }
+        emitter.Complete();
+        return matches;
+    }
+
+    private static void AdvanceLineNumber(string content, int index, ref int cursor, ref int lineNumber)
+    {
+        lineNumber += content.AsSpan(cursor, index - cursor).Count('\n');
+        cursor = index;
+    }
+
+    private static void MarkContextLines(byte[] flags, int beforeContext, int afterContext)
+    {
+        var markedEnd = -1;
+        for (var index = 0; index < flags.Length; index++)
+        {
+            if ((flags[index] & MatchedLineFlag) == 0)
+                continue;
+            var from = Math.Max(markedEnd + 1, Math.Max(0, index - beforeContext));
+            var to = (int)Math.Min(flags.Length - 1L, (long)index + afterContext);
+            for (var context = from; context <= to; context++)
+                flags[context] |= ContextLineFlag;
+            markedEnd = to;
+        }
+    }
+
+    private sealed class ContextEmitter(string file, ReadOnlyMemory<char>[] lines, byte[] flags, GrepResultCollector result)
+    {
+        private int _nextLine;
+
+        public void AddMatchParts(int lineNumber, ReadOnlySpan<char> text)
+        {
+            if (text.IsEmpty)
             {
-                var lineIndex = entry.LineNumber is int lineNumber ? lineNumber - 1 : startLine - 1;
-                if ((uint)lineIndex >= (uint)entriesByLine.Length)
+                AddPart(lineNumber, text);
+                return;
+            }
+            var subLine = 0;
+            var start = 0;
+            for (var index = 0; index < text.Length; index++)
+            {
+                if (text[index] != '\n')
                     continue;
-                if (entriesByLine[lineIndex] is not { } perLine)
-                    entriesByLine[lineIndex] = perLine = [];
-                perLine.Add(entry);
+                var end = index;
+                if (end > start && text[end - 1] == '\r')
+                    end--;
+                if (end > start)
+                    AddPart(lineNumber + subLine, text[start..end]);
+                subLine++;
+                start = index + 1;
             }
-
-            var endLine = match.Value.Length == 0
-                ? startLine
-                : LineNumberForIndex(content, match.Index + match.Value.Length - 1);
-            ranges.Add((startLine - 1, endLine - 1));
-            MarkMatchedLines(flags, startLine - 1, endLine - 1);
+            if (start < text.Length)
+                AddPart(lineNumber + subLine, text[start..]);
         }
 
-        return new(ranges.Count, BuildContextEntries(file, lines, ranges, entriesByLine, flags, beforeContext, afterContext));
-    }
+        public void Complete() => EmitContextUntil(lines.Length);
 
-    private static List<GrepContentEntry> BuildContextEntries(
-        string file,
-        string[] lines,
-        List<(int Start, int End)> ranges,
-        List<GrepContentEntry>?[] entriesByLine,
-        byte[] flags,
-        int beforeContext,
-        int afterContext)
-    {
-        MarkContextLines(flags, ranges, beforeContext, afterContext);
-        var entries = new List<GrepContentEntry>();
-        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        private void AddPart(int lineNumber, ReadOnlySpan<char> text)
         {
-            if (entriesByLine[lineIndex] is { } matched)
+            var index = lineNumber - 1;
+            if ((uint)index >= (uint)lines.Length)
+                return;
+            EmitContextUntil(index);
+            result.AddContent(file, lineNumber, text);
+            _nextLine = Math.Max(_nextLine, index + 1);
+        }
+
+        private void EmitContextUntil(int end)
+        {
+            while (_nextLine < end)
             {
-                entries.AddRange(matched);
-                continue;
+                if ((flags[_nextLine] & MatchedLineFlag) == 0 && (flags[_nextLine] & ContextLineFlag) != 0)
+                    result.AddContent(file, _nextLine + 1, lines[_nextLine].Span);
+                _nextLine++;
             }
-            if ((flags[lineIndex] & MatchedLineFlag) != 0)
-                continue;
-            if ((flags[lineIndex] & ContextLineFlag) != 0)
-                entries.Add(new GrepContentEntry(file, lineIndex + 1, lines[lineIndex]));
-        }
-        return entries;
-    }
-
-    private static void MarkMatchedLines(byte[] flags, int start, int end)
-    {
-        var from = Math.Max(0, start);
-        var to = Math.Min(flags.Length - 1, end);
-        for (var index = from; index <= to; index++)
-            flags[index] |= MatchedLineFlag;
-    }
-
-    private static void MarkContextLines(byte[] flags, List<(int Start, int End)> ranges, int beforeContext, int afterContext)
-    {
-        foreach (var (start, end) in ranges)
-        {
-            for (var index = Math.Max(0, start - beforeContext); index <= Math.Min(flags.Length - 1, end + afterContext); index++)
-                flags[index] |= ContextLineFlag;
         }
     }
 
-    private static void AppendOnlyMatchingEntries(List<GrepContentEntry> target, string file, int? lineNumber, string text)
-    {
-        if (text.Length == 0)
-        {
-            target.Add(new GrepContentEntry(file, lineNumber, ""));
-            return;
-        }
-
-        var subLine = 0;
-        var start = 0;
-        for (var index = 0; index < text.Length; index++)
-        {
-            if (text[index] != '\n')
-                continue;
-            var end = index;
-            if (end > start && text[end - 1] == '\r')
-                end--;
-            if (end > start)
-                target.Add(new GrepContentEntry(file, lineNumber + subLine, text[start..end]));
-            subLine++;
-            start = index + 1;
-        }
-        if (start < text.Length)
-            target.Add(new GrepContentEntry(file, lineNumber + subLine, text[start..]));
-    }
-
-    // Line boundaries are LF/CRLF only; a trailing line break is not an extra line and a lone CR stays in the line.
-    private static string[] SplitLines(string content)
+    // A trailing line break is not an extra line; only LF and CRLF delimit lines.
+    private static ReadOnlyMemory<char>[] SplitLines(string content)
     {
         if (content.Length == 0)
             return [];
@@ -269,7 +264,7 @@ internal sealed class ManagedGrepEngine : IGrepEngine
             end--;
         if (end > 0 && content[end - 1] == '\r')
             end--;
-        var lines = new List<string>();
+        var lines = new List<ReadOnlyMemory<char>>();
         var start = 0;
         for (var index = 0; index < end; index++)
         {
@@ -278,25 +273,21 @@ internal sealed class ManagedGrepEngine : IGrepEngine
             var lineEnd = index;
             if (lineEnd > start && content[lineEnd - 1] == '\r')
                 lineEnd--;
-            lines.Add(content[start..lineEnd]);
+            lines.Add(content.AsMemory(start, lineEnd - start));
             start = index + 1;
         }
-        lines.Add(content[start..end]);
+        lines.Add(content.AsMemory(start, end - start));
         return lines.ToArray();
     }
 
-    private static string FirstLine(string value)
+    private static ReadOnlySpan<char> FirstLine(ReadOnlySpan<char> value)
     {
         var newline = value.IndexOf('\n');
         var first = newline < 0 ? value : value[..newline];
-        return first.EndsWith('\r') ? first[..^1] : first;
+        return first.EndsWith("\r", StringComparison.Ordinal) ? first[..^1] : first;
     }
 
-    private static int LineNumberForIndex(string content, int index) =>
-        1 + content.AsSpan(0, index).Count('\n');
-
-    // A single open serves both the binary probe and the text decode; the probe reads exactly the
-    // first BinaryProbeBytes bytes, and the decode matches File.ReadAllText (UTF-8 with BOM detection).
+    // The probe and BOM-aware decode must use the same open file.
     private static bool TryReadNonBinaryText(string file, out string content)
     {
         content = "";

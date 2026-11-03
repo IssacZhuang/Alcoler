@@ -11,7 +11,7 @@ public sealed class ChromiumBrowserPage : IBrowserPage
     private static readonly FrozenSet<string> ConsumedProtocolMethods = new string[]
     {
         "Page.frameNavigated", "Page.navigatedWithinDocument", "DOM.documentUpdated",
-        "Runtime.executionContextsCleared", "Page.frameDetached", "Target.attachedToTarget",
+        "Runtime.executionContextsCleared", "Runtime.executionContextDestroyed", "Page.frameDetached", "Target.attachedToTarget",
         "Target.detachedFromTarget",
         "Page.lifecycleEvent", "Host.titleChanged", "Host.loadingChanged",
         "Page.javascriptDialogOpening", "Page.javascriptDialogClosed",

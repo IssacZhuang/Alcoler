@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Alcoler.Tests;
 
-public class ProjectionStoreTests
+public class ProjectionStoreTests(Xunit.Abstractions.ITestOutputHelper output)
 {
     private static (ProjectionStore Store, FakeConversationProjection Projection) Create(
         ConversationSnapshot snapshot,
@@ -222,6 +222,194 @@ public class ProjectionStoreTests
     }
 
     [Fact]
+    public async Task AppendText_MaterializesImmutableRowsAndPreservesMetadata()
+    {
+        var id = StrongId.NewMessageId();
+        var row = AssistantRow("a1", id, "initial", streaming: true) with { CanFork = true };
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State(), row));
+        using (store)
+        {
+            var updates = new ConcurrentQueue<ProjectionUpdate>();
+            store.Updated += updates.Enqueue;
+            store.Start();
+            await WaitUntil(() => updates.Count == 1);
+            var original = Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows));
+            var at = row.At.AddSeconds(1);
+
+            projection.Emit(new ConversationDelta(2, [new RowTextAppended(row.RowId, " appended", at)]));
+            await WaitUntil(() => updates.Any(update => update.Sequence == 2));
+            var appended = Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows));
+            var appendedText = Assert.IsType<TextPart>(Assert.Single(appended.Parts));
+            Assert.Equal("initial appended", appendedText.Text);
+            Assert.Equal(id, appended.Id);
+            Assert.Equal(at, appended.At);
+            Assert.True(appended.IsStreaming);
+            Assert.True(appended.CanFork);
+            Assert.Equal(Assert.IsType<TextPart>(Assert.Single(row.Parts)).Id, appendedText.Id);
+            Assert.Equal("initial", Assert.IsType<TextPart>(Assert.Single(original.Parts)).Text);
+
+            projection.Emit(new ConversationDelta(3, [new RowTextAppended(row.RowId, string.Empty, at.AddSeconds(1))]));
+            await WaitUntil(() => updates.Any(update => update.Sequence == 3));
+            var timestampOnly = Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows));
+            Assert.Same(appendedText.Text, Assert.IsType<TextPart>(Assert.Single(timestampOnly.Parts)).Text);
+            Assert.Equal(at.AddSeconds(1), timestampOnly.At);
+            Assert.Equal(at, appended.At);
+
+            var replacement = row with
+            {
+                Parts = [new TextPart(StrongId.NewPartId(), "corrected")],
+                IsStreaming = false,
+            };
+            projection.Emit(new ConversationDelta(4, [new RowUpserted(replacement)]));
+            await WaitUntil(() => updates.Any(update => update.Sequence == 4));
+            Assert.Same(replacement, Assert.Single(store.Rows));
+            Assert.Equal("initial appended", appendedText.Text);
+        }
+    }
+
+    [Fact]
+    public async Task QueuedAppendText_ConcatenatesEveryDeltaAndKeepsLatestTimestamp()
+    {
+        var scheduler = new QueuedUiScheduler();
+        var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State(), row), scheduler: scheduler);
+        using (store)
+        {
+            var updates = new List<ProjectionUpdate>();
+            store.Updated += updates.Add;
+            store.Start();
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+            projection.Emit(new ConversationDelta(2, [new RowTextAppended(row.RowId, " one", row.At.AddSeconds(1))]));
+            projection.Emit(new ConversationDelta(3, [new RowTextAppended(row.RowId, " two", row.At.AddSeconds(2))]));
+            projection.Emit(new ConversationDelta(4,
+            [
+                new RowTextAppended(row.RowId, string.Empty, row.At.AddSeconds(3)),
+                new StatePatched(TestSnapshots.State(contextUsageTokens: 42)),
+            ]));
+            await WaitUntil(() => store.State.ContextUsageTokens == 42 && scheduler.Count == 1);
+
+            scheduler.RunNext();
+
+            var update = Assert.Single(updates.Skip(1));
+            var appended = Assert.Single(update.Ops.OfType<RowTextAppended>());
+            Assert.Equal(" one two", appended.Delta);
+            Assert.Equal(row.At.AddSeconds(3), appended.At);
+            Assert.Equal(4, update.Sequence);
+            var stored = Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows));
+            Assert.Equal("initial one two", Assert.IsType<TextPart>(Assert.Single(stored.Parts)).Text);
+        }
+    }
+
+    [Fact]
+    public async Task QueuedAppendText_FullReplacementAndRemoveReaddDiscardSupersededAppends()
+    {
+        var scheduler = new QueuedUiScheduler();
+        var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State(), row), scheduler: scheduler);
+        using (store)
+        using (var viewModel = new Alcoler.ViewModel.ConversationViewModel(new FakeAgentRuntime(), store))
+        {
+            var updates = new List<ProjectionUpdate>();
+            store.Updated += updates.Add;
+            store.Start();
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+            projection.Emit(new ConversationDelta(2, [new RowTextAppended(row.RowId, " superseded", row.At)]));
+            projection.Emit(new ConversationDelta(3, [new RowUpserted(row with
+            {
+                Parts = [new TextPart(StrongId.NewPartId(), "replacement")],
+            })]));
+            projection.Emit(new ConversationDelta(4, [new RowTextAppended(row.RowId, " removed", row.At)]));
+            projection.Emit(new ConversationDelta(5, [new RowRemoved(row.RowId)]));
+            projection.Emit(new ConversationDelta(6, [new RowAppended(row with
+            {
+                Parts = [new TextPart(StrongId.NewPartId(), "new")],
+            })]));
+            projection.Emit(new ConversationDelta(7,
+            [
+                new RowTextAppended(row.RowId, " suffix", row.At),
+                new StatePatched(TestSnapshots.State(TurnPhase.Streaming, contextUsageTokens: 42)),
+            ]));
+            await WaitUntil(() => store.State.ContextUsageTokens == 42 && scheduler.Count == 1);
+
+            scheduler.RunNext();
+
+            var batch = Assert.Single(updates.Skip(1));
+            Assert.Collection(batch.Ops,
+                op => Assert.IsType<RowRemoved>(op),
+                op => Assert.IsType<RowAppended>(op),
+                op => Assert.Equal(" suffix", Assert.IsType<RowTextAppended>(op).Delta),
+                op => Assert.IsType<StatePatched>(op));
+            var assistant = Assert.IsType<Alcoler.ViewModel.AssistantMessageItemViewModel>(Assert.Single(viewModel.Items));
+            Assert.Equal("new suffix", assistant.MarkdownText);
+            Assert.Equal("new suffix", Assert.IsType<TextPart>(Assert.Single(
+                Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows)).Parts)).Text);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AppendText_RecoveryUsesAuthoritativeSnapshotAndClearsOldAccumulation(bool missingBaseline)
+    {
+        var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State(), missingBaseline ? [] : [row]));
+        using (store)
+        {
+            var updates = new ConcurrentQueue<ProjectionUpdate>();
+            store.Updated += updates.Enqueue;
+            store.Start();
+            await WaitUntil(() => updates.Count == 1);
+            if (!missingBaseline)
+            {
+                projection.Emit(new ConversationDelta(2, [new RowTextAppended(row.RowId, " obsolete", row.At)]));
+                await WaitUntil(() => updates.Any(update => update.Sequence == 2));
+            }
+            var authoritative = row with { Parts = [new TextPart(StrongId.NewPartId(), "authoritative")] };
+            projection.SetSnapshot(Snapshot(4, TestSnapshots.State(), authoritative));
+            projection.Emit(new ConversationDelta(missingBaseline ? 2 : 4,
+                [new RowTextAppended(row.RowId, " discarded", row.At)]));
+            await WaitUntil(() => updates.Count(update => update.Reset) == 2);
+            projection.Emit(new ConversationDelta(5, [new RowTextAppended(row.RowId, " suffix", row.At)]));
+            await WaitUntil(() => updates.Any(update => update.Sequence == 5));
+
+            var stored = Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows));
+            Assert.Equal("authoritative suffix", Assert.IsType<TextPart>(Assert.Single(stored.Parts)).Text);
+            Assert.Equal("authoritative", Assert.IsType<TextPart>(Assert.Single(authoritative.Parts)).Text);
+        }
+    }
+
+    [Fact]
+    public async Task AppendText_PumpAndQueuedCoalescingAvoidFullPrefixAllocations()
+    {
+        const int count = 4096;
+        const string delta = "0123456789abcdef";
+        var row = AssistantRow("a1", StrongId.NewMessageId(), new string('x', 100_000), streaming: true);
+        var deltas = Enumerable.Range(0, count).Select(index => new ConversationDelta(index + 2,
+            [new RowTextAppended(row.RowId, delta, row.At.AddTicks(index))])).ToArray();
+        var projection = new AllocationProjection(Snapshot(1, TestSnapshots.State(), row), deltas);
+        var scheduler = new QueuedUiScheduler();
+        using var store = new ProjectionStore(() => projection, StrongId.NewSessionId(), scheduler, TestSnapshots.State(),
+            coalesceWindow: TimeSpan.FromHours(1));
+        var updates = new List<ProjectionUpdate>();
+        store.Updated += updates.Add;
+
+        store.Start();
+        var allocated = await projection.Allocated.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        output.WriteLine($"4,096 queued store appends: {allocated:N0} bytes allocated.");
+        Assert.True(allocated < 4_000_000, $"Append pump allocated {allocated:N0} bytes.");
+        scheduler.RunNext();
+        scheduler.RunNext();
+        var appended = Assert.Single(Assert.Single(updates, update => !update.Reset).Ops.OfType<RowTextAppended>());
+        Assert.Equal(string.Concat(Enumerable.Repeat(delta, count)), appended.Delta);
+        var stored = Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows));
+        Assert.Equal(100_000 + count * delta.Length, Assert.IsType<TextPart>(Assert.Single(stored.Parts)).Text.Length);
+        Assert.Equal(100_000, Assert.IsType<TextPart>(Assert.Single(row.Parts)).Text.Length);
+    }
+
+    [Fact]
     public void SetRevision_NeverMovesBackwards()
     {
         var (store, _) = Create(Snapshot(1, TestSnapshots.State()));
@@ -229,6 +417,29 @@ public class ProjectionStoreTests
         store.SetRevision(3);
         Assert.Equal(5, store.Revision);
         store.Dispose();
+    }
+
+    private sealed class AllocationProjection(ConversationSnapshot snapshot, IReadOnlyList<ConversationDelta> deltas)
+        : IConversationProjection
+    {
+        public TaskCompletionSource<long> Allocated { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ConversationSnapshot Snapshot() => snapshot;
+
+        public async IAsyncEnumerable<ConversationDelta> Deltas(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            foreach (var delta in deltas)
+                yield return delta;
+            Allocated.TrySetResult(GC.GetAllocatedBytesForCurrentThread() - before);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        public Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public void Dispose() { }
     }
 
     private sealed class QueuedUiScheduler : IUiScheduler

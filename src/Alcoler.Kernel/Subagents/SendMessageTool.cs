@@ -71,6 +71,10 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
         await channel.DeliveryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (!messenger.CanDeliver(context.SessionId, channel))
+                return ToolExecutionResult.Text(
+                    $"No active local_agent task found for target {to}.", isError: true);
+            await channel.EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
             var busy = channel.IsBusy;
             var previousStatus = SubagentTool.BackgroundStatus(channel.Status);
             var summary = StringOrNull(context.Input, "summary");
@@ -101,6 +105,7 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
         finally
         {
             channel.DeliveryLock.Release();
+            messenger.Maintain(context.SessionId);
         }
     }
 

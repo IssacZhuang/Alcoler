@@ -47,10 +47,22 @@ public partial class App : Application
             _trayIcon = CreateTrayIcon(desktop);
             desktop.Exit += (_, _) =>
             {
-                Dispatcher.UIThread.UnhandledException -= OnDispatcherUnhandledException;
-                _trayIcon?.Dispose();
-                _trayIcon = null;
-                viewModel.Dispose();
+                // An exception in this handler would abort the dispatcher exit sequence
+                // and leave a headless process behind, so disposal is guarded.
+                try
+                {
+                    _trayIcon?.Dispose();
+                    _trayIcon = null;
+                    viewModel.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    AppLog.LogUnhandled("Shutdown", exception);
+                }
+                finally
+                {
+                    Dispatcher.UIThread.UnhandledException -= OnDispatcherUnhandledException;
+                }
             };
         }
         catch (Exception exception)
@@ -159,6 +171,10 @@ public partial class App : Application
 
     private void Exit(IClassicDesktopStyleApplicationLifetime desktop)
     {
+        if (_isExiting)
+        {
+            return;
+        }
         _isExiting = true;
         if (_trayIcon is not null)
         {
@@ -166,6 +182,14 @@ public partial class App : Application
             _trayIcon.Dispose();
             _trayIcon = null;
         }
+        // Watchdog: a hang or a swallowed exception in the shutdown sequence must not
+        // be able to leave a headless process behind, so exit is forced after a grace
+        // period that comfortably exceeds the normal shutdown duration.
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(15));
+            Environment.Exit(Environment.ExitCode);
+        });
         desktop.Shutdown();
     }
 }

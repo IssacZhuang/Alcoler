@@ -25,6 +25,8 @@ public interface IBrowserHost : IDisposable
 
     Task ClosePageAsync(string tabId, CancellationToken cancellationToken);
 
+    Task RejectPopupAsync(SessionId sessionId, string targetId, CancellationToken cancellationToken) => Task.CompletedTask;
+
     Task ShowPageAsync(string tabId, CancellationToken cancellationToken);
 
     Task HidePageAsync(string tabId, CancellationToken cancellationToken);

@@ -384,7 +384,7 @@
 
               <DataTemplate x:DataType="vm:AssistantMessageItemViewModel">
                 <StackPanel Classes="assistantRow"
-                            Classes.hasText="{Binding MarkdownText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                            Classes.hasText="{Binding HasText}"
                             Spacing="12" MinWidth="0" HorizontalAlignment="Stretch"
                             IsVisible="{Binding !IsFolded}">
                   <Expander Classes="thinkingBlock" IsExpanded="{Binding IsReasoningExpanded, Mode=TwoWay}" HorizontalAlignment="Stretch"

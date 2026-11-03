@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 
 namespace Alcoler.Adapters.Tools;
 
-internal readonly record struct GrepContentEntry(string Path, int? LineNumber, string Text);
+internal readonly record struct GrepResultEntry(
+    string Path, int? LineNumber, string Text, long Count, DateTime MtimeUtc, long Sequence);
 
 internal sealed class GrepPatternException(string pattern) : Exception
 {
@@ -24,13 +25,117 @@ internal sealed class GrepEngineRequest
     public bool OnlyMatching { get; init; }
     public int BeforeContext { get; init; }
     public int AfterContext { get; init; }
+    public long? RetainedEntryLimit { get; init; }
 }
 
 internal sealed class GrepEngineResult
 {
-    public List<GrepContentEntry> ContentEntries { get; } = [];
-    public List<(string Path, long Count)> CountEntries { get; } = [];
-    public List<string> MatchedFiles { get; } = [];
+    public List<GrepResultEntry> Entries { get; init; } = [];
+    public long TotalEntries { get; init; }
+    public long TotalMatches { get; init; }
+}
+
+internal sealed class GrepResultCollector
+{
+    private readonly bool _sortByMtime;
+    private readonly long? _limit;
+    private readonly List<GrepResultEntry> _unlimited = [];
+    private readonly PriorityQueue<GrepResultEntry, GrepResultEntry> _selected;
+    private long _totalEntries;
+    private long _totalMatches;
+    private string? _lastRetainedPath;
+
+    public GrepResultCollector(GrepEngineRequest request)
+    {
+        _sortByMtime = request.Mode == "files_with_matches";
+        _limit = request.RetainedEntryLimit;
+        _selected = new PriorityQueue<GrepResultEntry, GrepResultEntry>(
+            Comparer<GrepResultEntry>.Create((left, right) => Compare(right, left)));
+    }
+
+    public void AddContent(ReadOnlySpan<char> path, int? lineNumber, ReadOnlySpan<char> text)
+    {
+        if (!TrySelect(path, lineNumber, 0, default, out var entry))
+            return;
+        Retain(entry with { Text = text[..Math.Min(text.Length, GrepTool.MaxColumnChars + 1)].ToString() });
+    }
+
+    public unsafe void AddContent(ReadOnlySpan<char> path, int? lineNumber, byte* text)
+    {
+        if (!TrySelect(path, lineNumber, 0, default, out var entry))
+            return;
+        if (text is null)
+        {
+            Retain(entry);
+            return;
+        }
+        const int maxBytes = (GrepTool.MaxColumnChars + 1) * 4;
+        var length = 0;
+        while (length < maxBytes && text[length] != 0)
+            length++;
+        Span<char> chars = stackalloc char[maxBytes];
+        var charCount = Encoding.UTF8.GetChars(new ReadOnlySpan<byte>(text, length), chars);
+        Retain(entry with { Text = chars[..Math.Min(charCount, GrepTool.MaxColumnChars + 1)].ToString() });
+    }
+
+    public void AddFile(string path, long count)
+    {
+        _totalMatches += count;
+        var mtime = _sortByMtime ? FileSearchSupport.GetLastWriteTimeUtcSafe(path) : default;
+        if (TrySelect(path, null, count, mtime, out var entry))
+            Retain(entry);
+    }
+
+    public GrepEngineResult Complete()
+    {
+        var entries = _limit is null
+            ? _unlimited
+            : _selected.UnorderedItems.Select(static item => item.Element).ToList();
+        entries.Sort(Compare);
+        return new GrepEngineResult { Entries = entries, TotalEntries = _totalEntries, TotalMatches = _totalMatches };
+    }
+
+    private bool TrySelect(ReadOnlySpan<char> path, int? lineNumber, long count, DateTime mtime, out GrepResultEntry entry)
+    {
+        var sequence = _totalEntries++;
+        entry = default;
+        if (_limit is <= 0)
+            return false;
+        if (_limit is { } limit && _selected.Count >= limit)
+        {
+            var worst = _selected.Peek();
+            var comparison = _sortByMtime ? worst.MtimeUtc.CompareTo(mtime) : 0;
+            if (comparison == 0)
+                comparison = path.SequenceCompareTo(worst.Path.AsSpan());
+            if (comparison >= 0)
+                return false;
+        }
+        var retainedPath = _lastRetainedPath is { } previous && path.SequenceEqual(previous) ? previous : path.ToString();
+        _lastRetainedPath = retainedPath;
+        entry = new GrepResultEntry(retainedPath, lineNumber, "", count, mtime, sequence);
+        return true;
+    }
+
+    private void Retain(GrepResultEntry entry)
+    {
+        if (_limit is null)
+        {
+            _unlimited.Add(entry);
+            return;
+        }
+        if (_selected.Count >= _limit.Value)
+            _selected.EnqueueDequeue(entry, entry);
+        else
+            _selected.Enqueue(entry, entry);
+    }
+
+    private int Compare(GrepResultEntry left, GrepResultEntry right)
+    {
+        var comparison = _sortByMtime
+            ? FileSearchSupport.CompareNewestFirst((left.MtimeUtc, left.Path), (right.MtimeUtc, right.Path))
+            : string.CompareOrdinal(left.Path, right.Path);
+        return comparison != 0 ? comparison : left.Sequence.CompareTo(right.Sequence);
+    }
 }
 
 internal interface IGrepEngine

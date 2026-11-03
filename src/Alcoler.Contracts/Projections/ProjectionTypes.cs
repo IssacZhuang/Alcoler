@@ -136,6 +136,7 @@ public sealed record ConversationSnapshot(
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$type")]
 [JsonDerivedType(typeof(RowAppended), "row_appended")]
 [JsonDerivedType(typeof(RowUpserted), "row_upserted")]
+[JsonDerivedType(typeof(RowTextAppended), "row_text_appended")]
 [JsonDerivedType(typeof(RowRemoved), "row_removed")]
 [JsonDerivedType(typeof(StatePatched), "state_patch")]
 public abstract record RowOp;
@@ -143,6 +144,9 @@ public abstract record RowOp;
 public sealed record RowAppended(ConversationRow Row) : RowOp;
 
 public sealed record RowUpserted(ConversationRow Row) : RowOp;
+
+// Requires an initialized streaming assistant row with one text part; only text and At change.
+public sealed record RowTextAppended(string RowId, string Delta, DateTimeOffset At) : RowOp;
 
 public sealed record RowRemoved(string RowId) : RowOp;
 

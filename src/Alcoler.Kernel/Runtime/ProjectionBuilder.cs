@@ -15,7 +15,7 @@ public sealed class ProjectionBuilder
     private readonly object _sync = new();
     private readonly List<ConversationRow> _rows = [];
     private readonly Dictionary<string, int> _rowIndex = [];
-    private readonly Dictionary<string, (string RowId, StringBuilder Text)> _streamingText = [];
+    private readonly Dictionary<string, StreamingText> _streamingText = [];
     private ConversationState _state = ConversationState.Initial(string.Empty, PermissionMode.Build, null, 200_000);
     private readonly List<QueuedInput> _queue = [];
     private IReadOnlyList<QueuedInput> _queueSnapshot = Array.Empty<QueuedInput>();
@@ -33,6 +33,7 @@ public sealed class ProjectionBuilder
     {
         lock (_sync)
         {
+            MaterializeStreamingRows();
             return ([.. _rows], _state);
         }
     }
@@ -41,6 +42,7 @@ public sealed class ProjectionBuilder
     {
         lock (_sync)
         {
+            MaterializeStreamingRows();
             return [.. _rows];
         }
     }
@@ -117,6 +119,7 @@ public sealed class ProjectionBuilder
                         PendingInteraction = null,
                         ContextUsageTokens = _state.ContextUsageTokens ?? turnCompleted.FinalUsage?.ContextUsageTokens ?? turnCompleted.FinalUsage?.InputTokens,
                     };
+                    MaterializeStreamingRows();
                     _streamingText.Clear();
                     CloseOpenToolRows(
                         turnCompleted.Outcome == TurnOutcome.Failed ? ToolCallStatus.Failed : ToolCallStatus.Cancelled,
@@ -137,6 +140,7 @@ public sealed class ProjectionBuilder
                         PendingPermission = null,
                         PendingInteraction = null,
                     };
+                    MaterializeStreamingRows();
                     _streamingText.Clear();
                     CloseOpenToolRows(ToolCallStatus.Failed, ops);
                     Append(new SystemNoticeRow(
@@ -159,6 +163,7 @@ public sealed class ProjectionBuilder
                     _lastAssistantRowId = null;
                     ClearTurnFileChanges();
                     ApplyRewind(rewound.TargetMessageId.Value, ops);
+                    MaterializeStreamingRows();
                     _streamingText.Clear();
                     _queue.Clear();
                     _queueSnapshot = Array.Empty<QueuedInput>();
@@ -315,17 +320,21 @@ public sealed class ProjectionBuilder
                     {
                         if (!_streamingText.TryGetValue(streaming.TurnId.Value, out var entry))
                         {
-                            entry = ($"stream:{streaming.TurnId.Value}", new StringBuilder());
+                            var row = new AssistantMessageRow(
+                                $"stream:{streaming.TurnId.Value}",
+                                Id: default,
+                                [new TextPart(default, streaming.Delta)],
+                                IsStreaming: true,
+                                At: sequenced.OccurredAt);
+                            entry = new StreamingText(row, streaming.Delta);
                             _streamingText[streaming.TurnId.Value] = entry;
+                            Append(row, ops);
                         }
-                        var accumulated = entry.Text;
-                        accumulated.Append(streaming.Delta);
-                        Upsert(new AssistantMessageRow(
-                            entry.RowId,
-                            Id: default,
-                            [new TextPart(default, accumulated.ToString())],
-                            IsStreaming: true,
-                            At: sequenced.OccurredAt), ops);
+                        else
+                        {
+                            entry.Append(streaming.Delta, sequenced.OccurredAt);
+                            ops.Add(new RowTextAppended(entry.RowId, streaming.Delta, sequenced.OccurredAt));
+                        }
                         if (_state.Phase != TurnPhase.Streaming)
                         {
                             _state = _state with { Phase = TurnPhase.Streaming };
@@ -624,6 +633,42 @@ public sealed class ProjectionBuilder
             _rowIndex[_rows[i].RowId] = i;
         }
         ops.Add(new RowRemoved(rowId));
+    }
+
+    private void MaterializeStreamingRows()
+    {
+        foreach (var entry in _streamingText.Values)
+        {
+            if (_rowIndex.TryGetValue(entry.RowId, out var index))
+                _rows[index] = entry.Snapshot();
+        }
+    }
+
+    private sealed class StreamingText(AssistantMessageRow initial, string text)
+    {
+        private readonly StringBuilder _text = new(text);
+        private AssistantMessageRow _snapshot = initial;
+        private DateTimeOffset _at = initial.At;
+        private bool _dirty;
+
+        public string RowId { get; } = initial.RowId;
+
+        public void Append(string delta, DateTimeOffset at)
+        {
+            _text.Append(delta);
+            _at = at;
+            _dirty = true;
+        }
+
+        public AssistantMessageRow Snapshot()
+        {
+            if (_dirty)
+            {
+                _snapshot = _snapshot with { Parts = [new TextPart(default, _text.ToString())], At = _at };
+                _dirty = false;
+            }
+            return _snapshot;
+        }
     }
 
     private sealed class PendingFileChange(string path)

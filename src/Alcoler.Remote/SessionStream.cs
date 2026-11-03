@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 
@@ -15,7 +16,7 @@ internal static class SessionStream
 
     public static async Task RunAsync(
         GatewayState state, SessionId sessionId, WebSocket socket, CancellationToken requestAborted,
-        TimeSpan? pingInterval = null, TimeSpan? sendTimeout = null)
+        TimeSpan? pingInterval = null, TimeSpan? sendTimeout = null, bool appendText = false)
     {
         var writeTimeout = sendTimeout ?? SendTimeout;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
@@ -34,8 +35,9 @@ internal static class SessionStream
             }
             receive = ReceiveLoopAsync(socket, sendGate, cancellation);
             var snapshot = projection.Snapshot();
+            var legacyRows = appendText ? null : new LegacyRows(snapshot);
             await SendAsync(socket, sendGate,
-                GatewayJson.Wrap("snapshot", "snapshot", GatewayJson.Serialize(snapshot)),
+                GatewayJson.SnapshotFrame(snapshot),
                 cancellation.Token, writeTimeout);
             ping = PingLoopAsync(socket, sendGate, cancellation, pingInterval ?? PingInterval, writeTimeout);
             var lastSequence = snapshot.Sequence;
@@ -44,7 +46,7 @@ internal static class SessionStream
                 if (delta.Sequence <= lastSequence)
                     continue;
                 await SendAsync(socket, sendGate,
-                    GatewayJson.Wrap("delta", "delta", GatewayJson.Serialize(delta)),
+                    GatewayJson.DeltaFrame(legacyRows?.Apply(delta) ?? delta),
                     cancellation.Token, writeTimeout);
                 lastSequence = delta.Sequence;
             }
@@ -81,6 +83,56 @@ internal static class SessionStream
                     socket.Dispose();
                 }
             }
+        }
+    }
+
+    private sealed class LegacyRows(ConversationSnapshot snapshot)
+    {
+        private readonly Dictionary<string, AssistantMessageRow> _rows = snapshot.Rows
+            .OfType<AssistantMessageRow>()
+            .Where(row => row.IsStreaming)
+            .ToDictionary(row => row.RowId, StringComparer.Ordinal);
+
+        public ConversationDelta Apply(ConversationDelta delta)
+        {
+            List<RowOp>? translated = null;
+            for (var index = 0; index < delta.Ops.Count; index++)
+            {
+                var op = delta.Ops[index];
+                switch (op)
+                {
+                    case RowAppended { Row: AssistantMessageRow appendedRow }:
+                        Remember(appendedRow);
+                        break;
+                    case RowUpserted { Row: AssistantMessageRow upsertedRow }:
+                        Remember(upsertedRow);
+                        break;
+                    case RowRemoved removed:
+                        _rows.Remove(removed.RowId);
+                        break;
+                    case RowTextAppended appended:
+                        if (!_rows.TryGetValue(appended.RowId, out var current)
+                            || current.Parts is not [TextPart text])
+                            throw new InvalidOperationException("An appended text operation requires its streaming row baseline.");
+                        var updated = current with { Parts = [text with { Text = text.Text + appended.Delta }], At = appended.At };
+                        _rows[updated.RowId] = updated;
+                        if (translated is null)
+                        {
+                            translated = new List<RowOp>(delta.Ops.Count);
+                            for (var previous = 0; previous < index; previous++) translated.Add(delta.Ops[previous]);
+                        }
+                        op = new RowUpserted(updated);
+                        break;
+                }
+                translated?.Add(op);
+            }
+            return translated is null ? delta : delta with { Ops = translated };
+        }
+
+        private void Remember(AssistantMessageRow row)
+        {
+            if (row.IsStreaming) _rows[row.RowId] = row;
+            else _rows.Remove(row.RowId);
         }
     }
 

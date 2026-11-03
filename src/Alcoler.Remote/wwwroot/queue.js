@@ -2,9 +2,10 @@ import { artifactBlob } from './api.js';
 import { blobToBase64 } from './composer.js';
 import { renderQueue } from './render.js';
 
-export async function loadQueuedImages(images) {
+export async function loadQueuedImages(images, { signal } = {}) {
   return Promise.all((images || []).map(async image => {
-    const blob = await artifactBlob(image.artifactUri, image.mimeType);
+    const blob = await artifactBlob(image.artifactUri, image.mimeType, { signal });
+    signal?.throwIfAborted();
     return { mimeType: image.mimeType || blob.type, base64Data: await blobToBase64(blob) };
   }));
 }
@@ -68,8 +69,10 @@ export class QueuedMessages {
     }
     this.refresh();
     let removing = false;
+    const imageLoad = edit ? new AbortController() : null;
+    if (imageLoad) this.imageLoad = imageLoad;
     try {
-      const images = edit ? await (this.opts.loadImages || loadQueuedImages)(queued.images) : [];
+      const images = edit ? await (this.opts.loadImages || loadQueuedImages)(queued.images, { signal: imageLoad.signal }) : [];
       if (this.disposed) return;
       if (!this.ready || (edit && !this.editable) || !this.items.some(item => item.commandId === id)) {
         this.opts.onError('The queue changed or disconnected. This message was not withdrawn for editing.');
@@ -108,6 +111,8 @@ export class QueuedMessages {
         this.opts.onError(`${message}${error?.message ? ` ${error.message}` : ''}`);
       }
     } finally {
+      imageLoad?.abort();
+      if (this.imageLoad === imageLoad) this.imageLoad = null;
       this.pending.delete(id);
       if (edit && !this.disposed) {
         this.editing = false;
@@ -119,6 +124,8 @@ export class QueuedMessages {
 
   dispose() {
     this.disposed = true;
+    this.imageLoad?.abort();
+    this.imageLoad = null;
     if (this.editing) this.composer.setDisabled(false);
     this.items = [];
     this.container.textContent = '';

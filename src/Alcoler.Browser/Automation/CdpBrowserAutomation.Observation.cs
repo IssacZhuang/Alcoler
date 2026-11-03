@@ -16,10 +16,18 @@ public sealed partial class CdpBrowserAutomation
         var maxDepth = Integer(input, "maxDepth", 30, 0, 100);
         if (dom)
         {
-            var locator = Locator(input, false);
-            var scope = locator is null ? "document" : $"__alcolerAutomation.select({await RuntimeLocatorAsync(input, context, ct)})";
-            var value = await EvaluateValueAsync(context, $"__alcolerAutomation.snapshot({generation * 100000L + sequence},1000,{scope},{(Boolean(input, "includeHidden") ? "true" : "false")})", ct);
-            _references.Clear();
+            string? scope = null;
+            JsonElement value;
+            try
+            {
+                if (Locator(input, false) is not null) scope = await ResolveObjectAsync(input, context, ct);
+                await RetireReferencesAsync(generation * 100000L + sequence);
+                _referenceContexts[context] = 0;
+                value = scope is null
+                    ? await EvaluateValueAsync(context, $"__alcolerAutomation.snapshot({_referenceEpoch},1000,document,{(Boolean(input, "includeHidden") ? "true" : "false")})", ct)
+                    : RemoteValue(await CallObjectAsync(context, scope, "function(epoch,hidden){return __alcolerAutomation.snapshot(epoch,1000,this,hidden);}", [D("value", _referenceEpoch), D("value", Boolean(input, "includeHidden"))], ct, true));
+            }
+            finally { if (scope is not null) await ReleaseAsync(scope, context.Session); }
             foreach (var item in value.EnumerateArray())
                 if (String(item, "ref") is { } reference) _references[reference] = new(generation, context.FrameId, null);
             // The budget counts source raw lengths; the array text must be writer-normalized, not raw-concatenated.
@@ -88,7 +96,7 @@ public sealed partial class CdpBrowserAutomation
                     foreach (var pair in all) if (reachable.Contains(pair.Key)) selectedNodes.Add(pair.Value);
                     nodes = selectedNodes;
                 }
-                finally { await ReleaseAsync(id, frameContext.Session, ct); }
+                finally { await ReleaseAsync(id, frameContext.Session); }
             }
             else nodes = (await SendAsync("Accessibility.getFullAXTree", D("depth", maxDepth, "frameId", frame), ct, frameContext.Session)).GetProperty("nodes").EnumerateArray();
             foreach (var node in nodes)
@@ -99,7 +107,7 @@ public sealed partial class CdpBrowserAutomation
                     foreach (var child in children.EnumerateArray()) childIds.Add((frame, child.GetString() ?? ""));
             }
         }
-        _references.Clear();
+        await RetireReferencesAsync(generation * 100000L + sequence);
         var text = new StringBuilder();
         var structured = new StringBuilder();
         structured.Append("{\"generation\":").Append(generation).Append(",\"nodes\":[");

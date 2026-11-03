@@ -42,6 +42,9 @@ public sealed partial class WebFetchTool : ITool, IDisposable
 
     private readonly HttpClient _httpClient;
     private readonly WebFetchCache _cache;
+    private readonly object _expiryGate = new();
+    private ITimer? _expiryTimer;
+    private bool _disposed;
 
     public WebFetchTool(HttpMessageHandler? handler = null, WebFetchCache? cache = null)
     {
@@ -97,6 +100,7 @@ public sealed partial class WebFetchTool : ITool, IDisposable
         if (invalidUrl is not null)
             return ToolExecutionResult.Text(invalidUrl, isError: true);
 
+        EnsureExpiryMaintenance(context.Clock);
         var fetched = _cache.TryGet(rawUrl, now);
         if (fetched is null)
         {
@@ -110,7 +114,31 @@ public sealed partial class WebFetchTool : ITool, IDisposable
         return await SummarizeAsync(prompt, fetched, IsPreapprovedUrl(requestUri), context.AuxModel, cancellationToken).ConfigureAwait(false);
     }
 
-    public void Dispose() => _httpClient.Dispose();
+    public void Dispose()
+    {
+        lock (_expiryGate)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            _expiryTimer?.Dispose();
+            _expiryTimer = null;
+        }
+        _httpClient.Dispose();
+    }
+
+    private void EnsureExpiryMaintenance(TimeProvider clock)
+    {
+        lock (_expiryGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _expiryTimer ??= clock.CreateTimer(static state =>
+            {
+                var (cache, timerClock) = ((WebFetchCache, TimeProvider))state!;
+                cache.RemoveExpired(timerClock.GetUtcNow());
+            }, (_cache, clock), TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+        }
+    }
 
     private static string? ValidateUrl(string rawUrl, out Uri requestUri)
     {
@@ -230,6 +258,8 @@ public sealed partial class WebFetchTool : ITool, IDisposable
                     return FetchOutcome.FromTerminal(ToolExecutionResult.Text(ex.Message, isError: true));
                 }
 
+                if (content.Length > WebFetchCache.MaxRetainedContentChars)
+                    content = content[..WebFetchCache.MaxRetainedContentChars];
                 return new FetchOutcome(new WebFetchContent(content, contentType));
             }
         }

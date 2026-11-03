@@ -199,7 +199,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         foreach (var op in update.Ops)
         {
             appendedDelta |= ApplyOp(op);
-            rowUpserted |= op is RowUpserted;
+            rowUpserted |= op is RowUpserted or RowTextAppended;
             switch (op)
             {
                 case RowAppended { Row: SystemNoticeRow { Subagent: not null } }:
@@ -422,6 +422,10 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 Items.Add(item);
                 _itemsInCollection.Add(item);
                 return true;
+
+            case RowTextAppended appended when _itemsByRowId.GetValueOrDefault(appended.RowId) is AssistantMessageItemViewModel textItem:
+                textItem.AppendText(appended);
+                return false;
 
             case RowUpserted upserted:
                 var existing = _itemsByRowId.GetValueOrDefault(upserted.Row.RowId);

@@ -390,6 +390,226 @@ public sealed class CdpBrowserAutomationTests
         Assert.DoesNotContain(page.Calls, c => c.Method.StartsWith("Input."));
     }
 
+    [Fact]
+    public async Task FreshAccessibilitySnapshotsRetireAllPreviouslyBoundRendererRefs()
+    {
+        using var page = new FakePage();
+        using var engine = new CdpBrowserAutomation(page);
+        string? previous = null;
+        for (var i = 0; i < 5; i++)
+        {
+            var snapshot = await Execute(engine, "snapshot", "{}");
+            Assert.True(snapshot.Ok, snapshot.Error);
+            Assert.All(page.RendererRefs.Values, refs => Assert.Empty(refs));
+            if (previous is not null) Assert.False((await Execute(engine, "element_info", "{\"ref\":\"" + previous + "\"}")).Ok);
+            previous = Reference(snapshot);
+            Assert.True((await Execute(engine, "element_info", "{\"ref\":\"" + previous + "\"}")).Ok);
+            Assert.Single(Assert.Single(page.RendererRefs).Value);
+        }
+    }
+
+    [Theory]
+    [InlineData("snapshot", "snapshot")]
+    [InlineData("snapshot", "dom_snapshot")]
+    [InlineData("dom_snapshot", "snapshot")]
+    [InlineData("dom_snapshot", "dom_snapshot")]
+    public async Task ScopedSnapshotResolvesThePreviousEpochBeforeRetiringRendererRefs(string firstKind, string secondKind)
+    {
+        using var page = new FakePage();
+        using var engine = new CdpBrowserAutomation(page);
+        var first = await Execute(engine, firstKind, "{}");
+        Assert.True(first.Ok, first.Error);
+        var reference = Reference(first);
+        var before = page.Calls.Count;
+        var scoped = await Execute(engine, secondKind, "{\"ref\":\"" + reference + "\"}");
+        Assert.True(scoped.Ok, scoped.Error);
+        Assert.DoesNotContain(page.RendererRefs.Values, refs => refs.Contains(reference));
+        var calls = page.Calls.Skip(before).ToArray();
+        var selected = Array.FindIndex(calls, call => call.Method == "Runtime.evaluate"
+            && call.Parameters.GetProperty("expression").GetString()!.StartsWith("__alcolerAutomation.select(", StringComparison.Ordinal));
+        var retired = Array.FindIndex(calls, call => call.Method == "Runtime.evaluate"
+            && call.Parameters.GetProperty("expression").GetString()!.StartsWith("globalThis.__alcolerAutomation?.retire(", StringComparison.Ordinal));
+        Assert.True(selected >= 0 && retired > selected);
+        Assert.True((await Execute(engine, "element_info", "{\"ref\":\"" + Reference(scoped) + "\"}")).Ok);
+    }
+
+    [Fact]
+    public async Task ScopedAccessibilitySnapshotRetiresMapsInBothMainAndOopifContexts()
+    {
+        using var page = new FakePage { FrameTransforms = [Transform(1, 1)] };
+        using var engine = new CdpBrowserAutomation(page);
+        page.Emit("Target.attachedToTarget", "{\"sessionId\":\"oopif-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
+        var snapshot = await Execute(engine, "snapshot", "{}");
+        Assert.True(snapshot.Ok, snapshot.Error);
+        using var document = JsonDocument.Parse(snapshot.StructuredOutput!);
+        var references = document.RootElement.GetProperty("nodes").EnumerateArray()
+            .Where(node => node.GetProperty("role").GetString() == "button").Select(node => node.GetProperty("ref").GetString()!).ToArray();
+        Assert.Equal(2, references.Length);
+        foreach (var reference in references) Assert.True((await Execute(engine, "element_info", "{\"ref\":\"" + reference + "\"}")).Ok);
+        Assert.Equal(2, page.RendererRefs.Count);
+        Assert.All(page.RendererRefs.Values, refs => Assert.Single(refs));
+        var scoped = await Execute(engine, "snapshot", "{\"ref\":\"" + references[1] + "\"}");
+        Assert.True(scoped.Ok, scoped.Error);
+        Assert.All(page.RendererRefs.Values, refs => Assert.Empty(refs));
+        var retire = page.Calls.Where(call => call.Method == "Runtime.evaluate"
+            && call.Parameters.GetProperty("expression").GetString()!.StartsWith("globalThis.__alcolerAutomation?.retire(", StringComparison.Ordinal)).ToArray();
+        Assert.Contains(retire, call => call.Session is null);
+        Assert.Contains(retire, call => call.Session == "oopif-session");
+    }
+
+    [Theory]
+    [InlineData("acquired")]
+    [InlineData("bound")]
+    [InlineData("frame-owner")]
+    [InlineData("actionability")]
+    [InlineData("frame-offset")]
+    [InlineData("frame-hit")]
+    [InlineData("scoped-snapshot")]
+    public async Task CancellationAfterAcquiringRemoteObjectsStillReleasesThem(string phase)
+    {
+        using var page = new FakePage { FrameTransforms = phase.StartsWith("frame", StringComparison.Ordinal) ? [Transform(1, 1)] : null };
+        using var engine = new CdpBrowserAutomation(page);
+        using var cancellation = new CancellationTokenSource();
+        var reference = phase is "bound" or "scoped-snapshot" ? Reference(await Execute(engine, "snapshot", "{}")) : null;
+        var canceled = false;
+        page.AfterSend = method =>
+        {
+            var call = page.Calls[^1];
+            var function = method == "Runtime.callFunctionOn" ? call.Parameters.GetProperty("functionDeclaration").GetString()! : "";
+            if (phase switch
+            {
+                "acquired" => method == "Runtime.evaluate" && call.Parameters.GetProperty("expression").GetString()!.StartsWith("__alcolerAutomation.select(", StringComparison.Ordinal),
+                "bound" => method == "DOM.resolveNode",
+                "frame-owner" or "scoped-snapshot" => method == "DOM.describeNode",
+                "actionability" => function.Contains("scrollIntoView", StringComparison.Ordinal),
+                "frame-offset" => function.Contains("DOMMatrixReadOnly", StringComparison.Ordinal),
+                "frame-hit" => function.Contains("elementFromPoint(x,y)", StringComparison.Ordinal),
+                _ => false,
+            }) { canceled = true; cancellation.Cancel(); }
+        };
+        var input = phase.StartsWith("frame", StringComparison.Ordinal) ? "{\"locator\":{\"frame\":\"iframe\",\"css\":\"button\"}}"
+            : reference is null ? "{\"selector\":\"button\"}" : "{\"ref\":\"" + reference + "\"}";
+        var action = phase == "scoped-snapshot" ? "snapshot" : phase == "acquired" || phase == "bound" ? "element_info" : "click";
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.ExecuteAsync(new BrowserCommandAction(action, Parse(input)), cancellation.Token));
+        Assert.True(canceled);
+        Assert.Contains(page.Calls, call => call.Method == "Runtime.releaseObject");
+        Assert.All(page.ReleaseTokensWereCanceled, canceledToken => Assert.False(canceledToken));
+        Assert.All(page.AcquiredObjects, id => Assert.Contains(page.Calls, call => call.Method == "Runtime.releaseObject" && call.Parameters.GetProperty("objectId").GetString() == id));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReleaseFailureOrNoncooperativeReleaseCannotMaskCancellationOrHoldTheAction(bool hang)
+    {
+        using var page = new FakePage();
+        using var engine = new CdpBrowserAutomation(page);
+        using var cancellation = new CancellationTokenSource();
+        var release = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        page.Release = _ => hang ? release.Task : Task.FromException<JsonElement>(new OperationCanceledException("release failed"));
+        page.AfterSend = method =>
+        {
+            if (method == "Runtime.evaluate" && page.Calls[^1].Parameters.GetProperty("expression").GetString()!.StartsWith("__alcolerAutomation.select(", StringComparison.Ordinal)) cancellation.Cancel();
+        };
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.ExecuteAsync(
+                new BrowserCommandAction("element_info", Parse("{\"selector\":\"button\"}")), cancellation.Token).WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Single(page.ReleaseTokensWereCanceled);
+            Assert.False(page.ReleaseTokensWereCanceled[0]);
+        }
+        finally { release.TrySetResult(Parse("{}")); }
+    }
+
+    [Fact]
+    public async Task DisposalAfterAcquiringAHandleStillRunsIndependentRelease()
+    {
+        using var page = new FakePage();
+        using var engine = new CdpBrowserAutomation(page);
+        page.AfterSend = method =>
+        {
+            if (method == "Runtime.evaluate" && page.Calls[^1].Parameters.GetProperty("expression").GetString()!.StartsWith("__alcolerAutomation.select(", StringComparison.Ordinal)) engine.Dispose();
+        };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Execute(engine, "element_info", "{\"selector\":\"button\"}"));
+        Assert.Single(page.ReleaseTokensWereCanceled);
+        Assert.False(page.ReleaseTokensWereCanceled[0]);
+    }
+
+    [Fact]
+    public async Task JavaScriptFailureReleasesItsExceptionHandleAndOriginalElementWithoutReplacingTheError()
+    {
+        using var page = new FakePage { FailFunction = "inspect.call", Release = _ => Task.FromException<JsonElement>(new IOException("cleanup failed")) };
+        using var engine = new CdpBrowserAutomation(page);
+        var result = await Execute(engine, "element_info", "{\"selector\":\"button\"}");
+        Assert.False(result.Ok);
+        Assert.Contains("original JavaScript failure", result.Error);
+        Assert.Contains(page.Calls, call => call.Method == "Runtime.releaseObject" && call.Parameters.GetProperty("objectId").GetString() == "exception1");
+        Assert.Contains(page.Calls, call => call.Method == "Runtime.releaseObject" && call.Parameters.GetProperty("objectId").GetString() == "element1");
+    }
+
+    [Theory]
+    [InlineData("navigation")]
+    [InlineData("destroyed")]
+    [InlineData("cleared")]
+    [InlineData("frame-detached")]
+    [InlineData("session-detached")]
+    public async Task DeadExecutionContextsDoNotAccumulateCleanupMetadata(string reason)
+    {
+        var child = reason is "frame-detached" or "session-detached";
+        using var page = new FakePage { FrameTransforms = child ? [Transform(1, 1)] : null, FailRetirement = true };
+        using var engine = new CdpBrowserAutomation(page);
+        for (var i = 0; i < 5; i++)
+        {
+            if (child) page.Emit("Target.attachedToTarget", "{\"sessionId\":\"child-session\",\"targetInfo\":{\"type\":\"iframe\",\"targetId\":\"child\"}}");
+            var snapshot = await Execute(engine, "snapshot", child ? "{\"locator\":{\"frame\":\"iframe\",\"css\":\"button\"}}" : "{}");
+            Assert.True(snapshot.Ok, snapshot.Error);
+            var queried = await Execute(engine, "element_info", "{\"ref\":\"" + Reference(snapshot) + "\"}");
+            Assert.True(queried.Ok, queried.Error);
+            Assert.Equal(1, TrackedContextCount(engine));
+            switch (reason)
+            {
+                case "navigation": page.Emit("Page.frameNavigated", "{\"frame\":{\"id\":\"root\",\"url\":\"https://example.test/next\"}}"); break;
+                case "destroyed": page.Emit("Runtime.executionContextDestroyed", "{\"executionContextId\":7}"); break;
+                case "cleared": page.Emit("Runtime.executionContextsCleared", "{}"); break;
+                case "frame-detached": page.Emit("Page.frameDetached", "{\"frameId\":\"child\",\"reason\":\"remove\"}"); break;
+                case "session-detached": page.Emit("Target.detachedFromTarget", "{\"sessionId\":\"child-session\"}"); break;
+            }
+            Assert.Equal(0, TrackedContextCount(engine));
+        }
+    }
+
+    [Fact]
+    public async Task FailedCleanupOfALiveContextIsRetriedAfterDocumentOnlyInvalidation()
+    {
+        using var page = new FakePage();
+        using var engine = new CdpBrowserAutomation(page);
+        var snapshot = await Execute(engine, "snapshot", "{}");
+        await Execute(engine, "element_info", "{\"ref\":\"" + Reference(snapshot) + "\"}");
+        page.Emit("DOM.documentUpdated", "{}");
+        page.FailRetirement = true;
+        Assert.True((await Execute(engine, "snapshot", "{}")).Ok);
+        Assert.Equal(1, TrackedContextCount(engine));
+        Assert.Single(Assert.Single(page.RendererRefs).Value);
+        page.FailRetirement = false;
+        Assert.True((await Execute(engine, "snapshot", "{}")).Ok);
+        Assert.Equal(0, TrackedContextCount(engine));
+        Assert.Empty(Assert.Single(page.RendererRefs).Value);
+    }
+
+    private static int TrackedContextCount(CdpBrowserAutomation engine)
+    {
+        var contexts = typeof(CdpBrowserAutomation).GetField("_referenceContexts", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(engine)!;
+        return (int)contexts.GetType().GetProperty("Count")!.GetValue(contexts)!;
+    }
+
+    private static string Reference(BrowserActionResult snapshot)
+    {
+        using var document = JsonDocument.Parse(snapshot.StructuredOutput!);
+        var root = document.RootElement;
+        return (root.ValueKind == JsonValueKind.Array ? root.EnumerateArray() : root.GetProperty("nodes").EnumerateArray())
+            .First(node => node.GetProperty("role").GetString() == "button").GetProperty("ref").GetString()!;
+    }
+
     private static Task<BrowserActionResult> Execute(CdpBrowserAutomation engine, string command, string input) => engine.ExecuteAsync(new BrowserCommandAction(command, Parse(input)), default);
     private static JsonElement Parse(string json) { using var document = JsonDocument.Parse(json); return document.RootElement.Clone(); }
 
@@ -407,6 +627,13 @@ public sealed class CdpBrowserAutomationTests
         public bool OmitChildFrame { get; init; }
         public bool BlockFrame { get; init; }
         public Action<string>? AfterSend { get; set; }
+        public string? FailFunction { get; init; }
+        public bool FailRetirement { get; set; }
+        public Func<CancellationToken, Task<JsonElement>>? Release { get; set; }
+        public List<bool> ReleaseTokensWereCanceled { get; } = [];
+        public HashSet<string> AcquiredObjects { get; } = [];
+        public Dictionary<(int Context, string? Session), HashSet<string>> RendererRefs { get; } = [];
+        private readonly Dictionary<(int Context, string? Session), long> _epochs = [];
         private string _url = "https://example.test/";
 
         public async Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken cancellationToken, string? sessionId = null)
@@ -421,7 +648,7 @@ public sealed class CdpBrowserAutomationTests
             if (method == "Page.getFrameTree") return FrameTransforms is null || OmitChildFrame
                 ? Parse("{\"frameTree\":{\"frame\":{\"id\":\"root\",\"url\":\"https://example.test/\"}}}")
                 : Parse("{\"frameTree\":{\"frame\":{\"id\":\"root\",\"url\":\"https://example.test/\"},\"childFrames\":[{\"frame\":{\"id\":\"child\",\"parentId\":\"root\",\"url\":\"https://example.test/frame\"}}]}}");
-            if (method == "Page.createIsolatedWorld") return Parse("{\"executionContextId\":7}");
+            if (method == "Page.createIsolatedWorld") return Parse("{\"executionContextId\":" + (p.GetProperty("frameId").GetString() == "child" ? 8 : 7) + "}");
             if (method == "Page.navigate")
             {
                 _url = p.GetProperty("url").GetString()!;
@@ -431,18 +658,46 @@ public sealed class CdpBrowserAutomationTests
             }
             if (method == "Page.getLayoutMetrics") return Parse("{\"cssContentSize\":{\"width\":800,\"height\":1200}}");
             if (method == "Page.captureScreenshot") return Parse("{\"data\":\"iVBORw==\"}");
-            if (method == "DOM.resolveNode") return Parse("{\"object\":{\"objectId\":\"element1\"}}");
+            if (method == "Runtime.releaseObject")
+            {
+                ReleaseTokensWereCanceled.Add(cancellationToken.IsCancellationRequested);
+                return Release is null ? Parse("{}") : await Release(cancellationToken);
+            }
+            if (method == "DOM.resolveNode")
+            {
+                var objectId = p.GetProperty("backendNodeId").GetInt32() == 43 ? "child-element" : "element1";
+                AcquiredObjects.Add(objectId);
+                return Parse("{\"object\":{\"objectId\":\"" + objectId + "\"}}");
+            }
             if (method == "DOM.getFrameOwner") return Parse("{\"backendNodeId\":42}");
-            if (method == "DOM.describeNode") return FrameTransforms is null ? Parse("{\"node\":{\"backendNodeId\":42}}") : Parse("{\"node\":{\"backendNodeId\":42,\"frameId\":\"child\"}}");
-            if (method == "Accessibility.getFullAXTree") return Parse("""
-                {"nodes":[{"nodeId":"1","role":{"value":"RootWebArea"},"name":{"value":"Test"},"childIds":["2"]},{"nodeId":"2","role":{"value":"button"},"name":{"value":"Save"},"backendDOMNodeId":42,"properties":[{"name":"disabled","value":{"value":false}}]}]}
-                """);
+            if (method == "DOM.describeNode") return p.GetProperty("objectId").GetString() == "child-element"
+                ? Parse("{\"node\":{\"backendNodeId\":43}}")
+                : FrameTransforms is null ? Parse("{\"node\":{\"backendNodeId\":42}}") : Parse("{\"node\":{\"backendNodeId\":42,\"frameId\":\"child\"}}");
+            if (method == "Accessibility.getFullAXTree")
+            {
+                var frame = p.GetProperty("frameId").GetString()!;
+                return Parse("{\"nodes\":[{\"nodeId\":\"1\",\"role\":{\"value\":\"RootWebArea\"},\"name\":{\"value\":\"Test\"},\"childIds\":[\"2\"]},{\"nodeId\":\"2\",\"frameId\":\"" + frame
+                    + "\",\"role\":{\"value\":\"button\"},\"name\":{\"value\":\"Save\"},\"backendDOMNodeId\":" + (frame == "child" ? 43 : 42) + ",\"properties\":[{\"name\":\"disabled\",\"value\":{\"value\":false}}]}]}");
+            }
             if (method == "Runtime.evaluate")
             {
                 var expression = p.GetProperty("expression").GetString()!;
                 if (expression.StartsWith("(async()=>") && FailEvaluation) return Parse("{\"exceptionDetails\":{\"exception\":{\"description\":\"Error: broken\"}}}");
+                if (expression.StartsWith("globalThis.__alcolerAutomation?.retire(", StringComparison.Ordinal))
+                {
+                    if (FailRetirement) throw new InvalidOperationException("retirement failed");
+                    Retire((p.GetProperty("contextId").GetInt32(), sessionId), long.Parse(expression[(expression.LastIndexOf('(') + 1)..^1], System.Globalization.CultureInfo.InvariantCulture));
+                    return Value(true);
+                }
+                if (expression.StartsWith("__alcolerAutomation.snapshot(", StringComparison.Ordinal))
+                    return Snapshot((p.GetProperty("contextId").GetInt32(), sessionId), long.Parse(expression.Split('(')[1].Split(',')[0], System.Globalization.CultureInfo.InvariantCulture));
                 if (expression.Contains("__alcolerAutomation.select(") && !expression.Contains("Object.defineProperty"))
-                    return StrictFailure ? Parse("{\"exceptionDetails\":{\"text\":\"Strict locator matched 2 elements\"}}") : Parse("{\"result\":{\"objectId\":\"element1\"}}");
+                {
+                    if (StrictFailure) return Parse("{\"exceptionDetails\":{\"text\":\"Strict locator matched 2 elements\"}}");
+                    var objectId = p.GetProperty("contextId").GetInt32() == 8 ? "child-element" : "element1";
+                    AcquiredObjects.Add(objectId);
+                    return Parse("{\"result\":{\"objectId\":\"" + objectId + "\"}}");
+                }
                 if (expression.Contains("url:location.href")) return BrowserJson.Element(new Dictionary<string, object?> { ["result"] = new Dictionary<string, object?> { ["value"] = new Dictionary<string, object?> { ["url"] = _url, ["title"] = "Test" } } });
                 if (expression == "document.readyState") return Value("complete");
                 return Value(true);
@@ -450,6 +705,18 @@ public sealed class CdpBrowserAutomationTests
             if (method == "Runtime.callFunctionOn")
             {
                 var function = p.GetProperty("functionDeclaration").GetString()!;
+                var context = (p.TryGetProperty("executionContextId", out var contextId) ? contextId.GetInt32()
+                    : p.TryGetProperty("objectId", out var objectId) && objectId.GetString() == "child-element" ? 8 : 7, sessionId);
+                if (FailFunction is not null && function.Contains(FailFunction, StringComparison.Ordinal))
+                    return Parse("{\"exceptionDetails\":{\"exception\":{\"description\":\"original JavaScript failure\",\"objectId\":\"exception1\"}},\"result\":{\"objectId\":\"exception1\"}}");
+                if (function.Contains("refs.set", StringComparison.Ordinal))
+                {
+                    Retire(context, p.GetProperty("arguments")[1].GetProperty("value").GetInt64());
+                    RendererRefs[context].Add(p.GetProperty("arguments")[0].GetProperty("value").GetString()!);
+                    return Value(true);
+                }
+                if (function.Contains("__alcolerAutomation.snapshot(", StringComparison.Ordinal))
+                    return Snapshot(context, p.GetProperty("arguments")[0].GetProperty("value").GetInt64());
                 if (function.Contains("DOMMatrixReadOnly")) return Value(new Dictionary<string, object?> { ["x"] = 100, ["y"] = 200, ["transforms"] = FrameTransforms });
                 if (function.Contains("elementFromPoint(x,y)")) return Value(!BlockFrame);
                 if (function.Contains("inspect.call")) return Parse("{\"result\":{\"value\":{\"connected\":true,\"visible\":true,\"enabled\":true,\"editable\":true,\"hit\":true,\"x\":50,\"y\":20,\"left\":10,\"top\":10,\"width\":80,\"height\":20}}}");
@@ -461,8 +728,21 @@ public sealed class CdpBrowserAutomationTests
             return Parse("{}");
         }
 
+        private void Retire((int Context, string? Session) context, long epoch)
+        {
+            if (!RendererRefs.TryGetValue(context, out var refs)) RendererRefs[context] = refs = [];
+            if (!_epochs.TryGetValue(context, out var previous) || previous != epoch) refs.Clear();
+            _epochs[context] = epoch;
+        }
+        private JsonElement Snapshot((int Context, string? Session) context, long epoch)
+        {
+            Retire(context, epoch);
+            var reference = "d" + epoch + "_1";
+            RendererRefs[context].Add(reference);
+            return Parse("{\"result\":{\"value\":[{\"ref\":\"" + reference + "\",\"role\":\"button\",\"name\":\"Save\"}]}}");
+        }
         private static JsonElement Value(object value) => BrowserJson.Element(new Dictionary<string, object?> { ["result"] = new Dictionary<string, object?> { ["value"] = value } });
-        public void Emit(string method, string parameters) => ProtocolEvent?.Invoke(this, new(method, Parse(parameters)));
+        public void Emit(string method, string parameters, string? session = null) => ProtocolEvent?.Invoke(this, new(method, Parse(parameters), session));
         public void Dispose() { }
     }
 

@@ -919,7 +919,10 @@ function startConversation(sh, id, restore) {
   const closeOverlay = () => {
     els.overlay.hidden = true;
     els.overlayImg.src = '';
+    st.overlayLease?.release();
+    st.overlayLease = null;
   };
+  st.closeOverlay = closeOverlay;
 
   const onTranscriptClick = async event => {
     const copyBtn = event.target.closest('[data-copy]');
@@ -935,6 +938,8 @@ function startConversation(sh, id, restore) {
     }
     const thumb = event.target.closest('.thumb[data-url]');
     if (thumb) {
+      closeOverlay();
+      st.overlayLease = api.acquireArtifactObjectUrl?.(thumb.dataset.artifact, thumb.dataset.mime) || null;
       els.overlayImg.src = thumb.dataset.url;
       els.overlay.hidden = false;
     }
@@ -1353,6 +1358,10 @@ function startConversation(sh, id, restore) {
       if (!op) continue;
       if (op.$type === 'row_appended' && op.row) st.transcript.append(op.row);
       else if (op.$type === 'row_upserted' && op.row) st.transcript.upsert(op.row);
+      else if (op.$type === 'row_text_appended' && !st.transcript.appendText?.(op)) {
+        st.ws.manualReconnect();
+        return;
+      }
       else if (op.$type === 'row_removed') st.transcript.remove(op.rowId);
       else if (op.$type === 'state_patch' && op.state) {
         st.state = op.state;
@@ -1369,6 +1378,7 @@ function startConversation(sh, id, restore) {
     onDelta: applyDelta,
     onStatus: status => st.setConn(status),
     resume: () => api.resumeSession(id),
+    appendText: typeof st.transcript.appendText === 'function',
   });
   st.ws.start();
 
@@ -1408,6 +1418,7 @@ function disposeConversation() {
   if (st.ws) st.ws.close();
   if (st.layoutFrame) cancelAnimationFrame(st.layoutFrame);
   if (st.resizeObserver) st.resizeObserver.disconnect();
+  st.closeOverlay?.();
   st.transcript.dispose();
   if (st.onTranscriptClick && st.els.transcript) {
     st.els.transcript.removeEventListener('click', st.onTranscriptClick);

@@ -1,5 +1,7 @@
 using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Tools;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.Storage;
@@ -84,6 +86,7 @@ public sealed class FileArtifactStoreTests : IDisposable
         var store = NewStore();
 
         Assert.Null(await store.TryLoadAsync(artifactUri, CancellationToken.None));
+        Assert.False(await store.ExistsAsync(artifactUri, CancellationToken.None));
     }
 
     [Fact]
@@ -110,6 +113,59 @@ public sealed class FileArtifactStoreTests : IDisposable
         Assert.NotNull(await store.TryLoadAsync(kept.Uri, CancellationToken.None));
 
         await store.DeleteSessionArtifactsAsync(new SessionId("sess_removed"), CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Exists_UsesMetadataWithoutOpeningPayload_AndTracksDeletion()
+    {
+        var store = NewStore();
+        var reference = await store.SaveAsync(new SessionId("sess_exists"), "capture.png", "image/png",
+            new byte[1024 * 1024], CancellationToken.None);
+        var path = Assert.Single(Directory.GetFiles(Path.Combine(ArtifactsRoot, "sess_exists")));
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.True(await store.ExistsAsync(reference.Uri, CancellationToken.None));
+        }
+        File.Delete(path);
+        Assert.False(await store.ExistsAsync(reference.Uri, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Exists_Cancelled_ThrowsWithoutReading()
+    {
+        var store = NewStore();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await store.ExistsAsync("alcoler-artifact://sess_none/missing.png", cancellation.Token));
+    }
+
+    [Fact]
+    public async Task Exists_DefaultImplementation_RemainsCompatibleWithLoadOnlyStores()
+    {
+        var store = new LoadOnlyArtifactStore();
+        IArtifactStore contract = store;
+        Assert.True(await contract.ExistsAsync("present", CancellationToken.None));
+        Assert.True(await contract.ExistsAsync("empty", CancellationToken.None));
+        Assert.False(await contract.ExistsAsync("missing", CancellationToken.None));
+        Assert.Equal(3, store.Loads);
+    }
+
+    private sealed class LoadOnlyArtifactStore : IArtifactStore
+    {
+        public int Loads { get; private set; }
+
+        public ValueTask<ArtifactReference> SaveAsync(SessionId sessionId, string fileName, string mimeType,
+            ReadOnlyMemory<byte> data, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<ReadOnlyMemory<byte>?> TryLoadAsync(string artifactUri, CancellationToken cancellationToken)
+        {
+            Loads++;
+            if (artifactUri == "missing")
+                return ValueTask.FromResult<ReadOnlyMemory<byte>?>(null);
+            ReadOnlyMemory<byte> data = artifactUri == "empty" ? ReadOnlyMemory<byte>.Empty : new byte[] { 1 };
+            return ValueTask.FromResult<ReadOnlyMemory<byte>?>(data);
+        }
     }
 
     public void Dispose() => _temp.Dispose();

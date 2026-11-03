@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Serialization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Net.Http.Headers;
 
 namespace Alcoler.Remote;
 
@@ -30,7 +32,8 @@ internal static class GatewayJson
 
     public static IResult Plain(byte[] json) => Raw(json, "application/json");
 
-    public static IResult Raw(byte[] content, string contentType) => new BytesResult(content, contentType);
+    public static IResult Raw(ReadOnlyMemory<byte> content, string contentType, bool enableRanges = false) =>
+        new BytesResult(content, contentType, enableRanges: enableRanges);
 
     public static IResult Error(int statusCode, string error, string? reason = null) =>
         new BytesResult(
@@ -63,28 +66,48 @@ internal static class GatewayJson
                 writer.WriteString("code", code);
         });
 
-    public static byte[] Wrap(string type, string property, ReadOnlySpan<byte> payload)
-    {
-        using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("type", type);
-            writer.WritePropertyName(property);
-            writer.WriteRawValue(payload);
-            writer.WriteEndObject();
-        }
-        return stream.ToArray();
-    }
+    public static byte[] SnapshotFrame(ConversationSnapshot snapshot) => Serialize(new SnapshotEnvelope("snapshot", snapshot));
 
-    private sealed class BytesResult(byte[] content, string contentType, int statusCode = 200) : IResult
+    public static byte[] DeltaFrame(ConversationDelta delta) => Serialize(new DeltaEnvelope("delta", delta));
+
+    private sealed record SnapshotEnvelope(string Type, ConversationSnapshot Snapshot);
+
+    private sealed record DeltaEnvelope(string Type, ConversationDelta Delta);
+
+    private sealed class BytesResult(
+        ReadOnlyMemory<byte> content, string contentType, int statusCode = 200, bool enableRanges = false) : IResult
     {
         public async Task ExecuteAsync(HttpContext httpContext)
         {
-            httpContext.Response.StatusCode = statusCode;
-            httpContext.Response.ContentType = contentType;
-            httpContext.Response.ContentLength = content.Length;
-            await httpContext.Response.Body.WriteAsync(content).ConfigureAwait(false);
+            var response = httpContext.Response;
+            response.StatusCode = statusCode;
+            response.ContentType = contentType;
+            var body = content;
+            if (enableRanges)
+            {
+                response.Headers.AcceptRanges = "bytes";
+                if (!httpContext.Request.Headers.ContainsKey(HeaderNames.IfRange)
+                    && RangeHeaderValue.TryParse(httpContext.Request.Headers.Range.ToString(), out var range)
+                    && string.Equals(range.Unit.Value, "bytes", StringComparison.OrdinalIgnoreCase)
+                    && range.Ranges.Count == 1)
+                {
+                    var item = range.Ranges.Single();
+                    var start = item.From ?? Math.Max(0, content.Length - item.To!.Value);
+                    var end = item.From.HasValue ? Math.Min(item.To ?? content.Length - 1L, content.Length - 1L) : content.Length - 1L;
+                    if (start >= content.Length || end < start || (item.From is null && item.To == 0))
+                    {
+                        response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+                        response.Headers.ContentRange = $"bytes */{content.Length}";
+                        response.ContentLength = 0;
+                        return;
+                    }
+                    body = content.Slice((int)start, (int)(end - start + 1));
+                    response.StatusCode = StatusCodes.Status206PartialContent;
+                    response.Headers.ContentRange = $"bytes {start}-{end}/{content.Length}";
+                }
+            }
+            response.ContentLength = body.Length;
+            await response.Body.WriteAsync(body, httpContext.RequestAborted).ConfigureAwait(false);
         }
     }
 }

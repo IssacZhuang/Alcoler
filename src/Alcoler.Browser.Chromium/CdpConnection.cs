@@ -47,7 +47,7 @@ public sealed class WebSocketCdpWire : ICdpWire
             }
             if (received.MessageType == WebSocketMessageType.Close) return null;
             if (received.Count > 0) message.Write(_receiveBuffer, 0, received.Count);
-            if (received.EndOfMessage) return Encoding.UTF8.GetString(message.ToArray());
+            if (received.EndOfMessage) return Encoding.UTF8.GetString(message.GetBuffer(), 0, checked((int)message.Length));
         }
     }
 
@@ -124,32 +124,39 @@ public sealed class CdpConnection : IDisposable
             if (_closed) throw new InvalidOperationException("The CDP connection is closed.");
             _pending[id] = completion;
         }
-        var frame = Encode(id, method, parameters, sessionId);
-        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var dispatched = false;
         try
         {
-            await wire.SendTextAsync(frame, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            var frame = Encode(id, method, parameters, sessionId);
+            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                // A failed send may have written bytes; only failures before this point are known to be unsent.
+                dispatched = true;
+                await wire.SendTextAsync(frame, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
+            return await completion.Task.WaitAsync(_commandTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (dispatched && drainOnFailure)
+            {
+                try { await DrainCanceledCommandAsync(id, method, sessionId, completion).ConfigureAwait(false); }
+                catch (Exception) { }
+            }
+            throw;
         }
         finally
         {
-            _sendLock.Release();
-        }
-        try
-        {
-            return await completion.Task.WaitAsync(_commandTimeout, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
-        {
-            if (drainOnFailure) await DrainCanceledCommandAsync(id, method, sessionId, completion).ConfigureAwait(false);
-            else
-            {
-                lock (_sync)
-                {
-                    _pending.Remove(id);
-                    completion.TrySetCanceled();
-                }
-            }
-            throw;
+            lock (_sync) _pending.Remove(id);
+            completion.TrySetCanceled();
+            if (completion.Task.IsFaulted) _ = completion.Task.Exception;
         }
     }
 
@@ -197,7 +204,7 @@ public sealed class CdpConnection : IDisposable
         {
             ["id"] = id,
             ["method"] = method,
-            ["params"] = parameters is null ? BrowserJson.Element(new Dictionary<string, object?>()) : BrowserJson.Element(parameters),
+            ["params"] = parameters ?? new Dictionary<string, object?>(),
         };
         if (sessionId is not null) envelope["sessionId"] = sessionId;
         return BrowserJson.Serialize(envelope);

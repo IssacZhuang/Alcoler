@@ -41,18 +41,27 @@ public sealed class FileArtifactStore : IArtifactStore
         string artifactUri,
         CancellationToken cancellationToken)
     {
-        if (!TryParseArtifactUri(artifactUri, out var session, out var fileName))
-        {
-            return null;
-        }
-
-        var filePath = Path.GetFullPath(Path.Combine(_root, session, fileName));
-        if (!PathGuard.IsUnderRoot(filePath, _root) || !File.Exists(filePath))
+        if (!TryResolveArtifactPath(artifactUri, out var filePath) || !File.Exists(filePath))
         {
             return null;
         }
 
         return await File.ReadAllBytesAsync(filePath, cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask<bool> ExistsAsync(string artifactUri, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(TryResolveArtifactPath(artifactUri, out var filePath) && File.Exists(filePath));
+    }
+
+    private bool TryResolveArtifactPath(string artifactUri, out string filePath)
+    {
+        filePath = string.Empty;
+        if (!TryParseArtifactUri(artifactUri, out var session, out var fileName))
+            return false;
+        filePath = Path.GetFullPath(Path.Combine(_root, session, fileName));
+        return PathGuard.IsUnderRoot(filePath, _root);
     }
 
     public ValueTask DeleteSessionArtifactsAsync(SessionId sessionId, CancellationToken cancellationToken)

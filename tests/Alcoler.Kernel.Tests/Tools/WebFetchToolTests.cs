@@ -1,4 +1,6 @@
+using System.Collections;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Alcoler.Adapters.Tools;
@@ -428,6 +430,167 @@ public sealed class WebFetchToolTests : IDisposable
         var result = await tool.ExecuteAsync(Context(Call("https://example.com/huge", "p")), CancellationToken.None);
         Assert.True(result.IsError);
         Assert.Contains("maximum", result.SingleText());
+    }
+
+    [Theory]
+    [InlineData(99_999, false)]
+    [InlineData(100_000, false)]
+    [InlineData(100_001, false)]
+    [InlineData(160_000, false)]
+    [InlineData(99_999, true)]
+    [InlineData(100_000, true)]
+    [InlineData(100_001, true)]
+    [InlineData(160_000, true)]
+    public async Task CachedContent_PreservesExactBoundaryPromptsAndApprovedMarkdown(int length, bool approved)
+    {
+        var body = new string('x', length - 1) + "z";
+        var url = approved ? "https://react.dev/boundary" : "https://example.com/boundary";
+        var handler = new FakeHttpMessageHandler(_ => TextResponse(body, "text/markdown"));
+        var cache = new WebFetchCache();
+        var aux = new FakeAuxModelClient();
+        using var tool = new WebFetchTool(handler, cache);
+
+        foreach (var prompt in new[] { "first question", "second question" })
+        {
+            var result = await tool.ExecuteAsync(Context(Call(url, prompt), aux), CancellationToken.None);
+            Assert.False(result.IsError);
+            if (approved && length < 100_000)
+            {
+                Assert.Equal(body, result.SingleText());
+                Assert.Empty(aux.Requests);
+                continue;
+            }
+            const string suffix = "\n\n[WebFetch content truncated before prompt processing]";
+            var consumed = length > 100_000 ? body[..(100_000 - suffix.Length)] + suffix : body;
+            var instruction = approved
+                ? "Provide a concise response based on the content above. Include relevant details, code examples, and documentation excerpts as needed."
+                : """
+                  Provide a concise response based only on the content above. In your response:
+                   - Enforce a strict 125-character maximum for quotes from any source document. Open Source Software is ok as long as we respect the license.
+                   - Use quotation marks for exact language from articles; any language outside of the quotation should never be word-for-word the same.
+                   - You are not a lawyer and never comment on the legality of your own prompts and responses.
+                   - Never produce or reproduce exact song lyrics.
+                  """;
+            var request = aux.Requests[^1];
+            Assert.Equal("", request.SystemPrompt);
+            Assert.Equal($"\nWeb page content:\n---\n{consumed}\n---\n\n{prompt}\n\n{instruction}\n", request.UserPrompt);
+            Assert.Equal(4_096, request.MaxOutputTokens);
+        }
+
+        Assert.Single(handler.Requests);
+        var retained = Assert.Single(RetainedContents(cache));
+        Assert.Equal(body[..Math.Min(length, 100_001)], retained.Content);
+        Assert.Equal("text/markdown; charset=utf-8", retained.ContentType);
+    }
+
+    [Fact]
+    public async Task CacheLimit_IsAppliedAfterHtmlConversion()
+    {
+        var html = "<script>" + new string('x', 150_000) + "</script><h1>Preserved heading</h1><p>Tail content</p>";
+        var cache = new WebFetchCache();
+        var aux = new FakeAuxModelClient();
+        using var tool = new WebFetchTool(new FakeHttpMessageHandler(_ => TextResponse(html)), cache);
+
+        await tool.ExecuteAsync(Context(Call("https://example.com/converted"), aux), CancellationToken.None);
+
+        Assert.Equal("# Preserved heading\nTail content", Assert.Single(RetainedContents(cache)).Content);
+        Assert.Contains("# Preserved heading\nTail content", Assert.Single(aux.Requests).UserPrompt);
+        Assert.DoesNotContain("[WebFetch content truncated", aux.Requests[0].UserPrompt);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CacheOperations_SweepExpiredUnrelatedEntries(bool set)
+    {
+        var now = new DateTimeOffset(2026, 11, 3, 0, 0, 0, TimeSpan.Zero);
+        var cache = new WebFetchCache();
+        cache.Set("old-one", new WebFetchContent("one", "text/plain"), now);
+        cache.Set("old-two", new WebFetchContent("two", "text/plain"), now);
+        if (set)
+            cache.Set("fresh", new WebFetchContent("fresh", "text/markdown"), now.AddMinutes(15));
+        else
+            Assert.Null(cache.TryGet("unrelated", now.AddMinutes(15)));
+
+        Assert.Equal(set ? new[] { "fresh" } : [], RetainedContents(cache).Select(content => content.Content));
+    }
+
+    [Fact]
+    public void CacheRetention_IsBoundedByEntryCountAndConvertedCharacters()
+    {
+        var cache = new WebFetchCache();
+        var now = DateTimeOffset.UtcNow;
+        var body = new string('x', 200_000);
+        for (var index = 0; index < 60; index++)
+            cache.Set(index.ToString(), new WebFetchContent(body, "text/plain"), now);
+
+        var retained = RetainedContents(cache);
+        Assert.Equal(50, retained.Length);
+        Assert.Equal(50L * 100_001, retained.Sum(content => (long)content.Content.Length));
+        Assert.All(retained, content => Assert.Equal(body[..100_001], content.Content));
+    }
+
+    [Fact]
+    public async Task IdleExpiry_UsesContextClockAndDisposesItsOwnedTimer()
+    {
+        var clock = new ExpiryClock(new DateTimeOffset(2026, 11, 3, 0, 0, 0, TimeSpan.Zero));
+        var cache = new WebFetchCache();
+        var tool = new WebFetchTool(new FakeHttpMessageHandler(_ => TextResponse("page", "text/plain")), cache);
+        try
+        {
+            await tool.ExecuteAsync(Context(Call("https://example.com/idle"), new FakeAuxModelClient(), clock), CancellationToken.None);
+            Assert.Single(RetainedContents(cache));
+            Assert.Equal(TimeSpan.FromMinutes(1), clock.Timer!.Period);
+
+            clock.Advance(TimeSpan.FromMinutes(15));
+
+            Assert.Empty(RetainedContents(cache));
+        }
+        finally
+        {
+            tool.Dispose();
+        }
+        Assert.True(clock.Timer!.Disposed);
+        tool.Dispose();
+    }
+
+    private static WebFetchContent[] RetainedContents(WebFetchCache cache) =>
+        ((IEnumerable)typeof(WebFetchCache).GetField("_entries", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cache)!)
+        .Cast<object>()
+        .Select(entry => (WebFetchContent)entry.GetType().GetProperty("Content")!.GetValue(entry)!)
+        .ToArray();
+
+    private sealed class ExpiryClock(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        public ExpiryTimer? Timer { get; private set; }
+        public override DateTimeOffset GetUtcNow() => _now;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            Timer = new ExpiryTimer(callback, state, period);
+
+        public void Advance(TimeSpan delta)
+        {
+            _now += delta;
+            Timer?.Fire();
+        }
+    }
+
+    private sealed class ExpiryTimer(TimerCallback callback, object? state, TimeSpan period) : ITimer
+    {
+        public TimeSpan Period { get; } = period;
+        public bool Disposed { get; private set; }
+        public bool Change(TimeSpan dueTime, TimeSpan newPeriod) => !Disposed;
+        public void Dispose() => Disposed = true;
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
+        public void Fire()
+        {
+            if (!Disposed)
+                callback(state);
+        }
     }
 
     [Fact]

@@ -2,6 +2,7 @@ using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Serialization;
 using Alcoler.Kernel.Runtime;
 using Xunit;
 
@@ -77,16 +78,18 @@ public class LiveConversationProjectionTests
         await using var deltas = projection.Deltas(timeout.Token).GetAsyncEnumerator();
         Assert.True(await deltas.MoveNextAsync());
         Assert.Equal(snapshot.Sequence + 1, deltas.Current.Sequence);
-        AssertStreamingText(deltas.Current.Ops.OfType<RowUpserted>().Select(op => op.Row),
-            "already running, before enumeration");
+        Assert.Equal(new RowTextAppended($"stream:{turn.Value}", ", before enumeration", between.OccurredAt),
+            Assert.Single(deltas.Current.Ops.OfType<RowTextAppended>()));
+        Assert.Equal(TurnPhase.Streaming, Assert.Single(deltas.Current.Ops.OfType<StatePatched>()).State.Phase);
 
         var pending = deltas.MoveNextAsync().AsTask();
         Assert.False(pending.IsCompleted);
         var later = store.Append(new ModelStreamingTextEvent(turn, ", later"));
         Assert.True(await pending.WaitAsync(timeout.Token));
         Assert.Equal(later.Sequence, deltas.Current.Sequence);
-        AssertStreamingText(deltas.Current.Ops.OfType<RowUpserted>().Select(op => op.Row),
-            "already running, before enumeration, later");
+        Assert.Equal(new RowTextAppended($"stream:{turn.Value}", ", later", later.OccurredAt),
+            Assert.Single(deltas.Current.Ops.OfType<RowTextAppended>()));
+        AssertStreamingText(projection.Snapshot().Rows, "already running, before enumeration, later");
         AssertStreamingText(snapshot.Rows, "already running");
     }
 
@@ -114,8 +117,11 @@ public class LiveConversationProjectionTests
         Assert.True(await reconnectedDeltas.MoveNextAsync());
         Assert.Equal(last.Sequence, secondDeltas.Current.Sequence);
         Assert.Equal(last.Sequence, reconnectedDeltas.Current.Sequence);
-        AssertStreamingText(secondDeltas.Current.Ops.OfType<RowUpserted>().Select(op => op.Row), "one two three");
-        AssertStreamingText(reconnectedDeltas.Current.Ops.OfType<RowUpserted>().Select(op => op.Row), "one two three");
+        var appended = new RowTextAppended($"stream:{turn.Value}", " three", last.OccurredAt);
+        Assert.Equal(appended, Assert.Single(secondDeltas.Current.Ops.OfType<RowTextAppended>()));
+        Assert.Equal(appended, Assert.Single(reconnectedDeltas.Current.Ops.OfType<RowTextAppended>()));
+        AssertStreamingText(second.Snapshot().Rows, "one two three");
+        AssertStreamingText(reconnected.Snapshot().Rows, "one two three");
     }
 
     [Fact]
@@ -130,9 +136,16 @@ public class LiveConversationProjectionTests
         var total = LiveConversationProjection.MaxPendingDeltas + 10;
         for (var index = 1; index <= total; index++)
         {
-            store.Append(new ModelStreamingTextEvent(turn, "x"));
+            var item = store.Append(new ModelStreamingTextEvent(turn, "x"));
             Assert.True(await healthyDeltas.MoveNextAsync());
             Assert.Equal(index, healthyDeltas.Current.Sequence);
+            Assert.Empty(healthyDeltas.Current.Ops.OfType<RowUpserted>());
+            Assert.Equal(TurnPhase.Streaming, Assert.Single(healthyDeltas.Current.Ops.OfType<StatePatched>()).State.Phase);
+            if (index == 1)
+                AssertStreamingText(healthyDeltas.Current.Ops.OfType<RowAppended>().Select(op => op.Row), "x");
+            else
+                Assert.Equal(new RowTextAppended($"stream:{turn.Value}", "x", item.OccurredAt),
+                    Assert.Single(healthyDeltas.Current.Ops.OfType<RowTextAppended>()));
         }
         await slow.WaitUntilSequenceAsync(total, timeout.Token);
         var snapshot = slow.Snapshot();
@@ -155,6 +168,8 @@ public class LiveConversationProjectionTests
         await slow.WaitUntilSequenceAsync(later.Sequence, timeout.Token);
         Assert.Equal(later.Sequence, slow.Snapshot().Sequence);
         AssertStreamingText(slow.Snapshot().Rows, new string('x', total) + " later");
+        Assert.Equal(total, snapshot.Sequence);
+        AssertStreamingText(snapshot.Rows, new string('x', total));
     }
 
     [Fact]
@@ -200,6 +215,30 @@ public class LiveConversationProjectionTests
     }
 
     [Fact]
+    public async Task HistoricalStreamingReplay_LargerThanDeltaBacklog_CatchesUpWithoutChangingOldSnapshot()
+    {
+        var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
+        var turn = StrongId.NewTurnId();
+        const string chunk = "0123456789abcdef";
+        var chunks = LiveConversationProjection.MaxPendingDeltas * 2;
+        for (var index = 0; index < chunks; index++)
+            store.Append(new ModelStreamingTextEvent(turn, chunk));
+        using var projection = new LiveConversationProjection(store, 0, () => 3);
+        var snapshot = projection.Snapshot();
+        Assert.Equal(chunks, snapshot.Sequence);
+        AssertStreamingText(snapshot.Rows, string.Concat(Enumerable.Repeat(chunk, chunks)));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var deltas = projection.Deltas(timeout.Token).GetAsyncEnumerator();
+        var later = store.Append(new ModelStreamingTextEvent(turn, " tail"));
+        Assert.True(await deltas.MoveNextAsync());
+        Assert.Equal(later.Sequence, deltas.Current.Sequence);
+        Assert.Equal(new RowTextAppended($"stream:{turn.Value}", " tail", later.OccurredAt),
+            Assert.Single(deltas.Current.Ops.OfType<RowTextAppended>()));
+        AssertStreamingText(projection.Snapshot().Rows, string.Concat(Enumerable.Repeat(chunk, chunks)) + " tail");
+        AssertStreamingText(snapshot.Rows, string.Concat(Enumerable.Repeat(chunk, chunks)));
+    }
+
+    [Fact]
     public async Task Dispose_PendingSequenceWaiters_FinishWithoutHanging()
     {
         var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
@@ -209,6 +248,159 @@ public class LiveConversationProjectionTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => waiter);
         await Assert.ThrowsAsync<InvalidOperationException>(() => projection.WaitUntilSequenceAsync(1));
         Assert.True(projection.WaitUntilSequenceAsync(0).IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public void StreamingOps_InitializeOnceThenAppendVerbatim_WithImmutableSnapshots()
+    {
+        var builder = new ProjectionBuilder();
+        var session = StrongId.NewSessionId();
+        var turn = StrongId.NewTurnId();
+        var at = DateTimeOffset.UtcNow;
+        var first = builder.Apply(new SequencedEvent(1, session, at, new ModelStreamingTextEvent(turn, "first")));
+        var seed = Assert.IsType<AssistantMessageRow>(Assert.Single(first.OfType<RowAppended>()).Row);
+        AssertStreamingText([seed], "first");
+        Assert.False(seed.CanFork);
+        Assert.Equal(default, seed.Id);
+        var before = builder.SnapshotState();
+
+        var delta = builder.Apply(new SequencedEvent(2, session, at.AddSeconds(1),
+            new ModelStreamingTextEvent(turn, "\n\ud83d\ude00 last")));
+        Assert.Equal(2, delta.Count);
+        Assert.Equal(new RowTextAppended(seed.RowId, "\n\ud83d\ude00 last", at.AddSeconds(1)), delta[0]);
+        Assert.Equal(builder.State, Assert.IsType<StatePatched>(delta[1]).State);
+        var json = AlcolerJson.Serialize(new ConversationDelta(2, delta));
+        Assert.Contains("\"$type\":\"row_text_appended\"", json, StringComparison.Ordinal);
+        var replay = AlcolerJson.Deserialize<ConversationDelta>(json)!;
+        Assert.Equal(delta[0], Assert.IsType<RowTextAppended>(replay.Ops[0]));
+        Assert.Equal(2, replay.Sequence);
+
+        var after = builder.SnapshotState();
+        var current = Assert.IsType<AssistantMessageRow>(Assert.Single(after.Rows));
+        AssertStreamingText(after.Rows, "first\n\ud83d\ude00 last");
+        Assert.Equal(at.AddSeconds(1), current.At);
+        Assert.Same(current, Assert.Single(builder.Rows()));
+        Assert.Same(seed, Assert.Single(before.Rows));
+        AssertStreamingText(before.Rows, "first");
+        Assert.Equal(at, seed.At);
+
+        var empty = builder.Apply(new SequencedEvent(3, session, at.AddSeconds(2), new ModelStreamingTextEvent(turn, "")));
+        Assert.Equal(new RowTextAppended(seed.RowId, "", at.AddSeconds(2)), empty[0]);
+        Assert.Equal(at.AddSeconds(2), Assert.IsType<AssistantMessageRow>(Assert.Single(builder.Rows())).At);
+        Assert.Equal(at.AddSeconds(1), current.At);
+    }
+
+    [Fact]
+    public void CommitCorrection_ReplacesStreamAndPreservesOldRows_ThenMarksOnlyFinalRowForkable()
+    {
+        var builder = new ProjectionBuilder();
+        var session = StrongId.NewSessionId();
+        var turn = StrongId.NewTurnId();
+        var at = DateTimeOffset.UtcNow;
+        long sequence = 0;
+        IReadOnlyList<RowOp> Apply(SessionEvent item) => builder.Apply(new SequencedEvent(++sequence, session, at, item));
+        Apply(new TurnStartedEvent(turn, StrongId.NewCommandId()));
+        Apply(new ModelStreamingTextEvent(turn, "discarded"));
+        Apply(new ModelStreamingTextEvent(turn, " tail"));
+        var old = builder.Rows();
+        var message = new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
+            [new ReasoningPart(StrongId.NewPartId(), "reasoning"), new TextPart(StrongId.NewPartId(), "corrected")], at);
+        var commit = Apply(new AssistantMessageCommittedEvent(message));
+        Assert.Equal($"stream:{turn.Value}", Assert.IsType<RowRemoved>(commit[0]).RowId);
+        var committed = Assert.IsType<AssistantMessageRow>(Assert.IsType<RowAppended>(commit[1]).Row);
+        Assert.Same(message.Parts, committed.Parts);
+        Assert.False(committed.IsStreaming);
+        Assert.False(committed.CanFork);
+        var completed = Apply(new TurnCompletedEvent(turn, TurnOutcome.Completed));
+        Assert.True(Assert.IsType<AssistantMessageRow>(Assert.Single(completed.OfType<RowUpserted>()).Row).CanFork);
+        Assert.True(Assert.IsType<AssistantMessageRow>(Assert.Single(builder.Rows())).CanFork);
+        AssertStreamingText(old, "discarded tail");
+        Assert.False(committed.CanFork);
+
+        Apply(new ModelStreamingTextEvent(turn, "new step"));
+        Assert.Equal(2, builder.Rows().Count);
+        AssertStreamingText(builder.Rows().TakeLast(1), "new step");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TerminalEvent_RetainsAllUncommittedText_WithoutChangingPriorSnapshots(bool failed)
+    {
+        var builder = new ProjectionBuilder();
+        var session = StrongId.NewSessionId();
+        var turn = StrongId.NewTurnId();
+        var at = DateTimeOffset.UtcNow;
+        long sequence = 0;
+        void Apply(SessionEvent item) => builder.Apply(new SequencedEvent(++sequence, session, at, item));
+        Apply(new TurnStartedEvent(turn, StrongId.NewCommandId()));
+        Apply(new ModelStreamingTextEvent(turn, "partial"));
+        var old = builder.Rows();
+        Apply(new ModelStreamingTextEvent(turn, " answer"));
+        Apply(failed ? new TurnFailedEvent(turn, "failed") : new TurnCompletedEvent(turn, TurnOutcome.Cancelled));
+        AssertStreamingText(builder.Rows().OfType<AssistantMessageRow>(), "partial answer");
+        AssertStreamingText(old, "partial");
+        Assert.Equal(failed ? TurnPhase.Error : TurnPhase.Idle, builder.State.Phase);
+        Assert.Null(builder.State.ActiveTurn);
+        var nextTurn = StrongId.NewTurnId();
+        Apply(new TurnStartedEvent(nextTurn, StrongId.NewCommandId()));
+        Apply(new ModelStreamingTextEvent(nextTurn, "next"));
+        AssertStreamingText(builder.Rows().OfType<AssistantMessageRow>().TakeLast(1), "next");
+        AssertStreamingText(old, "partial");
+    }
+
+    [Fact]
+    public void Rewind_RemovesStreamAndResetsAppendBaseline()
+    {
+        var builder = new ProjectionBuilder();
+        var session = StrongId.NewSessionId();
+        var turn = StrongId.NewTurnId();
+        var at = DateTimeOffset.UtcNow;
+        long sequence = 0;
+        IReadOnlyList<RowOp> Apply(SessionEvent item) => builder.Apply(new SequencedEvent(++sequence, session, at, item));
+        var message = new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
+            [new TextPart(StrongId.NewPartId(), "question")], at, Source: MessageSource.RealUser);
+        Apply(new UserMessageCommittedEvent(message));
+        Apply(new TurnStartedEvent(turn, StrongId.NewCommandId()));
+        Apply(new ModelStreamingTextEvent(turn, "before"));
+        Apply(new ModelStreamingTextEvent(turn, " rewind"));
+        var old = builder.Rows();
+        var removed = Apply(new ConversationRewoundEvent(message.Id, default, [], 0));
+        Assert.Equal(new[] { $"stream:{turn.Value}", message.Id.Value }, removed.OfType<RowRemoved>().Select(op => op.RowId));
+        Assert.Empty(builder.Rows());
+        var restarted = Apply(new ModelStreamingTextEvent(turn, "after rewind"));
+        Assert.Single(restarted.OfType<RowAppended>());
+        Assert.Empty(restarted.OfType<RowTextAppended>());
+        AssertStreamingText(builder.Rows(), "after rewind");
+        AssertStreamingText(old.OfType<AssistantMessageRow>(), "before rewind");
+    }
+
+    [Fact]
+    public void StreamingAllocation_4096ChunksOf16Characters_ScalesLinearly()
+    {
+        MeasureStreamingAllocation(16);
+        var small = MeasureStreamingAllocation(1024);
+        var large = MeasureStreamingAllocation(4096);
+        Assert.True(large < small * 6, $"1024 chunks allocated {small:N0} bytes; 4096 chunks allocated {large:N0} bytes.");
+        Assert.True(large < 8 * 1024 * 1024, $"4096 chunks allocated {large:N0} bytes.");
+    }
+
+    private static long MeasureStreamingAllocation(int chunks)
+    {
+        const string chunk = "0123456789abcdef";
+        var session = StrongId.NewSessionId();
+        var turn = StrongId.NewTurnId();
+        var at = DateTimeOffset.UtcNow;
+        var events = Enumerable.Range(1, chunks)
+            .Select(index => new SequencedEvent(index, session, at, new ModelStreamingTextEvent(turn, chunk))).ToArray();
+        var builder = new ProjectionBuilder();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        foreach (var item in events)
+            builder.Apply(item);
+        var rows = builder.Rows();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        AssertStreamingText(rows, string.Concat(Enumerable.Repeat(chunk, chunks)));
+        return allocated;
     }
 
     private static void AssertStreamingText(IEnumerable<ConversationRow> rows, string expected)

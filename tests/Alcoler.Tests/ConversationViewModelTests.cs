@@ -125,6 +125,47 @@ public class ConversationViewModelTests
     }
 
     [Fact]
+    public void AppendText_UpdatesExistingAssistantWithoutReplacingItsStreamingChunks()
+    {
+        var (viewModel, _, store) = Create();
+        using (store)
+        using (viewModel)
+        {
+            var row = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), "Intro\n\nTail")], true, DateTimeOffset.UtcNow);
+            ApplyRows(viewModel, 1, true, row);
+            var assistant = Assert.IsType<AssistantMessageItemViewModel>(Assert.Single(viewModel.Items));
+            var chunk = Assert.Single(assistant.StreamingChunks);
+            assistant.IsReasoningExpanded = true;
+            var changes = new List<NotifyCollectionChangedAction>();
+            viewModel.Items.CollectionChanged += (_, args) => changes.Add(args.Action);
+
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+                [new RowTextAppended(row.RowId, " continues", row.At.AddSeconds(1))], false));
+
+            Assert.Same(assistant, Assert.Single(viewModel.Items));
+            Assert.Same(chunk, Assert.Single(assistant.StreamingChunks));
+            Assert.Equal("Intro\n\nTail continues", assistant.MarkdownText);
+            Assert.Equal("Tail continues", assistant.StreamingTail);
+            Assert.True(assistant.IsReasoningExpanded);
+            Assert.Equal(row.At.AddSeconds(1), assistant.At);
+            Assert.Empty(changes);
+
+            ApplyRows(viewModel, 3, false, row with
+            {
+                Parts = [new TextPart(StrongId.NewPartId(), "Authoritative final answer")],
+                IsStreaming = false,
+                CanFork = true,
+            });
+
+            Assert.Same(assistant, Assert.Single(viewModel.Items));
+            Assert.Equal("Authoritative final answer", assistant.FinalMarkdown);
+            Assert.True(assistant.CanFork);
+            Assert.Empty(assistant.StreamingChunks);
+        }
+    }
+
+    [Fact]
     public void TurnCompletion_FoldsIntermediateRowsAndKeepsFinalAnswerVisible()
     {
         var (viewModel, _, store) = Create();

@@ -5,6 +5,8 @@ using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
+using Alcoler.Kernel.Tests.Models;
+using Alcoler.Kernel.Tests.Subagents;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.Tools;
@@ -240,7 +242,7 @@ public class TaskOutputToolTests
     }
 
     [Fact]
-    public void DefaultTimeoutMetadata_IsUnset_SoPollingOwnsTheDeadline()
+    public void DefaultTimeoutMetadata_IsUnset_SoToolOwnsTheDeadline()
     {
         Assert.Null(new TaskOutputTool().Metadata.DefaultTimeoutMs);
     }
@@ -540,7 +542,8 @@ public class TaskOutputToolTests
         var info = SubagentInfo(SubagentStatus.Running);
         registry.Register(info, static _ => ValueTask.CompletedTask);
 
-        var first = registry.TryGetCompletion(info.Id);
+        ISubagentTasks subagents = new SubagentTool(new FakeSubagentPort(), tasks: registry);
+        var first = subagents.TryGetCompletion(info.Id.Value);
         Assert.NotNull(first);
         Assert.False(first!.IsCompleted);
 
@@ -556,7 +559,7 @@ public class TaskOutputToolTests
             Status = SubagentStatus.Running,
             EndedAt = null,
         }, resetNotified: true);
-        var second = registry.TryGetCompletion(info.Id);
+        var second = subagents.TryGetCompletion(info.Id.Value);
         Assert.NotNull(second);
         Assert.False(second!.IsCompleted);
 
@@ -582,6 +585,233 @@ public class TaskOutputToolTests
         Assert.Equal("Background job service is not configured for TaskOutput", result.SingleText());
     }
 
+    [Fact]
+    public async Task SubagentWrapper_LongWait_UsesOneDeadlineAndNoPollingTimers()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var clock = new CountingTimeProvider();
+        var signal = new TrackingInputSignal();
+        var query = new TaskOutputTool().ExecuteAsync(
+            Context(workspace, null, """{"task_id":"sub_agent","block":true,"timeout":600000}""",
+                registry, signal, clock), CancellationToken.None).AsTask();
+
+        Assert.Equal(1, clock.CreatedTimers);
+        Assert.Equal(1, clock.ActiveTimers);
+        clock.Advance(TimeSpan.FromMinutes(9));
+        await Task.Delay(30);
+        Assert.False(query.IsCompleted);
+        Assert.Equal(1, clock.CreatedTimers);
+        Assert.Equal(1, signal.WaitCount);
+
+        registry.Update(info.Id, current => current with { Status = SubagentStatus.Completed, Result = "done" });
+        var result = await query.WaitAsync(TimeSpan.FromSeconds(5));
+        await AsyncTestWait.UntilAsync(() => signal.ActiveWaits == 0);
+        Assert.Contains("<retrieval_status>success</retrieval_status>", result.SingleText());
+        Assert.Equal(0, clock.ActiveTimers);
+    }
+
+    [Theory]
+    [InlineData("completed")]
+    [InlineData("input")]
+    [InlineData("timeout")]
+    [InlineData("cancel")]
+    public async Task SubagentWrapper_BlockingWait_CleansLosersWithoutCancellingTarget(string wake)
+    {
+        using var workspace = new TempWorkspace();
+        using var cancellation = new CancellationTokenSource();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        ISubagentTasks wrapper = new SubagentTool(new FakeSubagentPort(), tasks: registry);
+        var completion = Assert.IsAssignableFrom<Task>(wrapper.TryGetCompletion(info.Id.Value));
+        var clock = new CountingTimeProvider();
+        var signal = new TrackingInputSignal();
+        var query = new TaskOutputTool().ExecuteAsync(
+            Context(workspace, null, """{"task_id":"sub_agent","block":true,"timeout":600000}""",
+                wrapper, signal, clock), cancellation.Token).AsTask();
+        Assert.False(query.IsCompleted);
+        Assert.Equal(1, signal.ActiveWaits);
+        Assert.Equal(1, clock.ActiveTimers);
+
+        switch (wake)
+        {
+            case "completed":
+                registry.Update(info.Id, current => current with { Status = SubagentStatus.Completed, Result = "finished" });
+                break;
+            case "input":
+                signal.Pulse();
+                break;
+            case "timeout":
+                clock.Advance(TimeSpan.FromMinutes(10));
+                break;
+            default:
+                cancellation.Cancel();
+                break;
+        }
+        if (wake == "cancel")
+        {
+            var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => query.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(cancellation.Token, error.CancellationToken);
+        }
+        else
+        {
+            var result = await query.WaitAsync(TimeSpan.FromSeconds(5));
+            var expected = wake == "completed" ? "success" : wake == "input" ? "interrupted" : "timeout";
+            Assert.Contains($"<retrieval_status>{expected}</retrieval_status>", result.SingleText());
+        }
+        await AsyncTestWait.UntilAsync(() => signal.ActiveWaits == 0);
+        Assert.Equal(0, clock.ActiveTimers);
+        Assert.Equal(1, clock.CreatedTimers);
+        if (wake != "completed")
+        {
+            Assert.False(completion.IsCompleted);
+            Assert.Equal(SubagentStatus.Running, wrapper.Find(info.Id.Value)!.Status);
+            Assert.False(wrapper.Find(info.Id.Value)!.Notified);
+            registry.Update(info.Id, current => current with { Status = SubagentStatus.Completed });
+        }
+        await completion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task SubagentWrapper_ResumedRun_WaitsOnNewCompletionAndReturnsOnlyNewResult()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        ISubagentTasks wrapper = new SubagentTool(new FakeSubagentPort(), tasks: registry);
+        var firstCompletion = wrapper.TryGetCompletion(info.Id.Value)!;
+        var clock = new CountingTimeProvider();
+        var context = Context(workspace, null,
+            """{"task_id":"sub_agent","block":true,"timeout":600000}""", wrapper, clock: clock);
+        var firstWait = new TaskOutputTool().ExecuteAsync(context, CancellationToken.None).AsTask();
+        registry.Update(info.Id, current => current with { Status = SubagentStatus.Completed, Result = "first result" });
+        Assert.Contains("first result", (await firstWait.WaitAsync(TimeSpan.FromSeconds(5))).SingleText());
+        Assert.True(wrapper.Find(info.Id.Value)!.Notified);
+
+        registry.Update(info.Id, current => current with { Status = SubagentStatus.Running, Result = null }, resetNotified: true);
+        var secondCompletion = wrapper.TryGetCompletion(info.Id.Value)!;
+        Assert.NotSame(firstCompletion, secondCompletion);
+        var secondWait = new TaskOutputTool().ExecuteAsync(context, CancellationToken.None).AsTask();
+        clock.Advance(TimeSpan.FromMinutes(9));
+        await Task.Delay(30);
+        Assert.False(secondWait.IsCompleted);
+        Assert.True(firstCompletion.IsCompletedSuccessfully);
+        Assert.False(secondCompletion.IsCompleted);
+        Assert.False(wrapper.Find(info.Id.Value)!.Notified);
+        Assert.Equal(2, clock.CreatedTimers);
+        Assert.Equal(1, clock.ActiveTimers);
+
+        registry.Update(info.Id, current => current with { Status = SubagentStatus.Completed, Result = "second result" });
+        var result = (await secondWait.WaitAsync(TimeSpan.FromSeconds(5))).SingleText();
+        Assert.Contains("second result", result);
+        Assert.DoesNotContain("first result", result);
+        Assert.Equal(0, clock.ActiveTimers);
+    }
+
+    [Fact]
+    public async Task LegacySubagents_PollFallback_CleansEachCompetition()
+    {
+        using var workspace = new TempWorkspace();
+        var registry = new SubagentTaskRegistry();
+        var info = SubagentInfo(SubagentStatus.Running);
+        registry.Register(info, static _ => ValueTask.CompletedTask);
+        var clock = new CountingTimeProvider();
+        var signal = new TrackingInputSignal();
+        var query = new TaskOutputTool().ExecuteAsync(
+            Context(workspace, null, """{"task_id":"sub_agent","block":true,"timeout":600000}""",
+                new LegacySubagents(registry), signal, clock), CancellationToken.None).AsTask();
+        for (var iteration = 0; iteration < 10; iteration++)
+        {
+            var expected = clock.CreatedTimers + 2;
+            clock.Advance(TimeSpan.FromMilliseconds(100));
+            await AsyncTestWait.UntilAsync(() => clock.CreatedTimers >= expected
+                && signal.WaitCount >= iteration + 2 && signal.ActiveWaits == 1);
+            Assert.Equal(2, clock.ActiveTimers);
+            Assert.Equal(1, signal.ActiveWaits);
+        }
+        signal.Pulse();
+        Assert.Contains("<retrieval_status>interrupted</retrieval_status>",
+            (await query.WaitAsync(TimeSpan.FromSeconds(5))).SingleText());
+        await AsyncTestWait.UntilAsync(() => signal.ActiveWaits == 0);
+        Assert.Equal(0, clock.ActiveTimers);
+        Assert.False(registry.TryGetCompletion(info.Id.Value)!.IsCompleted);
+    }
+
+    private sealed class LegacySubagents(SubagentTaskRegistry registry) : ISubagentTasks
+    {
+        public IReadOnlyList<SubagentTaskInfo> List() => registry.List();
+        public SubagentTaskInfo? Find(string taskId) => registry.Find(taskId);
+        public bool TryMarkNotified(string taskId) => registry.TryMarkNotified(taskId);
+        public ValueTask<bool> TryStopAsync(string taskId, CancellationToken cancellationToken) =>
+            registry.TryStopAsync(taskId, cancellationToken);
+    }
+
+    private sealed class TrackingInputSignal : ITurnInputSignal
+    {
+        private readonly TurnInputSignal _signal = new();
+        private int _activeWaits;
+        private int _waitCount;
+        public long Version => _signal.Version;
+        public int ActiveWaits => Volatile.Read(ref _activeWaits);
+        public int WaitCount => Volatile.Read(ref _waitCount);
+        public void Pulse() => _signal.Pulse();
+
+        public async Task WaitAsync(long seenVersion, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _activeWaits);
+            Interlocked.Increment(ref _waitCount);
+            try
+            {
+                await _signal.WaitAsync(seenVersion, cancellationToken);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeWaits);
+            }
+        }
+    }
+
+    private sealed class CountingTimeProvider : TimeProvider
+    {
+        private readonly ManualTimeProvider _clock = new();
+        private int _activeTimers;
+        private int _createdTimers;
+        public int ActiveTimers => Volatile.Read(ref _activeTimers);
+        public int CreatedTimers => Volatile.Read(ref _createdTimers);
+        public override DateTimeOffset GetUtcNow() => _clock.GetUtcNow();
+        public void Advance(TimeSpan by) => _clock.Advance(by);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Interlocked.Increment(ref _activeTimers);
+            Interlocked.Increment(ref _createdTimers);
+            return new TimerLease(this, _clock.CreateTimer(callback, state, dueTime, period));
+        }
+
+        private sealed class TimerLease(CountingTimeProvider owner, ITimer timer) : ITimer
+        {
+            private int _disposed;
+            public bool Change(TimeSpan dueTime, TimeSpan period) => timer.Change(dueTime, period);
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                    return;
+                timer.Dispose();
+                Interlocked.Decrement(ref owner._activeTimers);
+            }
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
     private static SubagentTaskInfo SubagentInfo(
         SubagentStatus status,
         string? result = null,
@@ -605,15 +835,17 @@ public class TaskOutputToolTests
         BackgroundJobService? jobs,
         string json,
         ISubagentTasks? subagents = null,
-        ITurnInputSignal? signal = null) =>
+        ITurnInputSignal? signal = null,
+        TimeProvider? clock = null) =>
         new(
             new SessionId("sess_test"),
             workspace.Root,
             JsonDocument.Parse(json).RootElement.Clone(),
             workspace.Workspace,
-            TimeProvider.System,
+            clock ?? TimeProvider.System,
             BackgroundJobs: jobs,
-            Subagents: subagents,
+            Subagents: subagents is SubagentTaskRegistry registry
+                ? new SubagentTool(new FakeSubagentPort(), tasks: registry) : subagents,
             TurnInputSignal: signal);
 
     private static async Task WaitForStatusAsync(BackgroundJobService jobs, BackgroundJobId id, BackgroundJobStatus status)

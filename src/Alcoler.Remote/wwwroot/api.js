@@ -51,7 +51,7 @@ async function errorFrom(res) {
   return new ApiError(res.status, code, message);
 }
 
-async function raw(path, { method = 'GET', body, auth = true } = {}) {
+async function raw(path, { method = 'GET', body, auth = true, signal } = {}) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (auth) {
@@ -60,8 +60,9 @@ async function raw(path, { method = 'GET', body, auth = true } = {}) {
   }
   let res;
   try {
-    res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
+    res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', signal });
   } catch {
+    if (signal?.aborted) throw signal.reason;
     throw new ApiError(0, 'network', 'Network unreachable');
   }
   if (res.status === 401 && auth) {
@@ -112,32 +113,108 @@ export function sendCommand(id, command) {
   return json(`/api/sessions/${encodeURIComponent(id)}/commands`, { method: 'POST', body: command });
 }
 
-// Artifact bytes need the Bearer header, so <img src> cannot be used directly.
-// Fetch with auth, cache the blob object URL, and evict oldest entries at a
-// bounded size so long conversations cannot accumulate without end.
 const artifactCache = new Map();
+const artifactQueue = [];
+const ARTIFACT_CONCURRENCY = 4;
+let activeArtifacts = 0;
 
-export async function artifactBlob(uri, mime) {
+function artifactPath(uri, mime) {
   if (!uri) throw new ApiError(0, 'invalid', 'Missing artifact URI');
-  const res = await raw(`/api/artifacts?uri=${encodeURIComponent(uri)}&mime=${encodeURIComponent(mime || '')}`);
-  if (!res.ok) throw await errorFrom(res);
-  return res.blob();
+  return `/api/artifacts?uri=${encodeURIComponent(uri)}&mime=${encodeURIComponent(mime || '')}`;
+}
+
+export function artifactUrl(uri, mime) {
+  const token = getToken();
+  if (!token) throw new ApiError(401, 'unauthorized', 'Device not paired');
+  return `${artifactPath(uri, mime)}&token=${encodeURIComponent(token)}`;
+}
+
+function drainArtifacts() {
+  while (activeArtifacts < ARTIFACT_CONCURRENCY && artifactQueue.length) {
+    const job = artifactQueue.shift();
+    job.signal?.removeEventListener('abort', job.cancel);
+    if (job.signal?.aborted) { job.reject(job.signal.reason); continue; }
+    activeArtifacts++;
+    Promise.resolve().then(job.run).then(job.resolve, job.reject).finally(() => {
+      activeArtifacts--;
+      drainArtifacts();
+    });
+  }
+}
+
+export function artifactBlob(uri, mime, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const job = { signal, resolve, reject, run: async () => {
+      signal?.throwIfAborted();
+      const res = await raw(artifactPath(uri, mime), { signal });
+      if (!res.ok) throw await errorFrom(res);
+      const blob = await res.blob();
+      signal?.throwIfAborted();
+      return blob;
+    } };
+    job.cancel = () => {
+      const index = artifactQueue.indexOf(job);
+      if (index < 0) return;
+      artifactQueue.splice(index, 1);
+      reject(signal.reason);
+    };
+    if (signal?.aborted) { reject(signal.reason); return; }
+    signal?.addEventListener('abort', job.cancel, { once: true });
+    artifactQueue.push(job);
+    drainArtifacts();
+  });
+}
+
+function retireArtifact(uri, entry) {
+  if (artifactCache.get(uri) === entry) artifactCache.delete(uri);
+  if (!entry.settled) entry.controller.abort();
+  if (entry.url) { URL.revokeObjectURL(entry.url); entry.url = null; }
+}
+
+function trimArtifacts() {
+  if (artifactCache.size <= 80) return;
+  for (const [uri, entry] of artifactCache) {
+    if (entry.consumers) continue;
+    retireArtifact(uri, entry);
+    if (artifactCache.size <= 50) break;
+  }
 }
 
 export function artifactObjectUrl(uri, mime) {
-  if (!uri) return Promise.reject(new ApiError(0, 'invalid', 'Missing artifact URI'));
-  let p = artifactCache.get(uri);
-  if (!p) {
-    if (artifactCache.size >= 80) {
-      for (const [key, promise] of artifactCache) {
-        artifactCache.delete(key);
-        promise.then(u => URL.revokeObjectURL(u)).catch(() => { });
-        if (artifactCache.size < 50) break;
-      }
-    }
-    p = artifactBlob(uri, mime).then(blob => URL.createObjectURL(blob));
-    p.catch(() => artifactCache.delete(uri));
-    artifactCache.set(uri, p);
+  const lease = acquireArtifactObjectUrl(uri, mime);
+  lease.promise.then(lease.release, lease.release);
+  return lease.promise;
+}
+
+export function acquireArtifactObjectUrl(uri, mime) {
+  let entry = artifactCache.get(uri);
+  if (!entry) {
+    entry = { consumers: 0, settled: false, url: null, controller: new AbortController() };
+    entry.promise = artifactBlob(uri, mime, { signal: entry.controller.signal }).then(blob => {
+      entry.controller.signal.throwIfAborted();
+      entry.url = URL.createObjectURL(blob);
+      entry.settled = true;
+      return entry.url;
+    }).catch(error => {
+      entry.settled = true;
+      if (artifactCache.get(uri) === entry) artifactCache.delete(uri);
+      throw error;
+    });
+    entry.promise.catch(() => {});
+    artifactCache.set(uri, entry);
   }
-  return p;
+  entry.consumers++;
+  trimArtifacts();
+  let released = false;
+  return {
+    promise: entry.promise,
+    release() {
+      if (released) return;
+      released = true;
+      entry.consumers--;
+      // A cache slot cannot keep an abandoned request or a detached decoder alive.
+      if (!entry.consumers && !entry.settled) retireArtifact(uri, entry);
+      else trimArtifacts();
+    },
+  };
 }

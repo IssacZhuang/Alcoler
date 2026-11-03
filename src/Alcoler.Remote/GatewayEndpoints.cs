@@ -242,7 +242,7 @@ internal static class GatewayEndpoints
             var mime = request.Query["mime"].ToString();
             if (mime.Length == 0)
                 mime = "application/octet-stream";
-            return GatewayJson.Raw(bytes.Value.ToArray(), mime);
+            return GatewayJson.Raw(bytes.Value, mime, enableRanges: true);
         });
     }
 
@@ -296,7 +296,8 @@ internal static class GatewayEndpoints
                 return;
             }
             var socket = await context.WebSockets.AcceptWebSocketAsync();
-            await SessionStream.RunAsync(state, new SessionId(sessionId), socket, context.RequestAborted);
+            await SessionStream.RunAsync(state, new SessionId(sessionId), socket, context.RequestAborted,
+                appendText: context.Request.Query["appendText"] == "1");
         });
     }
 

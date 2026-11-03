@@ -134,6 +134,8 @@ public interface ISubagentTasks
 
     SubagentTaskInfo? Find(string taskId);
 
+    Task? TryGetCompletion(string taskId) => null;
+
     bool TryMarkNotified(string taskId);
 
     ValueTask<bool> TryStopAsync(string taskId, CancellationToken cancellationToken);

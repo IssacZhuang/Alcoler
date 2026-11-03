@@ -265,9 +265,15 @@ test('a question arriving during preload defers withdrawal until the composer is
 
 test('disposing during preload cancels withdrawal and removes its UI', async () => {
   const images = deferred();
-  const { view, composer, container, commands, restores } = setup({ loadImages: () => images.promise });
+  let loadingSignal;
+  const { view, composer, container, commands, restores } = setup({ loadImages: (_, { signal }) => {
+    loadingSignal = signal;
+    return images.promise;
+  } });
   const operation = view.act('edit', 'queued-1');
+  assert.equal(loadingSignal.aborted, false);
   view.dispose();
+  assert.equal(loadingSignal.aborted, true);
   images.resolve([]);
   await operation;
   assert.equal(composer.disabled, false);

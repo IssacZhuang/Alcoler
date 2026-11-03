@@ -5,8 +5,10 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Remote.Tests.Infrastructure;
@@ -65,6 +67,116 @@ public sealed class WebSocketStreamTests
         {
             socket.Abort();
             socket.Dispose();
+        }
+    }
+
+    [Fact]
+    public void DirectFrames_AreByteIdenticalToLegacyWrappingWithDeclaredPolymorphicContracts()
+    {
+        var at = new DateTimeOffset(2026, 11, 3, 12, 34, 56, TimeSpan.FromHours(-7));
+        var callId = new ToolCallId("call_exact");
+        var input = JsonSerializer.SerializeToElement(new { text = "中文 <>&\"\\\r\n", nullable = (string?)null });
+        ToolResultBlock[] output = [new ToolResultText("text <>&"), new ToolResultMedia("alcoler-artifact://s/file", "video/webm", null)];
+        ConversationRow[] rows =
+        [
+            new UserMessageRow("user", "Unicode 中文 <>&\r\n", at, [new FilePart(new PartId("image"), "alcoler-artifact://s/image", "image/png")], true),
+            new AssistantMessageRow("assistant", new MessageId("message"),
+            [
+                new TextPart(new PartId("text"), new string('x', 131072) + " <>&中文"),
+                new ReasoningPart(new PartId("reasoning"), "thinking", ProviderSignature: "signature"),
+                new ToolCallPart(new PartId("call"), callId, "Browser", input),
+                new ToolResultPart(new PartId("result"), callId, output, StructuredOutput: "{\"exact\":true}"),
+                new FilePart(new PartId("file"), "alcoler-artifact://s/file", "video/webm", "original.webm"),
+                new AttachmentPart(new PartId("attachment"), AttachmentKind.SystemReminder, "reminder"),
+            ], false, at, true),
+            new ToolCallRow("tool", callId, "Browser", input, ToolCallStatus.Succeeded, output, false, TimeSpan.FromMilliseconds(1234), at),
+            new FileChangeSummaryRow("changes", [new FileChangeSummaryItem("中文.cs", 3, 2)], 3, 2),
+            new SystemNoticeRow("notice", "info", "notice", null),
+        ];
+        var state = ConversationState.Initial("title <>&中文", PermissionMode.Build, null, 200000);
+        var snapshot = new ConversationSnapshot(123, 456, rows, state);
+        var delta = new ConversationDelta(457,
+        [
+            new RowAppended(rows[0]), new RowUpserted(rows[1]),
+            new RowTextAppended("assistant", " appended\r\n中文", at.AddMilliseconds(1)),
+            new RowRemoved("removed"), new StatePatched(state),
+        ]);
+        Assert.Equal(LegacyFrame("snapshot", snapshot), GatewayJson.SnapshotFrame(snapshot));
+        Assert.Equal(LegacyFrame("delta", delta), GatewayJson.DeltaFrame(delta));
+        using var frame = JsonDocument.Parse(GatewayJson.DeltaFrame(delta));
+        var append = frame.RootElement.GetProperty("delta").GetProperty("ops")[2];
+        Assert.Equal("row_text_appended", append.GetProperty("$type").GetString());
+        Assert.Equal(" appended\r\n中文", append.GetProperty("delta").GetString());
+    }
+
+    [Fact]
+    public void DirectFrames_AvoidPayloadAndWrappingAllocationCopies()
+    {
+        var snapshot = new ConversationSnapshot(0, 1,
+            [new SystemNoticeRow("large", "info", new string('x', 131072))],
+            ConversationState.Initial("allocation", PermissionMode.Yolo, null, 200000));
+        _ = GatewayJson.SnapshotFrame(snapshot);
+        _ = LegacyFrame("snapshot", snapshot);
+        var start = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 16; index++) _ = GatewayJson.SnapshotFrame(snapshot);
+        var direct = GC.GetAllocatedBytesForCurrentThread() - start;
+        start = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 16; index++) _ = LegacyFrame("snapshot", snapshot);
+        var legacy = GC.GetAllocatedBytesForCurrentThread() - start;
+        Assert.True(direct < legacy / 2, $"Direct frames allocated {direct} bytes versus {legacy} legacy bytes.");
+    }
+
+    private static byte[] LegacyFrame<T>(string type, T payload) => GatewayJson.Object(writer =>
+    {
+        writer.WriteString("type", type);
+        writer.WritePropertyName(type);
+        writer.WriteRawValue(GatewayJson.Serialize(payload));
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stream_AppendCapability_PreservesNewClientChunksAndLegacyFullRowUpdates(bool appendText)
+    {
+        var (sessionId, token) = await _harness.NewSessionAsync();
+        var store = new SessionEventStore(sessionId, TimeProvider.System);
+        var turn = StrongId.NewTurnId();
+        store.Append(new ModelStreamingTextEvent(turn, "snapshot baseline"));
+        using var projection = new TrackedProjection(new LiveConversationProjection(store, 0, () => 0));
+        _harness.Runtime.UseProjection(sessionId, () => projection);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var socket = await WebSocketFrames.ConnectAsync(
+            new Uri($"{_harness.BaseAddress}api/sessions/{sessionId.Value}/stream?token={Uri.EscapeDataString(token)}{(appendText ? "&appendText=1" : "")}"),
+            cancellation.Token);
+        try
+        {
+            using var snapshot = await ReceiveDocumentAsync(socket);
+            var baseline = Assert.Single(snapshot.RootElement.GetProperty("snapshot").GetProperty("rows").EnumerateArray());
+            var appended = store.Append(new ModelStreamingTextEvent(turn, " next chunk"));
+            using var frame = await ReceiveDocumentAsync(socket);
+            var delta = frame.RootElement.GetProperty("delta");
+            Assert.Equal(appended.Sequence, delta.GetProperty("sequence").GetInt64());
+            var op = Assert.Single(delta.GetProperty("ops").EnumerateArray(), value => value.GetProperty("$type").GetString() != "state_patch");
+            if (appendText)
+            {
+                Assert.Equal("row_text_appended", op.GetProperty("$type").GetString());
+                Assert.Equal(baseline.GetProperty("rowId").GetString(), op.GetProperty("rowId").GetString());
+                Assert.Equal(" next chunk", op.GetProperty("delta").GetString());
+                Assert.False(op.TryGetProperty("row", out _));
+            }
+            else
+            {
+                Assert.Equal("row_upserted", op.GetProperty("$type").GetString());
+                var updated = op.GetProperty("row");
+                Assert.Equal("snapshot baseline next chunk", Assert.Single(updated.GetProperty("parts").EnumerateArray()).GetProperty("text").GetString());
+                Assert.Equal(baseline.GetProperty("id").GetString(), updated.GetProperty("id").GetString());
+                Assert.Equal(baseline.GetProperty("parts")[0].GetProperty("id").GetString(), updated.GetProperty("parts")[0].GetProperty("id").GetString());
+            }
+        }
+        finally
+        {
+            socket.Abort();
+            await projection.Disposed.WaitAsync(FrameBudget);
         }
     }
 

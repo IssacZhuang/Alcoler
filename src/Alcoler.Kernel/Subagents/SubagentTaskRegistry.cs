@@ -36,10 +36,8 @@ public sealed class SubagentTaskRegistry : ISubagentTasks
     public bool TryMarkNotified(string taskId) =>
         _entries.TryGetValue(new SubagentId(taskId), out var entry) && entry.TryMarkNotified();
 
-    // TaskOutputTool's blocking read awaits this instead of polling; the source resets when
-    // a completed agent is resumed, so a second wait on the same id parks again.
-    internal Task? TryGetCompletion(SubagentId id) =>
-        _entries.TryGetValue(id, out var entry) ? entry.Completion : null;
+    public Task? TryGetCompletion(string taskId) =>
+        _entries.TryGetValue(new SubagentId(taskId), out var entry) ? entry.Completion : null;
 
     public async ValueTask<bool> TryStopAsync(string taskId, CancellationToken cancellationToken)
     {
@@ -63,7 +61,7 @@ public sealed class SubagentTaskRegistry : ISubagentTasks
         private readonly object _gate = new();
         private SubagentTaskInfo _info = info;
         private bool _notified;
-        private TaskCompletionSource _completion = NewCompletion();
+        private TaskCompletionSource _completion = NewCompletion(info.Status);
 
         public Func<CancellationToken, ValueTask> StopAsync { get; } = stopAsync;
 
@@ -129,7 +127,12 @@ public sealed class SubagentTaskRegistry : ISubagentTasks
                 _completion.TrySetResult();
         }
 
-        private static TaskCompletionSource NewCompletion() =>
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private static TaskCompletionSource NewCompletion(SubagentStatus status = SubagentStatus.Running)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (status != SubagentStatus.Running)
+                completion.SetResult();
+            return completion;
+        }
     }
 }

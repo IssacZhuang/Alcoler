@@ -86,9 +86,11 @@ internal static class BrowserRuntime
             while(hit?.shadowRoot) { const next=hit.shadowRoot.elementFromPoint(x,y); if(!next || next===hit) break; hit=next; }
             return {connected:e.isConnected,visible:visible(e),enabled:enabled(e),editable:!e.readOnly && (e.isContentEditable || e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement),hit:hit===e || e.contains(hit),x,y,width:r.width,height:r.height,left:r.left,top:r.top,tag:e.tagName.toLowerCase(),role:role(e),name:name(e),text:text(e).slice(0,10000),value:e.value ?? null,checked:e.checked ?? null,attributes:Object.fromEntries(Array.from(e.attributes).map(a=>[a.name,a.value])),display:s.display};
           };
-          const api={resolve,select,visible,enabled,text,role,name,inspect,refs:new Map(),snapshot:(generation,limit=1000,root=document,includeHidden=false)=>{
+          const api={resolve,select,visible,enabled,text,role,name,inspect,refs:new Map(),epoch:null,retire:epoch=>{
+            if(api.epoch!==epoch){api.refs.clear();api.epoch=epoch;}return true;
+          },snapshot:(generation,limit=1000,root=document,includeHidden=false)=>{
             const elements=[...(root instanceof Element?[root]:[]),...all(root)];
-            api.refs.clear(); let i=0;
+            api.retire(generation); let i=0;
             return elements.filter(e=>includeHidden || visible(e)).filter(e=>role(e)!=='generic' || e.matches('input,textarea,[contenteditable],[tabindex]')).slice(0,limit).map(e=>{
               const ref=`d${generation}_${++i}`; api.refs.set(ref,e);
               const r=e.getBoundingClientRect();

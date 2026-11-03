@@ -162,6 +162,11 @@ public class ArtifactGatewayHarness : GatewayHarness
 {
     public const string KnownArtifactUri = "alcoler-artifact://sess_fixture/report.bin";
     public static readonly byte[] KnownArtifactBytes = [0x61, 0x6c, 0x63, 0x6f, 0x6c, 0x65, 0x72, 0x00];
+    public const string LargeArtifactUri = "alcoler-artifact://sess_fixture/large-original.bin";
+    public const string EmptyArtifactUri = "alcoler-artifact://sess_fixture/empty.bin";
+    private static readonly byte[] LargeArtifactStorage = Enumerable.Range(0, 2 * 1024 * 1024 + 46)
+        .Select(index => (byte)((index * 131 + 19) & 255)).ToArray();
+    public static ReadOnlyMemory<byte> LargeArtifactBytes => LargeArtifactStorage.AsMemory(13, LargeArtifactStorage.Length - 29);
 
     protected override RemoteGatewayOptions CreateOptions(int port) => new()
     {
@@ -174,9 +179,14 @@ public class ArtifactGatewayHarness : GatewayHarness
 
     private static ValueTask<ReadOnlyMemory<byte>?> LoadArtifact(string uri, CancellationToken cancellationToken)
     {
-        // The ternary needs an explicit cast: an uncast null arm would type the
-        // conditional as ReadOnlyMemory<byte> and yield a non-null empty payload.
-        ReadOnlyMemory<byte>? payload = uri == KnownArtifactUri ? KnownArtifactBytes : (ReadOnlyMemory<byte>?)null;
+        ReadOnlyMemory<byte>? payload = uri switch
+        {
+            KnownArtifactUri => KnownArtifactBytes,
+            LargeArtifactUri => LargeArtifactBytes,
+            EmptyArtifactUri => ReadOnlyMemory<byte>.Empty,
+            // A null array converts to empty memory, not a missing nullable payload.
+            _ => (ReadOnlyMemory<byte>?)null,
+        };
         return ValueTask.FromResult(payload);
     }
 }

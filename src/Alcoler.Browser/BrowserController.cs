@@ -99,18 +99,28 @@ public sealed class BrowserController : IBrowserController
         return Task.CompletedTask;
     }
 
-    public Task<BrowserActionResult> OpenPopupAsync(
+    public async Task<BrowserActionResult> OpenPopupAsync(
         SessionId sessionId, string openerTabId, string url, CancellationToken cancellationToken,
         string? adoptTargetId = null)
     {
-        PopupAction action;
-        lock (_sync)
+        try
         {
-            if (_disposed || !_sessions.TryGetValue(sessionId, out _))
-                return Task.FromResult(Failure("The popup opener is no longer available."));
-            action = new PopupAction(openerTabId, url, adoptTargetId);
+            lock (_sync)
+            {
+                if (_disposed || !_sessions.ContainsKey(sessionId))
+                    return Failure("The popup opener is no longer available.");
+            }
+            return await ExecuteAsync(sessionId, new PopupAction(openerTabId, url, adoptTargetId), cancellationToken).ConfigureAwait(false);
         }
-        return ExecuteAsync(sessionId, action, cancellationToken);
+        finally
+        {
+            if (adoptTargetId is not null)
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                try { await _host.RejectPopupAsync(sessionId, adoptTargetId, cleanup.Token).WaitAsync(cleanup.Token).ConfigureAwait(false); }
+                catch (Exception ex) { _logger.LogDebug(ex, "Closing a rejected native browser popup failed"); }
+            }
+        }
     }
 
     private async Task<BrowserActionResult> RunAsync(

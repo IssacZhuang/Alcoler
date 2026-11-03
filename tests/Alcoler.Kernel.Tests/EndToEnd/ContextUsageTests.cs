@@ -185,8 +185,7 @@ public class ContextUsageTests
             new ModelStreamingReasoningEvent(turnId, "Still thinking"),
             new ModelStreamingTextEvent(turnId, " world"),
         ];
-        foreach (var sessionEvent in events)
-            store.Append(sessionEvent);
+        var sequenced = events.Select(sessionEvent => store.Append(sessionEvent)).ToArray();
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await using var deltas = projection.Deltas(timeout.Token).GetAsyncEnumerator();
@@ -202,18 +201,30 @@ public class ContextUsageTests
         Assert.Empty(received[0].Ops);
         Assert.Empty(received[1].Ops);
         Assert.Empty(received[3].Ops);
-        var first = Assert.IsType<AssistantMessageRow>(Assert.Single(received[2].Ops.OfType<RowAppended>()).Row);
+        Assert.Equal(2, received[2].Ops.Count);
+        var first = Assert.IsType<AssistantMessageRow>(Assert.IsType<RowAppended>(received[2].Ops[0]).Row);
         Assert.True(first.IsStreaming);
+        Assert.Equal(sequenced[2].OccurredAt, first.At);
         Assert.Equal("Hello", Assert.IsType<TextPart>(Assert.Single(first.Parts)).Text);
-        var updated = Assert.IsType<AssistantMessageRow>(Assert.Single(received[4].Ops.OfType<RowUpserted>()).Row);
-        Assert.Equal(first.RowId, updated.RowId);
-        Assert.True(updated.IsStreaming);
-        Assert.Equal("Hello world", Assert.IsType<TextPart>(Assert.Single(updated.Parts)).Text);
-        Assert.Equal(TurnPhase.Streaming, Assert.Single(received[4].Ops.OfType<StatePatched>()).State.Phase);
+        Assert.Equal(TurnPhase.Streaming, Assert.IsType<StatePatched>(received[2].Ops[1]).State.Phase);
+        Assert.Equal(2, received[4].Ops.Count);
+        var appended = Assert.IsType<RowTextAppended>(received[4].Ops[0]);
+        Assert.Equal(new RowTextAppended(first.RowId, " world", sequenced[4].OccurredAt), appended);
+        var patched = Assert.IsType<StatePatched>(received[4].Ops[1]);
+        Assert.Equal(TurnPhase.Streaming, patched.State.Phase);
         var snapshot = projection.Snapshot();
         Assert.Equal(store.LastSequence, snapshot.Sequence);
-        Assert.Equal(updated, Assert.Single(snapshot.Rows));
-        Assert.Equal(TurnPhase.Streaming, snapshot.State.Phase);
+        var updated = Assert.IsType<AssistantMessageRow>(Assert.Single(snapshot.Rows));
+        Assert.Equal(first.RowId, updated.RowId);
+        Assert.Equal(first.Id, updated.Id);
+        Assert.Equal(first.CanFork, updated.CanFork);
+        Assert.True(updated.IsStreaming);
+        Assert.Equal(appended.At, updated.At);
+        Assert.Equal("Hello world", Assert.IsType<TextPart>(Assert.Single(updated.Parts)).Text);
+        Assert.Equal("Hello", Assert.IsType<TextPart>(Assert.Single(first.Parts)).Text);
+        Assert.Equal(sequenced[2].OccurredAt, first.At);
+        Assert.Empty(initial.Rows);
+        Assert.Equal(patched.State, snapshot.State);
     }
 
     [Fact]

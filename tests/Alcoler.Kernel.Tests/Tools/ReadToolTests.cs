@@ -267,6 +267,134 @@ public class ReadToolTests
             result.SingleText());
     }
 
+    [Theory]
+    [InlineData("one\r\ntwo\r\n", 2, 2, "2\ttwo\n3\t")]
+    [InlineData("one\rtwo\nlast\r", 1, 2, "1\tone\rtwo\n2\tlast\r")]
+    [InlineData("one\n\n", 0, 3, "0\tone\n1\t\n2\t")]
+    [InlineData("one\r\r\ntwo", 1, 2, "1\tone\r\n2\ttwo")]
+    public async Task ExplicitRange_PreservesLineEndingsAndOffsetZero(string content, int offset, int limit, string expected)
+    {
+        using var workspace = new TempWorkspace();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "endings.txt"), content);
+        var result = await new ReadTool().ExecuteAsync(workspace.ContextFor(
+            JsonSerializer.Serialize(new { file_path = "endings.txt", offset, limit })), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(expected, result.SingleText());
+    }
+
+    [Theory]
+    [InlineData(75_000, false, false)]
+    [InlineData(75_001, false, true)]
+    [InlineData(37_500, true, false)]
+    [InlineData(37_501, true, true)]
+    public async Task ExplicitRange_ExactTokenBoundaryIgnoresCrLfTerminator(int length, bool cjk, bool overBudget)
+    {
+        using var workspace = new TempWorkspace();
+        var line = new string(cjk ? '\u4E00' : 'x', length);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Root, "boundary.txt"), line + "\r\nnot selected");
+        var result = await new ReadTool().ExecuteAsync(workspace.ContextFor(
+            """{"file_path":"boundary.txt","limit":1}"""), CancellationToken.None);
+
+        Assert.Equal(overBudget, result.IsError);
+        Assert.Equal(overBudget
+            ? "File content (25001 tokens) exceeds maximum allowed tokens (25000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file."
+            : "1\t" + line, result.SingleText());
+    }
+
+    [Fact]
+    public async Task RangeScanner_SkipsHugePreRangeLineWithoutAllocatingIt()
+    {
+        var content = new string('x', 16 * 1024 * 1024) + "\r\nsmall\r\n";
+        using var reader = new StringReader(content);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+
+        var read = ReadTool.ReadLineRangeAsync(reader, 2, 1, CancellationToken.None);
+        var completedSynchronously = read.IsCompletedSuccessfully;
+        var result = await read;
+
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(completedSynchronously);
+        Assert.Equal(new[] { "small" }, result.Lines);
+        Assert.Equal(1, result.SelectedLineCount);
+        Assert.Equal(2, result.TokenCount);
+        Assert.True(allocated < 256 * 1024, $"Allocated {allocated} bytes while skipping a huge line.");
+    }
+
+    [Fact]
+    public async Task RangeScanner_OversizedSelectedLinesRetainOnlyBudgetAndCountExactTokens()
+    {
+        var content = new string('\u4E00', 2_000_000) + "\r\nlast\r\n";
+        using var reader = new StringReader(content);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+
+        var read = ReadTool.ReadLineRangeAsync(reader, 1, 2, CancellationToken.None);
+        var completedSynchronously = read.IsCompletedSuccessfully;
+        var result = await read;
+
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(completedSynchronously);
+        Assert.Empty(result.Lines);
+        Assert.Equal(2, result.SelectedLineCount);
+        Assert.Equal(1_333_335, result.TokenCount);
+        Assert.True(allocated < 1024 * 1024, $"Allocated {allocated} bytes for over-budget selected lines.");
+    }
+
+    [Fact]
+    public async Task RangeScanner_PreservesCrLfAcrossBufferBoundaryAndTrailingEmptyLine()
+    {
+        using var reader = new StringReader(new string('x', 4095) + "\r\nnext\r\n");
+
+        var result = await ReadTool.ReadLineRangeAsync(reader, 2, 3, CancellationToken.None);
+
+        Assert.Equal(new[] { "next", "" }, result.Lines);
+        Assert.Equal(3, result.TotalLines);
+        Assert.Equal(2, result.SelectedLineCount);
+        Assert.Equal(2, result.TokenCount);
+    }
+
+    [Fact]
+    public async Task OversizedRange_DoesNotAuthorizeOrCacheAnUnreadView()
+    {
+        using var workspace = new TempWorkspace();
+        var path = Path.Combine(workspace.Root, "unread.txt");
+        await File.WriteAllTextAsync(path, new string('x', 300_000) + "\nsmall");
+        var reads = new FileReadState();
+        var tool = new ReadTool();
+        var result = await tool.ExecuteAsync(workspace.ContextFor(
+            """{"file_path":"unread.txt","limit":1}""") with { FileReads = reads }, CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal("File content (100000 tokens) exceeds maximum allowed tokens (25000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.", result.SingleText());
+        Assert.Null(reads.FindView(path, 1, 1));
+        var range = workspace.ContextFor("""{"file_path":"unread.txt","offset":2,"limit":1}""") with { FileReads = reads };
+        Assert.Equal("2\tsmall", (await tool.ExecuteAsync(range, CancellationToken.None)).SingleText());
+        Assert.Contains("Wasted call", (await tool.ExecuteAsync(range, CancellationToken.None)).SingleText());
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task RangeScanner_CancelsWhileScanningSkippedOrOversizedSelectedLine(int startLine)
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var reader = new CancellingReader(new string('x', 100_000), cancellation, startLine == 1 ? 25 : 3);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await ReadTool.ReadLineRangeAsync(reader, startLine, 1, cancellation.Token));
+    }
+
+    private sealed class CancellingReader(string content, CancellationTokenSource cancellation, int cancelOnRead) : StringReader(content)
+    {
+        private int _reads;
+        public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+        {
+            if (++_reads == cancelOnRead)
+                cancellation.Cancel();
+            return base.ReadAsync(buffer, cancellationToken);
+        }
+    }
+
     [Fact]
     public async Task RepeatedReadOfUnchangedFile_ReturnsWastedCallStub()
     {

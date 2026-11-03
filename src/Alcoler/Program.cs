@@ -13,6 +13,8 @@ internal static class Program
         AppLog.Initialize();
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+        // Environment.Exit skips the finally blocks below; flush logs on the way out.
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => AppLog.Flush(TimeSpan.FromSeconds(2));
         try
         {
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);

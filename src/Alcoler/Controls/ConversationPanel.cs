@@ -29,6 +29,7 @@ public sealed class ConversationPanel : VirtualizingPanel
     private readonly List<Control> _orderedChildren = [];
     private readonly Comparison<Control> _childComparison;
     private double[] _offsets = [0];
+    private int _offsetCount = 1;
     // Lowest row index whose trailing offset is stale; int.MaxValue when all
     // offsets computed by the last measure pass are still valid.
     private int _firstDirtyOffset;
@@ -39,6 +40,7 @@ public sealed class ConversationPanel : VirtualizingPanel
     private int _tailIndex = -1;
     private int _scrollToIndex = -1;
     private bool _inLayout;
+    private Control? _ownVisibilityChange;
 
     public ConversationPanel()
     {
@@ -60,9 +62,9 @@ public sealed class ConversationPanel : VirtualizingPanel
                 _heights.Clear();
                 _firstDirtyOffset = 0;
             }
-            if (_offsets.Length != Items.Count + 1)
+            if (_offsetCount != Items.Count + 1)
             {
-                _offsets = new double[Items.Count + 1];
+                SetOffsetCount(Items.Count + 1);
                 _firstDirtyOffset = 0;
             }
 
@@ -78,7 +80,7 @@ public sealed class ConversationPanel : VirtualizingPanel
             _keepIndices.Clear();
             var width = 0d;
             _offsets[0] = 0;
-            var firstDirty = Math.Min(_firstDirtyOffset, Items.Count);
+            var firstDirty = Math.Min(_firstDirtyOffset, _offsetCount - 1);
             if (firstDirty > 0)
                 firstDirty = ReconcileCleanPrefix(start, end, firstDirty, constraint, ref width);
             for (var i = firstDirty; i < Items.Count; i++)
@@ -95,7 +97,7 @@ public sealed class ConversationPanel : VirtualizingPanel
                 Release(index);
 
             _firstDirtyOffset = int.MaxValue;
-            return new Size(double.IsFinite(availableSize.Width) ? availableSize.Width : width, _offsets[^1]);
+            return new Size(double.IsFinite(availableSize.Width) ? availableSize.Width : width, _offsets[_offsetCount - 1]);
         }
         finally
         {
@@ -128,8 +130,15 @@ public sealed class ConversationPanel : VirtualizingPanel
             if (pair.Key < firstDirty && pair.Value.Container.IsKeyboardFocusWithin)
                 _realizedSnapshot.Add((pair.Key, pair.Value));
         }
-        foreach (var (index, _) in _realizedSnapshot)
-            ProcessMeasure(index, start, end, constraint, ref width);
+        try
+        {
+            foreach (var (index, _) in _realizedSnapshot)
+                ProcessMeasure(index, start, end, constraint, ref width);
+        }
+        finally
+        {
+            _realizedSnapshot.Clear();
+        }
         return Math.Min(_firstDirtyOffset, firstDirty);
     }
 
@@ -208,6 +217,7 @@ public sealed class ConversationPanel : VirtualizingPanel
             return;
         }
         _firstDirtyOffset = 0;
+        SetOffsetCount(items.Count + 1);
         foreach (var item in _indices.Keys.OfType<INotifyPropertyChanged>())
             item.PropertyChanged -= OnItemPropertyChanged;
         _indices.Clear();
@@ -224,34 +234,55 @@ public sealed class ConversationPanel : VirtualizingPanel
         _heightKeys.Clear();
         foreach (var key in _heights.Keys)
             _heightKeys.Add(key);
-        foreach (var key in _heightKeys)
-            if (!_indices.ContainsKey(key))
-                _heights.Remove(key);
+        try
+        {
+            foreach (var key in _heightKeys)
+                if (!_indices.ContainsKey(key))
+                    _heights.Remove(key);
+        }
+        finally
+        {
+            _heightKeys.Clear();
+        }
 
         _realizedSnapshot.Clear();
         foreach (var (index, row) in _realized)
             _realizedSnapshot.Add((index, row));
         _realized.Clear();
-        foreach (var (oldIndex, row) in _realizedSnapshot)
+        try
         {
-            if (e.Action != NotifyCollectionChangedAction.Reset && _indices.TryGetValue(row.Key, out var index))
+            foreach (var (oldIndex, row) in _realizedSnapshot)
             {
-                _realized.Add(index, row);
-                if (index != oldIndex)
-                    ItemContainerGenerator!.ItemContainerIndexChanged(row.Container, oldIndex, index);
+                if (e.Action != NotifyCollectionChangedAction.Reset && _indices.TryGetValue(row.Key, out var index))
+                {
+                    _realized.Add(index, row);
+                    if (index != oldIndex)
+                        ItemContainerGenerator!.ItemContainerIndexChanged(row.Container, oldIndex, index);
+                }
+                else
+                    Release(row);
             }
-            else
-                Release(row);
+        }
+        finally
+        {
+            _realizedSnapshot.Clear();
         }
         _ownContainerSnapshot.Clear();
         foreach (var container in _ownContainers)
             _ownContainerSnapshot.Add(container);
-        foreach (var container in _ownContainerSnapshot)
-            if (!_indices.ContainsKey(container))
-            {
-                _ownContainers.Remove(container);
-                RemoveInternalChild(container);
-            }
+        try
+        {
+            foreach (var container in _ownContainerSnapshot)
+                if (!_indices.ContainsKey(container))
+                {
+                    _ownContainers.Remove(container);
+                    RemoveInternalChild(container);
+                }
+        }
+        finally
+        {
+            _ownContainerSnapshot.Clear();
+        }
         OrderChildren();
         if (e.Action == NotifyCollectionChangedAction.Reset)
             _heights.Clear();
@@ -368,14 +399,21 @@ public sealed class ConversationPanel : VirtualizingPanel
                     if (pair.Key >= Math.Min(oldIndex, newIndex) && pair.Key <= Math.Max(oldIndex, newIndex))
                         _realizedSnapshot.Add((pair.Key, pair.Value));
                 }
-                foreach (var (index, _) in _realizedSnapshot)
-                    _realized.Remove(index);
-                foreach (var (index, row) in _realizedSnapshot)
+                try
                 {
-                    var target = index == oldIndex ? newIndex : index + (oldIndex < newIndex ? -1 : 1);
-                    _realized.Add(target, row);
-                    if (target != index)
-                        ItemContainerGenerator!.ItemContainerIndexChanged(row.Container, index, target);
+                    foreach (var (index, _) in _realizedSnapshot)
+                        _realized.Remove(index);
+                    foreach (var (index, row) in _realizedSnapshot)
+                    {
+                        var target = index == oldIndex ? newIndex : index + (oldIndex < newIndex ? -1 : 1);
+                        _realized.Add(target, row);
+                        if (target != index)
+                            ItemContainerGenerator!.ItemContainerIndexChanged(row.Container, index, target);
+                    }
+                }
+                finally
+                {
+                    _realizedSnapshot.Clear();
                 }
                 MarkOffsetsDirty(Math.Min(oldIndex, newIndex));
                 OrderChildren();
@@ -402,26 +440,38 @@ public sealed class ConversationPanel : VirtualizingPanel
             if (pair.Key >= fromIndex)
                 _realizedSnapshot.Add((pair.Key, pair.Value));
         }
-        foreach (var (oldIndex, _) in _realizedSnapshot)
-            _realized.Remove(oldIndex);
-        foreach (var (oldIndex, row) in _realizedSnapshot)
+        try
         {
-            var newIndex = oldIndex + delta;
-            _realized.Add(newIndex, row);
-            ItemContainerGenerator!.ItemContainerIndexChanged(row.Container, oldIndex, newIndex);
+            foreach (var (oldIndex, _) in _realizedSnapshot)
+                _realized.Remove(oldIndex);
+            foreach (var (oldIndex, row) in _realizedSnapshot)
+            {
+                var newIndex = oldIndex + delta;
+                _realized.Add(newIndex, row);
+                ItemContainerGenerator!.ItemContainerIndexChanged(row.Container, oldIndex, newIndex);
+            }
+        }
+        finally
+        {
+            _realizedSnapshot.Clear();
         }
     }
 
     private void MarkOffsetsDirty(int index)
     {
-        if (_offsets.Length != Items.Count + 1)
-        {
-            var resized = new double[Items.Count + 1];
-            Array.Copy(_offsets, resized, Math.Min(_offsets.Length, index + 1));
-            _offsets = resized;
-        }
+        SetOffsetCount(Items.Count + 1);
         if (index < _firstDirtyOffset)
             _firstDirtyOffset = index;
+    }
+
+    private void SetOffsetCount(int count)
+    {
+        if (count > _offsets.Length)
+        {
+            var capacity = (int)Math.Min(Array.MaxLength, Math.Max(count, (long)_offsets.Length * 2));
+            Array.Resize(ref _offsets, capacity);
+        }
+        _offsetCount = count;
     }
 
     protected override void OnItemsControlChanged(ItemsControl? oldValue)
@@ -432,24 +482,43 @@ public sealed class ConversationPanel : VirtualizingPanel
             foreach (var row in _realized.Values)
                 _realizedValues.Add(row);
             _realized.Clear();
-            foreach (var row in _realizedValues)
+            try
             {
-                _anchors?.UnregisterAnchorCandidate(row.Container);
-                if (row.Generated)
-                    oldValue.ItemContainerGenerator.ClearItemContainer(row.Container);
+                foreach (var row in _realizedValues)
+                {
+                    _anchors?.UnregisterAnchorCandidate(row.Container);
+                    if (row.Generated)
+                        oldValue.ItemContainerGenerator.ClearItemContainer(row.Container);
+                }
+            }
+            finally
+            {
+                _realizedValues.Clear();
             }
             var logicalChildren = (IAvaloniaList<ILogical>)((ILogical)oldValue).LogicalChildren;
             _orderedChildren.Clear();
             foreach (var child in Children)
                 _orderedChildren.Add(child);
-            logicalChildren.RemoveAll(_orderedChildren);
-            Children.Clear();
+            try
+            {
+                logicalChildren.RemoveAll(_orderedChildren);
+                Children.Clear();
+            }
+            finally
+            {
+                _orderedChildren.Clear();
+            }
             foreach (var item in _indices.Keys.OfType<INotifyPropertyChanged>())
                 item.PropertyChanged -= OnItemPropertyChanged;
             _indices.Clear();
             _heights.Clear();
             _ownContainers.Clear();
+            _heightKeys.Clear();
+            _realizedSnapshot.Clear();
+            _ownContainerSnapshot.Clear();
+            _realizedContainers.Clear();
             _offsets = [0];
+            _offsetCount = 1;
             _firstDirtyOffset = 0;
             _tailIndex = _scrollToIndex = -1;
         }
@@ -568,7 +637,7 @@ public sealed class ConversationPanel : VirtualizingPanel
             generator.ItemContainerPrepared(container, item, index);
         }
         else
-            container.SetCurrentValue(IsVisibleProperty, true);
+            SetOwnContainerVisibility(container, true);
         return row;
     }
 
@@ -577,11 +646,18 @@ public sealed class ConversationPanel : VirtualizingPanel
         _orderedChildren.Clear();
         foreach (var child in Children)
             _orderedChildren.Add(child);
-        _orderedChildren.Sort(_childComparison);
-        for (var i = 0; i < _orderedChildren.Count; i++)
+        try
         {
-            if (!ReferenceEquals(Children[i], _orderedChildren[i]))
-                Children.Move(Children.IndexOf(_orderedChildren[i]), i);
+            _orderedChildren.Sort(_childComparison);
+            for (var i = 0; i < _orderedChildren.Count; i++)
+            {
+                if (!ReferenceEquals(Children[i], _orderedChildren[i]))
+                    Children.Move(Children.IndexOf(_orderedChildren[i]), i);
+            }
+        }
+        finally
+        {
+            _orderedChildren.Clear();
         }
     }
 
@@ -618,12 +694,26 @@ public sealed class ConversationPanel : VirtualizingPanel
             RemoveInternalChild(row.Container);
         }
         else
-            row.Container.SetCurrentValue(IsVisibleProperty, false);
+            SetOwnContainerVisibility(row.Container, false);
+    }
+
+    private void SetOwnContainerVisibility(Control container, bool visible)
+    {
+        var previous = _ownVisibilityChange;
+        _ownVisibilityChange = container;
+        try
+        {
+            container.SetCurrentValue(IsVisibleProperty, visible);
+        }
+        finally
+        {
+            _ownVisibilityChange = previous;
+        }
     }
 
     private void OnItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (sender is null || !_indices.TryGetValue(sender, out var index))
+        if (sender is null || ReferenceEquals(sender, _ownVisibilityChange) || !_indices.TryGetValue(sender, out var index))
             return;
         if (_realized.TryGetValue(index, out var row))
         {
@@ -645,6 +735,7 @@ public sealed class ConversationPanel : VirtualizingPanel
     private static bool AffectsHeight(object item, string? propertyName) => propertyName is null or "" || item switch
     {
         AssistantMessageItemViewModel => propertyName is nameof(AssistantMessageItemViewModel.MarkdownText)
+            or nameof(AssistantMessageItemViewModel.HasText)
             or nameof(AssistantMessageItemViewModel.ReasoningBlocks)
             or nameof(AssistantMessageItemViewModel.IsStreaming)
             or nameof(AssistantMessageItemViewModel.IsReasoningExpanded)
@@ -679,7 +770,7 @@ public sealed class ConversationPanel : VirtualizingPanel
         TimelineItemViewModel { IsFolded: true } => 0,
         AgentCallItemViewModel => 32,
         ToolCallItemViewModel tool => (tool.IsExpanded ? 48 : 32) + EstimateImageHeight(tool.ImageMedia.Count),
-        AssistantMessageItemViewModel { IsReasoningExpanded: false, MarkdownText.Length: 0 } => 32,
+        AssistantMessageItemViewModel { IsReasoningExpanded: false, HasText: false } => 32,
         _ => 48,
     };
 

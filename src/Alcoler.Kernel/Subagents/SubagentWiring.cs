@@ -14,87 +14,60 @@ using Microsoft.Extensions.Logging;
 
 namespace Alcoler.Kernel.Subagents;
 
-/// <summary>
-/// Bridges SubagentService to real runtimes: each request gets a child AgentRuntime sharing
-/// the parent's store/workspace/providers and inheriting the parent session's model selection
-/// (unless the request overrides it) with no runtime-default fallback, with the subagent
-/// dispatch tools removed and the tool set filtered to the agent type's scope. The child's system prompt is composed from
-/// SubagentPrompts and installed via the per-session CustomSystemPrompt channel. Children
-/// inherit plan mode when the parent is planning; otherwise they run in Yolo because no UI
-/// answers a child broker and the parent already approved the Agent call. Interactive
-/// tools are removed from plan-mode children so they cannot stall on a missing broker.
-/// Completion mirroring rides on the child's terminal turn signal for both foreground and
-/// background runs.
-/// </summary>
 public static class SubagentWiring
 {
     private static readonly string[] ChildHiddenTools = ["Agent", "Task", "SendMessage", "RespondToCoordinator", "ExitPlanMode"];
 
-    /// <param name="runtime">Lazy because the tool is registered on the runtime it resolves.</param>
-    /// <param name="messenger">When set, children register here so SendMessage can reach them.</param>
     public static SubagentTool CreateTool(Func<AgentRuntime> runtime, SubagentMessenger? messenger = null)
     {
         var tasks = new SubagentTaskRegistry();
         return new(
             new SubagentService((id, request, ct) => CreateChildAsync(runtime(), id, request, ct, messenger, tasks)),
-            NotifyParentOfBackgroundCompletionAsync(runtime, tasks),
+            (request, result) => NotifyParentOfBackgroundCompletionAsync(runtime(), tasks, request, result),
             () => runtime().Options.Tools.Any(tool => tool.Contract.Name is "Read" or "Bash"),
             tasks);
     }
 
-    private static Func<SubagentRequest, SubagentResult, ValueTask> NotifyParentOfBackgroundCompletionAsync(
-        Func<AgentRuntime> runtime,
-        SubagentTaskRegistry? tasks = null) =>
-        async (request, result) =>
-        {
-            if (tasks is not null && tasks.Find(result.State.Id.Value)?.Notified == true)
-            {
-                return;
-            }
+    private static async ValueTask NotifyParentOfBackgroundCompletionAsync(
+        AgentRuntime runtime,
+        SubagentTaskRegistry? tasks,
+        SubagentRequest request,
+        SubagentResult result)
+    {
+        if (tasks?.Find(result.State.Id.Value)?.Notified == true)
+            return;
+        var parent = runtime.GetSession(request.ParentSessionId);
+        if (parent is null)
+            return;
 
-            var parent = runtime().GetSession(request.ParentSessionId);
-            if (parent is null)
-            {
-                return;
-            }
-
-            var status = SubagentTool.BackgroundStatus(result.State.Status);
-            var durationMs = Math.Max(
-                0,
-                (int)Math.Round((result.State.EndedAt.GetValueOrDefault() - result.State.StartedAt).TotalMilliseconds));
-            var output = result.Output.Trim();
-            var outputFile = new SubagentArtifacts(ResolveArtifactsRoot(runtime()))
-                .GetOutputFile(request.ParentSessionId, result.State.Id);
-            var body = BackgroundJobNotifications.FormatLocalAgentCompleted(
-                result.State.Id.Value,
-                status,
-                request.AgentType ?? SubagentPrompts.GeneralPurposeAgentType,
-                result.State.Description,
-                result: result.State.Status == SubagentStatus.Completed && output.Length > 0 ? output : null,
-                error: result.State.Status == SubagentStatus.Failed && output.Length > 0 ? output : null,
-                toolUses: result.ToolUseCount,
-                durationMs: durationMs,
-                toolUseId: request.ParentToolCallId?.Value,
-                outputFile: outputFile);
-            await parent.EnqueueTaskNotificationAsync(body).ConfigureAwait(false);
-            tasks?.TryMarkNotified(result.State.Id.Value);
-        };
+        var status = SubagentTool.BackgroundStatus(result.State.Status);
+        var durationMs = Math.Max(
+            0,
+            (int)Math.Round((result.State.EndedAt.GetValueOrDefault() - result.State.StartedAt).TotalMilliseconds));
+        var output = result.Output.Trim();
+        var outputFile = new SubagentArtifacts(ResolveArtifactsRoot(runtime))
+            .GetOutputFile(request.ParentSessionId, result.State.Id);
+        var body = BackgroundJobNotifications.FormatLocalAgentCompleted(
+            result.State.Id.Value,
+            status,
+            request.AgentType ?? SubagentPrompts.GeneralPurposeAgentType,
+            result.State.Description,
+            result: result.State.Status == SubagentStatus.Completed && output.Length > 0 ? output : null,
+            error: result.State.Status == SubagentStatus.Failed && output.Length > 0 ? output : null,
+            toolUses: result.ToolUseCount,
+            durationMs: durationMs,
+            toolUseId: request.ParentToolCallId?.Value,
+            outputFile: outputFile);
+        await parent.EnqueueTaskNotificationAsync(body).ConfigureAwait(false);
+        tasks?.TryMarkNotified(result.State.Id.Value);
+    }
 
     private static string ResolveArtifactsRoot(AgentRuntime runtime) =>
         runtime.Options.SubagentOutputRoot ?? Path.Combine(Path.GetTempPath(), "alcoler-agents");
 
-    /// <summary>
-    /// A planning child inherits the parent's mode with plan mode still enabled; otherwise
-    /// the child runs in Yolo because the parent already approved the Agent call.
-    /// </summary>
     public static PermissionMode ResolveChildMode(PermissionMode parentMode, bool parentPlanEnabled = false) =>
         parentPlanEnabled ? parentMode : PermissionMode.Yolo;
 
-    /// <summary>
-    /// A child runs on the parent session's model unless the request names one explicitly.
-    /// A missing selection is an error; substituting the runtime default would silently run
-    /// the child on a model the parent is not using.
-    /// </summary>
     public static ModelSelection ResolveChildModelSelection(
         ModelSelection? requestSelection,
         ModelSelection? parentSelection,
@@ -105,10 +78,6 @@ public static class SubagentWiring
             $"No model is selected for parent session {parentSessionId.Value}; " +
             "subagents inherit the parent session model and do not fall back to a runtime default.");
 
-    /// <summary>
-    /// ExitPlanMode is removed from every child because plan approval exists only at the parent;
-    /// Agent/Task recursion and parent-side SendMessage are removed on top of the type scope.
-    /// </summary>
     public static IReadOnlyList<ITool> SelectChildTools(
         IReadOnlyList<ITool> tools,
         SubagentRequest request,
@@ -138,179 +107,287 @@ public static class SubagentWiring
         SubagentId id,
         SubagentRequest request,
         CancellationToken ct,
-        SubagentMessenger? messenger = null,
-        SubagentTaskRegistry? tasks = null)
+        SubagentMessenger? messenger,
+        SubagentTaskRegistry? tasks)
     {
+        using var parentLease = await runtime.LockSessionLifecycleAsync(request.ParentSessionId, ct).ConfigureAwait(false);
         var options = runtime.Options;
-        var artifacts = new SubagentArtifacts(ResolveArtifactsRoot(runtime));
-        var logger = options.Logging?.CreateLogger(typeof(SubagentWiring).FullName!);
-        var parentRuntime = runtime.GetSession(request.ParentSessionId);
-        var parentRecord = parentRuntime is null
+        var parent = runtime.GetSession(request.ParentSessionId);
+        var parentRecord = parent is null
             ? await options.Store.GetSessionAsync(request.ParentSessionId, ct).ConfigureAwait(false)
             : null;
-        var root = request.WorkspaceRoot
-            ?? parentRuntime?.WorkspaceRoot
-            ?? parentRecord?.WorkspaceRoot
+        var root = request.WorkspaceRoot ?? parent?.WorkspaceRoot ?? parentRecord?.WorkspaceRoot
             ?? throw new InvalidOperationException(
                 $"parent session {request.ParentSessionId} was not found; subagents need a WorkspaceRoot");
-        var inheritedShell = parentRuntime?.Shell ?? parentRecord?.Shell;
-        var parentMode = parentRuntime?.Mode ?? parentRecord?.PermissionMode ?? PermissionMode.Yolo;
-        var parentPlanEnabled = parentRuntime?.PlanEnabled ?? parentRecord?.PlanEnabled ?? false;
-        var childMode = ResolveChildMode(parentMode, parentPlanEnabled);
-        var childPlanEnabled = parentPlanEnabled;
-
+        var shell = parent?.Shell ?? parentRecord?.Shell;
+        var planEnabled = parent?.PlanEnabled ?? parentRecord?.PlanEnabled ?? false;
+        var mode = ResolveChildMode(parent?.Mode ?? parentRecord?.PermissionMode ?? PermissionMode.Yolo, planEnabled);
         var selection = ResolveChildModelSelection(
-            request.ModelSelection,
-            parentRuntime?.ModelSelection ?? parentRecord?.ModelSelection,
-            request.ParentSessionId);
-        string BuildChildPrompt(ShellEnvironment? shell) => SubagentPrompts.BuildChildSystemPrompt(
-            request.AgentType,
-            new SubagentEnvironmentFacts(
-                root,
-                RuntimeEnvironmentFacts.IsGitRepository(root),
-                RuntimeEnvironmentFacts.Platform,
-                shell?.Name ?? options.ShellName ?? RuntimeEnvironmentFacts.Shell,
-                RuntimeEnvironmentFacts.OsVersion,
-                selection.ProviderId,
-                selection.ModelId));
-
-        var responseTool = new RespondToCoordinatorTool(
-            id,
-            request.AgentType ?? SubagentPrompts.GeneralPurposeAgentType,
-            (body, token) =>
-            {
-                token.ThrowIfCancellationRequested();
-                var parent = runtime.GetSession(request.ParentSessionId)
-                    ?? throw new InvalidOperationException("Coordinator session is not resident.");
-                return parent.EnqueueTaskNotificationAsync(body);
-            });
-        var childRuntime = new AgentRuntime(new AgentRuntimeOptions
+            request.ModelSelection, parent?.ModelSelection ?? parentRecord?.ModelSelection, request.ParentSessionId);
+        var metadata = new ChildMetadata(runtime, id,
+            request with { WorkspaceRoot = root, ModelSelection = selection }, tasks, mode, planEnabled);
+        var childRuntime = metadata.CreateRuntime(runtime);
+        try
         {
-            Store = options.Store,
-            Artifacts = options.Artifacts,
-            Providers = runtime.CurrentProviders,
-            Tools = SelectChildTools(parentRuntime?.ToolRegistry.Tools ?? options.Tools, request, responseTool,
-                childMode, childPlanEnabled),
-            WorkspaceFactory = options.WorkspaceFactory,
-            PermissionRules = options.PermissionRules,
-            Clock = options.Clock,
-            DefaultModel = selection,
-            AgentInstructions = options.AgentInstructions,
-            CustomSystemPromptFactory = BuildChildPrompt,
-            ShellName = options.ShellName,
-            ToolOutputRoot = options.ToolOutputRoot,
-            ResolveShell = options.ResolveShell,
-            GitSnapshotProvider = options.GitSnapshotProvider,
-            UserSkillsBase = options.UserSkillsBase,
-            DisabledSkillPathsProvider = options.DisabledSkillPathsProvider,
-            PlanFileStore = options.PlanFileStore,
-        });
-
-        var handle = await childRuntime.CreateSessionAsync(
-            new SessionOptions(root, request.Description, childMode, selection,
-                ParentSessionId: request.ParentSessionId, Shell: inheritedShell,
-                PlanEnabled: childPlanEnabled),
-            ct);
-
-        runtime.RegisterSubagentRuntime(request.ParentSessionId, handle.Id, childRuntime);
-        var child = childRuntime.GetSession(handle.Id)!;
-        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var completedRuns = 0;
-        var runRequest = request;
-        var previousAssistantMessages = 0;
-        var previousToolUses = 0;
-        string? finalOutput = null;
-        var description = string.IsNullOrWhiteSpace(request.Description) ? request.Prompt : request.Description;
-        var agentType = request.AgentType ?? SubagentPrompts.GeneralPurposeAgentType;
-        var outputFile = artifacts.GetOutputFile(request.ParentSessionId, id);
-        var startedAt = options.Clock.GetUtcNow();
-        var state = new SubagentState(
-            id,
-            handle.Id,
-            description,
-            SubagentStatus.Running,
-            null,
-            startedAt,
-            null,
-            OutputFile: outputFile,
-            ParentToolCallId: request.ParentToolCallId,
-            AgentType: agentType);
-
-        // The task registry outlives the agent; a strong stop closure would root the child
-        // runtime graph for the parent runtime's whole lifetime.
-        var childRuntimeRef = new WeakReference<AgentRuntime>(childRuntime);
-        async ValueTask StopChildAsync(CancellationToken token)
-        {
-            if (!childRuntimeRef.TryGetTarget(out var runtimeToStop))
-                return;
-            await runtimeToStop.SubmitAsync(new StopCommand(StrongId.NewCommandId(), handle.Id, 0), token)
+            var handle = await childRuntime.CreateSessionAsync(
+                new SessionOptions(root, request.Description, mode, selection,
+                    ParentSessionId: request.ParentSessionId, Shell: shell, PlanEnabled: planEnabled), ct)
                 .ConfigureAwait(false);
-        }
-
-        tasks?.Register(
-            new SubagentTaskInfo(
-                id,
-                handle.Id,
-                agentType,
-                description,
-                request.Prompt,
-                outputFile,
-                SubagentStatus.Running,
-                Result: null,
-                Error: null,
-                ToolUses: null,
-                startedAt,
-                EndedAt: null)
+            metadata.Initialize(handle.Id, childRuntime);
+            var channel = new SubagentChannel(id, handle.Id, metadata.State.Description, childRuntime,
+                OutputFile: metadata.State.OutputFile)
+            {
+                ColdLoadAsync = metadata.ColdLoadAsync,
+            };
+            var run = new ChildRun(metadata, childRuntime, channel, initialRun: true);
+            run.Bind();
+            tasks?.Register(new SubagentTaskInfo(
+                id, handle.Id, metadata.AgentType, metadata.State.Description, request.Prompt,
+                metadata.State.OutputFile, SubagentStatus.Running, Result: null, Error: null,
+                ToolUses: null, metadata.State.StartedAt, EndedAt: null)
             {
                 ParentSessionId = request.ParentSessionId,
-            },
-            StopChildAsync);
-
-        void WriteTerminalArtifacts(SubagentState terminalState, string output, int toolUses)
-        {
-            var endedAt = terminalState.EndedAt ?? options.Clock.GetUtcNow();
-            switch (terminalState.Status)
+            }, metadata.Stop.StopAsync);
+            if (request.Background)
+                metadata.WriteRunning();
+            if (messenger is not null)
             {
-                case SubagentStatus.Completed:
-                    artifacts.WriteCompleted(
-                        id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
-                        description, request.Prompt, root, output,
-                        Math.Max(0, (int)Math.Round((endedAt - terminalState.StartedAt).TotalMilliseconds)),
-                        toolUses,
-                        terminalState.StartedAt, endedAt);
-                    break;
-                case SubagentStatus.Failed:
-                    artifacts.WriteFailed(
-                        id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
-                        description, request.Prompt, root, output, terminalState.StartedAt, endedAt);
-                    break;
-                default:
-                    artifacts.WriteStopped(
-                        id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
-                        description, request.Prompt, root, terminalState.StartedAt, endedAt);
-                    break;
+                runtime.RegisterSubagentMessenger(messenger);
+                messenger.Register(request.ParentSessionId, channel);
             }
+            runtime.RegisterSubagentRuntime(request.ParentSessionId, handle.Id, childRuntime);
+            await metadata.EmitStateAsync(started: true).ConfigureAwait(false);
+            return run.ChildSession();
+        }
+        catch (Exception ex)
+        {
+            metadata.State = metadata.State with { Status = SubagentStatus.Failed, EndedAt = options.Clock.GetUtcNow() };
+            tasks?.Update(id, info => info with
+            {
+                Status = SubagentStatus.Failed,
+                Error = ex.Message,
+                EndedAt = metadata.State.EndedAt,
+            });
+            messenger?.Maintain(request.ParentSessionId);
+            await childRuntime.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private sealed class ChildStop(AgentRuntime runtime, SessionId sessionId)
+    {
+        private readonly WeakReference<AgentRuntime> _runtime = new(runtime);
+        private readonly SessionId _sessionId = sessionId;
+
+        public void Retarget(AgentRuntime runtime) => _runtime.SetTarget(runtime);
+
+        public async ValueTask StopAsync(CancellationToken cancellationToken)
+        {
+            if (_runtime.TryGetTarget(out var runtime))
+                await runtime.SubmitAsync(new StopCommand(StrongId.NewCommandId(), _sessionId, 0), cancellationToken)
+                    .ConfigureAwait(false);
+        }
+    }
+
+    // Cold callbacks must not retain a resident parent, child, or warm execution callback.
+    private sealed class ChildMetadata
+    {
+        private readonly WeakReference<AgentRuntime> _parent;
+        private readonly SubagentArtifacts _artifacts;
+        private readonly TimeProvider _clock;
+        private ModelSelection _selection;
+        private PermissionMode _mode;
+        private bool _planEnabled;
+        private SubagentState _state;
+        private ChildStop? _stop;
+
+        public ChildMetadata(AgentRuntime parent, SubagentId id, SubagentRequest request,
+            SubagentTaskRegistry? tasks, PermissionMode mode, bool planEnabled)
+        {
+            _parent = new(parent);
+            _artifacts = new SubagentArtifacts(ResolveArtifactsRoot(parent));
+            _clock = parent.Options.Clock;
+            _selection = request.ModelSelection!;
+            _mode = mode;
+            _planEnabled = planEnabled;
+            Request = request;
+            Tasks = tasks;
+            AgentType = request.AgentType ?? SubagentPrompts.GeneralPurposeAgentType;
+            var description = string.IsNullOrWhiteSpace(request.Description) ? request.Prompt : request.Description;
+            _state = new SubagentState(id, default, description, SubagentStatus.Running, null,
+                _clock.GetUtcNow(), null, _artifacts.GetOutputFile(request.ParentSessionId, id),
+                request.ParentToolCallId, AgentType);
         }
 
-        if (request.Background)
+        public SubagentRequest Request { get; }
+        private string OriginalDescription => string.IsNullOrWhiteSpace(Request.Description) ? Request.Prompt : Request.Description;
+        public SubagentTaskRegistry? Tasks { get; }
+        public string AgentType { get; }
+        public ChildStop Stop => _stop!;
+        public TimeProvider Clock => _clock;
+        public SubagentState State
         {
+            get => Volatile.Read(ref _state);
+            set => Volatile.Write(ref _state, value);
+        }
+
+        public void Initialize(SessionId sessionId, AgentRuntime runtime)
+        {
+            State = State with { ChildSessionId = sessionId };
+            _stop = new ChildStop(runtime, sessionId);
+        }
+
+        public AgentRuntime CreateRuntime(AgentRuntime parent)
+        {
+            var options = parent.Options;
+            var response = new RespondToCoordinatorTool(State.Id, AgentType, DeliverToParentAsync);
+            return new AgentRuntime(new AgentRuntimeOptions
+            {
+                Store = options.Store,
+                Artifacts = options.Artifacts,
+                Providers = parent.CurrentProviders,
+                Tools = SelectChildTools(parent.GetSession(Request.ParentSessionId)?.ToolRegistry.Tools ?? options.Tools,
+                    Request, response, _mode, _planEnabled),
+                WorkspaceFactory = options.WorkspaceFactory,
+                PermissionRules = options.PermissionRules,
+                Clock = _clock,
+                DefaultModel = _selection,
+                AgentInstructions = options.AgentInstructions,
+                CustomSystemPromptFactory = BuildPrompt,
+                ShellName = options.ShellName,
+                ToolOutputRoot = options.ToolOutputRoot,
+                ResolveShell = options.ResolveShell,
+                GitSnapshotProvider = options.GitSnapshotProvider,
+                UserSkillsBase = options.UserSkillsBase,
+                DisabledSkillPathsProvider = options.DisabledSkillPathsProvider,
+                PlanFileStore = options.PlanFileStore,
+                Logging = options.Logging,
+            });
+        }
+
+        public async ValueTask ColdLoadAsync(SubagentChannel channel, CancellationToken cancellationToken)
+        {
+            if (!_parent.TryGetTarget(out var parent) || parent.GetSession(Request.ParentSessionId) is null)
+                throw new InvalidOperationException("Coordinator session is not resident.");
+            var record = await parent.Options.Store.GetSessionAsync(State.ChildSessionId, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Session {State.ChildSessionId.Value} not found.");
+            _selection = record.ModelSelection ?? _selection;
+            _mode = record.PermissionMode;
+            _planEnabled = record.PlanEnabled;
+            var runtime = CreateRuntime(parent);
             try
             {
-                artifacts.WriteRunning(
-                    id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
-                    description, request.Prompt, root, startedAt, startedAt);
+                await runtime.ResumeSessionAsync(State.ChildSessionId, cancellationToken).ConfigureAwait(false);
+                var run = new ChildRun(this, runtime, channel, initialRun: false);
+                run.Bind();
+                Stop.Retarget(runtime);
+                parent.RegisterSubagentRuntime(Request.ParentSessionId, State.ChildSessionId, runtime);
             }
             catch
             {
-                await childRuntime.DisposeAsync().ConfigureAwait(false);
+                await runtime.DisposeAsync().ConfigureAwait(false);
                 throw;
             }
         }
 
-        child.TurnFinished += async (_, outcome) =>
+        public ValueTask EmitStateAsync(bool started) =>
+            _parent.TryGetTarget(out var parent) && parent.GetSession(Request.ParentSessionId) is { } session
+                ? session.EmitSubagentStateAsync(State, started)
+                : ValueTask.CompletedTask;
+
+        public ValueTask NotifyCompletionAsync(SubagentRequest request, SubagentResult result) =>
+            _parent.TryGetTarget(out var parent)
+                ? NotifyParentOfBackgroundCompletionAsync(parent, Tasks, request, result)
+                : ValueTask.CompletedTask;
+
+        public ILogger? CreateLogger() => _parent.TryGetTarget(out var parent)
+            ? parent.Options.Logging?.CreateLogger(typeof(SubagentWiring).FullName!) : null;
+
+        public SubagentStatus ReadStatus() => State.Status;
+
+        public void WriteRunning(bool resumed = false, ToolCallId? resumedFrom = null)
         {
-            var initialRun = Interlocked.Increment(ref completedRuns) == 1;
-            var terminal = state with
+            var state = State;
+            _artifacts.WriteRunning(state.Id, state.ChildSessionId, Request.ParentSessionId,
+                Request.ParentToolCallId, AgentType, OriginalDescription, Request.Prompt,
+                Request.WorkspaceRoot!, state.StartedAt, state.StartedAt,
+                resumedAt: resumed ? state.StartedAt : null, resumedFromToolCallId: resumedFrom);
+        }
+
+        public void WriteTerminal(string output, int toolUses)
+        {
+            var state = State;
+            var endedAt = state.EndedAt ?? _clock.GetUtcNow();
+            var description = OriginalDescription;
+            switch (state.Status)
+            {
+                case SubagentStatus.Completed:
+                    _artifacts.WriteCompleted(state.Id, state.ChildSessionId, Request.ParentSessionId,
+                        Request.ParentToolCallId, AgentType, description, Request.Prompt, Request.WorkspaceRoot!,
+                        output, Math.Max(0, (int)Math.Round((endedAt - state.StartedAt).TotalMilliseconds)),
+                        toolUses, state.StartedAt, endedAt);
+                    break;
+                case SubagentStatus.Failed:
+                    _artifacts.WriteFailed(state.Id, state.ChildSessionId, Request.ParentSessionId,
+                        Request.ParentToolCallId, AgentType, description, Request.Prompt, Request.WorkspaceRoot!,
+                        output, state.StartedAt, endedAt);
+                    break;
+                default:
+                    _artifacts.WriteStopped(state.Id, state.ChildSessionId, Request.ParentSessionId,
+                        Request.ParentToolCallId, AgentType, description, Request.Prompt, Request.WorkspaceRoot!,
+                        state.StartedAt, endedAt);
+                    break;
+            }
+        }
+
+        private ValueTask DeliverToParentAsync(string body, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var session = _parent.TryGetTarget(out var parent) ? parent.GetSession(Request.ParentSessionId) : null;
+            return (session ?? throw new InvalidOperationException("Coordinator session is not resident."))
+                .EnqueueTaskNotificationAsync(body);
+        }
+
+        private string BuildPrompt(ShellEnvironment? shell) => SubagentPrompts.BuildChildSystemPrompt(
+            Request.AgentType,
+            new SubagentEnvironmentFacts(Request.WorkspaceRoot!,
+                RuntimeEnvironmentFacts.IsGitRepository(Request.WorkspaceRoot!), RuntimeEnvironmentFacts.Platform,
+                shell?.Name ?? (_parent.TryGetTarget(out var parent) ? parent.Options.ShellName : null)
+                    ?? RuntimeEnvironmentFacts.Shell,
+                RuntimeEnvironmentFacts.OsVersion, _selection.ProviderId, _selection.ModelId));
+    }
+
+    private sealed class ChildRun(ChildMetadata metadata, AgentRuntime runtime, SubagentChannel channel, bool initialRun)
+    {
+        private readonly TaskCompletionSource _finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private SubagentRequest _runRequest = metadata.Request;
+        private bool _initialRun = initialRun;
+        private int _previousAssistantMessages;
+        private int _previousToolUses;
+        private string? _finalOutput;
+
+        public void Bind()
+        {
+            channel.BindRuntime(runtime, ResumeAsync, metadata.ReadStatus);
+            runtime.GetSession(channel.ChildSessionId)!.TurnFinished += OnTurnFinishedAsync;
+        }
+
+        public SubagentChildSession ChildSession() => new(
+            channel.ChildSessionId,
+            (prompt, token) => SubmitPromptAsync(runtime, channel.ChildSessionId, prompt, token),
+            _finished.Task,
+            () => Task.FromResult(_finalOutput),
+            () => Task.FromResult(CountToolUses(ReadRows(runtime, channel.ChildSessionId))),
+            metadata.Stop.StopAsync,
+            OutputFile: channel.OutputFile);
+
+        private async ValueTask OnTurnFinishedAsync(SessionRuntime child, TurnOutcome outcome)
+        {
+            await channel.DeliveryLock.WaitAsync().ConfigureAwait(false);
+            var firstRun = _initialRun;
+            _initialRun = false;
+            var terminal = metadata.State with
             {
                 Status = outcome switch
                 {
@@ -318,19 +395,22 @@ public static class SubagentWiring
                     TurnOutcome.Failed => SubagentStatus.Failed,
                     _ => SubagentStatus.Cancelled,
                 },
-                EndedAt = options.Clock.GetUtcNow(),
+                EndedAt = metadata.Clock.GetUtcNow(),
             };
             try
             {
-                var rows = ReadRows(childRuntime, handle.Id);
-                var output = ReadFinalOutput(rows, previousAssistantMessages) ?? string.Empty;
+                var rows = ReadRows(child);
+                var output = ReadFinalOutput(rows, _previousAssistantMessages) ?? string.Empty;
                 var toolUses = CountToolUses(rows);
                 if (terminal.Status == SubagentStatus.Failed && child.LastTurnError is { Length: > 0 } error)
                     output = string.IsNullOrWhiteSpace(output) ? error : $"{output}\n\n{error}";
-                finalOutput = output;
-                terminal = terminal with { ResultSummary = string.IsNullOrWhiteSpace(output) ? null : output[..Math.Min(output.Length, 200)] };
-                state = terminal;
-                tasks?.Update(id, info => info with
+                _finalOutput = output;
+                terminal = terminal with
+                {
+                    ResultSummary = string.IsNullOrWhiteSpace(output) ? null : output[..Math.Min(output.Length, 200)],
+                };
+                metadata.State = terminal;
+                metadata.Tasks?.Update(terminal.Id, info => info with
                 {
                     Status = terminal.Status,
                     Result = terminal.Status == SubagentStatus.Completed ? output : null,
@@ -340,20 +420,16 @@ public static class SubagentWiring
                 });
                 try
                 {
-                    WriteTerminalArtifacts(terminal, output, toolUses);
+                    metadata.WriteTerminal(output, toolUses);
                 }
                 catch (Exception ex)
                 {
-                    logger?.LogWarning(ex, "Writing subagent artifacts for {SubagentId} failed", id.Value);
+                    metadata.CreateLogger()?.LogWarning(ex, "Writing subagent artifacts for {SubagentId} failed", terminal.Id.Value);
                 }
-                if (parentRuntime is not null)
-                    await parentRuntime.EmitSubagentStateAsync(terminal, started: false).ConfigureAwait(false);
-                if (!initialRun)
-                {
-                    await NotifyParentOfBackgroundCompletionAsync(() => runtime, tasks)(runRequest,
-                        new SubagentResult(terminal, output,
-                            toolUses - previousToolUses)).ConfigureAwait(false);
-                }
+                await metadata.EmitStateAsync(started: false).ConfigureAwait(false);
+                if (!firstRun)
+                    await metadata.NotifyCompletionAsync(_runRequest,
+                        new SubagentResult(terminal, output, toolUses - _previousToolUses)).ConfigureAwait(false);
             }
             catch
             {
@@ -361,88 +437,69 @@ public static class SubagentWiring
             }
             finally
             {
-                if (initialRun)
+                if (firstRun)
                 {
                     if (terminal.Status == SubagentStatus.Failed)
-                        finished.TrySetException(new InvalidOperationException(child.LastTurnError ?? "Subagent turn failed."));
+                        _finished.TrySetException(new InvalidOperationException(child.LastTurnError ?? "Subagent turn failed."));
                     else if (terminal.Status == SubagentStatus.Cancelled)
-                        finished.TrySetCanceled();
+                        _finished.TrySetCanceled();
                     else
-                        finished.TrySetResult();
+                        _finished.TrySetResult();
                 }
+                channel.DeliveryLock.Release();
+                channel.Messenger?.OnTerminal(metadata.Request.ParentSessionId, channel);
             }
-        };
-        if (messenger is not null)
-        {
-            messenger.Register(request.ParentSessionId, new SubagentChannel(state.Id, handle.Id, description, childRuntime,
-                ResumeAsync: async (prompt, summary, toolCallId, token) =>
-                {
-                    var previousState = state;
-                    var previousRequest = runRequest;
-                    var rows = ReadRows(childRuntime, handle.Id);
-                    previousAssistantMessages = CountAssistantMessages(rows);
-                    previousToolUses = CountToolUses(rows);
-                    runRequest = request with
-                    {
-                        Prompt = prompt,
-                        Description = string.IsNullOrWhiteSpace(summary) ? state.Description : summary,
-                        Background = true,
-                        ParentToolCallId = toolCallId,
-                    };
-                    state = state with
-                    {
-                        Description = runRequest.Description!,
-                        Status = SubagentStatus.Running,
-                        ResultSummary = null,
-                        StartedAt = options.Clock.GetUtcNow(),
-                        EndedAt = null,
-                    };
-                    var previousTask = tasks?.Find(id.Value);
-                    tasks?.Update(id, info => info with
-                    {
-                        Description = state.Description,
-                        Status = SubagentStatus.Running,
-                        Result = null,
-                        Error = null,
-                        ToolUses = null,
-                        StartedAt = state.StartedAt,
-                        EndedAt = null,
-                    }, resetNotified: true);
-                    try
-                    {
-                        artifacts.WriteRunning(
-                            id, handle.Id, request.ParentSessionId, request.ParentToolCallId, agentType,
-                            description, request.Prompt, root, state.StartedAt, state.StartedAt,
-                            resumedAt: state.StartedAt, resumedFromToolCallId: toolCallId);
-                        if (parentRuntime is not null)
-                            await parentRuntime.EmitSubagentStateAsync(state, started: false).ConfigureAwait(false);
-                        await SubmitPromptAsync(childRuntime, handle.Id, prompt, token).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        state = previousState;
-                        runRequest = previousRequest;
-                        if (previousTask is not null)
-                            tasks?.Restore(id, previousTask);
-                        if (parentRuntime is not null)
-                            await parentRuntime.EmitSubagentStateAsync(state, started: false).ConfigureAwait(false);
-                        throw;
-                    }
-                },
-                ReadStatus: () => state.Status,
-                OutputFile: outputFile));
         }
-        if (parentRuntime is not null)
-            await parentRuntime.EmitSubagentStateAsync(state, started: true).ConfigureAwait(false);
 
-        return new SubagentChildSession(
-            handle.Id,
-            (prompt, token) => SubmitPromptAsync(childRuntime, handle.Id, prompt, token),
-            finished.Task,
-            () => Task.FromResult(finalOutput),
-            () => Task.FromResult(CountToolUses(ReadRows(childRuntime, handle.Id))),
-            StopChildAsync,
-            OutputFile: outputFile);
+        private async ValueTask ResumeAsync(string prompt, string? summary, ToolCallId? toolCallId, CancellationToken token)
+        {
+            var previousState = metadata.State;
+            var previousRequest = _runRequest;
+            var rows = ReadRows(runtime, channel.ChildSessionId);
+            _previousAssistantMessages = CountAssistantMessages(rows);
+            _previousToolUses = CountToolUses(rows);
+            _runRequest = metadata.Request with
+            {
+                Prompt = prompt,
+                Description = string.IsNullOrWhiteSpace(summary) ? previousState.Description : summary,
+                Background = true,
+                ParentToolCallId = toolCallId,
+            };
+            metadata.State = previousState with
+            {
+                Description = _runRequest.Description!,
+                Status = SubagentStatus.Running,
+                ResultSummary = null,
+                StartedAt = metadata.Clock.GetUtcNow(),
+                EndedAt = null,
+            };
+            var previousTask = metadata.Tasks?.Find(previousState.Id.Value);
+            metadata.Tasks?.Update(previousState.Id, info => info with
+            {
+                Description = metadata.State.Description,
+                Status = SubagentStatus.Running,
+                Result = null,
+                Error = null,
+                ToolUses = null,
+                StartedAt = metadata.State.StartedAt,
+                EndedAt = null,
+            }, resetNotified: true);
+            try
+            {
+                metadata.WriteRunning(resumed: true, resumedFrom: toolCallId);
+                await metadata.EmitStateAsync(started: false).ConfigureAwait(false);
+                await SubmitPromptAsync(runtime, channel.ChildSessionId, prompt, token).ConfigureAwait(false);
+            }
+            catch
+            {
+                metadata.State = previousState;
+                _runRequest = previousRequest;
+                if (previousTask is not null)
+                    metadata.Tasks?.Restore(previousState.Id, previousTask);
+                await metadata.EmitStateAsync(started: false).ConfigureAwait(false);
+                throw;
+            }
+        }
     }
 
     private static async ValueTask SubmitPromptAsync(
@@ -452,11 +509,15 @@ public static class SubagentWiring
         CancellationToken ct)
     {
         var ack = await runtime.SubmitAsync(
-            new SendTextCommand(StrongId.NewCommandId(), sessionId, 0, prompt), ct);
+            new SendTextCommand(StrongId.NewCommandId(), sessionId, 0, prompt), ct).ConfigureAwait(false);
         if (!ack.Accepted)
-        {
             throw new InvalidOperationException($"subagent prompt rejected: {ack.RejectionReason}");
-        }
+    }
+
+    private static IReadOnlyList<ConversationRow> ReadRows(SessionRuntime runtime)
+    {
+        using var projection = runtime.CreateProjection();
+        return projection.Snapshot().Rows;
     }
 
     private static IReadOnlyList<ConversationRow> ReadRows(AgentRuntime runtime, SessionId sessionId)

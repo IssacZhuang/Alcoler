@@ -3,7 +3,6 @@ using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
-using Alcoler.Kernel.Subagents;
 
 namespace Alcoler.Kernel.Tools;
 
@@ -75,11 +74,12 @@ public sealed class TaskOutputTool : ITool
         if (string.IsNullOrEmpty(taskId))
             return ToolExecutionResult.Text("Task ID is required", isError: true);
 
+        var inputVersion = context.TurnInputSignal?.Version ?? 0;
         var job = context.BackgroundJobs?.Find(new BackgroundJobId(taskId));
         if (job is null)
         {
             if (context.Subagents is { } subagents)
-                return await ReadSubagentAsync(subagents, taskId, context, cancellationToken).ConfigureAwait(false);
+                return await ReadSubagentAsync(subagents, taskId, context, inputVersion, cancellationToken).ConfigureAwait(false);
             return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
         }
 
@@ -95,7 +95,7 @@ public sealed class TaskOutputTool : ITool
                     return ToolExecutionResult.Text(FormatResult("timeout", job));
                 var completion = (context.BackgroundJobs as BackgroundJobService)
                     ?.TryGetCompletion(new BackgroundJobId(taskId));
-                switch (await AwaitWakeAsync(completion, context, deadline, cancellationToken).ConfigureAwait(false))
+                switch (await AwaitWakeAsync(completion, context, deadline, inputVersion, cancellationToken).ConfigureAwait(false))
                 {
                     case WakeReason.Deadline:
                         return ToolExecutionResult.Text(FormatResult("timeout", job));
@@ -124,6 +124,7 @@ public sealed class TaskOutputTool : ITool
         ISubagentTasks subagents,
         string taskId,
         ToolExecutionContext context,
+        long inputVersion,
         CancellationToken cancellationToken)
     {
         var block = ReadBool(context.Input, "block", defaultValue: true);
@@ -139,8 +140,8 @@ public sealed class TaskOutputTool : ITool
             {
                 if (context.Clock.GetUtcNow() >= deadline)
                     return ToolExecutionResult.Text(FormatSubagentResult("timeout", task));
-                var completion = (subagents as SubagentTaskRegistry)?.TryGetCompletion(task.Id);
-                switch (await AwaitWakeAsync(completion, context, deadline, cancellationToken).ConfigureAwait(false))
+                var completion = subagents.TryGetCompletion(taskId);
+                switch (await AwaitWakeAsync(completion, context, deadline, inputVersion, cancellationToken).ConfigureAwait(false))
                 {
                     case WakeReason.Deadline:
                         return ToolExecutionResult.Text(FormatSubagentResult("timeout", task));
@@ -175,34 +176,37 @@ public sealed class TaskOutputTool : ITool
         Deadline,
     }
 
-    // Wakes on target completion, queued turn input, or the deadline — whichever comes first.
-    // Without a completion signal, a short poll substitutes so terminal transitions are still
-    // observed; without a turn-input signal, only completion/deadline can end the wait.
     private static async Task<WakeReason> AwaitWakeAsync(
         Task? completion,
         ToolExecutionContext context,
         DateTimeOffset deadline,
+        long inputVersion,
         CancellationToken cancellationToken)
     {
         var remaining = deadline - context.Clock.GetUtcNow();
         if (remaining <= TimeSpan.Zero)
             return WakeReason.Deadline;
 
-        // (wait, reason): a poll wake means "recheck status", so it shares the completion reason.
-        var waits = new List<(Task Wait, WakeReason Reason)>
+        // Only local waits belong to this scope; target completion is shared with other readers.
+        using var localWaits = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
         {
-            (Task.Delay(remaining, context.Clock, cancellationToken), WakeReason.Deadline),
-        };
-        if (completion is not null)
-            waits.Add((completion, WakeReason.TargetCompleted));
-        else
-            waits.Add((Task.Delay(TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, cancellationToken), WakeReason.TargetCompleted));
-        if (context.TurnInputSignal is { } signal)
-            waits.Add((signal.WaitAsync(signal.Version, cancellationToken), WakeReason.Interrupted));
-
-        var done = await Task.WhenAny(waits.Select(static wait => wait.Wait)).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-        return waits.First(wait => wait.Wait == done).Reason;
+            var deadlineWait = Task.Delay(remaining, context.Clock, localWaits.Token);
+            var targetWait = completion ?? Task.Delay(
+                TimeSpan.FromMilliseconds(PollIntervalMs), context.Clock, localWaits.Token);
+            var inputWait = context.TurnInputSignal?.WaitAsync(inputVersion, localWaits.Token);
+            var done = inputWait is null
+                ? await Task.WhenAny(deadlineWait, targetWait).ConfigureAwait(false)
+                : await Task.WhenAny(deadlineWait, targetWait, inputWait).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return done == deadlineWait ? WakeReason.Deadline
+                : done == targetWait ? WakeReason.TargetCompleted
+                : WakeReason.Interrupted;
+        }
+        finally
+        {
+            await localWaits.CancelAsync().ConfigureAwait(false);
+        }
     }
 
     internal static string FormatSubagentResult(string retrievalStatus, SubagentTaskInfo? task)

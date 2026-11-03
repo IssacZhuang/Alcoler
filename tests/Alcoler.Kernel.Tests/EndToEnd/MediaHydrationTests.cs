@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Alcoler.Adapters.Tools;
 using Alcoler.Contracts.Commands;
@@ -7,6 +9,9 @@ using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tests.Models;
 using Alcoler.Kernel.Context;
 using Alcoler.Kernel.Runtime;
 using Xunit;
@@ -57,6 +62,38 @@ public class MediaHydrationTests
         Assert.Equal(TinyPngBase64, image.Base64Data);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActualReadToolContinuation_LoadsImageOnce_AndReleasesPayloadAfterRequest(bool inline)
+    {
+        await using var harness = TestHarness.Create();
+        var model = new ImageContinuationModel(inline);
+        CountingArtifactStore artifacts = null!;
+        await using var runtime = TestHarness.BuildRuntimeFor(model, harness.Root, transform: options => options with
+        {
+            Artifacts = artifacts = new CountingArtifactStore(options.Artifacts),
+        });
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        await File.WriteAllBytesAsync(Path.Combine(harness.Root, "pixel.png"), Convert.FromBase64String(TinyPngBase64));
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
+            "look at the pixel"), CancellationToken.None)).Accepted);
+        await WaitForReplyAsync(projection, "seen");
+        await AwaitCurrentTurnAsync(runtime.GetSession(session.Id)!);
+
+        Assert.Equal(2, model.Calls);
+        Assert.Equal(1, Assert.Single(artifacts.Loads).Value);
+        Assert.True(artifacts.ExistenceChecks.Values.Sum() > 0);
+        var payload = Assert.IsType<WeakReference>(model.Payload);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Assert.False(payload.IsAlive);
+        GC.KeepAlive(runtime);
+        GC.KeepAlive(model);
+    }
+
     [Fact]
     public async Task HydratedImagePayload_IsCollectibleWhileSessionRemainsResident()
     {
@@ -93,6 +130,141 @@ public class MediaHydrationTests
         var media = task.GetAwaiter().GetResult()!;
         Assert.Equal(TinyPngBase64, Assert.Single(media).Value.Base64Data);
         return new WeakReference(Assert.Single(media).Value.Base64Data);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BudgetAssembly_UsesOnlyMetadata_AndMatchesHydratedAccountingForMissingAndDuplicateMedia(bool inline)
+    {
+        await using var harness = TestHarness.Create();
+        var model = new InlineImageModel(harness.ScriptedModel, inline);
+        CountingArtifactStore artifacts = null!;
+        await using var runtime = TestHarness.BuildRuntimeFor(model, harness.Root, transform: options => options with
+        {
+            Artifacts = artifacts = new CountingArtifactStore(options.Artifacts),
+        });
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        var fixture = await CreateMediaFixtureAsync(artifacts, session.Id);
+        var sessionRuntime = runtime.GetSession(session.Id)!;
+        var budget = await AssembleAsync(sessionRuntime, fixture.History, model, hydrate: false);
+        Assert.Empty(artifacts.Loads);
+        Assert.Equal(3, artifacts.ExistenceChecks.Count);
+        Assert.All(artifacts.ExistenceChecks.Values, count => Assert.Equal(1, count));
+        Assert.DoesNotContain(fixture.PdfUri, artifacts.ExistenceChecks.Keys);
+        Assert.Equal(4, budget.Request.Messages.SelectMany(ImageBlocks).Count());
+        Assert.All(budget.Request.Messages.SelectMany(ImageBlocks), image => Assert.Empty(image.Base64Data));
+
+        var hydrated = await AssembleAsync(sessionRuntime, fixture.History, model, hydrate: true);
+        AssertMediaFixtureRequest(hydrated.Request, fixture, inline);
+        Assert.Equal(budget.EstimatedRequestTokens, hydrated.EstimatedRequestTokens);
+        Assert.Equal(budget.Breakdown, hydrated.Breakdown);
+        Assert.Equal(TokenEstimator.EstimateRequestTokens(budget.Request), TokenEstimator.EstimateRequestTokens(hydrated.Request));
+        Assert.Equal(budget.Request.Messages.Select(message => (message.Role, message.CacheControl)),
+            hydrated.Request.Messages.Select(message => (message.Role, message.CacheControl)));
+        Assert.Equal(3, artifacts.Loads.Count);
+        Assert.All(artifacts.Loads.Values, count => Assert.Equal(1, count));
+        Assert.DoesNotContain(fixture.PdfUri, artifacts.Loads.Keys);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResumeAndMicrocompaction_DoNotReadHistoricalImagesUntilActualRequest(bool microcompact)
+    {
+        await using var harness = TestHarness.Create();
+        var model = new ScriptedCallModel([Reply("remembered")]);
+        var clock = new ManualTimeProvider();
+        SessionId sessionId;
+        MediaFixture fixture;
+        await using (var initial = TestHarness.BuildRuntimeFor(model, harness.Root, transform: options => options with { Clock = clock }))
+        {
+            sessionId = (await initial.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None)).Id;
+            fixture = await CreateMediaFixtureAsync(initial.Options.Artifacts, sessionId);
+            var history = fixture.History.ToList();
+            if (microcompact)
+            {
+                var groups = CompactPolicy.MicroCompactKeepRecentGroups + 1;
+                var threshold = CompactPolicy.AutoCompactThreshold(model.Descriptor.Properties.ContextWindowTokens!.Value);
+                var charactersPerGroup = CompactPolicy.MicroCompactTriggerTokens(threshold) * 3 / groups + 3;
+                for (var index = 0; index < groups; index++)
+                {
+                    var call = new ToolCallId($"clearable-{index}");
+                    history.Add(new ConversationMessage(StrongId.NewMessageId(), MessageRole.Assistant,
+                        [new ToolCallPart(StrongId.NewPartId(), call, "Read", JsonSerializer.SerializeToElement(new { file_path = "old.txt" }))], clock.GetUtcNow()));
+                    history.Add(new ConversationMessage(StrongId.NewMessageId(), MessageRole.User,
+                        [new ToolResultPart(StrongId.NewPartId(), call, [new ToolResultText(new string('x', charactersPerGroup))])], clock.GetUtcNow()));
+                }
+                Assert.Single(MicroCompactor.Apply(history, clock.GetUtcNow(), clock.GetUtcNow(), threshold).ClearedParts);
+            }
+            await initial.Options.Store.AppendMessagesAsync(sessionId, history, 1, CancellationToken.None);
+        }
+        CountingArtifactStore artifacts = null!;
+        await using var resumed = TestHarness.BuildRuntimeFor(model, harness.Root, transform: options => options with
+        {
+            Clock = clock,
+            Artifacts = artifacts = new CountingArtifactStore(options.Artifacts),
+        });
+        await resumed.ResumeSessionAsync(sessionId, CancellationToken.None);
+        Assert.Empty(artifacts.Loads);
+        Assert.All(artifacts.ExistenceChecks.Values, count => Assert.Equal(1, count));
+        using var projection = resumed.Subscribe(sessionId);
+        Assert.True((await resumed.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), sessionId, 0,
+            "what did you see?"), CancellationToken.None)).Accepted);
+        await WaitForReplyAsync(projection, "remembered");
+        await AwaitCurrentTurnAsync(resumed.GetSession(sessionId)!);
+        var request = Assert.Single(model.Requests);
+        AssertMediaFixtureRequest(request, fixture, inline: false);
+        Assert.Equal(3, artifacts.Loads.Count);
+        Assert.All(artifacts.Loads.Values, count => Assert.Equal(1, count));
+        var events = await resumed.Options.Store.LoadDurableEventsAsync(sessionId, CancellationToken.None);
+        Assert.Equal(microcompact, events.Any(item => item.Event is MicrocompactAppliedEvent));
+        Assert.DoesNotContain(events, item => item.Event is CompactBoundaryAppliedEvent);
+        if (microcompact)
+            Assert.Contains(request.Messages.SelectMany(message => message.Content).OfType<InputToolResultBlock>(),
+                result => result.Content == MicroCompactor.ClearedContentText);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ManualCompaction_HydratesOnlyImageBearingSummaryRequest(bool mediaSizeRetry)
+    {
+        await using var harness = TestHarness.Create();
+        IReadOnlyList<ModelStreamEvent> summary =
+        [new ModelTextStarted(), new ModelTextDelta("compact summary"), new ModelTextEnded(), new ModelStreamFinished(ModelFinishReason.Stop)];
+        var model = new ScriptedCallModel(mediaSizeRetry
+            ? [[new ModelStreamFailed(new ModelFailure(ModelFailureKind.InvalidRequest, "image too large", ProviderCode: "image_too_large"))], summary]
+            : [summary]);
+        SessionId sessionId;
+        MediaFixture fixture;
+        await using (var initial = TestHarness.BuildRuntimeFor(model, harness.Root))
+        {
+            sessionId = (await initial.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None)).Id;
+            fixture = await CreateMediaFixtureAsync(initial.Options.Artifacts, sessionId);
+            await initial.Options.Store.AppendMessagesAsync(sessionId, fixture.History, 1, CancellationToken.None);
+        }
+        CountingArtifactStore artifacts = null!;
+        await using var resumed = TestHarness.BuildRuntimeFor(model, harness.Root, transform: options => options with
+        {
+            Artifacts = artifacts = new CountingArtifactStore(options.Artifacts),
+        });
+        await resumed.ResumeSessionAsync(sessionId, CancellationToken.None);
+        Assert.Empty(artifacts.Loads);
+        var ack = await resumed.SubmitAsync(new CompactCommand(StrongId.NewCommandId(), sessionId, 0), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        Assert.Equal(mediaSizeRetry ? 2 : 1, model.Requests.Count);
+        AssertMediaFixtureRequest(model.Requests[0], fixture, inline: false);
+        if (mediaSizeRetry)
+        {
+            Assert.Empty(model.Requests[1].Messages.SelectMany(ImageBlocks));
+            Assert.Contains(model.Requests[1].Messages.SelectMany(message => message.Content).OfType<InputTextBlock>(),
+                text => text.Text == "[image]");
+        }
+        Assert.Equal(3, artifacts.Loads.Count);
+        Assert.All(artifacts.Loads.Values, count => Assert.Equal(1, count));
+        var events = await resumed.Options.Store.LoadDurableEventsAsync(sessionId, CancellationToken.None);
+        Assert.Single(events, item => item.Event is CompactBoundaryAppliedEvent);
     }
 
     [Theory]
@@ -294,6 +466,134 @@ public class MediaHydrationTests
         Assert.Equal(8, Assert.Single(projection.Snapshot().Rows.OfType<UserMessageRow>()).Images!.Count);
     }
 
+    private sealed record MediaFixture(
+        IReadOnlyList<ConversationMessage> History, string FirstUri, string SecondUri, string MissingUri, string PdfUri);
+
+    private static async Task<MediaFixture> CreateMediaFixtureAsync(IArtifactStore artifacts, SessionId session)
+    {
+        var first = await artifacts.SaveAsync(session, "pixel.png", "image/png", Convert.FromBase64String(TinyPngBase64), CancellationToken.None);
+        var second = await artifacts.SaveAsync(session, "second.jpg", "image/jpeg", new byte[] { 1, 2, 3 }, CancellationToken.None);
+        var pdf = await artifacts.SaveAsync(session, "report.pdf", "application/pdf", new byte[] { 4 }, CancellationToken.None);
+        var missing = $"alcoler-artifact://{session.Value}/missing.png";
+        var at = DateTimeOffset.UtcNow;
+        ConversationMessage[] history =
+        [
+            new(StrongId.NewMessageId(), MessageRole.User,
+            [
+                new FilePart(StrongId.NewPartId(), first.Uri, first.MimeType, first.FileName),
+                new FilePart(StrongId.NewPartId(), first.Uri, first.MimeType, first.FileName),
+                new FilePart(StrongId.NewPartId(), missing, "image/png", "missing.png"),
+                new FilePart(StrongId.NewPartId(), pdf.Uri, pdf.MimeType, pdf.FileName),
+            ], at, Source: MessageSource.RealUser),
+            new(StrongId.NewMessageId(), MessageRole.Assistant,
+                [new ToolCallPart(StrongId.NewPartId(), ReadCallId, "Read", JsonSerializer.SerializeToElement(new { file_path = "pixel.png" }))], at),
+            new(StrongId.NewMessageId(), MessageRole.User,
+                [new ToolResultPart(StrongId.NewPartId(), ReadCallId,
+                [
+                    new ToolResultText("caption"),
+                    new ToolResultMedia(first.Uri, first.MimeType, first.FileName),
+                    new ToolResultMedia(missing, "image/png", "missing.png"),
+                    new ToolResultMedia(pdf.Uri, pdf.MimeType, pdf.FileName),
+                    new ToolResultMedia(second.Uri, second.MimeType, second.FileName),
+                ])], at),
+        ];
+        return new MediaFixture(history, first.Uri, second.Uri, missing, pdf.Uri);
+    }
+
+    private static void AssertMediaFixtureRequest(ModelRequest request, MediaFixture fixture, bool inline)
+    {
+        var images = request.Messages.SelectMany(ImageBlocks).ToArray();
+        Assert.Equal(new[] { "image/png", "image/png", "image/png", "image/jpeg" }, images.Select(image => image.MimeType));
+        Assert.Equal(new[] { TinyPngBase64, TinyPngBase64, TinyPngBase64, "AQID" }, images.Select(image => image.Base64Data));
+        Assert.Same(images[0].Base64Data, images[1].Base64Data);
+        Assert.Same(images[0].Base64Data, images[2].Base64Data);
+        var result = Assert.Single(request.Messages.SelectMany(message => message.Content).OfType<InputToolResultBlock>(),
+            item => item.Id == ReadCallId);
+        Assert.Equal("caption\n[media file: missing.png]\n[media file: report.pdf]", result.Content);
+        Assert.Equal(inline, result.Images is { Count: 2 });
+        Assert.Contains(request.Messages.SelectMany(message => message.Content).OfType<InputTextBlock>(),
+            text => text.Text == "[media file: missing.png]");
+        Assert.DoesNotContain(fixture.MissingUri, images.Select(image => image.Base64Data));
+    }
+
+    private static Task<AssembledContext> AssembleAsync(SessionRuntime session, IReadOnlyList<ConversationMessage> history,
+        IChatModel model, bool hydrate)
+    {
+        var method = typeof(SessionRuntime).GetMethod("AssembleContextAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        return (Task<AssembledContext>)method.Invoke(session,
+            [history, new ModelCallOptions(), model, CancellationToken.None, hydrate])!;
+    }
+
+    private sealed class InlineImageModel(IChatModel inner, bool inline) : IChatModel
+    {
+        public ModelDescriptor Descriptor => inner.Descriptor;
+        public bool InlineToolResultImages => inline;
+
+        public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken cancellationToken) =>
+            inner.StreamAsync(request, cancellationToken);
+    }
+
+    private sealed class CountingArtifactStore(IArtifactStore inner) : IArtifactStore
+    {
+        public ConcurrentDictionary<string, int> Loads { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, int> ExistenceChecks { get; } = new(StringComparer.Ordinal);
+
+        public ValueTask<ArtifactReference> SaveAsync(SessionId sessionId, string fileName, string mimeType,
+            ReadOnlyMemory<byte> data, CancellationToken cancellationToken) =>
+            inner.SaveAsync(sessionId, fileName, mimeType, data, cancellationToken);
+
+        public ValueTask<bool> ExistsAsync(string artifactUri, CancellationToken cancellationToken)
+        {
+            ExistenceChecks.AddOrUpdate(artifactUri, 1, (_, count) => count + 1);
+            return inner.ExistsAsync(artifactUri, cancellationToken);
+        }
+
+        public ValueTask<ReadOnlyMemory<byte>?> TryLoadAsync(string artifactUri, CancellationToken cancellationToken)
+        {
+            Loads.AddOrUpdate(artifactUri, 1, (_, count) => count + 1);
+            return inner.TryLoadAsync(artifactUri, cancellationToken);
+        }
+    }
+
+    private sealed class ImageContinuationModel(bool inline) : IChatModel
+    {
+        public ModelDescriptor Descriptor { get; } = new("scripted", "test-model", "Image Continuation",
+            new ModelProperties(ContextWindowTokens: 200_000));
+        public bool InlineToolResultImages => inline;
+        public int Calls { get; private set; }
+        public WeakReference? Payload { get; private set; }
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
+            if (Calls == 1)
+            {
+                Assert.Empty(request.Messages.SelectMany(ImageBlocks));
+                foreach (var item in ReadImageCall())
+                    yield return item;
+                yield break;
+            }
+            Assert.Equal(2, Calls);
+            var image = Assert.Single(request.Messages.SelectMany(ImageBlocks));
+            Assert.Equal("image/png", image.MimeType);
+            Assert.Equal(TinyPngBase64, image.Base64Data);
+            var result = Assert.Single(request.Messages.SelectMany(message => message.Content).OfType<InputToolResultBlock>());
+            Assert.Equal(inline, result.Images is { Count: 1 });
+            Assert.Equal("", result.Content);
+            Payload = new WeakReference(image.Base64Data);
+            yield return new ModelTextDelta("seen");
+            yield return new ModelStreamFinished(ModelFinishReason.Stop);
+        }
+    }
+
+    private static Task AwaitCurrentTurnAsync(SessionRuntime session) =>
+        (Task)typeof(SessionRuntime).GetField("_turnTask",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(session)!;
+
     private static IReadOnlyList<ModelStreamEvent> Reply(string text, TokenUsage? usage = null) =>
         [new ModelTextDelta(text), new ModelStreamFinished(ModelFinishReason.Stop, usage)];
 
@@ -319,5 +619,6 @@ public class MediaHydrationTests
     }
 
     private static IEnumerable<InputImageBlock> ImageBlocks(ModelInputMessage message) =>
-        message.Content.OfType<InputImageBlock>();
+        message.Content.OfType<InputImageBlock>().Concat(message.Content.OfType<InputToolResultBlock>()
+            .SelectMany(result => result.Images ?? []));
 }

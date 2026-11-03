@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Alcoler.Remote;
@@ -186,6 +187,10 @@ public sealed class RemoteGateway : IAsyncDisposable
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
+        // Idle WebSocket streams never complete on their own, and without a bound
+        // shutdown timeout the host waits for them far longer than desktop exit can afford.
+        builder.Services.Configure<HostOptions>(options =>
+            options.ShutdownTimeout = TimeSpan.FromSeconds(3));
         if (OperatingSystem.IsWindows())
             builder.Services.Configure<SocketTransportOptions>(options =>
                 options.CreateBoundListenSocket = CreateExclusiveListenSocket);
@@ -224,7 +229,10 @@ public sealed class RemoteGateway : IAsyncDisposable
     {
         var path = context.Request.Path;
         if (path.StartsWithSegments("/api"))
+        {
             context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+        }
         else
             context.Response.Headers.CacheControl = "no-cache";
     }

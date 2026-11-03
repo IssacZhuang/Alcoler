@@ -1,3 +1,5 @@
+using System.Text;
+using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Projections;
 using Alcoler.Ui;
 using Alcoler.Contracts.Identifiers;
@@ -28,6 +30,7 @@ public sealed class ProjectionStore : IDisposable
     private readonly object _sync = new();
     private readonly List<ConversationRow> _rows = [];
     private readonly Dictionary<string, int> _rowIndex = [];
+    private readonly Dictionary<string, StreamingRow> _streamingRows = new(StringComparer.Ordinal);
 
     private IConversationProjection? _projection;
     private CancellationTokenSource? _pumpCts;
@@ -66,7 +69,16 @@ public sealed class ProjectionStore : IDisposable
 
     public IReadOnlyList<ConversationRow> Rows
     {
-        get { lock (_sync) return [.. _rows]; }
+        get
+        {
+            lock (_sync)
+            {
+                var rows = _rows.ToArray();
+                foreach (var (rowId, streaming) in _streamingRows)
+                    rows[_rowIndex[rowId]] = streaming.Materialize();
+                return rows;
+            }
+        }
     }
 
     public long Revision
@@ -123,6 +135,7 @@ public sealed class ProjectionStore : IDisposable
             _flushTimer = null;
             _pending.Clear();
             _pendingReset = null;
+            _streamingRows.Clear();
             _projection?.Dispose();
             _projection = null;
         }
@@ -202,6 +215,7 @@ public sealed class ProjectionStore : IDisposable
         {
             _rows.Clear();
             _rowIndex.Clear();
+            _streamingRows.Clear();
             foreach (var row in snapshot.Rows)
             {
                 _rowIndex[row.RowId] = _rows.Count;
@@ -228,7 +242,8 @@ public sealed class ProjectionStore : IDisposable
                 {
                     continue;
                 }
-                ApplyOps(delta.Ops);
+                if (!ApplyOps(delta.Ops))
+                    return PumpOutcome.Gap;
                 _pending.Add(delta.Ops);
 
                 if (_coalesceWindow is { } window)
@@ -248,7 +263,7 @@ public sealed class ProjectionStore : IDisposable
         return PumpOutcome.Ended;
     }
 
-    private void ApplyOps(IReadOnlyList<RowOp> ops)
+    private bool ApplyOps(IReadOnlyList<RowOp> ops)
     {
         foreach (var op in ops)
         {
@@ -265,7 +280,20 @@ public sealed class ProjectionStore : IDisposable
                     }
                     break;
 
+                case RowTextAppended appended:
+                    if (!_streamingRows.TryGetValue(appended.RowId, out var streaming))
+                    {
+                        if (!_rowIndex.TryGetValue(appended.RowId, out var textIndex) ||
+                            _rows[textIndex] is not AssistantMessageRow assistant ||
+                            StreamingRow.Create(assistant) is not { } initialized)
+                            return false;
+                        _streamingRows.Add(appended.RowId, streaming = initialized);
+                    }
+                    streaming.Append(appended);
+                    break;
+
                 case RowUpserted upserted:
+                    _streamingRows.Remove(upserted.Row.RowId);
                     if (_rowIndex.TryGetValue(upserted.Row.RowId, out var index))
                     {
                         _rows[index] = upserted.Row;
@@ -278,6 +306,7 @@ public sealed class ProjectionStore : IDisposable
                     break;
 
                 case RowRemoved removed:
+                    _streamingRows.Remove(removed.RowId);
                     if (_rowIndex.TryGetValue(removed.RowId, out var removeIndex))
                     {
                         _rows.RemoveAt(removeIndex);
@@ -290,6 +319,7 @@ public sealed class ProjectionStore : IDisposable
                     break;
             }
         }
+        return true;
     }
 
     private void Flush()
@@ -342,10 +372,65 @@ public sealed class ProjectionStore : IDisposable
         RequestDelivery();
     }
 
+    private sealed class StreamingRow(AssistantMessageRow baseline, int partIndex, TextPart part)
+    {
+        private readonly List<string> _segments = [part.Text];
+        private int _length = part.Text.Length;
+        private string? _text = part.Text;
+        private DateTimeOffset _at = baseline.At;
+        private AssistantMessageRow? _materialized;
+
+        public static StreamingRow? Create(AssistantMessageRow row)
+        {
+            if (!row.IsStreaming)
+                return null;
+            var textIndex = -1;
+            for (var index = 0; index < row.Parts.Count; index++)
+            {
+                if (row.Parts[index] is not TextPart)
+                    continue;
+                if (textIndex >= 0)
+                    return null;
+                textIndex = index;
+            }
+            return textIndex < 0 ? null : new StreamingRow(row, textIndex, (TextPart)row.Parts[textIndex]);
+        }
+
+        public void Append(RowTextAppended appended)
+        {
+            if (appended.Delta.Length > 0)
+            {
+                _segments.Add(appended.Delta);
+                _length += appended.Delta.Length;
+                _text = null;
+            }
+            _at = appended.At;
+            _materialized = null;
+        }
+
+        public AssistantMessageRow Materialize()
+        {
+            if (_materialized is not null)
+                return _materialized;
+            _text ??= string.Create(_length, _segments, static (destination, segments) =>
+            {
+                var offset = 0;
+                foreach (var segment in segments)
+                {
+                    segment.AsSpan().CopyTo(destination[offset..]);
+                    offset += segment.Length;
+                }
+            });
+            var parts = baseline.Parts.ToArray();
+            parts[partIndex] = part with { Text = _text };
+            return _materialized = baseline with { Parts = parts, At = _at };
+        }
+    }
+
     private sealed class PendingRowOps
     {
-        private readonly List<RowOp> _ops = [];
-        private readonly Dictionary<string, int> _rowSlots = new(StringComparer.Ordinal);
+        private readonly List<PendingRow> _ops = [];
+        private readonly Dictionary<string, PendingRow> _rowSlots = new(StringComparer.Ordinal);
         private StatePatched? _state;
 
         public bool IsEmpty => _ops.Count == 0 && _state is null;
@@ -362,17 +447,21 @@ public sealed class ProjectionStore : IDisposable
 
                     case RowRemoved removed:
                         if (_rowSlots.Remove(removed.RowId, out var slot))
-                            _ops[slot] = removed;
+                            slot.Replace(removed);
                         else
-                            _ops.Add(removed);
+                            _ops.Add(new PendingRow(removed));
                         break;
 
                     case RowAppended appended:
-                        ReplaceOrAdd(appended.Row.RowId, op);
+                        GetOrAdd(appended.Row.RowId).Replace(op);
                         break;
 
                     case RowUpserted upserted:
-                        ReplaceOrAdd(upserted.Row.RowId, op);
+                        GetOrAdd(upserted.Row.RowId).Replace(op);
+                        break;
+
+                    case RowTextAppended appended:
+                        GetOrAdd(appended.RowId).Append(appended);
                         break;
                 }
             }
@@ -382,10 +471,20 @@ public sealed class ProjectionStore : IDisposable
         {
             if (IsEmpty)
                 return null;
-            var result = new RowOp[_ops.Count + (_state is null ? 0 : 1)];
-            _ops.CopyTo(result, 0);
+            var count = _state is null ? 0 : 1;
+            foreach (var pending in _ops)
+                count += pending.Count;
+            var result = new RowOp[count];
+            var index = 0;
+            foreach (var pending in _ops)
+            {
+                if (pending.Operation is { } operation)
+                    result[index++] = operation;
+                if (pending.TakeAppend() is { } appended)
+                    result[index++] = appended;
+            }
             if (_state is not null)
-                result[^1] = _state;
+                result[index] = _state;
             Clear();
             return result;
         }
@@ -397,15 +496,47 @@ public sealed class ProjectionStore : IDisposable
             _state = null;
         }
 
-        private void ReplaceOrAdd(string rowId, RowOp op)
+        private PendingRow GetOrAdd(string rowId)
         {
             if (_rowSlots.TryGetValue(rowId, out var slot))
+                return slot;
+            slot = new PendingRow(null);
+            _rowSlots.Add(rowId, slot);
+            _ops.Add(slot);
+            return slot;
+        }
+
+        private sealed class PendingRow(RowOp? operation)
+        {
+            private RowTextAppended? _firstAppend;
+            private RowTextAppended? _lastAppend;
+            private StringBuilder? _appendBuilder;
+
+            public RowOp? Operation { get; private set; } = operation;
+            public int Count => (Operation is null ? 0 : 1) + (_firstAppend is null ? 0 : 1);
+
+            public void Replace(RowOp op)
             {
-                _ops[slot] = op;
-                return;
+                Operation = op;
+                _firstAppend = _lastAppend = null;
+                _appendBuilder = null;
             }
-            _rowSlots[rowId] = _ops.Count;
-            _ops.Add(op);
+
+            public void Append(RowTextAppended appended)
+            {
+                if (_firstAppend is null)
+                    _firstAppend = appended;
+                else if (appended.Delta.Length > 0)
+                {
+                    _appendBuilder ??= new StringBuilder(_firstAppend.Delta);
+                    _appendBuilder.Append(appended.Delta);
+                }
+                _lastAppend = appended;
+            }
+
+            public RowTextAppended? TakeAppend() => _firstAppend is { } first
+                ? first with { Delta = _appendBuilder?.ToString() ?? first.Delta, At = _lastAppend!.At }
+                : null;
         }
     }
 }

@@ -31,28 +31,8 @@ internal sealed class AlcoGrepEngine : IGrepEngine
             request.OnlyMatching,
             (uint)Math.Max(0, request.BeforeContext),
             (uint)Math.Max(0, request.AfterContext));
-        return Assemble(AlcoGrepNative.Search(query, cancellationToken));
-    }
-
-    private static GrepEngineResult Assemble(AlcoGrepRawResult raw)
-    {
-        var result = new GrepEngineResult();
-        foreach (var (kind, path, lineNumber, text, count) in raw.Events)
-        {
-            switch (kind)
-            {
-                case AlcoGrepAbi.EventMatch:
-                    result.ContentEntries.Add(new GrepContentEntry(path, lineNumber > 0 ? (int)lineNumber : null, text));
-                    break;
-                case AlcoGrepAbi.EventContext:
-                    result.ContentEntries.Add(new GrepContentEntry(path, (int)lineNumber, text));
-                    break;
-                case AlcoGrepAbi.EventFileCount:
-                    result.MatchedFiles.Add(path);
-                    result.CountEntries.Add((path, (long)count));
-                    break;
-            }
-        }
-        return result;
+        var result = new GrepResultCollector(request);
+        AlcoGrepNative.Search(query, result, cancellationToken);
+        return result.Complete();
     }
 }

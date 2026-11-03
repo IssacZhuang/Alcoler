@@ -213,6 +213,35 @@ public class SendMessageToolTests
         Assert.NotNull(messenger.Find(parent, "sub_b"));
     }
 
+    [Fact]
+    public async Task Messenger_SuspendedDetach_TrimsTerminalBurstWithoutEvictingRunningChannels()
+    {
+        var messenger = new SubagentMessenger();
+        var parent = new SessionId("sess_parent");
+        var statuses = Enumerable.Repeat(SubagentStatus.Running, 24).ToArray();
+        var channels = Enumerable.Range(0, statuses.Length).Select(index => new SubagentChannel(
+            new SubagentId($"sub_{index}"), new SessionId($"sess_child_{index}"), "child", null!,
+            ReadStatus: () => statuses[index])).ToArray();
+        foreach (var channel in channels)
+            messenger.Register(parent, channel);
+        using (var lease = await messenger.SuspendParentAsync(parent, CancellationToken.None))
+        {
+            Assert.NotNull(lease);
+            for (var index = 0; index < 21; index++)
+            {
+                statuses[index] = SubagentStatus.Completed;
+                messenger.OnTerminal(parent, channels[index]);
+            }
+            Assert.All(channels, channel => Assert.NotNull(messenger.Find(parent, channel.Id.Value)));
+            Assert.Empty(lease.DetachRuntimes(forget: false));
+            Assert.Equal(19, channels.Count(channel => messenger.Find(parent, channel.Id.Value) is not null));
+            Assert.All(channels.Take(5), channel => Assert.Null(messenger.Find(parent, channel.Id.Value)));
+            Assert.All(channels.Skip(21), channel => Assert.NotNull(messenger.Find(parent, channel.Id.Value)));
+        }
+        messenger.ActivateParent(parent);
+        Assert.Equal(19, channels.Count(channel => messenger.Find(parent, channel.Id.Value) is not null));
+    }
+
     internal static ToolExecutionContext Context(string inputJson)
     {
         using var document = JsonDocument.Parse(inputJson);

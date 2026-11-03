@@ -51,6 +51,8 @@ public sealed class CdpConnectionTests
         wire.Push("{\"id\":" + id + ",\"error\":{\"code\":-32000,\"message\":\"No frame for given id found\"}}");
         var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => pending);
         Assert.Equal("No frame for given id found", failure.Message);
+        Assert.Equal(0, PendingCount(connection));
+        Assert.DoesNotContain(Parse(wire.Snapshot()), frame => frame.Method == "Runtime.terminateExecution");
     }
 
     [Fact]
@@ -111,6 +113,7 @@ public sealed class CdpConnectionTests
         await connection.ConnectAsync(wire, TestUri, CancellationToken.None);
         await Assert.ThrowsAsync<TimeoutException>(
             () => connection.SendAsync("Page.navigate", null, CancellationToken.None, "S1"));
+        Assert.Equal(0, PendingCount(connection));
     }
 
     [Fact]
@@ -144,6 +147,102 @@ public sealed class CdpConnectionTests
         Assert.Contains("closed", failure.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task EncodingFailureRemovesTheUnsentRequest()
+    {
+        var wire = new FakeWire();
+        using var connection = new CdpConnection();
+        await connection.ConnectAsync(wire, TestUri, default);
+        await Assert.ThrowsAsync<ArgumentException>(() => connection.SendAsync("Runtime.evaluate", new object(), default, "S1"));
+        Assert.Empty(wire.Snapshot());
+        Assert.Equal(0, PendingCount(connection));
+    }
+
+    [Fact]
+    public async Task CancellationWaitingForSendLockRemovesOnlyTheUnsentRequest()
+    {
+        var sending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wire = new FakeWire { OnSend = async (_, ct) => { sending.TrySetResult(); await release.Task.WaitAsync(ct); } };
+        using var connection = new CdpConnection();
+        await connection.ConnectAsync(wire, TestUri, default);
+        var first = connection.SendAsync("Page.enable", null, default);
+        await sending.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        using var cancellation = new CancellationTokenSource();
+        var second = connection.SendAsync("Runtime.evaluate", null, cancellation.Token, "S1");
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
+        Assert.Single(wire.Snapshot());
+        Assert.Equal(1, PendingCount(connection));
+        release.TrySetResult();
+        wire.Push("{\"id\":1,\"result\":{}}");
+        await first.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, PendingCount(connection));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailureDuringSendDrainsPotentiallyDispatchedWorkAndPreservesTheOriginalFailure(bool canceled)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var original = canceled ? (Exception)new OperationCanceledException(cancellation.Token) : new IOException("partial send failed");
+        var wire = new FakeWire
+        {
+            OnSend = (text, _) =>
+            {
+                if (text.Contains("Runtime.evaluate", StringComparison.Ordinal))
+                {
+                    if (canceled) cancellation.Cancel();
+                    return Task.FromException(original);
+                }
+                return Task.CompletedTask;
+            }
+        };
+        using var connection = new CdpConnection(drainWindow: TimeSpan.FromMilliseconds(100));
+        await connection.ConnectAsync(wire, TestUri, default);
+        var pending = connection.SendAsync("Runtime.evaluate", null, cancellation.Token, "S1");
+        await WaitForAsync(() => wire.Snapshot().Count == 2);
+        var frames = Parse(wire.Snapshot());
+        Assert.Equal("Runtime.terminateExecution", frames[1].Method);
+        Assert.Equal("S1", frames[1].SessionId);
+        wire.Push("{\"id\":" + frames[1].Id + ",\"result\":{}}");
+        wire.Push("{\"id\":" + frames[0].Id + ",\"result\":{}}");
+        var failure = await Record.ExceptionAsync(() => pending);
+        Assert.Same(original, failure);
+        Assert.Equal(0, PendingCount(connection));
+        wire.OnSend = null;
+        var next = connection.SendAsync("Page.enable", null, default, "S1");
+        await WaitForAsync(() => wire.Snapshot().Count == 3);
+        wire.Push("{\"id\":" + Parse(wire.Snapshot())[^1].Id + ",\"result\":{}}");
+        await next.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, PendingCount(connection));
+    }
+
+    [Fact]
+    public async Task DrainSendFailureAndLateResponseDoNotLeavePendingRequests()
+    {
+        var wire = new FakeWire
+        {
+            OnSend = (text, _) => text.Contains("Runtime.terminateExecution", StringComparison.Ordinal)
+                ? Task.FromException(new IOException("drain send failed")) : Task.CompletedTask
+        };
+        using var connection = new CdpConnection(TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(30));
+        await connection.ConnectAsync(wire, TestUri, default);
+        await Assert.ThrowsAsync<TimeoutException>(() => connection.SendAsync("Runtime.evaluate", null, default, "S1"));
+        Assert.Equal(0, PendingCount(connection));
+        foreach (var frame in Parse(wire.Snapshot())) wire.Push("{\"id\":" + frame.Id + ",\"result\":{}}");
+        wire.OnSend = null;
+        var next = connection.SendAsync("Page.enable", null, default);
+        var id = Parse(wire.Snapshot())[^1].Id;
+        wire.Push("{\"id\":" + id + ",\"result\":{}}");
+        await next.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, PendingCount(connection));
+    }
+
+    private static int PendingCount(CdpConnection connection) =>
+        ((System.Collections.IDictionary)typeof(CdpConnection).GetField("_pending", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(connection)!).Count;
+
     private static async Task WaitForAsync(Func<bool> condition, int timeoutMs = 5000)
     {
         var deadline = Environment.TickCount64 + timeoutMs;
@@ -176,6 +275,7 @@ public sealed class CdpConnectionTests
         private readonly Lock _gate = new();
 
         public List<string> Frames { get; } = [];
+        public Func<string, CancellationToken, Task>? OnSend { get; set; }
 
         public List<string> Snapshot()
         {
@@ -187,7 +287,7 @@ public sealed class CdpConnectionTests
         public Task SendTextAsync(string text, CancellationToken cancellationToken)
         {
             lock (_gate) Frames.Add(text);
-            return Task.CompletedTask;
+            return OnSend?.Invoke(text, cancellationToken) ?? Task.CompletedTask;
         }
 
         public Task<string?> ReceiveTextAsync(CancellationToken cancellationToken) => _inbound.Reader.ReadAsync(cancellationToken).AsTask();

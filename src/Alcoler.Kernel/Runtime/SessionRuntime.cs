@@ -1290,7 +1290,8 @@ public sealed class SessionRuntime : IAsyncDisposable
             await CommitRuntimeRemindersAsync(history).ConfigureAwait(false);
 
         _turnMachine.TryTransition(TurnPhase.AwaitingModel);
-        var request = await AssembleContextAsync(_turnLocalRequestMessages.Merge(history), initialRequest.Request.Options, model, turnCt).ConfigureAwait(false);
+        var request = await AssembleContextAsync(_turnLocalRequestMessages.Merge(history), initialRequest.Request.Options,
+            model, turnCt, hydrateMedia: true).ConfigureAwait(false);
         var (requestTokens, source) = EstimateContextTokens(request, history);
         if (model.Descriptor.Properties.ContextWindowTokens is { } configuredContext)
         {
@@ -1960,7 +1961,8 @@ public sealed class SessionRuntime : IAsyncDisposable
             var summaryLimit = Math.Min(CompactPolicy.SummaryMaxOutputTokens,
                 model.Descriptor.Properties.DefaultMaxOutputTokens ?? DefaultRequestMaxOutputTokens);
             var summaryOptions = options with { MaxOutputTokens = summaryLimit };
-            var summaryContext = await AssembleContextAsync(summaryHistory, summaryOptions, model, ct).ConfigureAwait(false);
+            var summaryContext = await AssembleContextAsync(summaryHistory, summaryOptions, model, ct,
+                hydrateMedia: !stripMediaForSummary).ConfigureAwait(false);
             var summaryRequest = rawRequest with
             {
                 Messages = [.. summaryContext.Request.Messages, rawRequest.Messages[^1]],
@@ -2130,11 +2132,13 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private async Task<AssembledContext> AssembleContextAsync(
         IReadOnlyList<ConversationMessage> history, ModelCallOptions options, IChatModel? model = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool hydrateMedia = false)
     {
         var custom = _deps.Options.CustomSystemPromptFactory?.Invoke(Shell) ?? _deps.Options.CustomSystemPrompt;
         var currentDate = EnvironmentSections.FormatLocalIsoDate(_deps.Clock.GetLocalNow().LocalDateTime);
-        var media = await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
+        var media = hydrateMedia
+            ? await LoadSessionMediaAsync(history, cancellationToken).ConfigureAwait(false)
+            : await DescribeAvailableSessionMediaAsync(history, cancellationToken).ConfigureAwait(false);
         var visibleContracts = _deps.Tools.VisibleContractsFor(model?.Descriptor.Properties);
         var skillToolAvailable = ContractListContains(visibleContracts, "Skill");
         string? skillsListing = null;
@@ -2171,51 +2175,37 @@ public sealed class SessionRuntime : IAsyncDisposable
             CacheAffinity: new ModelCacheAffinity(_record.Id.Value, _record.ParentSessionId?.Value)));
     }
 
-    // Stored history references media by artifact URI so sessions stay light in memory;
-    // image payloads are hydrated per request, and models without image support get the
-    // adapter-level downgrade instead of a hydration skip.
+    // Empty image payloads are budget-only; missing artifacts must keep their text fallback.
+    private async Task<Dictionary<string, MediaPayload>?> DescribeAvailableSessionMediaAsync(
+        IReadOnlyList<ConversationMessage> history, CancellationToken cancellationToken)
+    {
+        var media = ContextBuilder.DescribeMedia(history);
+        if (media is null)
+            return null;
+        foreach (var uri in media.Keys.ToArray())
+        {
+            if (!await _deps.Artifacts.ExistsAsync(uri, cancellationToken).ConfigureAwait(false))
+                media.Remove(uri);
+        }
+        return media;
+    }
+
+    // Payloads remain request-local; models without image support retain the adapter downgrade.
     private async Task<Dictionary<string, MediaPayload>?> LoadSessionMediaAsync(
         IReadOnlyList<ConversationMessage> history, CancellationToken cancellationToken)
     {
-        Dictionary<string, MediaPayload>? media = null;
-        foreach (var message in history)
+        var media = ContextBuilder.DescribeMedia(history);
+        if (media is null)
+            return null;
+        foreach (var (uri, description) in media.ToArray())
         {
-            foreach (var part in message.Parts)
-            {
-                switch (part)
-                {
-                    case ToolResultPart result:
-                        foreach (var block in result.Content)
-                        {
-                            if (block is ToolResultMedia mediaBlock)
-                            {
-                                await AddMediaAsync(mediaBlock.ArtifactUri, mediaBlock.MimeType,
-                                    mediaBlock.FileName).ConfigureAwait(false);
-                            }
-                        }
-                        break;
-                    case FilePart file:
-                        await AddMediaAsync(file.ArtifactUri, file.MimeType, file.FileName).ConfigureAwait(false);
-                        break;
-                }
-            }
-        }
-        return media;
-
-        async ValueTask AddMediaAsync(string uri, string mimeType, string? fileName)
-        {
-            if (media?.ContainsKey(uri) == true
-                || !mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
             var bytes = await _deps.Artifacts.TryLoadAsync(uri, cancellationToken).ConfigureAwait(false);
             if (bytes is not { } data)
-                return;
-            var payload = new MediaPayload(mimeType, Convert.ToBase64String(data.Span), fileName);
-            media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
-            media[uri] = payload;
+                media.Remove(uri);
+            else
+                media[uri] = description with { Base64Data = Convert.ToBase64String(data.Span) };
         }
+        return media;
     }
 
     private static bool ContractListContains(IReadOnlyList<ToolContract> contracts, string name)

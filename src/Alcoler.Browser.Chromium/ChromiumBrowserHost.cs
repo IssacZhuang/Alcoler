@@ -29,6 +29,9 @@ public sealed class ChromiumBrowserHost : IBrowserHost
     private readonly Func<CancellationToken, Task<string>> _binaryResolver;
     private readonly Func<string, string, bool, IChromiumProcess> _processFactory;
     private readonly Func<ICdpWire> _wireFactory;
+    private readonly TimeProvider _timeProvider;
+    private const int MaxPendingPopups = 32;
+    private static readonly TimeSpan PopupLifetime = TimeSpan.FromMinutes(2);
     private readonly Lock _sync = new();
     private readonly Dictionary<SessionId, SessionEntry> _sessions = [];
     private bool _disposed;
@@ -38,7 +41,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
     public ChromiumBrowserHost(string dataRoot, ChromiumBrowserOptions? options = null, ILogger<ChromiumBrowserHost>? logger = null,
         Func<CancellationToken, Task<string>>? binaryResolver = null,
         Func<string, string, bool, IChromiumProcess>? processFactory = null,
-        Func<ICdpWire>? wireFactory = null)
+        Func<ICdpWire>? wireFactory = null, TimeProvider? timeProvider = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         _dataRoot = Path.GetFullPath(dataRoot);
@@ -52,6 +55,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         _processFactory = processFactory
             ?? ((executablePath, profileDirectory, headless) => new ChromiumProcess(executablePath, profileDirectory, headless));
         _wireFactory = wireFactory ?? (() => new WebSocketCdpWire());
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<IBrowserPage> CreatePageAsync(SessionId sessionId, string tabId, CancellationToken cancellationToken, string? adoptTargetId = null)
@@ -67,24 +71,32 @@ public sealed class ChromiumBrowserHost : IBrowserHost
                 var connection = entry.Connection ?? await InitializeSessionAsync(entry, cancellationToken).ConfigureAwait(false);
                 if (entry.PagesByTabId.TryGetValue(tabId, out var existing)) return existing;
                 var targetId = await ResolveTargetIdAsync(entry, adoptTargetId, cancellationToken).ConfigureAwait(false);
-                var attached = await connection.SendAsync("Target.attachToTarget",
-                    D(("targetId", targetId), ("flatten", true)), cancellationToken).ConfigureAwait(false);
-                var pageSessionId = attached.GetProperty("sessionId").GetString()
-                    ?? throw new InvalidOperationException("The browser did not return a session for the new target.");
-                if (!entry.DownloadsConfigured)
+                try
                 {
-                    await connection.SendAsync("Browser.setDownloadBehavior",
-                        D(("behavior", "allow"), ("downloadPath", entry.DownloadsDirectory), ("eventsEnabled", true)),
-                        cancellationToken).ConfigureAwait(false);
-                    entry.DownloadsConfigured = true;
+                    var attached = await connection.SendAsync("Target.attachToTarget",
+                        D(("targetId", targetId), ("flatten", true)), cancellationToken).ConfigureAwait(false);
+                    var pageSessionId = attached.GetProperty("sessionId").GetString()
+                        ?? throw new InvalidOperationException("The browser did not return a session for the new target.");
+                    if (!entry.DownloadsConfigured)
+                    {
+                        await connection.SendAsync("Browser.setDownloadBehavior",
+                            D(("behavior", "allow"), ("downloadPath", entry.DownloadsDirectory), ("eventsEnabled", true)),
+                            cancellationToken).ConfigureAwait(false);
+                        entry.DownloadsConfigured = true;
+                    }
+                    var page = new ChromiumBrowserPage(connection, tabId, targetId, pageSessionId);
+                    lock (_sync)
+                    {
+                        entry.PagesByTabId[tabId] = page;
+                        entry.PagesByTargetId[targetId] = page;
+                    }
+                    return page;
                 }
-                var page = new ChromiumBrowserPage(connection, tabId, targetId, pageSessionId);
-                lock (_sync)
+                catch
                 {
-                    entry.PagesByTabId[tabId] = page;
-                    entry.PagesByTargetId[targetId] = page;
+                    await TrySendAsync(entry, "Target.closeTarget", D("targetId", targetId)).ConfigureAwait(false);
+                    throw;
                 }
-                return page;
             }
             finally
             {
@@ -150,10 +162,36 @@ public sealed class ChromiumBrowserHost : IBrowserHost
             D(("windowId", windowId), ("bounds", D("windowState", windowState))), cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<string> ResolveTargetIdAsync(SessionEntry entry, string? adoptTargetId, CancellationToken cancellationToken)
+    public async Task RejectPopupAsync(SessionId sessionId, string targetId, CancellationToken cancellationToken)
+    {
+        SessionEntry? entry;
+        lock (_sync) _sessions.TryGetValue(sessionId, out entry);
+        if (entry is null) return;
+        await entry.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (entry.Dead || !entry.Popups.Remove(targetId)) return;
+            SchedulePopupExpiry(entry);
+            await TrySendAsync(entry, "Target.closeTarget", D("targetId", targetId)).ConfigureAwait(false);
+        }
+        finally { entry.Gate.Release(); }
+    }
+
+    private async Task<string> ResolveTargetIdAsync(SessionEntry entry, string? adoptTargetId, CancellationToken cancellationToken)
     {
         var connection = entry.Connection ?? throw new InvalidOperationException("The browser session is no longer connected.");
-        if (adoptTargetId is not null && entry.Popups.Remove(adoptTargetId, out _)) return adoptTargetId;
+        if (adoptTargetId is not null)
+        {
+            if (!entry.Popups.Remove(adoptTargetId, out var pending))
+                throw new InvalidOperationException("The native popup is no longer available.");
+            SchedulePopupExpiry(entry);
+            if (pending.ExpiresAt <= _timeProvider.GetUtcNow())
+            {
+                await TrySendAsync(entry, "Target.closeTarget", D("targetId", adoptTargetId)).ConfigureAwait(false);
+                throw new InvalidOperationException("The native popup has expired.");
+            }
+            return adoptTargetId;
+        }
         var created = await connection.SendAsync("Target.createTarget",
             D(("url", "about:blank"), ("background", true)), cancellationToken).ConfigureAwait(false);
         return created.GetProperty("targetId").GetString()
@@ -218,32 +256,38 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         var executable = await _binaryResolver(cancellationToken).ConfigureAwait(false);
         Directory.CreateDirectory(entry.ProfileDirectory);
         var process = _processFactory(executable, entry.ProfileDirectory, entry.Headless);
-        process.Exited += (_, _) => OnProcessExited(entry);
-        await process.StartAsync(cancellationToken).ConfigureAwait(false);
-        entry.Process = process;
-        var connection = new CdpConnection();
-        connection.BrowserEvent += protocolEvent => EnqueueTargetEvent(entry, protocolEvent);
+        CdpConnection? connection = null;
+        EventHandler exited = (_, _) => OnProcessExited(entry, process);
         try
         {
+            entry.Process = process;
+            process.Exited += exited;
+            await process.StartAsync(cancellationToken).ConfigureAwait(false);
+            connection = new CdpConnection();
+            var ownedConnection = connection;
+            connection.BrowserEvent = protocolEvent => EnqueueTargetEvent(entry, ownedConnection, protocolEvent);
+            entry.Connection = connection;
             await connection.ConnectAsync(_wireFactory(), process.WsUri, cancellationToken).ConfigureAwait(false);
             await connection.SendAsync("Target.setDiscoverTargets", D("discover", true), cancellationToken).ConfigureAwait(false);
+            entry.EventPump = Task.Run(() => PumpEventsAsync(entry));
+            return connection;
         }
-        catch (Exception)
+        catch
         {
-            await process.ShutdownAsync(CancellationToken.None).ConfigureAwait(false);
-            process.Dispose();
-            connection.Dispose();
+            entry.Process = null;
+            entry.Connection = null;
+            process.Exited -= exited;
+            try { connection?.Dispose(); }
+            catch (Exception ex) { _logger.LogDebug(ex, "Failed browser connection cleanup failed"); }
+            await StopProcessAsync(process).ConfigureAwait(false);
             throw;
         }
-        entry.Connection = connection;
-        entry.EventPump = Task.Run(() => PumpEventsAsync(entry));
-        return connection;
     }
 
-    private void EnqueueTargetEvent(SessionEntry entry, BrowserProtocolEvent protocolEvent)
+    private static void EnqueueTargetEvent(SessionEntry entry, CdpConnection connection, BrowserProtocolEvent protocolEvent)
     {
         if (protocolEvent.Method is not ("Target.targetCreated" or "Target.targetInfoChanged" or "Target.targetDestroyed")) return;
-        entry.Events.Writer.TryWrite(protocolEvent);
+        entry.Events.Writer.TryWrite((connection, protocolEvent));
     }
 
     // Target events must be applied under the session gate in wire order; dispatching them inline on the receive
@@ -257,7 +301,8 @@ public sealed class ChromiumBrowserHost : IBrowserHost
                 await entry.Gate.WaitAsync(entry.Lifetime.Token).ConfigureAwait(false);
                 try
                 {
-                    DispatchTargetEvent(entry, protocolEvent);
+                    if (ReferenceEquals(entry.Connection, protocolEvent.Connection))
+                        DispatchTargetEvent(entry, protocolEvent.Event);
                 }
                 finally
                 {
@@ -327,7 +372,8 @@ public sealed class ChromiumBrowserHost : IBrowserHost
             {
                 var targetId = String(parameters, "targetId");
                 if (targetId is null) return;
-                lock (_sync) entry.Popups.Remove(targetId);
+                entry.Popups.Remove(targetId);
+                SchedulePopupExpiry(entry);
                 // The page stays registered: the controller answers Host.closed with ClosePageAsync, which performs
                 // the unregister and, for the last tab, the session teardown.
                 if (entry.PagesByTargetId.TryGetValue(targetId, out var page)) page.Close();
@@ -342,7 +388,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         try
         {
             using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await entry.Connection.SendAsync(method, parameters, bounded.Token).ConfigureAwait(false);
+            await entry.Connection.SendAsync(method, parameters, bounded.Token).WaitAsync(bounded.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -351,7 +397,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         catch (OperationCanceledException) { }
     }
 
-    private void OnProcessExited(SessionEntry entry)
+    private void OnProcessExited(SessionEntry entry, IChromiumProcess process)
     {
         _ = Task.Run(async () =>
         {
@@ -360,7 +406,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
                 await entry.Gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                 try
                 {
-                    if (entry.Dead) return;
+                    if (entry.Dead || !ReferenceEquals(entry.Process, process)) return;
                     await TearDownSessionAsync(entry.SessionId, entry).ConfigureAwait(false);
                 }
                 finally
@@ -384,6 +430,8 @@ public sealed class ChromiumBrowserHost : IBrowserHost
             if (_sessions.TryGetValue(sessionId, out var current) && ReferenceEquals(current, entry)) _sessions.Remove(sessionId);
         }
         entry.Lifetime.Cancel();
+        entry.PopupTimer?.Dispose();
+        entry.PopupTimer = null;
         entry.Events.Writer.TryComplete();
         foreach (var page in entry.PagesByTabId.Values.ToArray())
         {
@@ -397,20 +445,35 @@ public sealed class ChromiumBrowserHost : IBrowserHost
             entry.Popups.Clear();
         }
         await TrySendAsync(entry, "Browser.close", null).ConfigureAwait(false);
-        if (entry.Process is not null)
+        var process = entry.Process;
+        entry.Process = null;
+        try
         {
-            using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            try
-            {
-                await entry.Process.ShutdownAsync(grace.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "Browser process shutdown failed");
-            }
+            if (process is not null) await StopProcessAsync(process).ConfigureAwait(false);
         }
-        entry.Connection?.Dispose();
-        entry.Process?.Dispose();
+        finally
+        {
+            entry.Connection?.Dispose();
+            entry.Connection = null;
+        }
+    }
+
+    private async Task StopProcessAsync(IChromiumProcess process)
+    {
+        using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await process.ShutdownAsync(grace.Token).WaitAsync(grace.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Browser process shutdown failed");
+        }
+        finally
+        {
+            try { process.Dispose(); }
+            catch (Exception ex) { _logger.LogDebug(ex, "Browser process disposal failed"); }
+        }
     }
 
     public void Dispose()
@@ -441,9 +504,68 @@ public sealed class ChromiumBrowserHost : IBrowserHost
 
     private void RegisterPendingTarget(SessionEntry entry, string targetId, string url, string openerTabId)
     {
+        if (entry.Dead) return;
         var notify = IsNavigableUrl(url);
-        lock (_sync) entry.Popups[targetId] = new PopupRequest(url, openerTabId, notify);
-        if (notify) NewTabRequested?.Invoke(this, new(entry.SessionId, openerTabId, url, targetId));
+        entry.Popups.TryGetValue(targetId, out var existing);
+        if (existing is null && entry.Popups.Count >= MaxPendingPopups
+            || existing is not null && existing.ExpiresAt <= _timeProvider.GetUtcNow())
+        {
+            entry.Popups.Remove(targetId);
+            _ = TrySendAsync(entry, "Target.closeTarget", D("targetId", targetId));
+            SchedulePopupExpiry(entry);
+            return;
+        }
+        entry.Popups[targetId] = new PopupRequest(url, openerTabId, notify,
+            existing?.ExpiresAt ?? _timeProvider.GetUtcNow() + PopupLifetime);
+        SchedulePopupExpiry(entry);
+        if (notify)
+        {
+            if (NewTabRequested is { } requested) requested.Invoke(this, new(entry.SessionId, openerTabId, url, targetId));
+            else
+            {
+                entry.Popups.Remove(targetId);
+                _ = TrySendAsync(entry, "Target.closeTarget", D("targetId", targetId));
+                SchedulePopupExpiry(entry);
+            }
+        }
+    }
+
+    private void SchedulePopupExpiry(SessionEntry entry)
+    {
+        if (entry.Dead) return;
+        if (entry.Popups.Count == 0)
+        {
+            entry.PopupTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            return;
+        }
+        var due = entry.Popups.Values.Min(popup => popup.ExpiresAt) - _timeProvider.GetUtcNow();
+        entry.PopupTimer ??= _timeProvider.CreateTimer(_ => _ = ExpirePopupsAsync(entry), null,
+            Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        entry.PopupTimer.Change(due > TimeSpan.Zero ? due : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+    }
+
+    private async Task ExpirePopupsAsync(SessionEntry entry)
+    {
+        try
+        {
+            await entry.Gate.WaitAsync(entry.Lifetime.Token).ConfigureAwait(false);
+            try
+            {
+                if (entry.Dead) return;
+                var now = _timeProvider.GetUtcNow();
+                var closing = new List<Task>();
+                foreach (var (targetId, pending) in entry.Popups.ToArray())
+                {
+                    if (pending.ExpiresAt > now || !entry.Popups.Remove(targetId)) continue;
+                    closing.Add(TrySendAsync(entry, "Target.closeTarget", D("targetId", targetId)));
+                }
+                await Task.WhenAll(closing).ConfigureAwait(false);
+                SchedulePopupExpiry(entry);
+            }
+            finally { entry.Gate.Release(); }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _logger.LogDebug(ex, "Pending browser popup cleanup failed"); }
     }
 
     private static bool IsNavigableUrl(string url) =>
@@ -462,7 +584,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         return result;
     }
 
-    private sealed record PopupRequest(string Url, string OpenerTabId, bool Notified);
+    private sealed record PopupRequest(string Url, string OpenerTabId, bool Notified, DateTimeOffset ExpiresAt);
 
     private sealed class SessionEntry
     {
@@ -472,13 +594,14 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         public string DownloadsDirectory => Path.Combine(ProfileDirectory, "downloads");
         public SemaphoreSlim Gate { get; } = new(1, 1);
         public CancellationTokenSource Lifetime { get; } = new();
-        public Channel<BrowserProtocolEvent> Events { get; } = Channel.CreateUnbounded<BrowserProtocolEvent>();
+        public Channel<(CdpConnection Connection, BrowserProtocolEvent Event)> Events { get; } = Channel.CreateUnbounded<(CdpConnection, BrowserProtocolEvent)>();
         public Dictionary<string, ChromiumBrowserPage> PagesByTabId { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, ChromiumBrowserPage> PagesByTargetId { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, PopupRequest> Popups { get; } = new(StringComparer.Ordinal);
         public CdpConnection? Connection;
         public IChromiumProcess? Process;
         public Task? EventPump;
+        public ITimer? PopupTimer;
         public bool DownloadsConfigured;
         public bool Dead;
     }

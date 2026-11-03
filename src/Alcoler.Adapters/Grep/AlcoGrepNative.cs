@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Alcoler.Adapters.Tools;
@@ -15,11 +17,6 @@ internal sealed record AlcoGrepQuery(
     bool OnlyMatching,
     uint BeforeContext,
     uint AfterContext);
-
-internal sealed class AlcoGrepRawResult
-{
-    public List<(uint Kind, string Path, ulong LineNumber, string Text, ulong Count)> Events { get; } = [];
-}
 
 /// <summary>
 /// Facade over the alco-grep native library: probes availability once (a
@@ -46,10 +43,9 @@ internal static unsafe class AlcoGrepNative
         }
     }
 
-    public static AlcoGrepRawResult Search(AlcoGrepQuery query, CancellationToken cancellationToken)
+    public static void Search(AlcoGrepQuery query, GrepResultCollector result, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var result = new AlcoGrepRawResult();
         var receiver = new EventReceiver(result);
         var receiverHandle = GCHandle.Alloc(receiver);
         var cancel = new PinnedFlag();
@@ -78,10 +74,11 @@ internal static unsafe class AlcoGrepNative
                 static state => RaiseCancel((nint)state!),
                 (nint)cancel.Pointer);
             var status = AlcoGrepRaw.GrepSearch(in options, &OnEvent, (void*)GCHandle.ToIntPtr(receiverHandle), cancel.Pointer);
+            receiver.Failure?.Throw();
             switch (status)
             {
                 case AlcoGrepAbi.StatusOk:
-                    return result;
+                    return;
                 case AlcoGrepAbi.StatusCancelled:
                     cancellationToken.ThrowIfCancellationRequested();
                     throw new OperationCanceledException("alco-grep search was cancelled", cancellationToken);
@@ -121,20 +118,56 @@ internal static unsafe class AlcoGrepNative
         return receiver.Add(ffiEvent) ? 0u : 1u;
     }
 
-    private sealed class EventReceiver(AlcoGrepRawResult result)
+    private sealed class EventReceiver(GrepResultCollector result)
     {
         private readonly object _gate = new();
 
-        // Events can arrive concurrently from parallel native walker threads.
+        public ExceptionDispatchInfo? Failure { get; private set; }
+
+        // Native callbacks may overlap across files and must never unwind through the ABI.
         public bool Add(AlcoGrepMatchEvent* ffiEvent)
         {
             lock (_gate)
             {
-                var path = Marshal.PtrToStringUTF8((nint)ffiEvent->Path) ?? "";
-                var text = Marshal.PtrToStringUTF8((nint)ffiEvent->Text) ?? "";
-                result.Events.Add((ffiEvent->Kind, path, ffiEvent->LineNumber, text, ffiEvent->Count));
+                if (Failure is not null)
+                    return false;
+                try
+                {
+                    if (ffiEvent->Kind == AlcoGrepAbi.EventFileCount)
+                    {
+                        result.AddFile(Marshal.PtrToStringUTF8((nint)ffiEvent->Path) ?? "", (long)ffiEvent->Count);
+                        return true;
+                    }
+                    if (ffiEvent->Kind is not (AlcoGrepAbi.EventMatch or AlcoGrepAbi.EventContext))
+                        return true;
+                    var pathLength = 0;
+                    if (ffiEvent->Path is not null)
+                        while (ffiEvent->Path[pathLength] != 0)
+                            pathLength++;
+                    char[]? rented = null;
+                    Span<char> path = pathLength <= 1024
+                        ? stackalloc char[pathLength]
+                        : rented = ArrayPool<char>.Shared.Rent(pathLength);
+                    try
+                    {
+                        var count = Encoding.UTF8.GetChars(new ReadOnlySpan<byte>(ffiEvent->Path, pathLength), path);
+                        var lineNumber = ffiEvent->Kind == AlcoGrepAbi.EventMatch && ffiEvent->LineNumber == 0
+                            ? (int?)null : (int)ffiEvent->LineNumber;
+                        result.AddContent(path[..count], lineNumber, ffiEvent->Text);
+                    }
+                    finally
+                    {
+                        if (rented is not null)
+                            ArrayPool<char>.Shared.Return(rented);
+                    }
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Failure = ExceptionDispatchInfo.Capture(ex);
+                    return false;
+                }
             }
-            return true;
         }
     }
 

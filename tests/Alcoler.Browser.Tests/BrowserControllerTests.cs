@@ -128,6 +128,59 @@ public sealed class BrowserControllerTests
     }
 
     [Fact]
+    public async Task PopupAtTheTabCapRejectsItsNativeTargetWithoutClosingRetainedTabs()
+    {
+        using var host = new TestHost();
+        using var controller = new BrowserController(host);
+        var opener = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        for (var i = 1; i < 32; i++) Assert.True((await controller.ExecuteAsync(First, Command("new_tab"), default)).Ok);
+        await controller.ExecuteAsync(First, new BrowserCommandAction("finalize", BrowserJson.Element(
+            new Dictionary<string, object?> { ["keep"] = new[] { opener.TabId } })), default);
+        var rejected = await controller.OpenPopupAsync(First, opener.TabId!, "https://example.test/popup", default, "POP-CAP");
+        Assert.False(rejected.Ok);
+        Assert.Contains("32-tab limit", rejected.Error);
+        Assert.Equal((First, "POP-CAP"), Assert.Single(host.RejectedPopups));
+        Assert.Equal(32, host.Pages.Count);
+        Assert.Empty(host.Closed);
+    }
+
+    [Theory]
+    [InlineData("missing-session")]
+    [InlineData("missing-opener")]
+    [InlineData("unsafe-url")]
+    [InlineData("canceled")]
+    [InlineData("creation-failed")]
+    public async Task RejectedPopupAlwaysCleansItsTargetUsingIndependentCancellation(string reason)
+    {
+        using var host = new TestHost();
+        using var controller = new BrowserController(host);
+        var opener = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        using var cancellation = new CancellationTokenSource();
+        if (reason == "canceled") cancellation.Cancel();
+        host.FailCreation = reason == "creation-failed";
+        var pending = controller.OpenPopupAsync(reason == "missing-session" ? Second : First,
+            reason == "missing-opener" ? "missing" : opener.TabId!,
+            reason == "unsafe-url" ? "file:///secret" : "https://example.test/popup", cancellation.Token, "REJECT");
+        if (reason == "canceled") await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        else Assert.False((await pending).Ok);
+        Assert.Equal((reason == "missing-session" ? Second : First, "REJECT"), Assert.Single(host.RejectedPopups));
+        Assert.False(host.RejectionTokenWasCanceled);
+        Assert.Single(host.Pages);
+    }
+
+    [Fact]
+    public async Task RejectionCleanupFailureDoesNotReplaceThePopupFailure()
+    {
+        using var host = new TestHost { FailRejection = true };
+        using var controller = new BrowserController(host);
+        var opener = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        var result = await controller.OpenPopupAsync(First, opener.TabId!, "file:///secret", default, "REJECT");
+        Assert.False(result.Ok);
+        Assert.Contains("only http", result.Error);
+        Assert.Single(host.RejectedPopups);
+    }
+
+    [Fact]
     public async Task VisibilityFalse_ParksNativePage()
     {
         using var host = new TestHost();
@@ -163,6 +216,9 @@ public sealed class BrowserControllerTests
         public List<string> Hidden { get; } = [];
         public List<(string TabId, string AdoptTargetId)> Adoptions { get; } = [];
         public bool FailCreation { get; set; }
+        public bool FailRejection { get; init; }
+        public bool RejectionTokenWasCanceled { get; private set; }
+        public List<(SessionId Session, string Target)> RejectedPopups { get; } = [];
         public TaskCompletionSource CloseCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public event EventHandler<BrowserNewTabRequestedEventArgs>? NewTabRequested
         {
@@ -185,6 +241,13 @@ public sealed class BrowserControllerTests
         {
             lock (_sync) { Pages.Remove(tabId); Closed.Add(tabId); }
             CloseCompleted.TrySetResult();
+            return Task.CompletedTask;
+        }
+        public Task RejectPopupAsync(SessionId sessionId, string targetId, CancellationToken cancellationToken)
+        {
+            RejectedPopups.Add((sessionId, targetId));
+            RejectionTokenWasCanceled = cancellationToken.IsCancellationRequested;
+            if (FailRejection) throw new OperationCanceledException("cleanup failed");
             return Task.CompletedTask;
         }
         public Task ShowPageAsync(string tabId, CancellationToken cancellationToken) => Task.CompletedTask;

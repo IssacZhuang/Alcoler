@@ -149,7 +149,7 @@ public sealed partial class CdpBrowserAutomation
                 await Task.Delay(32, ct);
             }
         }
-        finally { await ReleaseAsync(id, context.Session, ct); }
+        finally { await ReleaseAsync(id, context.Session); }
     }
 
     private const string FrameOffsetFunction = """
@@ -201,7 +201,7 @@ public sealed partial class CdpBrowserAutomation
                 ValidateFrameTranslation(box);
                 x += Number(box, "x"); y += Number(box, "y");
             }
-            finally { await ReleaseAsync(objectId, context.Session, ct); }
+            finally { await ReleaseAsync(objectId, context.Session); }
         }
         return new(x, y);
     }
@@ -226,7 +226,7 @@ public sealed partial class CdpBrowserAutomation
                 var parentOffset = offsets[owner.ParentId];
                 offsets[frame] = new(parentOffset.X + Number(box, "x"), parentOffset.Y + Number(box, "y"));
             }
-            finally { await ReleaseAsync(objectId, context.Session, ct); }
+            finally { await ReleaseAsync(objectId, context.Session); }
         }
         foreach (var (frame, owner) in ancestors)
         {
@@ -240,7 +240,7 @@ public sealed partial class CdpBrowserAutomation
                 var hit = RemoteValue(await CallObjectAsync(context, objectId, "function(x,y){let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const next=hit.shadowRoot.elementFromPoint(x,y);if(!next||next===hit)break;hit=next;}return hit===this;}", [D("value", point.X - offset.X), D("value", point.Y - offset.Y)], ct, true));
                 if (!hit.GetBoolean()) return false;
             }
-            finally { await ReleaseAsync(objectId, context.Session, ct); }
+            finally { await ReleaseAsync(objectId, context.Session); }
         }
         return true;
     }

@@ -97,7 +97,7 @@ function createFixture({ storedMode } = {}) {
   const storage = new Map([['alcoler.lastWorkspace', 'C:/workspace']]);
   if (storedMode !== undefined) storage.set('alcoler.lastMode', storedMode);
   const location = { hash: '#/new' };
-  const calls = { creates: [], commands: [], catalogs: [] };
+  const calls = { creates: [], commands: [], catalogs: [], transcript: [], reconnects: 0 };
   const handlers = {
     createSession: async () => ({ id: 'created' }),
     sendCommand: async () => accepted(),
@@ -121,8 +121,20 @@ function createFixture({ storedMode } = {}) {
     setTimeout: schedule, clearTimeout: noop, setInterval: schedule, clearInterval: noop,
     requestAnimationFrame: schedule, cancelAnimationFrame: noop,
     ResizeObserver: class { observe() {} disconnect() {} },
-    StreamClient: class { constructor(opts) { this.opts = opts; } start() {} close() {} },
-    Transcript: class { constructor() { this.els = new Map(); } rebuild() {} dispose() {} },
+    StreamClient: class {
+      constructor(opts) { this.opts = opts; }
+      start() {} close() {}
+      manualReconnect() { calls.reconnects++; }
+    },
+    Transcript: class {
+      constructor() { this.els = new Map(); }
+      rebuild(rows) { calls.transcript.push(['snapshot', structuredClone(rows)]); }
+      append(row) { calls.transcript.push(['append', structuredClone(row)]); }
+      upsert(row) { calls.transcript.push(['upsert', structuredClone(row)]); }
+      appendText(op) { calls.transcript.push(['text', structuredClone(op)]); return op.rowId !== 'missing'; }
+      remove(rowId) { calls.transcript.push(['remove', rowId]); }
+      dispose() {}
+    },
     SessionList: class { setActive() {} updateTitle() {} updateActivity() {} },
     QueuedMessages: class { constructor(_root, opts) { this.opts = opts; } update() {} refresh() {} dispose() {} },
     icon: () => '', uuid: () => `command-${++serial}`, workspaceTail: root => root,
@@ -154,6 +166,24 @@ function createFixture({ storedMode } = {}) {
   };
   return fixture;
 }
+
+test('append operations apply once above the snapshot watermark and reconnect snapshots replace the baseline', () => {
+  const f = createFixture();
+  const st = f.open();
+  f.calls.transcript.length = 0;
+  const appended = { $type: 'row_text_appended', rowId: 'assistant', delta: ' exact\n中文 ', at: 'new-at' };
+  st.ws.opts.onDelta({ sequence: 100, ops: [appended] });
+  st.ws.opts.onDelta({ sequence: 101, ops: [appended] });
+  st.ws.opts.onDelta({ sequence: 101, ops: [appended] });
+  assert.deepEqual(f.calls.transcript, [['text', appended]]);
+  const final = { $type: 'assistant_message', rowId: 'assistant', isStreaming: false, parts: [{ $type: 'text', text: 'authoritative' }] };
+  st.ws.opts.onDelta({ sequence: 102, ops: [{ $type: 'row_upserted', row: final }, { $type: 'row_removed', rowId: 'obsolete' }] });
+  st.ws.opts.onSnapshot({ revision: 11, sequence: 200, state: sessionState(), rows: [final] });
+  st.ws.opts.onDelta({ sequence: 199, ops: [appended] });
+  assert.deepEqual(f.calls.transcript.slice(1), [['upsert', final], ['remove', 'obsolete'], ['snapshot', [final]]]);
+  st.ws.opts.onDelta({ sequence: 201, ops: [{ ...appended, rowId: 'missing' }] });
+  assert.equal(f.calls.reconnects, 1);
+});
 
 test('new tasks default to full access when no valid mode was saved', async () => {
   for (const storedMode of [undefined, '', 'unknown']) {
