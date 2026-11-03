@@ -32,9 +32,42 @@ public sealed class StaticShellTests
         Assert.Contains("data-composer=\"session\"", body);
         Assert.Equal(2, body.Split("class=\"model-select\"").Length - 1);
         Assert.Equal(2, body.Split("class=\"effort-select\"").Length - 1);
+        Assert.Equal(2, body.Split("class=\"slash-popup\"").Length - 1);
+        Assert.Equal(2, body.Split("aria-autocomplete=\"list\"").Length - 1);
+        Assert.Equal(2, body.Split("class=\"workflow-badge\"").Length - 1);
         Assert.Matches("class=\"pair-logo\"[^>]*>\\s*<img src=\"icons/favicon.svg\"", body);
         Assert.Matches("class=\"sb-brand\"><img class=\"sb-brand-icon\" src=\"icons/favicon.svg\"", body);
         Assert.Contains("class=\"sb-brand-icon\" src=\"icons/favicon.svg\" alt=\"Alcoler\"", body);
+    }
+
+    [Fact]
+    public async Task ComposerPickers_ShareTheBottomToolbar()
+    {
+        var body = await _harness.Client.GetStringAsync(string.Empty);
+        var toolbars = Regex.Matches(body, @"(?s)<div class=""composer-toolbar"">.*?<input class=""composer-file""");
+        Assert.Equal(2, toolbars.Count);
+        foreach (Match toolbar in toolbars)
+        {
+            Assert.Matches(@"(?s)class=""mode-picker"".*?class=""toolbar-spacer"".*?class=""composer-models"".*?class=""model-select"".*?class=""effort-select"".*?class=""composer-send send-btn""", toolbar.Value);
+            Assert.Contains("class=\"picker-icon effort-icon\"", toolbar.Value);
+            Assert.Contains("class=\"picker-label model-label\"", toolbar.Value);
+            Assert.DoesNotContain(">Thinking</span>", toolbar.Value);
+        }
+    }
+
+    [Fact]
+    public async Task ComposerStyles_KeepPickersAtDesktopSizeAndBoundLongLabels()
+    {
+        var css = await _harness.Client.GetStringAsync("styles.css");
+        Assert.Matches(@"(?s)\.model-picker\s*\{[^}]*max-width: 240px;[^}]*min-width: 40px;", css);
+        Assert.Matches(@"(?s)\.effort-picker\s*\{[^}]*flex: 0 1 auto;[^}]*max-width: 112px;[^}]*min-width: 66px;", css);
+        Assert.Matches(@"(?s)\.picker-label\s*\{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;", css);
+        Assert.Matches(@"(?s)\.composer-picker\s*\{[^}]*height: 28px;", css);
+        Assert.Contains("@container (max-width: 560px)", css);
+        var compact = css[css.IndexOf("@container (max-width: 560px)", StringComparison.Ordinal)..];
+        Assert.Matches(@"(?s)\.effort-picker\s*\{[^}]*min-width: 74px;", compact);
+        Assert.Matches(@"(?s)\.plan-badge\s*\{[^}]*padding: 0 2px;", compact);
+        Assert.Matches(@"(?s)\.toolbar-spacer\s*\{[^}]*display: none;", compact);
     }
 
     [Fact]
@@ -45,6 +78,7 @@ public sealed class StaticShellTests
         var css = await response.Content.ReadAsStringAsync();
         var header = Assert.Single(Regex.Matches(css, @"(?m)^\s*\.tool-head\s*\{([^}]*)\}").Cast<Match>()).Groups[1].Value;
         Assert.Contains("min-height: 28px;", header);
+        Assert.Contains("line-height: 20px;", header);
         Assert.Contains("padding: 3px 0;", header);
         Assert.Contains("grid-template-columns: 16px minmax(0, 1fr) auto 16px;", header);
         foreach (var selector in new[] { "tool", "thinking" })
@@ -57,6 +91,27 @@ public sealed class StaticShellTests
         Assert.Contains("margin-bottom: 4px;", reasoning);
         var label = Assert.Single(Regex.Matches(css, @"(?m)^\s*\.tool-label\s*\{([^}]*)\}").Cast<Match>()).Groups[1].Value;
         Assert.Contains("flex-wrap: nowrap;", label);
+        var name = Assert.Single(Regex.Matches(css, @"(?m)^\s*\.tool-name\s*\{([^}]*)\}").Cast<Match>()).Groups[1].Value;
+        Assert.Contains("max-width: 120px;", name);
+        Assert.Contains("overflow: hidden;", name);
+        Assert.Contains("text-overflow: ellipsis;", name);
+        Assert.Contains("white-space: nowrap;", name);
+        Assert.DoesNotContain("overflow-wrap: anywhere;", name);
+        Assert.DoesNotMatch(@"(?s)\.tool-head\.is-compact \.tool-name\s*\{[^}]*flex: none;", css);
+        Assert.Matches(@"(?s)\[hidden\]\s*\{[^}]*display: none !important;", css);
+    }
+
+    [Fact]
+    public async Task ToolStyles_KeepSearchAndSubagentsAtDesktopPresentation()
+    {
+        var css = await _harness.Client.GetStringAsync("styles.css");
+        Assert.Matches(@"(?s)\.tool-head\.is-search \.tool-summary,\s*\.tool-head\.is-agent \.tool-summary\s*\{[^}]*color: var\(--tertiary\);", css);
+        Assert.Matches(@"(?s)\.tool-agent-type\s*\{[^}]*color: var\(--info\);[^}]*font-family: var\(--mono\);[^}]*font-size: 14px;[^}]*max-width: 144px;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;", css);
+        Assert.Matches(@"(?s)\.tool-agent-type\.is-explore\s*\{[^}]*color: var\(--agent-explore\);", css);
+        Assert.Contains("--agent-explore: #77d6be;", css);
+        Assert.Matches(@"(?s)\.tool-head\.is-agent\s*\{[^}]*grid-template-columns: 16px minmax\(0, 1fr\) auto;", css);
+        Assert.Matches(@"(?s)\.tool-head\.is-agent\.is-running \.tool-name\s*\{[^}]*animation: agent-pulse 4s", css);
+        Assert.Matches(@"(?s)\.tool-head\.is-search \.tool-chev\s*\{[^}]*opacity: 0;", css);
     }
 
     [Fact]
@@ -76,6 +131,8 @@ public sealed class StaticShellTests
     [Theory]
     [InlineData("wwwroot/session-list.js")]
     [InlineData("wwwroot/composer.js")]
+    [InlineData("wwwroot/slash.js")]
+    [InlineData("wwwroot/submission.js")]
     [InlineData("wwwroot/queue.js")]
     public async Task WwwRoot_ServesShellModules(string path)
     {

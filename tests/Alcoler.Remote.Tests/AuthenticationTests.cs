@@ -14,6 +14,8 @@ public sealed class AuthenticationTests
     [Theory]
     [InlineData("api/sessions")]
     [InlineData("api/models")]
+    [InlineData("api/slash-catalog")]
+    [InlineData("api/sessions/sess_unknown/slash-catalog")]
     public async Task ApiRequest_WithoutToken_IsUnauthorized(string path)
     {
         using var response = await _harness.Client.GetAsync(path);

@@ -3,7 +3,9 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Kernel.Skills;
 using Alcoler.Localization;
 using Alcoler.Remote;
 using Alcoler.ViewModel;
@@ -722,6 +724,87 @@ public sealed class RemoteSettingsTests
     }
 
     [Fact]
+    public async Task RemoteAccess_SlashCatalogReadsLiveSkillsAndDisabledConfigWithoutLeakingPrivateData()
+    {
+        var currentConfig = SampleConfig() with { DisabledSkillPaths = [] };
+        ComposerSkillCatalog? skills = null;
+        var calls = 0;
+        await using var context = new RemoteTestContext(slashCatalog: (sessionId, workspaceRoot, _) =>
+        {
+            Assert.Null(sessionId);
+            Interlocked.Increment(ref calls);
+            return ValueTask.FromResult<RemoteSlashCatalog?>(Composition.BuildRemoteSlashCatalog(
+                workspaceRoot, Volatile.Read(ref currentConfig).DisabledSkillPaths, skills));
+        });
+        var directory = Path.GetDirectoryName(context.ConfigPath)!;
+        var workspace = Path.Combine(directory, "workspace");
+        var userBase = Path.Combine(directory, "user");
+        skills = new ComposerSkillCatalog(new SkillsCatalog(userBase));
+        var report = WriteSkill(Path.Combine(workspace, ".alcoler", "skills"), "report", "Research topics.");
+        var review = WriteSkill(Path.Combine(userBase, ".agents", "skills"), "review", "Inspect changes.");
+        var port = AllocateFreePort();
+        await context.RemoteAccess.ApplyConfigAsync(new WorkbenchRemoteConfig(true, port, FirstCode));
+        Assert.True(context.RemoteAccess.IsRunning);
+        Assert.Equal(0, Volatile.Read(ref calls));
+        using var client = CreateClient(port);
+        var path = "api/slash-catalog?workspaceRoot=" + Uri.EscapeDataString(workspace);
+        using (var unauthorized = await client.GetAsync(path))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+            Assert.Equal(0, Volatile.Read(ref calls));
+        }
+        var token = await PairAsync(port, FirstCode);
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        using (var first = await client.GetAsync(path))
+        {
+            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+            Assert.Equal("no-store", first.Headers.CacheControl?.ToString());
+            var body = await first.Content.ReadAsStringAsync();
+            Assert.DoesNotContain("private-skill-body", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("SKILL.md", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("provider-key", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("https://api.anthropic.com", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("search-key", body, StringComparison.Ordinal);
+            Assert.DoesNotContain(FirstCode, body, StringComparison.Ordinal);
+            using var document = JsonDocument.Parse(body);
+            var entries = document.RootElement.GetProperty("entries").EnumerateArray().ToArray();
+            Assert.Equal(new[] { "plan", "orchestrator", "report", "review" }, entries.Select(entry => entry.GetProperty("name").GetString()));
+            Assert.Equal(new[] { "plan", "orchestrator", "skill", "skill" }, entries.Select(entry => entry.GetProperty("kind").GetString()));
+            Assert.All(entries, entry => Assert.Equal(new[] { "name", "description", "kind" }, entry.EnumerateObject().Select(property => property.Name)));
+        }
+        Volatile.Write(ref currentConfig, currentConfig with { DisabledSkillPaths = [report] });
+        await File.WriteAllTextAsync(review, "---\nname: review\ndescription: Updated live review metadata.\n---\nprivate-skill-body");
+
+        using (var disabled = await client.GetAsync(path))
+        {
+            Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+            using var document = JsonDocument.Parse(await disabled.Content.ReadAsStringAsync());
+            var entry = Assert.Single(document.RootElement.GetProperty("entries").EnumerateArray(),
+                entry => entry.GetProperty("kind").GetString() == "skill");
+            Assert.Equal("review", entry.GetProperty("name").GetString());
+            Assert.Equal("Updated live review metadata.", entry.GetProperty("description").GetString());
+        }
+        Volatile.Write(ref currentConfig, currentConfig with { DisabledSkillPaths = [] });
+
+        using var enabled = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+        using var restored = JsonDocument.Parse(await enabled.Content.ReadAsStringAsync());
+        Assert.Contains(restored.RootElement.GetProperty("entries").EnumerateArray(), entry => entry.GetProperty("name").GetString() == "report");
+        Assert.Equal(3, Volatile.Read(ref calls));
+        Assert.True(context.RemoteAccess.IsRunning);
+
+        static string WriteSkill(string root, string name, string description)
+        {
+            var directory = Path.Combine(root, name);
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "SKILL.md");
+            File.WriteAllText(path, $"---\nname: {name}\ndescription: {description}\n---\nprivate-skill-body");
+            return path;
+        }
+    }
+
+    [Fact]
     public async Task RemoteAccess_ApplyDisabledNewPortAndCode_ReenableBindsNewListener()
     {
         await using var context = new RemoteTestContext();
@@ -877,7 +960,9 @@ public sealed class RemoteSettingsTests
         private readonly string _directory = Path.Combine(
             Path.GetTempPath(), "alcoler-remote-settings-tests-" + Guid.NewGuid().ToString("N"));
 
-        public RemoteTestContext(Func<RemoteModelCatalog>? modelCatalog = null)
+        public RemoteTestContext(
+            Func<RemoteModelCatalog>? modelCatalog = null,
+            Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>>? slashCatalog = null)
         {
             Directory.CreateDirectory(_directory);
             RemoteAccess = new RemoteAccessViewModel(
@@ -885,7 +970,8 @@ public sealed class RemoteSettingsTests
                 RemoteDirectory,
                 static (_, _) => ValueTask.FromResult<ReadOnlyMemory<byte>?>(null),
                 "remote-settings-tests",
-                modelCatalog);
+                modelCatalog,
+                slashCatalog);
         }
 
         public string ConfigPath => Path.Combine(_directory, "config.json");

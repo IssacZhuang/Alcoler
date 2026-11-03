@@ -1,6 +1,11 @@
 using System.Net;
 using System.Text.Json;
+using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Sessions;
 using Alcoler.Remote.Tests.Infrastructure;
 using Xunit;
 
@@ -76,6 +81,163 @@ public sealed class SessionEndpointTests
         }
     }
 
+    [Theory]
+    [InlineData("api/slash-catalog")]
+    [InlineData("api/sessions/sess_unknown/slash-catalog")]
+    public async Task SlashCatalog_WithoutConfiguredCallback_ReturnsEmptyEntries(string path)
+    {
+        var (_, token) = await _harness.PairAsync();
+
+        using var response = await _harness.GetWithTokenAsync(path, token);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Equal("""{"entries":[]}""", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task SlashCatalog_AuthenticatesBeforeInvokingCallbackAndReadsLiveEntries()
+    {
+        var calls = 0;
+        var workspace = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "remote-slash-workspace"));
+        var catalog = new RemoteSlashCatalog(
+            [new("plan", "Plan without making changes", "plan"), new("report", "Research topics", "skill")]);
+        var harness = new SlashCatalogGatewayHarness((sessionId, workspaceRoot, cancellationToken) =>
+        {
+            Assert.Null(sessionId);
+            Assert.Equal(workspace, workspaceRoot);
+            Assert.True(cancellationToken.CanBeCanceled);
+            Interlocked.Increment(ref calls);
+            return ValueTask.FromResult<RemoteSlashCatalog?>(Volatile.Read(ref catalog));
+        });
+        await harness.InitializeAsync();
+        try
+        {
+            foreach (var path in new[] { "api/slash-catalog?workspaceRoot=relative", "api/sessions/sess_unknown/slash-catalog" })
+            {
+                using var unauthorized = await harness.Client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+                Assert.Equal("no-store", unauthorized.Headers.CacheControl?.ToString());
+            }
+            Assert.Equal(0, Volatile.Read(ref calls));
+            var (deviceId, token) = await harness.PairAsync();
+            var draftPath = "api/slash-catalog?workspaceRoot=" + Uri.EscapeDataString(workspace);
+
+            using (var first = await harness.GetWithTokenAsync(draftPath, token))
+            {
+                Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+                Assert.Equal("no-store", first.Headers.CacheControl?.ToString());
+                Assert.Equal(
+                    """{"entries":[{"name":"plan","description":"Plan without making changes","kind":"plan"},{"name":"report","description":"Research topics","kind":"skill"}]}""",
+                    await first.Content.ReadAsStringAsync());
+            }
+            Assert.Equal(1, Volatile.Read(ref calls));
+            Volatile.Write(ref catalog, new RemoteSlashCatalog([new("review", "Inspect changes", "skill")]));
+
+            using (var second = await harness.GetWithTokenAsync(draftPath, token))
+            {
+                Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+                Assert.Equal("no-store", second.Headers.CacheControl?.ToString());
+                Assert.Equal("""{"entries":[{"name":"review","description":"Inspect changes","kind":"skill"}]}""",
+                    await second.Content.ReadAsStringAsync());
+            }
+            Assert.Equal(2, Volatile.Read(ref calls));
+
+            await harness.Gateway.RevokeDeviceAsync(deviceId);
+            using var revoked = await harness.GetWithTokenAsync(draftPath, token);
+            Assert.Equal(HttpStatusCode.Unauthorized, revoked.StatusCode);
+            Assert.Equal(2, Volatile.Read(ref calls));
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task SlashCatalog_SessionRoutePassesOnlyTrustedSessionIdAndMapsUnknownSession()
+    {
+        var knownId = new SessionId("sess_catalog");
+        var calls = new List<SessionId?>();
+        var harness = new SlashCatalogGatewayHarness((sessionId, workspaceRoot, _) =>
+        {
+            calls.Add(sessionId);
+            Assert.Null(workspaceRoot);
+            return ValueTask.FromResult<RemoteSlashCatalog?>(sessionId == knownId
+                ? new RemoteSlashCatalog([new("workspace-skill", "Known session skill", "skill")])
+                : null);
+        });
+        await harness.InitializeAsync();
+        try
+        {
+            var (_, token) = await harness.PairAsync();
+            using var known = await harness.GetWithTokenAsync(
+                $"api/sessions/{knownId.Value}/slash-catalog?workspaceRoot=relative-client-override", token);
+            Assert.Equal(HttpStatusCode.OK, known.StatusCode);
+            Assert.Equal("no-store", known.Headers.CacheControl?.ToString());
+            Assert.Equal("""{"entries":[{"name":"workspace-skill","description":"Known session skill","kind":"skill"}]}""",
+                await known.Content.ReadAsStringAsync());
+
+            using var unknown = await harness.GetWithTokenAsync("api/sessions/sess_missing/slash-catalog", token);
+            Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+            Assert.Equal("no-store", unknown.Headers.CacheControl?.ToString());
+            Assert.Equal("""{"error":"not_found","reason":"session"}""", await unknown.Content.ReadAsStringAsync());
+            Assert.Equal(new SessionId?[] { knownId, new("sess_missing") }, calls);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task SlashCatalog_DraftAllowsBlankAndAbsoluteWorkspaceButRejectsMalformedPathsBeforeCallback()
+    {
+        var workspaces = new List<string?>();
+        var harness = new SlashCatalogGatewayHarness((sessionId, workspaceRoot, _) =>
+        {
+            Assert.Null(sessionId);
+            workspaces.Add(workspaceRoot);
+            return ValueTask.FromResult<RemoteSlashCatalog?>(new RemoteSlashCatalog([]));
+        });
+        await harness.InitializeAsync();
+        try
+        {
+            var (_, token) = await harness.PairAsync();
+            foreach (var query in new[] { "", "?workspaceRoot=", "?workspaceRoot=%20%20%09" })
+            {
+                using var blank = await harness.GetWithTokenAsync("api/slash-catalog" + query, token);
+                Assert.Equal(HttpStatusCode.OK, blank.StatusCode);
+            }
+            Assert.Equal(new string?[] { null, null, null }, workspaces);
+            var workspace = Path.Combine(Path.GetTempPath(), "remote-slash-draft", "..", "selected");
+            using (var absolute = await harness.GetWithTokenAsync(
+                "api/slash-catalog?workspaceRoot=" + Uri.EscapeDataString(workspace), token))
+            {
+                Assert.Equal(HttpStatusCode.OK, absolute.StatusCode);
+                Assert.Equal(Path.GetFullPath(workspace), workspaces[^1]);
+            }
+            var callsBeforeInvalid = workspaces.Count;
+            foreach (var invalid in new[] { "relative", "../workspace", @"C:relative", @"\rooted", "file:///workspace", Path.GetTempPath() + "invalid\0path" })
+            {
+                using var response = await harness.GetWithTokenAsync(
+                    "api/slash-catalog?workspaceRoot=" + Uri.EscapeDataString(invalid), token);
+                Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+                Assert.Equal("""{"error":"bad_request","reason":"workspaceRoot"}""", await response.Content.ReadAsStringAsync());
+            }
+            using var multiple = await harness.GetWithTokenAsync(
+                "api/slash-catalog?workspaceRoot=&workspaceRoot=relative", token);
+            Assert.Equal(HttpStatusCode.BadRequest, multiple.StatusCode);
+            Assert.Equal(callsBeforeInvalid, workspaces.Count);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task CreateSession_RoundTripsWorkspaceTitleAndYoloMode()
     {
@@ -110,6 +272,109 @@ public sealed class SessionEndpointTests
             string.Equals("yolo", permissionMode, StringComparison.OrdinalIgnoreCase),
             $"permissionMode was {permissionMode}");
         Assert.False(entry.Value.GetProperty("isArchived").GetBoolean());
+    }
+
+    [Fact]
+    public async Task CreateSession_PassesPlanAndWorkflowIntentWithBackwardCompatibleDefaults()
+    {
+        var runtime = new SessionCreationRuntime();
+        var harness = new SessionCreationGatewayHarness(runtime);
+        await harness.InitializeAsync();
+        try
+        {
+            var (_, token) = await harness.PairAsync();
+            var workspaceRoot = Path.Combine(Path.GetTempPath(), "remote-session-intent");
+            using (var planned = await harness.SendWithTokenAsync(HttpMethod.Post, "api/sessions", token,
+                GatewayHarness.Serialize(new { workspaceRoot, title = "Planned", mode = "edit", planEnabled = true, activeWorkflows = new[] { "orchestrator" } })))
+            {
+                Assert.Equal(HttpStatusCode.OK, planned.StatusCode);
+            }
+            var intent = Assert.Single(runtime.Options);
+            Assert.Equal(workspaceRoot, intent.WorkspaceRoot);
+            Assert.Equal("Planned", intent.Title);
+            Assert.Equal(PermissionMode.Edit, intent.PermissionMode);
+            Assert.True(intent.PlanEnabled);
+            Assert.Equal(new[] { "orchestrator" }, intent.ActiveWorkflows);
+
+            using (var legacy = await harness.SendWithTokenAsync(HttpMethod.Post, "api/sessions", token,
+                GatewayHarness.Serialize(new { workspaceRoot })))
+            {
+                Assert.Equal(HttpStatusCode.OK, legacy.StatusCode);
+            }
+            Assert.Equal(PermissionMode.Build, runtime.Options[1].PermissionMode);
+            Assert.False(runtime.Options[1].PlanEnabled);
+            Assert.Null(runtime.Options[1].ActiveWorkflows);
+
+            using var cleared = await harness.SendWithTokenAsync(HttpMethod.Post, "api/sessions", token,
+                GatewayHarness.Serialize(new { workspaceRoot, planEnabled = false, activeWorkflows = Array.Empty<string>() }));
+            Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
+            Assert.False(runtime.Options[2].PlanEnabled);
+            Assert.Empty(Assert.IsType<string[]>(runtime.Options[2].ActiveWorkflows));
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task CreateSession_RejectsMalformedIntentBeforeInvokingRuntime()
+    {
+        var runtime = new SessionCreationRuntime();
+        var harness = new SessionCreationGatewayHarness(runtime);
+        await harness.InitializeAsync();
+        try
+        {
+            var (_, token) = await harness.PairAsync();
+            var malformed = new[]
+            {
+                "null", "[]", "{}", "{", """{"workspaceRoot":null}""", """{"workspaceRoot":42}""", """{"workspaceRoot":" "}""",
+                """{"workspaceRoot":"workspace","title":42}""", """{"workspaceRoot":"workspace","title":{}}""",
+                """{"workspaceRoot":"workspace","mode":false}""", """{"workspaceRoot":"workspace","mode":[]}""",
+                """{"workspaceRoot":"workspace","planEnabled":null}""", """{"workspaceRoot":"workspace","planEnabled":"true"}""",
+                """{"workspaceRoot":"workspace","planEnabled":1}""", """{"workspaceRoot":"workspace","planEnabled":{}}""",
+                """{"workspaceRoot":"workspace","activeWorkflows":null}""", """{"workspaceRoot":"workspace","activeWorkflows":"orchestrator"}""",
+                """{"workspaceRoot":"workspace","activeWorkflows":true}""", """{"workspaceRoot":"workspace","activeWorkflows":{}}""",
+                """{"workspaceRoot":"workspace","activeWorkflows":[null]}""", """{"workspaceRoot":"workspace","activeWorkflows":[1]}""",
+                """{"workspaceRoot":"workspace","activeWorkflows":[{}]}""", """{"workspaceRoot":"workspace","activeWorkflows":[""]}""",
+                """{"workspaceRoot":"workspace","activeWorkflows":[" \t "]}""",
+                """{"workspaceRoot":"workspace","activeWorkflows":["orchestrator","orchestrator","orchestrator","orchestrator"]}""",
+            };
+            foreach (var json in malformed)
+            {
+                using var response = await harness.SendWithTokenAsync(HttpMethod.Post, "api/sessions", token, json);
+                Assert.True(response.StatusCode == HttpStatusCode.BadRequest, $"Expected 400 for {json}; got {(int)response.StatusCode}.");
+                Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+                Assert.Empty(runtime.Options);
+            }
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task CreateSession_WorkflowValidationFailureIsBadRequestWithoutPrivateDetails()
+    {
+        var runtime = new SessionCreationRuntime { RejectOptions = true };
+        var harness = new SessionCreationGatewayHarness(runtime);
+        await harness.InitializeAsync();
+        try
+        {
+            var (_, token) = await harness.PairAsync();
+            using var response = await harness.SendWithTokenAsync(HttpMethod.Post, "api/sessions", token,
+                GatewayHarness.Serialize(new { workspaceRoot = "workspace", activeWorkflows = new[] { "unknown-workflow" } }));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("""{"error":"bad_request","reason":"session_options"}""", await response.Content.ReadAsStringAsync());
+            Assert.Equal(new[] { "unknown-workflow" }, Assert.Single(runtime.Options).ActiveWorkflows);
+            Assert.DoesNotContain("session_created", await File.ReadAllTextAsync(Path.Combine(harness.DataDirectory, "audit.jsonl")), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -241,6 +506,62 @@ public sealed class SessionEndpointTests
             ProductVersion = Version,
             ModelCatalog = modelCatalog,
         };
+    }
+
+    private sealed class SlashCatalogGatewayHarness(
+        Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>> slashCatalog) : GatewayHarness
+    {
+        protected override RemoteGatewayOptions CreateOptions(int port) => new()
+        {
+            Runtime = () => Runtime,
+            Port = port,
+            DataDirectory = DataDirectory,
+            ProductVersion = Version,
+            SlashCatalog = slashCatalog,
+        };
+    }
+
+    private sealed class SessionCreationGatewayHarness(IAgentRuntime runtime) : GatewayHarness
+    {
+        protected override RemoteGatewayOptions CreateOptions(int port) => new()
+        {
+            Runtime = () => runtime,
+            Port = port,
+            DataDirectory = DataDirectory,
+            ProductVersion = Version,
+        };
+    }
+
+    private sealed class SessionCreationRuntime : IAgentRuntime
+    {
+        public List<SessionOptions> Options { get; } = [];
+        public bool RejectOptions { get; init; }
+
+        public ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken)
+        {
+            Options.Add(options);
+            return RejectOptions
+                ? ValueTask.FromException<SessionHandle>(new InvalidOperationException("Private workflow validation detail"))
+                : ValueTask.FromResult(new SessionHandle(StrongId.NewSessionId(), options.WorkspaceRoot, options.Title ?? "Session"));
+        }
+
+        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
+            string? workspaceRoot, int limit, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<int> UnloadIdleSessionsAsync(
+            TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public IConversationProjection Subscribe(SessionId sessionId) => throw new NotSupportedException();
+
+        public IConversationProjection? TryObserve(SessionId sessionId) => throw new NotSupportedException();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private static IEnumerable<JsonElement> EnumerateSessions(JsonElement root) =>

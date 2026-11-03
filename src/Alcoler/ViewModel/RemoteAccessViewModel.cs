@@ -1,5 +1,6 @@
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Localization;
 using Alcoler.Remote;
@@ -30,6 +31,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
     private readonly Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> _artifactLoader;
     private readonly string? _productVersion;
     private readonly Func<RemoteModelCatalog>? _modelCatalog;
+    private readonly Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>>? _slashCatalog;
     private readonly SemaphoreSlim _operations = new(1, 1);
     private readonly string _fallbackConnectionCode = RemoteConnectionCode.Generate();
     private RemoteGateway? _gateway;
@@ -42,13 +44,15 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         string dataDirectory,
         Func<string, CancellationToken, ValueTask<ReadOnlyMemory<byte>?>> artifactLoader,
         string? productVersion,
-        Func<RemoteModelCatalog>? modelCatalog = null)
+        Func<RemoteModelCatalog>? modelCatalog = null,
+        Func<SessionId?, string?, CancellationToken, ValueTask<RemoteSlashCatalog?>>? slashCatalog = null)
     {
         _runtimeFactory = runtimeFactory;
         _dataDirectory = dataDirectory;
         _artifactLoader = artifactLoader;
         _productVersion = productVersion;
         _modelCatalog = modelCatalog;
+        _slashCatalog = slashCatalog;
     }
 
     [ObservableProperty]
@@ -377,6 +381,7 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         ArtifactLoader = _artifactLoader,
         ProductVersion = _productVersion,
         ModelCatalog = _modelCatalog,
+        SlashCatalog = _slashCatalog,
     };
 
     private void SetPort(int port)

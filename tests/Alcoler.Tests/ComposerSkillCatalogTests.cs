@@ -1,4 +1,7 @@
+using System.Text.Json;
 using Alcoler.Kernel.Skills;
+using Alcoler.Remote;
+using Alcoler.ViewModel;
 using Xunit;
 
 namespace Alcoler.Tests;
@@ -154,6 +157,74 @@ public sealed class ComposerSkillCatalogTests : IDisposable
 
         Assert.Equal(["global", "local"], catalog.GetEntries(WorkspaceRoot).Select(entry => entry.Name));
         Assert.Equal(["global"], catalog.GetEntries(Path.Combine(_directory, "another-workspace")).Select(entry => entry.Name));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" \t ")]
+    public void RemoteSlashCatalog_BlankWorkspaceContainsOnlyAuthoritativeDesktopCommands(string? workspaceRoot)
+    {
+        WriteSkill(UserSkills, "report", "User report.");
+
+        var entries = Composition.BuildRemoteSlashCatalog(workspaceRoot, [], Catalog()).Entries;
+        var expected = ComposerCommands.SuggestionsFor("/").Select(suggestion =>
+        {
+            Assert.True(ComposerCommands.TryParse("/" + suggestion.Name, out var command));
+            return new RemoteSlashEntry(suggestion.Name, suggestion.Description, command.Kind.ToString().ToLowerInvariant());
+        });
+
+        Assert.Equal(expected, entries);
+        Assert.Equal(new[] { "plan", "orchestrator" }, entries.Select(entry => entry.Kind));
+    }
+
+    [Fact]
+    public void RemoteSlashCatalog_ExcludesBuiltInCollisionsAndProjectsSortedMetadataOnly()
+    {
+        WriteSkill(WorkspaceSkills, "zeta", "Last workspace skill.");
+        WriteSkill(UserSkills, "Alpha", "First user skill.");
+        WriteSkill(WorkspaceSkills, "PLAN", "Must not replace plan.");
+        WriteSkill(UserSkills, "OrChEsTrAtOr", "Must not replace orchestrator.");
+        WriteSkillText(WorkspaceSkills, "report",
+            "---\nname: report\ndescription: Research topics.\nwhen_to_use: private-trigger-detail\n---\nPrivate skill body and secrets.");
+
+        var catalog = Composition.BuildRemoteSlashCatalog(WorkspaceRoot, [], Catalog());
+
+        Assert.Equal(new[] { "plan", "orchestrator", "Alpha", "report", "zeta" }, catalog.Entries.Select(entry => entry.Name));
+        Assert.Equal(new[] { "plan", "orchestrator", "skill", "skill", "skill" }, catalog.Entries.Select(entry => entry.Kind));
+        var json = JsonSerializer.Serialize(catalog, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var document = JsonDocument.Parse(json);
+        Assert.Equal(new[] { "entries" }, document.RootElement.EnumerateObject().Select(property => property.Name));
+        Assert.All(document.RootElement.GetProperty("entries").EnumerateArray(), entry =>
+            Assert.Equal(new[] { "name", "description", "kind" }, entry.EnumerateObject().Select(property => property.Name)));
+        Assert.DoesNotContain("Private skill body", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-trigger-detail", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("SKILL.md", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("workspaceRoot", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("Must not replace", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RemoteSlashCatalog_RefreshesSkillsAndDisabledPathsOnEveryBuild()
+    {
+        var catalog = Catalog();
+        var report = WriteSkill(WorkspaceSkills, "report", "Original report.");
+        WriteSkill(UserSkills, "review", "Inspect changes.");
+
+        var initial = Composition.BuildRemoteSlashCatalog(WorkspaceRoot, [], catalog);
+        Assert.Equal(new[] { "report", "review" }, initial.Entries.Where(entry => entry.Kind == "skill").Select(entry => entry.Name));
+
+        WriteSkill(WorkspaceSkills, "report", "Updated report with fresh metadata.");
+        Assert.Equal("Updated report with fresh metadata.", Composition.BuildRemoteSlashCatalog(WorkspaceRoot, [], catalog)
+            .Entries.Single(entry => entry.Name == "report").Description);
+        Assert.Equal("review", Assert.Single(Composition.BuildRemoteSlashCatalog(WorkspaceRoot, [report], catalog)
+            .Entries, entry => entry.Kind == "skill").Name);
+        Assert.Contains(Composition.BuildRemoteSlashCatalog(WorkspaceRoot, [], catalog).Entries, entry => entry.Name == "report");
+
+        File.Delete(report);
+        WriteSkill(WorkspaceSkills, "added", "New skill.");
+        Assert.Equal(new[] { "added", "review" }, Composition.BuildRemoteSlashCatalog(WorkspaceRoot, [], catalog)
+            .Entries.Where(entry => entry.Kind == "skill").Select(entry => entry.Name));
     }
 
     [Theory]

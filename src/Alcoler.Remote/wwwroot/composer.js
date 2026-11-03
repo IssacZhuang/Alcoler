@@ -1,4 +1,5 @@
 import { icon } from './util.js';
+import { SlashAutocomplete } from './slash.js';
 
 const MAX_IMAGE_EDGE = 1568;
 const JPEG_QUALITY = 0.85;
@@ -18,9 +19,17 @@ export class Composer {
     this.modeSelect = root.querySelector('.mode-select');
     this.modeIcon = root.querySelector('.mode-icon');
     this.planBadge = root.querySelector('.plan-badge');
+    this.workflowBadge = root.querySelector('.workflow-badge');
+    this.statusRow = root.querySelector('.composer-status');
     this.modelSelect = root.querySelector('.model-select');
+    this.modelPicker = root.querySelector('.model-picker');
+    this.modelLabel = root.querySelector('.model-label');
+    this.modelChevron = root.querySelector('.model-chevron');
     this.effortSelect = root.querySelector('.effort-select');
     this.effortPicker = root.querySelector('.effort-picker');
+    this.effortLabel = root.querySelector('.effort-label');
+    this.effortIcon = root.querySelector('.effort-icon');
+    this.effortChevron = root.querySelector('.effort-chevron');
     this.models = [];
     this.defaultSelection = null;
     this.modelSelection = null;
@@ -29,13 +38,21 @@ export class Composer {
     this.ready = false;
     this.disabled = false;
     this.disposed = false;
+    this.slash = new SlashAutocomplete(this.input, root.querySelector('.slash-popup'), {
+      root, onComplete: () => { this.autosize(); this.update(); },
+    });
 
     if (this.attachBtn) this.attachBtn.innerHTML = icon('camera');
     if (this.modeIcon) this.modeIcon.innerHTML = icon('wrench');
+    if (this.modelChevron) this.modelChevron.innerHTML = icon('chevron-down');
+    if (this.effortIcon) this.effortIcon.innerHTML = icon('brain');
+    if (this.effortChevron) this.effortChevron.innerHTML = icon('chevron-down');
 
-    this._onInput = () => { this.autosize(); this.update(); };
+    this._onInput = () => { this.autosize(); this.update(); this.slash.refresh(); };
     this._onKeyDown = e => {
-      if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+      if (e.isComposing || this.slash.composing || e.keyCode === 229) return;
+      if (this.slash.handleKeyDown(e)) return;
+      if (e.key !== 'Enter' || e.shiftKey) return;
       if (!desktopKeyboard()) return;
       e.preventDefault();
       if (!this.canSend()) return;
@@ -101,13 +118,23 @@ export class Composer {
     this.update();
   }
 
+  setSlashSource(key, loadCatalog) {
+    this.slash.setSource(key, loadCatalog);
+  }
+
+  async parseCommand(text) {
+    return this.slash.parseCommand(text);
+  }
+
   setReady(ready) {
     this.ready = !!ready;
+    this.slash.setEnabled(this.ready && !this.disabled);
     this.update();
   }
 
   setDisabled(disabled) {
     this.disabled = !!disabled;
+    this.slash.setEnabled(this.ready && !this.disabled);
     if (this.input) this.input.disabled = this.disabled;
     if (this.attachBtn) this.attachBtn.disabled = this.disabled;
     if (this.modeSelect) this.modeSelect.disabled = this.disabled;
@@ -116,6 +143,7 @@ export class Composer {
   }
 
   setText(text) {
+    this.slash.reset();
     if (!this.input) return;
     this.input.value = String(text ?? '');
     this.autosize();
@@ -164,6 +192,7 @@ export class Composer {
     if (!this.modeSelect) return;
     const picker = this.modeSelect.closest('.mode-picker');
     if (picker) picker.classList.toggle('full-access', this.modeSelect.value === 'yolo');
+    this.modeSelect.title = this.modeSelect.selectedOptions?.[0]?.textContent || this.modeSelect.value;
   }
 
   setModels(catalog) {
@@ -175,12 +204,13 @@ export class Composer {
     if (this.modelSelect) {
       this.modelSelect.textContent = '';
       if (!this.models.length) {
-        this.addOption(this.modelSelect, '', catalog ? 'No models configured' : 'Models unavailable');
+        const label = catalog ? 'No models configured' : 'Models unavailable';
+        this.addOption(this.modelSelect, '', label);
+        if (this.modelLabel) this.modelLabel.textContent = label;
         this.modelSelect.title = catalog ? 'Configure models in the desktop app' : 'Refresh sessions to retry';
       }
       this.models.forEach((model, index) => {
-        const label = model.displayName || model.modelId;
-        this.addOption(this.modelSelect, String(index), model.providerLabel ? `${label} — ${model.providerLabel}` : label);
+        this.addOption(this.modelSelect, String(index), `${model.providerLabel || model.providerId}/${model.modelId}`);
       });
     }
     this.setModelSelection(this.modelSelection);
@@ -216,21 +246,32 @@ export class Composer {
             ? options.maxOutputTokens : null,
         },
       };
+      const label = `${model.providerLabel || model.providerId}/${model.modelId}`;
+      if (this.modelLabel) this.modelLabel.textContent = label;
       if (this.modelSelect) {
         this.modelSelect.value = String(index);
-        this.modelSelect.title = `${model.providerLabel || model.providerId}: ${model.modelId}`;
+        this.modelSelect.title = label;
       }
     } else if (selection) {
       this.modelSelection = { ...selection, options: { ...selection.options } };
     }
     if (this.effortSelect) {
       this.effortSelect.textContent = '';
-      for (const level of model?.reasoningLevels || []) {
-        this.addOption(this.effortSelect, level, level.charAt(0).toUpperCase() + level.slice(1));
-      }
+      for (const level of model?.reasoningLevels || []) this.addOption(this.effortSelect, level, level);
       this.effortSelect.value = this.modelSelection?.options?.reasoningLevel ?? '';
+      this.effortSelect.hidden = (model?.reasoningLevels.length || 0) < 2;
     }
-    if (this.effortPicker) this.effortPicker.hidden = !model?.reasoningLevels.length;
+    if (this.effortLabel) {
+      this.effortLabel.textContent = this.modelSelection?.options?.reasoningLevel ?? '';
+      this.effortLabel.setAttribute('aria-hidden', String((model?.reasoningLevels.length || 0) > 1));
+    }
+    if (this.effortChevron) this.effortChevron.hidden = (model?.reasoningLevels.length || 0) < 2;
+    if (this.effortPicker) {
+      this.effortPicker.hidden = !model?.reasoningLevels.length;
+      this.effortPicker.title = this.modelSelection?.options?.reasoningLevel
+        ? `Reasoning effort: ${this.modelSelection.options.reasoningLevel}` : 'Reasoning effort';
+      this.effortPicker.classList.toggle('is-static', (model?.reasoningLevels.length || 0) < 2);
+    }
     this.update();
   }
 
@@ -241,6 +282,12 @@ export class Composer {
 
   setPlan(enabled) {
     if (this.planBadge) this.planBadge.hidden = !enabled;
+  }
+
+  setWorkflows(active) {
+    const enabled = Array.isArray(active) && active.some(name => String(name).toLowerCase() === 'orchestrator');
+    if (this.workflowBadge) this.workflowBadge.hidden = !enabled;
+    if (this.statusRow) this.statusRow.hidden = !enabled;
   }
 
   getText() {
@@ -256,6 +303,7 @@ export class Composer {
   }
 
   clear() {
+    this.slash.reset();
     if (this.input) this.input.value = '';
     this.autosize();
     this.revokeImages();
@@ -270,8 +318,11 @@ export class Composer {
 
   update() {
     if (this.disposed) return;
-    if (this.modelSelect) this.modelSelect.disabled = this.disabled || !this.ready || !this.models.length;
-    if (this.effortSelect) this.effortSelect.disabled = this.disabled || !this.ready || !this.models.length || !!this.effortPicker?.hidden;
+    const selectionDisabled = this.disabled || !this.ready || !this.models.length;
+    if (this.modelSelect) this.modelSelect.disabled = selectionDisabled;
+    if (this.modelPicker) this.modelPicker.classList.toggle('is-disabled', selectionDisabled);
+    if (this.effortSelect) this.effortSelect.disabled = selectionDisabled || this.effortSelect.hidden;
+    if (this.effortPicker) this.effortPicker.classList.toggle('is-disabled', selectionDisabled);
     if (!this.sendBtn) return;
     const busy = this.isBusy();
     const hasContent = this.hasContent();
@@ -292,6 +343,7 @@ export class Composer {
 
   dispose() {
     this.disposed = true;
+    this.slash.dispose();
     if (this.input) {
       this.input.removeEventListener('input', this._onInput);
       this.input.removeEventListener('keydown', this._onKeyDown);

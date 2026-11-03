@@ -26,6 +26,7 @@ internal static class GatewayEndpoints
     {
         MapInfo(app, state);
         MapModels(app, state);
+        MapSlashCatalog(app, state);
         MapSessions(app, state);
         MapCommands(app, state);
         MapArtifacts(app, state);
@@ -47,6 +48,54 @@ internal static class GatewayEndpoints
     {
         app.MapGet("/api/models", () => GatewayJson.Data(
             state.Options.ModelCatalog?.Invoke() ?? new RemoteModelCatalog([], null)));
+    }
+
+    private static void MapSlashCatalog(WebApplication app, GatewayState state)
+    {
+        app.MapGet("/api/slash-catalog", async (HttpRequest request, CancellationToken cancellationToken) =>
+        {
+            if (!TryReadDraftWorkspace(request, out var workspaceRoot))
+                return GatewayJson.Error(400, "bad_request", "workspaceRoot");
+            var catalog = state.Options.SlashCatalog is { } callback
+                ? await callback(null, workspaceRoot, cancellationToken)
+                : new RemoteSlashCatalog([]);
+            return catalog is null
+                ? GatewayJson.Error(404, "not_found", "session")
+                : GatewayJson.Data(catalog);
+        });
+
+        app.MapGet("/api/sessions/{sessionId}/slash-catalog", async (string sessionId, CancellationToken cancellationToken) =>
+        {
+            var catalog = state.Options.SlashCatalog is { } callback
+                ? await callback(new SessionId(sessionId), null, cancellationToken)
+                : new RemoteSlashCatalog([]);
+            return catalog is null
+                ? GatewayJson.Error(404, "not_found", "session")
+                : GatewayJson.Data(catalog);
+        });
+    }
+
+    private static bool TryReadDraftWorkspace(HttpRequest request, out string? workspaceRoot)
+    {
+        workspaceRoot = null;
+        var values = request.Query["workspaceRoot"];
+        if (values.Count > 1)
+            return false;
+        var value = values.ToString().Trim();
+        if (value.Length == 0)
+            return true;
+        try
+        {
+            if (!Path.IsPathFullyQualified(value) || value.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+                return false;
+            workspaceRoot = Path.GetFullPath(value);
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or IOException
+            or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     private static void MapSessions(WebApplication app, GatewayState state)
@@ -81,10 +130,19 @@ internal static class GatewayEndpoints
             {
                 payload = null;
             }
-            if (payload is null || payload.WorkspaceRoot.Length == 0 || !TryMapMode(payload.Mode, out var permissionMode))
+            if (payload is null || string.IsNullOrWhiteSpace(payload.WorkspaceRoot) || !TryMapMode(payload.Mode, out var permissionMode))
                 return GatewayJson.Error(400, "bad_request", "body");
-            var handle = await state.Options.Runtime()
-                .CreateSessionAsync(new SessionOptions(payload.WorkspaceRoot, payload.Title, permissionMode), cancellationToken);
+            SessionHandle handle;
+            try
+            {
+                handle = await state.Options.Runtime().CreateSessionAsync(new SessionOptions(
+                    payload.WorkspaceRoot, payload.Title, permissionMode,
+                    ActiveWorkflows: payload.ActiveWorkflows, PlanEnabled: payload.PlanEnabled), cancellationToken);
+            }
+            catch (InvalidOperationException)
+            {
+                return GatewayJson.Error(400, "bad_request", "session_options");
+            }
             state.Audit.Write("session_created", sessionId: handle.Id.Value, detail: payload.WorkspaceRoot);
             return GatewayJson.Data(handle);
         });
@@ -314,9 +372,43 @@ internal static class GatewayEndpoints
         if (root.ValueKind != JsonValueKind.Object)
             return null;
         var workspaceRoot = ReadString(root, "workspaceRoot");
-        if (workspaceRoot is null)
+        if (workspaceRoot is null
+            || !TryReadOptionalString(root, "title", out var title)
+            || !TryReadOptionalString(root, "mode", out var mode))
             return null;
-        return new CreateSessionRequest(workspaceRoot, ReadString(root, "title"), ReadString(root, "mode"));
+        var planEnabled = false;
+        if (root.TryGetProperty("planEnabled", out var plan))
+        {
+            if (plan.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return null;
+            planEnabled = plan.GetBoolean();
+        }
+        string[]? activeWorkflows = null;
+        if (root.TryGetProperty("activeWorkflows", out var workflows))
+        {
+            if (workflows.ValueKind != JsonValueKind.Array || workflows.GetArrayLength() > 3)
+                return null;
+            activeWorkflows = new string[workflows.GetArrayLength()];
+            for (var index = 0; index < activeWorkflows.Length; index++)
+            {
+                var workflow = workflows[index];
+                if (workflow.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(workflow.GetString()))
+                    return null;
+                activeWorkflows[index] = workflow.GetString()!;
+            }
+        }
+        return new CreateSessionRequest(workspaceRoot, title, mode, planEnabled, activeWorkflows);
+    }
+
+    private static bool TryReadOptionalString(JsonElement parent, string name, out string? value)
+    {
+        value = null;
+        if (!parent.TryGetProperty(name, out var element) || element.ValueKind == JsonValueKind.Null)
+            return true;
+        if (element.ValueKind != JsonValueKind.String)
+            return false;
+        value = element.GetString();
+        return true;
     }
 
     private static bool TryMapMode(string? mode, out PermissionMode permissionMode)
@@ -358,5 +450,6 @@ internal static class GatewayEndpoints
             ? discriminator
             : command.GetType().Name;
 
-    private sealed record CreateSessionRequest(string WorkspaceRoot, string? Title, string? Mode);
+    private sealed record CreateSessionRequest(
+        string WorkspaceRoot, string? Title, string? Mode, bool PlanEnabled, IReadOnlyList<string>? ActiveWorkflows);
 }

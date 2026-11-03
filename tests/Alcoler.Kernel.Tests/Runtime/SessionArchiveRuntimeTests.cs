@@ -2,6 +2,7 @@ using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Permissions;
+using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
 using Alcoler.Kernel.Tests.EndToEnd;
@@ -11,6 +12,35 @@ namespace Alcoler.Kernel.Tests.Runtime;
 
 public class SessionArchiveRuntimeTests
 {
+    [Fact]
+    public async Task GetSessionHandle_ReadsStoredSessionWithoutLoadingRuntimeOrChangingRecord()
+    {
+        await using var harness = TestHarness.Create();
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var now = DateTimeOffset.UtcNow - TimeSpan.FromDays(30);
+        var record = new SessionRecord(StrongId.NewSessionId(), harness.Root, "Stored session", PermissionMode.Edit,
+            ModelSelection: null, now, now, IsArchived: true, ActiveWorkflows: ["orchestrator"], PlanEnabled: true);
+        await store.UpsertSessionAsync(record, CancellationToken.None);
+        var before = AlcolerJson.Serialize(await store.GetSessionAsync(record.Id, CancellationToken.None));
+        await using var runtime = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, store,
+            transform: options => options with
+            {
+                WorkspaceFactory = _ => throw new InvalidOperationException("Lookup must not construct a workspace."),
+                SessionToolsProvider = _ => throw new InvalidOperationException("Lookup must not load session tools."),
+            });
+
+        Assert.Null(await runtime.GetSessionHandleAsync(new SessionId("sess_missing"), CancellationToken.None));
+        var handle = await runtime.GetSessionHandleAsync(record.Id, CancellationToken.None);
+
+        Assert.Equal(new SessionHandle(record.Id, record.WorkspaceRoot, record.Title), handle);
+        Assert.Null(runtime.TryObserve(record.Id));
+        Assert.Null(runtime.GetSessionActivity(record.Id));
+        Assert.Equal(before, AlcolerJson.Serialize(await store.GetSessionAsync(record.Id, CancellationToken.None)));
+        Assert.Empty(await store.LoadDurableEventsAsync(record.Id, CancellationToken.None));
+        Assert.Single(await store.ListSessionsAsync(null, 10, SessionListKind.Archived, CancellationToken.None));
+    }
+
     [Fact]
     public async Task ArchivedResidentSessionSurvivesLaterRecordPersistence()
     {

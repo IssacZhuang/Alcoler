@@ -97,7 +97,18 @@ public static class Composition
             Path.Combine(WorkbenchDataPaths.Root, "remote"),
             new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath).TryLoadAsync,
             ProductVersion,
-            () => BuildRemoteModelCatalog(Volatile.Read(ref currentConfig)));
+            () => BuildRemoteModelCatalog(Volatile.Read(ref currentConfig)),
+            async (sessionId, workspaceRoot, cancellationToken) =>
+            {
+                if (sessionId is { } id)
+                {
+                    var session = await runtime.GetSessionHandleAsync(id, cancellationToken);
+                    if (session is null)
+                        return null;
+                    workspaceRoot = session.WorkspaceRoot;
+                }
+                return BuildRemoteSlashCatalog(workspaceRoot, Volatile.Read(ref currentConfig).DisabledSkillPaths);
+            });
         if (config.Remote?.Enabled == true)
         {
             // Start failures surface through the settings status line, not startup.
@@ -241,6 +252,27 @@ public static class Composition
                     WorkbenchModelCatalog.Resolve(provider, model).ReasoningLevels ?? [])))
             .ToArray();
         return new RemoteModelCatalog(models, WorkbenchModelCatalog.DefaultSelection(config));
+    }
+
+    internal static RemoteSlashCatalog BuildRemoteSlashCatalog(
+        string? workspaceRoot,
+        IReadOnlyList<string>? disabledSkillPaths,
+        ComposerSkillCatalog? skillCatalog = null)
+    {
+        List<RemoteSlashEntry> entries = [];
+        foreach (var (name, description) in ComposerCommands.SuggestionsFor("/"))
+        {
+            if (ComposerCommands.TryParse("/" + name, out var command))
+                entries.Add(new RemoteSlashEntry(name, description, command.Kind.ToString().ToLowerInvariant()));
+        }
+        if (!string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            var builtInNames = entries.Select(entry => entry.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            entries.AddRange((skillCatalog ?? new ComposerSkillCatalog()).GetEntries(workspaceRoot, disabledSkillPaths)
+                .Where(entry => !builtInNames.Contains(entry.Name))
+                .Select(entry => new RemoteSlashEntry(entry.Name, entry.Description, "skill")));
+        }
+        return new RemoteSlashCatalog(entries);
     }
 
     internal static IReadOnlyList<IModelProvider> BuildProviders(WorkbenchConfig config, ChatGptAccountService? chatGptAccount = null) =>

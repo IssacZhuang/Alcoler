@@ -82,6 +82,12 @@ async function json(path, opts) {
 export const getInfo = () => json('/api/info', { auth: false });
 export const getModels = () => json('/api/models');
 
+export function getSlashCatalog({ workspaceRoot = '', sessionId = null } = {}) {
+  return sessionId
+    ? json(`/api/sessions/${encodeURIComponent(sessionId)}/slash-catalog`)
+    : json(`/api/slash-catalog?workspaceRoot=${encodeURIComponent(workspaceRoot)}`);
+}
+
 export function pair(pairingToken, deviceName) {
   return json('/api/pair', { method: 'POST', auth: false, body: { pairingToken, deviceName } });
 }

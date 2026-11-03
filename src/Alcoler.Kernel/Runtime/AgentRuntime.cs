@@ -132,6 +132,13 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         return new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
     }
 
+    public async ValueTask<SessionHandle?> GetSessionHandleAsync(SessionId sessionId, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
+        var record = await _options.Store.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        return record is null ? null : new SessionHandle(record.Id, record.WorkspaceRoot, record.Title);
+    }
+
     public async ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);

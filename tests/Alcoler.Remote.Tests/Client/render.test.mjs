@@ -86,13 +86,175 @@ test('Terminal shows only its title and keeps command details available when exp
   assert.match(toolCallHtml(tool({ toolName: 'Bash', input: { command: 'pwd\nls' } })), />pwd<\/span>/);
 });
 
-test('Search still shows both scope and search pattern', () => {
-  for (const toolName of ['Grep', 'Glob']) {
-    const search = toolCallHtml(tool({ toolName, input: { path: '/workspace/src', pattern: '**/*.cs' } }));
-    assert.match(search, /class="tool-summary is-path">src<\/span>/);
-    assert.match(search, /class="tool-context tool-path-parent">\/workspace\/<\/span>/);
-    assert.match(search, /Pattern:<\/span> \*\*\/\*\.cs/);
+test('Browser and generic tools keep a single compact summary with other fields in the disclosure', () => {
+  const url = 'http://127.0.0.1:56387/#/session/sess_spacing_probe';
+  for (const toolName of ['Browser', 'SendMessage', 'TaskOutput', 'Search', 'CustomTool']) {
+    const row = tool({ toolName, input: {
+      description: 'One summary line\nadditional description', path: '/workspace/src/extra.cs',
+      url, action: 'navigate',
+    } });
+    const html = toolCallHtml(row);
+    assert.match(html, /class="tool-head is-compact"/);
+    assert.match(html, />One summary line<\/span>/);
+    assert.doesNotMatch(html, /tool-context|additional description|navigate|extra\.cs|56387/);
+    const body = toolBodyHtml(row);
+    assert.match(body, /additional description/);
+    assert.match(body, /extra\.cs/);
+    assert.match(body, /navigate/);
+    assert.match(body, /56387/);
   }
+  const row = tool({ toolName: 'Browser', input: { action: 'navigate', url } });
+  assert.ok(toolCallHtml(row).includes(`>${url}</span>`));
+  assert.doesNotMatch(toolCallHtml(row), /tool-context|Action:|>navigate<\/span>/);
+  assert.match(toolBodyHtml(row), />Action<\/div>/);
+  assert.match(toolBodyHtml(row), />navigate<\/span>/);
+  assert.match(toolCallHtml(tool({ toolName: 'Browser', input: { action: 'evaluate' } })), />evaluate<\/span>/);
+});
+
+test('collapsed generic headers do not inspect additional context or tool output', () => {
+  const input = {
+    description: 'Run the selected action',
+    get file_path() { throw new Error('must not read additional header context'); },
+    get action() { throw new Error('must not read additional header context'); },
+    toJSON() { throw new Error('must not serialize input'); },
+  };
+  const row = tool({ toolName: 'Browser', input });
+  Object.defineProperty(row, 'output', { get() { throw new Error('must not inspect output'); } });
+  assert.match(toolCallHtml(row), />Run the selected action<\/span>/);
+});
+
+test('Search shows a single desktop summary with the full scope instead of extra context lines', () => {
+  for (const toolName of ['Grep', 'Glob', 'gReP', 'GLOB']) {
+    const row = tool({ toolName, input: { path: '/workspace/src', pattern: '**/*.cs' } });
+    const html = toolCallHtml(row);
+    assert.match(html, /class="tool-head is-compact is-search"/);
+    assert.match(html, /class="tool-summary" title="\/workspace\/src">\/workspace\/src<\/span>/);
+    assert.match(html, /stroke-width="1\.5"/);
+    assert.doesNotMatch(html, /tool-context|is-path|Pattern:|\*\*\/\*\.cs|tool-status|Succeeded/);
+    assert.match(toolBodyHtml(row), />Pattern<\/div>/);
+    assert.match(toolBodyHtml(row), /\*\*\/\*\.cs/);
+    assert.match(toolBodyHtml(row), /\/workspace\/src/);
+  }
+});
+
+test('Search preserves Windows, relative, and root scopes and uses desktop field precedence', () => {
+  for (const path of ['C:\\Projects\\Alcoler\\styles.css', 'src/styles.css', '/', 'C:\\', '/workspace/src/']) {
+    const html = toolCallHtml(tool({ toolName: 'Grep', input: { path, pattern: 'hidden-pattern' } }));
+    assert.ok(html.includes(`>${path}</span>`));
+    assert.doesNotMatch(html, /hidden-pattern|tool-context|tool-file-parent/);
+  }
+  for (const [input, expected] of [
+    [{ description: 'Find references\nignored line', file_path: '/src/first.cs', path: '/src', pattern: 'unused' }, 'Find references'],
+    [{ file_path: '/src/first.cs', path: '/src', pattern: 'unused' }, '/src/first.cs'],
+    [{ path: ' ', pattern: 'Find.*References' }, 'Find.*References'],
+    [{ pattern: 42, query: 'search query' }, 'search query'],
+  ]) {
+    const html = toolCallHtml(tool({ toolName: 'Glob', input }));
+    assert.ok(html.includes(`>${expected}</span>`));
+    assert.doesNotMatch(html, /tool-context|ignored line/);
+  }
+  assert.doesNotMatch(toolCallHtml(tool({ toolName: 'Grep', input: { action: 'not-a-summary' } })),
+    /tool-summary|not-a-summary/);
+});
+
+test('Search keeps summaries bounded and retains status, duration, and expandable details', () => {
+  const path = '/workspace/' + 'long-directory/'.repeat(100) + 'styles.css';
+  const row = tool({ toolName: 'Grep', input: { path, pattern: 'search pattern' } });
+  const html = toolCallHtml(row);
+  assert.ok(html.includes(`>${path.slice(0, 157)}...</span>`));
+  assert.ok(html.length < 4000);
+  assert.match(html, /Elapsed time: 1\.5s/);
+  assert.match(toolBodyHtml(row, expanded('context:path', 'input')), new RegExp('long-directory/'.repeat(100)));
+  assert.match(toolCallHtml({ ...row, status: 'Running', duration: null }), />Running<\/span>/);
+  assert.match(toolCallHtml({ ...row, status: 'Failed' }), /class="tool-state failed">Error<\/span>/);
+  assert.match(toolCallHtml({ ...row, status: 'Cancelled' }), />Cancelled<\/span>/);
+  assert.match(toolCallHtml({ ...row, status: 'AwaitingPermission' }), />Needs permission<\/span>/);
+  assert.doesNotMatch(toolCallHtml({ ...row, status: 'Running' }), /class="tool-status/);
+});
+
+test('literal Search and WebSearch keep their unrelated generic presentation', () => {
+  for (const toolName of ['Search', 'WebSearch']) {
+    const html = toolCallHtml(tool({ toolName, input: { query: 'network search query' } }));
+    assert.ok(html.includes(`title="${toolName}">${toolName}</span>`));
+    assert.match(html, />network search query<\/span>/);
+    assert.doesNotMatch(html, /is-search|tool-agent-type/);
+  }
+});
+
+test('Agent, Task, and subagent use the desktop robot, type, separator, and task title', () => {
+  for (const toolName of ['Agent', 'Task', 'subagent', 'AGENT', 'tAsK', 'SUBAGENT']) {
+    const row = tool({ toolName, input: {
+      subagent_type: 'general-purpose', description: 'Prepare picker browser fixture',
+      prompt: 'Long private task instructions must stay in the expanded input', run_in_background: true,
+    } });
+    const html = toolCallHtml(row);
+    assert.match(html, /class="tool-head is-compact is-agent"/);
+    assert.ok(html.includes(`title="${toolName}">SubAgent</span>`));
+    assert.match(html, /class="tool-agent-type" title="general-purpose">general-purpose<\/span>/);
+    assert.match(html, /class="tool-agent-separator" aria-hidden="true">·<\/span>/);
+    assert.match(html, />Prepare picker browser fixture<\/span>/);
+    assert.match(html, /stroke-width="1\.5"/);
+    assert.ok(html.includes('M12 8V4H8M5 8h14'));
+    assert.doesNotMatch(html, /tool-context|tool-status|tool-dur|tool-state|tool-chev|private task instructions|first output|<pre/);
+    assert.match(toolBodyHtml(row), /Long private task instructions/);
+    assert.match(toolBodyHtml(row), /first output/);
+  }
+});
+
+test('Agent defaults match desktop without using prompt, path, or other summary fields', () => {
+  for (const input of [null, [], {}, { description: ' ', subagent_type: 42 },
+    { prompt: 'Never use the prompt as a title', path: '/not-a-title', subagent_type: '\t' }]) {
+    const html = toolCallHtml(tool({ toolName: 'Agent', input }));
+    assert.match(html, />general-purpose<\/span>/);
+    assert.match(html, />Agent task<\/span>/);
+    assert.doesNotMatch(html, /Never use the prompt|not-a-title/);
+  }
+});
+
+test('Agent preserves longer task titles for visual ellipsis and distinguishes Explore case-insensitively', () => {
+  const title = 'Inspect the implementation '.repeat(12) + 'visible title tail';
+  for (const subagent_type of ['Explore', 'eXpLoRe']) {
+    const html = toolCallHtml(tool({ toolName: 'Agent', input: { subagent_type, description: title } }));
+    assert.match(html, /class="tool-agent-type is-explore"/);
+    assert.ok(html.includes(`>${subagent_type}</span>`));
+    assert.ok(html.includes(`>${title}</span>`));
+  }
+  assert.doesNotMatch(toolCallHtml(tool({ toolName: 'Agent', input: { subagent_type: 'custom-agent' } })), /is-explore/);
+});
+
+test('Agent only exposes failure text and marks active dispatches for the desktop label pulse', () => {
+  for (const status of ['Pending', 'Running', 'pending', 'running']) {
+    const html = toolCallHtml(tool({ toolName: 'Agent', status }));
+    assert.match(html, /class="tool-head is-compact is-agent is-running"/);
+    assert.doesNotMatch(html, />Running<|>Pending<|tool-status|tool-dur|tool-chev/);
+  }
+  for (const row of [tool({ toolName: 'Agent', status: 'Failed' }),
+    tool({ toolName: 'Task', status: 'Succeeded', isError: true })]) {
+    const html = toolCallHtml(row);
+    assert.match(html, /class="tool is-error"/);
+    assert.match(html, /class="tool-state failed">Failed<\/span>/);
+    assert.doesNotMatch(html, /is-running|tool-status|tool-dur|tool-chev/);
+  }
+  for (const status of ['Succeeded', 'Cancelled', 'AwaitingPermission']) {
+    assert.doesNotMatch(toolCallHtml(tool({ toolName: 'Agent', status })), /is-running|tool-state|tool-status|tool-dur|tool-chev/);
+  }
+});
+
+test('Search and Agent headers escape metadata without serializing input or inspecting outputs', () => {
+  const attack = '<img src=x onerror="alert(1)">&\'';
+  for (const toolName of ['Grep', 'Glob', 'Agent', 'Task', 'subagent']) {
+    const input = { description: attack, path: attack, subagent_type: attack,
+      get prompt() { throw new Error('must not read prompt while collapsed'); },
+      toJSON() { throw new Error('must not serialize input while collapsed'); } };
+    const row = tool({ toolName, input });
+    Object.defineProperty(row, 'output', { get() { throw new Error('must not read output while collapsed'); } });
+    const html = toolCallHtml(row);
+    assert.doesNotMatch(html, /<img src=x|onerror="alert/);
+    assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;&amp;&#39;/);
+  }
+  assert.ok(toolCallHtml(tool({ toolName: 'Agent', input: {
+    description: 'a'.repeat(100_000), subagent_type: 'b'.repeat(100_000),
+  } })).length < 12_000);
 });
 
 test('long absolute paths show only the basename and retain full expanded detail', () => {
@@ -247,6 +409,54 @@ test('conversation rows preserve escaping, markdown, and reasoning disclosure st
   assert.match(el.innerHTML, /<strong>hello<\/strong>/);
   assert.match(el.innerHTML, /download="file.pdf"/);
   assert.doesNotMatch(el.innerHTML, /class="thumb"/);
+}));
+
+test('sealed assistant rows without visible content stay addressable but take no layout space', () => withElements(() => {
+  const call = { $type: 'tool_call', toolCallId: 'call-1', toolName: 'Browser', input: { action: 'evaluate' } };
+  const result = { $type: 'tool_result', toolCallId: 'call-1', content: [{ $type: 'text', text: 'Tool output' }] };
+  for (const parts of [undefined, [], [null], [call], [result], [call, result],
+    [{ $type: 'text', text: ' \t\r\n ' }], [{ $type: 'reasoning', text: '\n\t ' }, call],
+    [{ $type: 'file' }], [{ $type: 'unknown', text: 'Not a displayable part' }]]) {
+    const el = rowElement({ $type: 'assistant_message', rowId: 'invisible-assistant', parts, isStreaming: false });
+    assert.equal(el.dataset.rowId, 'invisible-assistant');
+    assert.equal(el.className, 'row row-assistant');
+    assert.equal(el.hidden, true);
+    assert.equal(el.innerHTML, '');
+  }
+}));
+
+test('real assistant prose, reasoning, files, and streaming placeholders keep their content and visibility', () => withElements(() => {
+  for (const [row, pattern] of [
+    [{ parts: [{ $type: 'text', text: '  **Visible prose**\n' }] }, /<strong>Visible prose<\/strong>/],
+    [{ parts: [{ $type: 'reasoning', text: 'Real reasoning' }, { $type: 'text', text: '\n ' }] }, /class="thinking"/],
+    [{ parts: [{ $type: 'file', artifactUri: 'artifact:image', mimeType: 'image/png' }] }, /class="msg-images"/],
+    [{ parts: [], isStreaming: true }, /class="stream-cursor"/],
+    [{ parts: [{ $type: 'text', text: '\n\t ' }], isStreaming: true }, /class="stream-cursor"/],
+  ]) {
+    const el = rowElement({ $type: 'assistant_message', rowId: 'visible-assistant', ...row });
+    assert.equal(el.hidden, false);
+    assert.match(el.innerHTML, pattern);
+  }
+}));
+
+test('assistant rows can become visible and invisible on updates without losing their transcript slot', () => withElements(() => {
+  const root = container();
+  const transcript = new Transcript(root);
+  const row = { $type: 'assistant_message', rowId: 'assistant-slot', parts: [] };
+  transcript.rebuild([tool(), row]);
+  assert.equal(transcript.els.get(row.rowId).hidden, true);
+  for (const parts of [[{ $type: 'text', text: 'Visible follow-up' }], [{ $type: 'tool_result' }]]) {
+    const current = transcript.els.get(row.rowId);
+    current.replaceWith = replacement => { root.childNodes[1] = replacement; };
+    transcript.upsert({ ...row, parts });
+    assert.equal(transcript.els.size, 2);
+    assert.equal(root.childNodes[1], transcript.els.get(row.rowId));
+    assert.equal(root.childNodes[1].hidden, parts[0].$type !== 'text');
+  }
+  transcript.rebuild([tool(), { ...row, parts: [{ $type: 'text', text: 'Restored on reconnect' }] }]);
+  assert.equal(transcript.els.get(row.rowId).hidden, false);
+  assert.match(transcript.els.get(row.rowId).innerHTML, /Restored on reconnect/);
+  transcript.dispose();
 }));
 
 test('Transcript notifies after mutations, retains constructor compatibility, and disposes listeners', () => withElements(() => {

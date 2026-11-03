@@ -33,7 +33,8 @@ afterEach(() => {
 
 function createComposer(options = {}) {
   const elements = new Map([
-    '.composer-input', '.composer-send', '.mode-select', '.model-select', '.effort-select', '.effort-picker',
+    '.composer-input', '.composer-send', '.mode-select', '.model-select', '.model-picker', '.model-label',
+    '.model-chevron', '.effort-select', '.effort-picker', '.effort-label', '.effort-icon', '.effort-chevron',
   ].map(selector => [selector, new Element()]));
   const composer = new Composer({ querySelector: selector => elements.get(selector) || null }, options);
   composer.setReady(true);
@@ -58,13 +59,61 @@ test('catalog populates model and thinking choices using the configured default'
   assert.deepEqual(composer.getModelSelection(), selection('first', 'shared', 'high'));
   const models = elements.get('.model-select');
   assert.equal(models.children.length, 3);
-  assert.equal(models.children[0].textContent, 'Reasoner — First provider');
-  assert.equal(models.children[1].textContent, 'Reasoner — Second provider');
-  assert.equal(models.children[2].textContent, '<Plain & fast>');
-  assert.equal(models.title, 'First provider: shared');
+  assert.equal(models.children[0].textContent, 'First provider/shared');
+  assert.equal(models.children[1].textContent, 'Second provider/shared');
+  assert.equal(models.children[2].textContent, 'first/plain');
+  assert.equal(models.title, 'First provider/shared');
+  assert.equal(elements.get('.model-label').textContent, models.title);
+  assert.equal(elements.get('.effort-label').textContent, 'high');
+  assert.deepEqual(elements.get('.effort-select').children.map(option => option.textContent), ['low', 'high']);
   assert.equal(models.disabled, false);
   assert.equal(elements.get('.effort-select').value, 'high');
   assert.equal(elements.get('.effort-picker').hidden, false);
+});
+
+test('desktop model labels omit generated display names and keep the provider label and raw model ID', () => {
+  const { composer, elements } = createComposer();
+  const providerId = 'provider-40434f5f6dcb43dc8d12d770e50ad6c5';
+  composer.setModels({
+    models: [{ providerId, providerLabel: 'ChatGPT', modelId: 'gpt-6.1-sol',
+      displayName: `${providerId}:gpt-6.1-sol`, reasoningLevels: ['low', 'medium', 'high', 'max'] }],
+    defaultSelection: selection(providerId, 'gpt-6.1-sol', 'max'),
+  });
+  assert.equal(elements.get('.model-label').textContent, 'ChatGPT/gpt-6.1-sol');
+  assert.equal(elements.get('.model-select').children[0].textContent, 'ChatGPT/gpt-6.1-sol');
+  assert.equal(elements.get('.model-select').title, 'ChatGPT/gpt-6.1-sol');
+  assert.equal(elements.get('.effort-label').textContent, 'max');
+  assert.equal(elements.get('.effort-select').children.at(-1).textContent, 'max');
+  assert.match(elements.get('.effort-icon').innerHTML, /M12 18V5/);
+  assert.match(elements.get('.model-chevron').innerHTML, /m6 9 6 6 6-6/);
+  assert.equal(elements.get('.effort-chevron').hidden, false);
+});
+
+test('visible model labels stay text-only even when provider and model identifiers contain markup', () => {
+  const { composer, elements } = createComposer();
+  composer.setModels({ models: [{ providerId: 'p', providerLabel: '<Provider & Co>', modelId: '<model>', reasoningLevels: [] }] });
+  assert.equal(elements.get('.model-label').textContent, '<Provider & Co>/<model>');
+  assert.equal(elements.get('.model-label').innerHTML, undefined);
+  assert.equal(elements.get('.model-select').children[0].textContent, '<Provider & Co>/<model>');
+});
+
+test('one reasoning level remains visible without a chevron or a focusable selector', () => {
+  const { composer, elements } = createComposer();
+  const data = catalog();
+  data.models[0].reasoningLevels = ['automatic'];
+  composer.setModels(data);
+  assert.equal(elements.get('.effort-picker').hidden, false);
+  assert.equal(elements.get('.effort-label').textContent, 'automatic');
+  assert.equal(elements.get('.effort-picker').title, 'Reasoning effort: automatic');
+  assert.equal(elements.get('.effort-label').attributes.get('aria-hidden'), 'false');
+  assert.equal(elements.get('.effort-chevron').hidden, true);
+  assert.equal(elements.get('.effort-select').hidden, true);
+  assert.equal(elements.get('.effort-select').disabled, true);
+  composer.setModels(catalog());
+  assert.equal(elements.get('.effort-select').hidden, false);
+  assert.equal(elements.get('.effort-select').disabled, false);
+  assert.equal(elements.get('.effort-chevron').hidden, false);
+  assert.equal(elements.get('.effort-label').attributes.get('aria-hidden'), 'true');
 });
 
 test('session hydration can arrive before catalog metadata and preserves call options', () => {
@@ -82,6 +131,8 @@ test('explicit model picks use the highest configured effort and distinguish pro
   composer.setModels(catalog());
   elements.get('.model-select').change('1');
   assert.deepEqual(composer.getModelSelection(), selection('second', 'shared', 'max'));
+  assert.equal(elements.get('.model-label').textContent, 'Second provider/shared');
+  assert.equal(elements.get('.effort-label').textContent, 'max');
   elements.get('.model-select').change('0');
   assert.deepEqual(composer.getModelSelection(), selection('first', 'shared', 'high'));
 });
@@ -130,6 +181,7 @@ test('empty catalog and failed requests disable choices without blocking ordinar
     assert.equal(composer.getModelSelection(), null);
   }
   assert.equal(elements.get('.model-select').textContent, 'Models unavailable');
+  assert.equal(elements.get('.model-label').textContent, 'Models unavailable');
   composer.setText('still send using the desktop default');
   composer.emitSend();
   assert.equal(sends[0][2], null);
@@ -197,4 +249,52 @@ test('readiness and sending disable both selectors and disposal removes their li
   composer.dispose();
   assert.equal(elements.get('.model-select').listeners.size, 0);
   assert.equal(elements.get('.effort-select').listeners.size, 0);
+});
+
+test('slash parsing works without popup DOM and ordinary drafts never require discovery', async () => {
+  const { composer } = createComposer();
+  let loads = 0;
+  composer.setSlashSource('workspace:one', async () => {
+    loads++;
+    return { entries: [
+      { name: 'ServerPlan', description: 'Server metadata', kind: 'plan' },
+      { name: 'Review', description: 'Skill metadata only', kind: 'skill' },
+    ] };
+  });
+  composer.setText('ordinary draft');
+  assert.equal(await composer.parseCommand('ordinary draft'), null);
+  assert.equal(loads, 0);
+  assert.deepEqual(await composer.parseCommand(' /serverplan  inspect '),
+    { name: 'ServerPlan', kind: 'plan', prompt: 'inspect' });
+  assert.equal(await composer.parseCommand('/Review inspect'), null);
+  assert.equal(await composer.parseCommand('/plan inspect'), null);
+  assert.equal(loads, 1);
+  composer.clear();
+  composer.setDisabled(true);
+  composer.setReady(false);
+  composer.dispose();
+});
+
+test('failed slash discovery rejects without clearing a draft in the minimal composer DOM', async () => {
+  const { composer } = createComposer();
+  composer.setSlashSource('workspace:offline', async () => { throw new Error('Offline metadata'); });
+  composer.setText('/ServerPlan inspect');
+  await assert.rejects(composer.parseCommand(composer.getText()), /Offline metadata/);
+  assert.equal(composer.getText(), '/ServerPlan inspect');
+  composer.dispose();
+});
+
+test('workflow badges are optional and do not change the plan badge or submission contract', () => {
+  const badges = new Map(['.plan-badge', '.workflow-badge', '.composer-status'].map(selector => [selector, new Element()]));
+  const composer = new Composer({ querySelector: selector => badges.get(selector) || null });
+  composer.setPlan(true);
+  composer.setWorkflows(['plan', 'orchestrator']);
+  assert.equal(badges.get('.plan-badge').hidden, false);
+  assert.equal(badges.get('.workflow-badge').hidden, false);
+  assert.equal(badges.get('.composer-status').hidden, false);
+  composer.setWorkflows(['unsupported']);
+  assert.equal(badges.get('.workflow-badge').hidden, true);
+  assert.equal(badges.get('.composer-status').hidden, true);
+  assert.equal(badges.get('.plan-badge').hidden, false);
+  composer.dispose();
 });

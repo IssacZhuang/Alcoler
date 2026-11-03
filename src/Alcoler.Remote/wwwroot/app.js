@@ -11,6 +11,7 @@ import {
 import { SessionList, sessionListErrorMessage } from './session-list.js';
 import { Composer } from './composer.js';
 import { QueuedMessages } from './queue.js';
+import { prepareSubmission } from './submission.js';
 import { icon, uuid, copyText, workspaceTail } from './util.js';
 
 const appEl = document.getElementById('app');
@@ -182,6 +183,9 @@ function createShell() {
     modelCatalogSignature: '',
     draftWorkspace: '',
     draftMode: 'build',
+    draftPlanEnabled: false,
+    draftWorkflows: [],
+    draftLiteralText: null,
     draftSending: false,
     workspaceMenuOpen: false,
     draftComposer: null,
@@ -214,6 +218,9 @@ function createShell() {
       sh.draftMode = mode;
       storageSet(MODE_KEY, mode);
     },
+    onChange: () => {
+      if (sh.draftComposer && sh.draftComposer.getText() !== sh.draftLiteralText) sh.draftLiteralText = null;
+    },
   });
 
   sh.sessionComposer = new Composer(document.querySelector('[data-composer="session"]'), {
@@ -227,10 +234,12 @@ function createShell() {
     },
     onChange: () => {
       if (!convo) return;
+      if (sh.sessionComposer && sh.sessionComposer.getText() !== convo.literalText) convo.literalText = null;
       if (convo.draftIntent && sh.sessionComposer && !sh.sessionComposer.hasContent() && !sh.sessionComposer.disabled) {
         convo.draftIntent = null;
         sh.sessionComposer.setMode(modeValue(convo.state?.mode));
-        sh.sessionComposer.setPlan(!!convo.state?.planEnabled);
+        sh.sessionComposer.setPlan(convo.localPlanEnabled ?? !!convo.state?.planEnabled);
+        sh.sessionComposer.setWorkflows(convo.state?.activeWorkflows);
       }
       if (convo.queueView) convo.queueView.refresh();
       if (convo.updateConn) convo.updateConn();
@@ -573,6 +582,8 @@ function setDraftWorkspace(sh, root) {
 }
 
 function renderWorkspace(sh) {
+  const workspaceRoot = sh.draftWorkspace;
+  sh.draftComposer.setSlashSource(`draft:${workspaceRoot}`, () => api.getSlashCatalog({ workspaceRoot }));
   const button = $('btn-workspace');
   const name = $('workspace-name');
   if (!button || !name) return;
@@ -685,75 +696,110 @@ function setDraftSending(sh, sending) {
 
 async function sendDraft(sh, text, images, modelSelection) {
   if (sh.draftSending) return;
-  const message = String(text || '').trim();
+  let message = String(text || '').trim();
   const imageList = Array.isArray(images) ? images : [];
   if (!message && !imageList.length) return;
-  if (!sh.draftWorkspace) {
-    showDraftError('Choose a workspace before sending.');
-    openWorkspaceMenu(sh);
-    return;
-  }
+  const workspaceRoot = sh.draftWorkspace;
   hideDraftError();
   sh.draftSending = true;
   setDraftSending(sh, true);
-
-  let handle;
   try {
-    handle = await api.createSession({ workspaceRoot: sh.draftWorkspace, mode: sh.draftMode || 'build' });
-  } catch (e) {
+    const parsed = sh.draftLiteralText === message ? null : await sh.draftComposer.parseCommand(message);
+    if (shell !== sh || sh.draftWorkspace !== workspaceRoot) return;
+    const prepared = prepareSubmission(message, parsed, {
+      planEnabled: sh.draftPlanEnabled,
+      workflows: sh.draftWorkflows,
+    });
+    if (parsed) {
+      message = prepared.text;
+      sh.draftPlanEnabled = prepared.planEnabled;
+      sh.draftWorkflows = prepared.workflows || [];
+      sh.draftComposer.setPlan(sh.draftPlanEnabled);
+      sh.draftComposer.setWorkflows(sh.draftWorkflows);
+      sh.draftComposer.setText(message);
+      sh.draftLiteralText = message || null;
+      if (prepared.action !== 'send') return;
+    }
+    if (!workspaceRoot) {
+      showDraftError('Choose a workspace before sending.');
+      openWorkspaceMenu(sh);
+      return;
+    }
+
+    let handle;
+    try {
+      handle = await api.createSession({
+        workspaceRoot,
+        mode: sh.draftMode || 'build',
+        planEnabled: sh.draftPlanEnabled,
+        activeWorkflows: sh.draftWorkflows,
+      });
+    } catch (e) {
+      if (shell === sh) showDraftError(e?.status === 0 ? 'Cannot reach the desktop app.' : 'Could not create the session.');
+      return;
+    }
     if (shell !== sh) return;
-    sh.draftSending = false;
-    setDraftSending(sh, false);
-    showDraftError(e && e.status === 0 ? 'Cannot reach the desktop app.' : 'Could not create the session.');
-    return;
-  }
-  if (shell !== sh) return;
-  if (!handle || !handle.id) {
-    sh.draftSending = false;
-    setDraftSending(sh, false);
-    showDraftError('Could not create the session.');
-    return;
-  }
+    if (!handle?.id) {
+      showDraftError('Could not create the session.');
+      return;
+    }
 
-  sessionTitles.set(handle.id, String(handle.title || '').trim() || 'Session');
-  const uploads = imageList
-    .map(image => ({ mimeType: image.mimeType || 'image/jpeg', base64Data: image.base64Data || '' }))
-    .filter(image => image.base64Data);
-  const command = {
-    $type: 'send_text',
-    commandId: uuid(),
-    sessionId: handle.id,
-    baseRevision: 0,
-    text: message,
-  };
-  if (modelSelection) command.modelSelection = modelSelection;
-  if (uploads.length) command.images = uploads;
+    sessionTitles.set(handle.id, String(handle.title || '').trim() || 'Session');
+    const uploads = imageList
+      .map(image => ({ mimeType: image.mimeType || 'image/jpeg', base64Data: image.base64Data || '' }))
+      .filter(image => image.base64Data);
+    const command = {
+      $type: 'send_text',
+      commandId: uuid(),
+      sessionId: handle.id,
+      baseRevision: 0,
+      text: message,
+      planEnabled: sh.draftPlanEnabled,
+    };
+    if (modelSelection) command.modelSelection = modelSelection;
+    if (uploads.length) command.images = uploads;
 
-  let ack = null;
-  let sendError = null;
-  try {
-    ack = await api.sendCommand(handle.id, command);
+    let ack = null;
+    let sendError = null;
+    try {
+      ack = await api.sendCommand(handle.id, command);
+    } catch (e) {
+      sendError = e;
+    }
+    if (shell !== sh) return;
+    const planEnabled = sh.draftPlanEnabled;
+    const workflows = sh.draftWorkflows;
+    sh.draftPlanEnabled = false;
+    sh.draftWorkflows = [];
+    sh.draftComposer.setPlan(false);
+    sh.draftComposer.setWorkflows([]);
+
+    if (ack && ack.accepted !== false) {
+      sh.draftComposer.clear();
+      hideDraftError();
+      scheduleListRefresh(200);
+      navigateToSession(handle.id);
+      return;
+    }
+
+    const literalText = sh.draftLiteralText;
+    const restorableImages = sh.draftComposer.takeImages();
+    sh.draftComposer.setText('');
+    const error = sendError?.status === 0
+      ? 'Could not reach the desktop app. Your message was restored here so you can retry.'
+      : 'The desktop did not accept the message. It was restored here so you can retry.';
+    navigateToSession(handle.id, {
+      text: message, images: restorableImages, modelSelection, error, literalText,
+      intent: { mode: null, planEnabled, modelSelection, delivery: 'Queue', workflows },
+    });
   } catch (e) {
-    sendError = e;
+    if (shell === sh) showDraftError(e?.message || 'Commands are unavailable. Refresh and try again.');
+  } finally {
+    if (shell === sh) {
+      sh.draftSending = false;
+      setDraftSending(sh, false);
+    }
   }
-  if (shell !== sh) return;
-  sh.draftSending = false;
-  setDraftSending(sh, false);
-
-  if (ack && ack.accepted !== false) {
-    sh.draftComposer.clear();
-    hideDraftError();
-    scheduleListRefresh(200);
-    navigateToSession(handle.id);
-    return;
-  }
-
-  const restorableImages = sh.draftComposer.takeImages();
-  sh.draftComposer.setText('');
-  const error = sendError && sendError.status === 0
-    ? 'Could not reach the desktop app. Your message was restored here so you can retry.'
-    : 'The desktop did not accept the message. It was restored here so you can retry.';
-  navigateToSession(handle.id, { text: message, images: restorableImages, modelSelection, error });
 }
 
 function openSession(id, restore) {
@@ -809,6 +855,8 @@ function startConversation(sh, id, restore) {
     lastPendingKey: null,
     queueView: null,
     draftIntent: null,
+    localPlanEnabled: null,
+    literalText: null,
     lastTitle: null,
     lastPhase: null,
     lastModelSelectionKey: null,
@@ -844,6 +892,8 @@ function startConversation(sh, id, restore) {
   sh.sessionComposer.clear();
   sh.sessionComposer.setReady(false);
   sh.sessionComposer.setPlan(false);
+  sh.sessionComposer.setWorkflows([]);
+  sh.sessionComposer.setSlashSource(`session:${id}`, () => api.getSlashCatalog({ sessionId: id }));
   sh.sessionComposer.setModelSelection(null);
 
   const nearBottom = () => els.scroll.scrollHeight - els.scroll.scrollTop - els.scroll.clientHeight < 80;
@@ -1071,7 +1121,8 @@ function startConversation(sh, id, restore) {
     const paused = phase === 'awaitingPermission' || phase === 'awaitingInteraction';
     if (els.activityDots) els.activityDots.className = 'activity-dots' + (paused ? ' paused' : '');
 
-    sh.sessionComposer.setPlan(st.draftIntent?.planEnabled ?? !!state.planEnabled);
+    sh.sessionComposer.setPlan(st.draftIntent?.planEnabled ?? st.localPlanEnabled ?? !!state.planEnabled);
+    sh.sessionComposer.setWorkflows(st.draftIntent?.workflows ?? state.activeWorkflows);
     sh.sessionComposer.setMode(modeValue(st.draftIntent?.mode ?? state.mode));
     const selectionKey = JSON.stringify(state.modelSelection ?? null);
     if (st.lastModelSelectionKey !== selectionKey) {
@@ -1090,63 +1141,139 @@ function startConversation(sh, id, restore) {
   }
 
   st.sendMessage = async (text, images, modelSelection) => {
-    if (!st.snapshotReady || st.disposed) return;
-    const message = String(text || '').trim();
+    if (!st.snapshotReady || st.disposed || sh.sessionComposer.disabled) return;
+    let message = String(text || '').trim();
     const imageList = Array.isArray(images) ? images : [];
     if (!message && !imageList.length) return;
-    const uploads = imageList
-      .map(image => ({ mimeType: image.mimeType || 'image/jpeg', base64Data: image.base64Data || '' }))
-      .filter(image => image.base64Data);
-    const backupText = message;
-    const backupImages = uploads.slice();
-    const intent = st.draftIntent;
-    st.draftIntent = null;
-    sh.sessionComposer.setDisabled(true);
-    sh.sessionComposer.clear();
-    const command = {
-      $type: 'send_text',
-      commandId: uuid(),
-      sessionId: id,
-      baseRevision: st.revision,
+    const originalIntent = st.draftIntent ? { ...st.draftIntent } : null;
+    const catalogDraft = {
       text: message,
+      literalText: st.literalText,
+      images: imageList.map(image => ({ mimeType: image.mimeType, base64Data: image.base64Data })),
+      modelSelection: originalIntent ? originalIntent.modelSelection : modelSelection,
+      intent: originalIntent || (st.localPlanEnabled !== null ? {
+        mode: null, planEnabled: st.localPlanEnabled, modelSelection, delivery: 'Queue', workflows: null,
+      } : null),
     };
-    if (intent) {
-      command.mode = intent.mode;
-      command.planEnabled = intent.planEnabled;
-      command.delivery = intent.delivery;
-      command.workflows = intent.workflows;
-    }
-    const selection = intent ? intent.modelSelection : modelSelection;
-    if (selection) command.modelSelection = selection;
-    if (uploads.length) command.images = uploads;
-    let ack = null;
+    let waitingForCatalog = true;
+    sh.sessionComposer.setDisabled(true);
     try {
-      ack = await api.sendCommand(id, command);
-    } catch {
-      ack = null;
-    }
-    const failedDraft = !ack || ack.accepted === false ? {
-      text: backupText,
-      images: backupImages,
-      modelSelection: selection,
-      intent,
-      error: ack?.rejectionReason || 'Delivery could not be confirmed. Your draft was kept; check the conversation before sending again.',
-    } : null;
-    if (shell !== sh || convo !== st || st.disposed) {
-      if (failedDraft) savePendingRestore(id, failedDraft);
-      return;
-    }
-    applyAckRevision(st, ack);
-    sh.sessionComposer.setDisabled(false);
-    if (failedDraft) {
-      applyRestore(st, failedDraft);
-      return;
-    }
-    if (st.restoreError) {
+      const parsed = st.literalText === message ? null : await sh.sessionComposer.parseCommand(message);
+      if (shell !== sh || convo !== st || st.disposed) return;
+      waitingForCatalog = false;
+      const intent = st.draftIntent ? { ...st.draftIntent } : null;
+      const busy = isBusy(st.state?.phase);
+      const prepared = prepareSubmission(message, parsed, {
+        planEnabled: intent?.planEnabled ?? st.localPlanEnabled ?? !!st.state?.planEnabled,
+        workflows: intent?.workflows ?? st.state?.activeWorkflows,
+        busy,
+      });
+      if (parsed) {
+        message = prepared.text;
+        sh.sessionComposer.setText(message);
+        st.literalText = message || null;
+        if (parsed.kind === 'plan') {
+          st.localPlanEnabled = true;
+          if (intent) {
+            intent.planEnabled = true;
+            st.draftIntent = intent;
+          }
+          sh.sessionComposer.setPlan(true);
+        }
+        if (prepared.action === 'local') return;
+        if (prepared.action === 'workflows') {
+          const workflowSequence = st.lastSeq;
+          let ack = null;
+          try {
+            ack = await api.sendCommand(id, {
+              $type: 'set_workflows', commandId: uuid(), sessionId: id,
+              baseRevision: st.revision, active: prepared.workflows,
+            });
+          } catch { /* A workflow toggle is never retried after uncertain delivery. */ }
+          if (shell !== sh || convo !== st || st.disposed) {
+            if (shell === sh && (imageList.length || catalogDraft.intent)) {
+              savePendingRestore(id, {
+                ...catalogDraft, text: '', literalText: null,
+                intent: ack?.accepted && catalogDraft.intent
+                  ? { ...catalogDraft.intent, workflows: prepared.workflows } : catalogDraft.intent,
+                error: ack?.accepted ? '' : ack?.rejectionReason || 'Workflow change could not be confirmed. Check the session before toggling again.',
+              });
+            }
+            return;
+          }
+          if (ack?.accepted) {
+            if (st.lastSeq === workflowSequence) st.state = { ...st.state, activeWorkflows: prepared.workflows };
+            if (intent) st.draftIntent = { ...intent, workflows: prepared.workflows };
+            sh.sessionComposer.setWorkflows(st.draftIntent?.workflows ?? st.state?.activeWorkflows);
+            st.restoreError = '';
+          } else {
+            st.restoreError = ack?.rejectionReason || 'Workflow change could not be confirmed. Check the session before toggling again.';
+          }
+          applyAckRevision(st, ack);
+          st.updateConn();
+          return;
+        }
+      }
+
+      const uploads = imageList
+        .map(image => ({ mimeType: image.mimeType || 'image/jpeg', base64Data: image.base64Data || '' }))
+        .filter(image => image.base64Data);
+      const command = {
+        $type: 'send_text', commandId: uuid(), sessionId: id,
+        baseRevision: st.revision, text: message,
+      };
+      if (intent) {
+        command.mode = intent.mode;
+        command.planEnabled = intent.planEnabled;
+        command.delivery = intent.delivery;
+        command.workflows = intent.workflows;
+      }
+      if (st.localPlanEnabled !== null && !busy && intent?.planEnabled == null) command.planEnabled = st.localPlanEnabled;
+      if (prepared.workflowsChanged) command.workflows = prepared.workflows;
+      const selection = intent ? intent.modelSelection : modelSelection;
+      if (selection) command.modelSelection = selection;
+      if (uploads.length) command.images = uploads;
+      const recoveryIntent = intent || (command.planEnabled != null || command.workflows != null ? {
+        mode: null, planEnabled: command.planEnabled ?? null, modelSelection: selection,
+        delivery: 'Queue', workflows: command.workflows ?? null,
+      } : null);
+      if (recoveryIntent) {
+        recoveryIntent.planEnabled = command.planEnabled ?? null;
+        recoveryIntent.workflows = command.workflows ?? null;
+      }
+      const literalText = st.literalText;
+      st.draftIntent = null;
+      sh.sessionComposer.clear();
+      let ack = null;
+      try {
+        ack = await api.sendCommand(id, command);
+      } catch { }
+      const failedDraft = !ack || ack.accepted === false ? {
+        text: message, images: uploads, modelSelection: selection, intent: recoveryIntent, literalText,
+        error: ack?.rejectionReason || 'Delivery could not be confirmed. Your draft was kept; check the conversation before sending again.',
+      } : null;
+      if (shell !== sh || convo !== st || st.disposed) {
+        if (failedDraft) savePendingRestore(id, failedDraft);
+        return;
+      }
+      applyAckRevision(st, ack);
+      if (failedDraft) {
+        applyRestore(st, failedDraft);
+        return;
+      }
+      if (command.planEnabled != null) st.localPlanEnabled = null;
       st.restoreError = '';
       st.updateConn();
+      scheduleListRefresh(400);
+    } catch (e) {
+      if (shell === sh && convo === st && !st.disposed) {
+        st.restoreError = e?.message || 'Commands are unavailable. Refresh and try again.';
+        st.updateConn();
+      }
+    } finally {
+      if (shell === sh && convo === st && !st.disposed) sh.sessionComposer.setDisabled(false);
+      else if (shell === sh && waitingForCatalog) savePendingRestore(id, catalogDraft);
     }
-    scheduleListRefresh(400);
   };
 
   st.sendStop = async () => {
@@ -1258,6 +1385,7 @@ function applyRestore(st, restore) {
   }
   composer.clear();
   if (typeof restore.text === 'string') composer.setText(restore.text);
+  st.literalText = restore.literalText ?? null;
   if (restore.modelSelection) {
     st.restoreModelSelection = restore.modelSelection;
     composer.setModelSelection(restore.modelSelection);
@@ -1266,6 +1394,7 @@ function applyRestore(st, restore) {
   st.draftIntent = restore.intent || null;
   if (st.draftIntent?.mode != null) composer.setMode(modeValue(st.draftIntent.mode));
   if (st.draftIntent?.planEnabled != null) composer.setPlan(st.draftIntent.planEnabled);
+  composer.setWorkflows(st.draftIntent?.workflows ?? st.state?.activeWorkflows);
   if (restore.error) st.restoreError = String(restore.error);
   st.updateConn();
 }
@@ -1291,6 +1420,8 @@ function disposeConversation() {
     shell.sessionComposer.clear();
     shell.sessionComposer.setReady(false);
     shell.sessionComposer.setPlan(false);
+    shell.sessionComposer.setWorkflows([]);
+    shell.sessionComposer.setSlashSource('', null);
     if (shell.sessionComposer.root) shell.sessionComposer.root.hidden = false;
   }
   const els = st.els;

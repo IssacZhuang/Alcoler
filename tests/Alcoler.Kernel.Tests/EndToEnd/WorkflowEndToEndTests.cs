@@ -109,6 +109,26 @@ public class WorkflowEndToEndTests
     }
 
     [Fact]
+    public async Task CreateSession_UnknownWorkflowIsRejectedBeforePersistenceOrRuntimeConstruction()
+    {
+        await using var harness = TestHarness.Create();
+        await using var store = new Alcoler.Adapters.Storage.SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = TestHarness.BuildRuntimeFor(harness.ScriptedModel, harness.Root, store,
+            transform: options => options with
+            {
+                WorkspaceFactory = _ => throw new InvalidOperationException("Invalid workflows must not construct a workspace."),
+            });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => runtime.CreateSessionAsync(
+            new Contracts.Sessions.SessionOptions(harness.Root, ActiveWorkflows: ["unknown-workflow"], PlanEnabled: true),
+            CancellationToken.None).AsTask());
+
+        Assert.Contains("unknown workflow", error.Message, StringComparison.Ordinal);
+        Assert.Empty(await store.ListSessionsAsync(null, 10, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task SetWorkflows_RejectsUnknownWorkflow()
     {
         await using var harness = TestHarness.Create(FinalText("Unrelated."));

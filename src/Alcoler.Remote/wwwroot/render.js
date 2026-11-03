@@ -277,6 +277,7 @@ export function rowElement(row, state = rowState()) {
     case 'assistant_message':
       div.className = 'row row-assistant';
       div.innerHTML = assistantHtml(row, state);
+      div.hidden = !div.innerHTML;
       break;
     case 'tool_call':
       div.className = 'row row-tool';
@@ -331,10 +332,9 @@ function assistantHtml(row, state) {
   const files = [];
   for (const p of row.parts || []) {
     if (!p) continue;
-    if (p.$type === 'text' && p.text) texts.push(p.text);
-    else if (p.$type === 'reasoning' && p.text) thinks.push(p.text);
+    if (p.$type === 'text' && typeof p.text === 'string' && p.text.trim()) texts.push(p.text);
+    else if (p.$type === 'reasoning' && typeof p.text === 'string' && p.text.trim()) thinks.push(p.text);
     else if (p.$type === 'file' && p.artifactUri) files.push(p);
-    // tool_call / tool_result parts are shown by tool_call rows; attachments stay unrendered.
   }
   let h = '';
   if (thinks.length) {
@@ -367,12 +367,12 @@ const TOOL_PRESENTATION = {
   grep: ['Search', 'M21 21l-4.34-4.34M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z'],
   browser: ['Browser', 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10Z'],
   todoread: ['Tasks', 'm3 6 2 2 4-4M13 6h8m-18 6 2 2 4-4M13 12h8m-18 6 2 2 4-4M13 18h8'],
-  task: ['Agent', 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 3a4 4 0 1 0 0 0 8 4 4 0 0 0 0-8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'],
+  agent: ['SubAgent', 'M12 8V4H8M5 8h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2ZM9 13v2M15 13v2M1 13v4M23 13v4M9 18h6'],
   exitplanmode: ['Plan', 'M9 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4M9 3h6v4H9ZM8 12h8M8 16h5'],
 };
 const TOOL_ALIASES = {
   shell: 'bash', terminal: 'bash', runcommand: 'bash', readfile: 'read', editfile: 'edit',
-  writefile: 'write', glob: 'grep', todowrite: 'todoread',
+  writefile: 'write', glob: 'grep', todowrite: 'todoread', task: 'agent', subagent: 'agent',
 };
 
 function inputField(input, key) {
@@ -426,16 +426,22 @@ function pathParts(value) {
   return { name: trimmed.slice(split + 1), parent: parent.length > 36 ? '...' + parent.slice(-33) : parent };
 }
 
-function contextHtml(field) {
-  if (isPathField(field)) {
-    const path = pathParts(field.value);
-    return `<span class="tool-context tool-file-context"><span class="tool-context-label">${CONTEXT_LABELS[field.key]}:</span> <span class="tool-file-name">${esc(truncate(path.name, 160))}</span>${path.parent ? ` <span class="tool-file-parent">${esc(path.parent)}</span>` : ''}</span>`;
-  }
-  return `<span class="tool-context"><span class="tool-context-label">${CONTEXT_LABELS[field.key]}:</span> ${esc(toolSummary({ description: field.value }))}</span>`;
+function toolGlyph(path, strokeWidth = 1.8) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
 }
 
-function toolGlyph(path) {
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
+function toolDisclosureHtml(row, head, state, error) {
+  const open = state.open.has('tool');
+  return `<details class="tool${error ? ' is-error' : ''}" data-disclosure="tool"${open ? ' open' : ''}>${head}<div class="tool-body"${open ? ' data-loaded="1"' : ''}>${open ? toolBodyHtml(row, state) : ''}</div></details>`;
+}
+
+function agentCallHtml(row, state, status, error, name) {
+  const [label, glyph] = TOOL_PRESENTATION.agent;
+  const type = truncate(inputField(row.input, 'subagent_type')?.value || 'general-purpose', 160);
+  const title = truncate(inputField(row.input, 'description')?.value || 'Agent task', INPUT_PREVIEW);
+  const running = !error && (status === 'pending' || status === 'running');
+  const head = `<summary class="tool-head is-compact is-agent${running ? ' is-running' : ''}"><span class="tool-icon">${toolGlyph(glyph, 1.5)}</span><span class="tool-title"><span class="tool-label"><span class="tool-name" title="${esc(name)}">${label}</span><span class="tool-agent-type${type.toLowerCase() === 'explore' ? ' is-explore' : ''}" title="${esc(type)}">${esc(type)}</span><span class="tool-agent-separator" aria-hidden="true">·</span><span class="tool-summary" title="${esc(title)}">${esc(title)}</span></span></span>${error ? '<span class="tool-meta"><span class="tool-state failed">Failed</span></span>' : ''}</summary>`;
+  return toolDisclosureHtml(row, head, state, error);
 }
 
 export function toolCallHtml(row, state = rowState()) {
@@ -448,26 +454,24 @@ export function toolCallHtml(row, state = rowState()) {
   const name = truncate(row.toolName || 'tool', 80);
   const key = String(row.toolName || '').toLowerCase();
   const canonical = Object.hasOwn(TOOL_ALIASES, key) ? TOOL_ALIASES[key] : key;
+  if (canonical === 'agent') return agentCallHtml(row, state, status, error, name);
   const presentation = Object.hasOwn(TOOL_PRESENTATION, canonical) ? TOOL_PRESENTATION[canonical] : null;
-  const fields = toolFields(row);
   const fileTool = ['read', 'edit', 'write'].includes(canonical);
-  const compact = fileTool || canonical === 'bash';
-  const summary = (fileTool && (inputField(row.input, 'file_path') || inputField(row.input, 'path'))) || fields[0];
-  const path = isPathField(summary) ? pathParts(summary.value) : null;
-  const context = compact ? '' : (path?.parent ? `<span class="tool-context tool-path-parent">${esc(path.parent)}</span>` : '')
-    + fields.slice(1).map(contextHtml).join('');
+  const searchTool = canonical === 'grep';
+  const summary = (fileTool && (inputField(row.input, 'file_path') || inputField(row.input, 'path')))
+    || summaryField(row.input) || (!searchTool && inputField(row.input, 'action'));
+  const path = !searchTool && isPathField(summary) ? pathParts(summary.value) : null;
   const summaryText = path ? truncate(path.name, 160) : toolSummary({ description: summary?.value });
   const dur = fmtDuration(row.duration);
-  let head = `<summary class="tool-head${compact ? ' is-compact' : ''}"><span class="tool-icon">${presentation ? toolGlyph(presentation[1]) : icon('wrench')}</span><span class="tool-title"><span class="tool-label"><span class="tool-name" title="${esc(name)}">${esc(presentation ? presentation[0] : name)}</span>${summary ? `<span class="tool-summary${path ? ' is-path' : ''}">${esc(summaryText)}</span>` : ''}</span>${context}</span><span class="tool-meta">`;
+  let head = `<summary class="tool-head is-compact${searchTool ? ' is-search' : ''}"><span class="tool-icon">${presentation ? toolGlyph(presentation[1], searchTool ? 1.5 : 1.8) : icon('wrench')}</span><span class="tool-title"><span class="tool-label"><span class="tool-name" title="${esc(name)}">${esc(presentation ? presentation[0] : name)}</span>${summary ? `<span class="tool-summary${path ? ' is-path' : ''}"${searchTool ? ` title="${esc(summaryText)}"` : ''}>${esc(summaryText)}</span>` : ''}</span></span><span class="tool-meta">`;
   const change = row.fileChange;
   if (Number(change?.added) > 0) head += `<span class="tool-add" aria-label="${esc(fmtNum(change.added))} lines added">+${fmtNum(change.added)}</span>`;
   if (Number(change?.removed) > 0) head += `<span class="tool-del" aria-label="${esc(fmtNum(change.removed))} lines removed">\u2212${fmtNum(change.removed)}</span>`;
-  head += `<span class="tool-status ${statusCls}" role="img" aria-label="${statusLabel}">${icon(error ? 'x' : STATUS_ICON[status])}</span>`;
+  if (!searchTool) head += `<span class="tool-status ${statusCls}" role="img" aria-label="${statusLabel}">${icon(error ? 'x' : STATUS_ICON[status])}</span>`;
   if (stateLabel) head += `<span class="tool-state ${statusCls}">${stateLabel}</span>`;
   if (dur) head += `<span class="tool-dur" aria-label="Elapsed time: ${esc(dur)}">${esc(dur)}</span>`;
   head += `</span><span class="tool-chev">${icon('chevron-right')}</span></summary>`;
-  const open = state.open.has('tool');
-  return `<details class="tool${error ? ' is-error' : ''}" data-disclosure="tool"${open ? ' open' : ''}>${head}<div class="tool-body"${open ? ' data-loaded="1"' : ''}>${open ? toolBodyHtml(row, state) : ''}</div></details>`;
+  return toolDisclosureHtml(row, head, state, error);
 }
 
 export function jsonPreview(value, limit = INPUT_PREVIEW) {

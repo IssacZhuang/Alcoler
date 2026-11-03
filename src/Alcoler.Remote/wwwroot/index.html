@@ -89,16 +89,12 @@
               <span class="workspace-chevron" aria-hidden="true"></span>
             </button>
             <div class="composer-shell" data-composer="draft">
+              <div class="slash-popup" role="listbox" aria-label="Slash commands" hidden></div>
               <div class="attach-row" hidden></div>
-              <textarea class="composer-input" rows="1" placeholder="Message Alcoler" aria-label="Message Alcoler"></textarea>
-              <div class="composer-models">
-                <select class="model-select" aria-label="Model" disabled>
-                  <option value="">Loading models...</option>
-                </select>
-                <label class="effort-picker" hidden>
-                  <span>Thinking</span>
-                  <select class="effort-select" aria-label="Thinking effort" disabled></select>
-                </label>
+              <textarea class="composer-input" rows="1" placeholder="Message Alcoler" aria-label="Message Alcoler"
+                aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false"></textarea>
+              <div class="composer-status" hidden>
+                <span class="workflow-badge" role="status" aria-label="Orchestrator workflow armed" title="Orchestrator workflow armed" hidden>Orchestrator</span>
               </div>
               <div class="composer-toolbar">
                 <button type="button" class="composer-attach icon-btn" aria-label="Attach photos" title="Attach photos"></button>
@@ -112,6 +108,21 @@
                 </label>
                 <span class="plan-badge" hidden>Plan</span>
                 <span class="toolbar-spacer"></span>
+                <div class="composer-models">
+                  <label class="composer-picker model-picker">
+                    <span class="picker-label model-label" aria-hidden="true">Loading models...</span>
+                    <span class="picker-chevron model-chevron" aria-hidden="true"></span>
+                    <select class="model-select" aria-label="Model" disabled>
+                      <option value="">Loading models...</option>
+                    </select>
+                  </label>
+                  <div class="composer-picker effort-picker" role="group" aria-label="Thinking effort" title="Reasoning effort" hidden>
+                    <span class="picker-icon effort-icon" aria-hidden="true"></span>
+                    <span class="picker-label effort-label" aria-hidden="true"></span>
+                    <span class="picker-chevron effort-chevron" aria-hidden="true"></span>
+                    <select class="effort-select" aria-label="Thinking effort" disabled></select>
+                  </div>
+                </div>
                 <button type="button" class="composer-send send-btn" aria-label="Send" disabled></button>
                 <input class="composer-file" type="file" accept="image/*" capture="environment" multiple hidden>
               </div>
@@ -156,16 +167,12 @@
             </div>
             <div id="pending-cards"></div>
             <div class="composer-shell" data-composer="session">
+              <div class="slash-popup" role="listbox" aria-label="Slash commands" hidden></div>
               <div class="attach-row" hidden></div>
-              <textarea class="composer-input" rows="1" placeholder="Message Alcoler" aria-label="Message Alcoler"></textarea>
-              <div class="composer-models">
-                <select class="model-select" aria-label="Model" disabled>
-                  <option value="">Loading models...</option>
-                </select>
-                <label class="effort-picker" hidden>
-                  <span>Thinking</span>
-                  <select class="effort-select" aria-label="Thinking effort" disabled></select>
-                </label>
+              <textarea class="composer-input" rows="1" placeholder="Message Alcoler" aria-label="Message Alcoler"
+                aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false"></textarea>
+              <div class="composer-status" hidden>
+                <span class="workflow-badge" role="status" aria-label="Orchestrator workflow armed" title="Orchestrator workflow armed" hidden>Orchestrator</span>
               </div>
               <div class="composer-toolbar">
                 <button type="button" class="composer-attach icon-btn" aria-label="Attach photos" title="Attach photos"></button>
@@ -179,6 +186,21 @@
                 </label>
                 <span class="plan-badge" hidden>Plan</span>
                 <span class="toolbar-spacer"></span>
+                <div class="composer-models">
+                  <label class="composer-picker model-picker">
+                    <span class="picker-label model-label" aria-hidden="true">Loading models...</span>
+                    <span class="picker-chevron model-chevron" aria-hidden="true"></span>
+                    <select class="model-select" aria-label="Model" disabled>
+                      <option value="">Loading models...</option>
+                    </select>
+                  </label>
+                  <div class="composer-picker effort-picker" role="group" aria-label="Thinking effort" title="Reasoning effort" hidden>
+                    <span class="picker-icon effort-icon" aria-hidden="true"></span>
+                    <span class="picker-label effort-label" aria-hidden="true"></span>
+                    <span class="picker-chevron effort-chevron" aria-hidden="true"></span>
+                    <select class="effort-select" aria-label="Thinking effort" disabled></select>
+                  </div>
+                </div>
                 <button type="button" class="composer-send send-btn" aria-label="Send" disabled></button>
                 <input class="composer-file" type="file" accept="image/*" capture="environment" multiple hidden>
               </div>
