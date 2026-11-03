@@ -149,6 +149,306 @@ public class ConversationMarkdownTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
+    public async Task InlineCodePartialSelection_DragAndCopyPreservePrefix(bool fragment, bool reverse)
+    {
+        foreach (var (markdown, prefix, clipboard) in new[]
+        {
+            ("`abcdef`", "", "ab"),
+            ("Prefix `abcdef`", "Prefix ", "ab"),
+            ("- `abcdef`", "", "\u25cb ab"),
+            // Table copying retains empty cells in its TSV grid.
+            ("| Key | Value |\n| --- | --- |\n| row | `abcdef` |", "", "\t\t\n\tab\t"),
+        })
+        {
+            Control view = fragment
+                ? new ConversationMarkdownFragment { Markdown = markdown }
+                : new ConversationMarkdown { Markdown = markdown };
+            using var host = new Harness(view);
+            await host.RenderAsync();
+            var blocks = view.GetVisualDescendants().OfType<CTextBlock>().ToArray();
+            Assert.True(blocks.Any(text => text.Text == prefix + "abcdef"),
+                $"Markdown [{markdown}] rendered [{string.Join(" | ", blocks.Select(text => text.Text))}].");
+            var block = Assert.Single(blocks, text => text.Text == prefix + "abcdef");
+            var code = Assert.Single(block.GetLogicalDescendants().OfType<CCode>());
+            var prefixWidth = prefix.Length == 0 ? 0 : InlineTextWidth(
+                Assert.Single(block.GetLogicalDescendants().OfType<CRun>(), run => run.Text == prefix), prefix);
+            var start = InlineCodePoint(host, block, code, "") + new Vector(prefixWidth, 0);
+            var end = InlineCodePoint(host, block, code, "ab") + new Vector(prefixWidth, 0);
+            await AssertDragCopiesAsync(host, block, start, end, prefix.Length, "ab", reverse, clipboard);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task InlineCodePartialSelection_PreservesUnicodeAndWhitespace(bool fragment, bool reverse)
+    {
+        foreach (var (text, prefix) in new[]
+        {
+            ("中文文件", "中文"),
+            ("\U0001F600abcdef", "\U0001F600a"),
+            ("e\u0301abcdef", "e\u0301a"),
+            ("a bcdef", "a "),
+        })
+        {
+            var markdown = $"`{text}`";
+            Control view = fragment
+                ? new ConversationMarkdownFragment { Markdown = markdown }
+                : new ConversationMarkdown { Markdown = markdown };
+            using var host = new Harness(view);
+            await host.RenderAsync();
+            var block = Assert.Single(view.GetVisualDescendants().OfType<CTextBlock>(), candidate => candidate.Text == text);
+            var code = Assert.Single(block.GetLogicalDescendants().OfType<CCode>());
+            var start = InlineCodePoint(host, block, code, "");
+            var end = InlineCodePoint(host, block, code, prefix);
+            await AssertDragCopiesAsync(host, block, start, end, 0, prefix, reverse);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task InlineCodePartialSelection_DragAcrossRunsAndNestedDecoratorCopiesExactText(bool fragment, bool reverse)
+    {
+        foreach (var nested in new[] { false, true })
+        {
+            Control view = fragment
+                ? new ConversationMarkdownFragment { Markdown = "`abcdefgh`" }
+                : new ConversationMarkdown { Markdown = "`abcdefgh`" };
+            using var host = new Harness(view);
+            var block = Assert.Single(view.GetVisualDescendants().OfType<CTextBlock>(), text => text.Text == "abcdefgh");
+            var code = Assert.Single(block.GetLogicalDescendants().OfType<CCode>());
+            var first = new CRun { Text = "ab" };
+            var middle = new CRun { Text = "cd" };
+            var last = new CRun { Text = "efgh" };
+            var inner = nested ? new CCode([middle, last]) : null;
+            code.Content = inner is null ? [first, middle, last] : [first, inner];
+            // Replacing CSpan.Content does not invalidate the host's measured geometries.
+            var inlines = block.Content.ToArray();
+            block.Content.Clear();
+            foreach (var inline in inlines)
+                block.Content.Add(inline);
+            await host.RenderAsync();
+            Assert.Equal("abcdefgh", block.Text);
+            var start = InlineCodePoint(host, block, code, "a");
+            var end = InlineCodePoint(host, block, code, "")
+                + new Vector(InlineTextWidth(first, first.Text) + InlineTextWidth(middle, middle.Text)
+                    + InlineTextWidth(last, "ef"), 0);
+            if (inner is not null)
+                end += new Vector(inner.Margin.Left + inner.BorderThickness.Left + inner.Padding.Left, 0);
+            await AssertDragCopiesAsync(host, block, start, end, 1, "bcdef", reverse);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InlineCodePartialSelection_SurvivesLineReflow(bool fragment)
+    {
+        const string text = "abcdefgh ijklmnop qrstuvwx yz012345 abcdefgh ijklmnop qrstuvwx yz012345";
+        Control view = fragment
+            ? new ConversationMarkdownFragment { Markdown = $"`{text}`" }
+            : new ConversationMarkdown { Markdown = $"`{text}`" };
+        using var host = new Harness(view);
+        await host.RenderAsync();
+        var block = Assert.Single(view.GetVisualDescendants().OfType<CTextBlock>(), candidate => candidate.Text == text);
+        var initialHeight = block.Bounds.Height;
+        block.Select(1, 30);
+        foreach (var width in new[] { 120d, 280d, 900d })
+        {
+            host.Window.Width = width;
+            await host.RenderAsync();
+            Assert.Equal(text[1..30], block.GetSelectedText());
+            var selection = Assert.IsType<Selection>(block.Selection);
+            Assert.Equal(1, selection.From);
+            Assert.Equal(30, selection.To);
+            if (width == 120)
+                Assert.True(block.Bounds.Height > initialHeight);
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task EmptyDecoratedInline_AllowsEmptySelection()
+    {
+        var code = new CCode([new CRun { Text = "" }]) { Padding = new Thickness(6, 2) };
+        var block = new CTextBlock { VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top };
+        block.Content.Add(new ConversationTextSpan(block, [code]));
+        using var host = new Harness(block);
+        await host.RenderAsync();
+        Assert.Equal(0, block.GetBegin().Index);
+        Assert.Equal(0, block.GetEnd().Index);
+        block.Select(0, 0);
+        Assert.Equal("", block.GetSelectedText());
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DecoratedGeometry_HitTestingPreservesRunOffsetsAndNestedLastChild(bool nested)
+    {
+        var last = new CRun { Text = nested ? "efgh" : "cdefgh" };
+        CInline tail = nested
+            ? new CCode([new CRun { Text = "cd" }, last])
+            {
+                Padding = new Thickness(3, 1),
+                Margin = new Thickness(1, 0),
+                BorderThickness = new Thickness(1),
+            }
+            : last;
+        var first = new CRun { Text = "ab" };
+        var code = new CCode([first, tail])
+        {
+            Padding = new Thickness(6, 2),
+            Margin = new Thickness(2, 0),
+            FontSize = 12,
+        };
+        var block = new CTextBlock { VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top };
+        block.Content.Add(new ConversationTextSpan(block, [code]));
+        using var host = new Harness(block);
+        await host.RenderAsync();
+        Assert.Equal("abcdefgh", block.Text);
+
+        var inset = code.Margin.Left + code.BorderThickness.Left + code.Padding.Left;
+        var lastOffset = nested ? 4 : 2;
+        var lastX = inset + InlineTextWidth(first, first.Text);
+        if (tail is CCode inner)
+        {
+            lastX += inner.Margin.Left + inner.BorderThickness.Left + inner.Padding.Left
+                + InlineTextWidth(inner, "cd");
+        }
+        var y = block.Bounds.Height / 2;
+        Assert.Equal(0, block.CalcuatePointerFrom(0.01, y).Index);
+        Assert.Equal(1, block.CalcuatePointerFrom(inset + InlineTextWidth(first, "a") + 0.01, y).Index);
+        Assert.Equal(2, block.CalcuatePointerFrom(inset + InlineTextWidth(first, first.Text), y).Index);
+        foreach (var length in new[] { 0, 1, last.Text.Length - 1, last.Text.Length })
+        {
+            var hit = block.CalcuatePointerFrom(lastX + InlineTextWidth(last, last.Text[..length]) + 0.01, y);
+            var expected = lastOffset + length;
+            Assert.Equal(expected, hit.Index);
+            foreach (var reverse in new[] { false, true })
+            {
+                block.Select(reverse ? hit.Index : 0, reverse ? 0 : hit.Index);
+                Assert.Equal(block.Text[..expected], block.GetSelectedText());
+                var selection = Assert.IsType<Selection>(block.Selection);
+                Assert.Equal(0, Math.Min(selection.From, selection.To));
+                Assert.Equal(expected, Math.Max(selection.From, selection.To));
+            }
+        }
+        Assert.Equal(block.Text.Length, block.CalcuatePointerFrom(block.Bounds.Width - 0.01, y).Index);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InlineCodePointerEvents_OnlyLinkedCodeConsumesClicks(bool linked)
+    {
+        var clicks = 0;
+        var code = new CCode([new CRun { Text = "abcdef" }])
+        {
+            Padding = new Thickness(6, 2),
+            Margin = new Thickness(2, 0),
+            FontSize = 12,
+        };
+        CInline inline = linked ? new CHyperlink([code]) { Command = _ => clicks++ } : code;
+        var block = new CTextBlock { VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top };
+        block.Content.Add(new ConversationTextSpan(block, [inline]));
+        using var host = new Harness(block);
+        await host.RenderAsync();
+        if (linked)
+            Assert.Contains(inline, code.GetLogicalAncestors());
+        var presses = new List<bool>();
+        var releases = new List<bool>();
+        host.Window.AddHandler(InputElement.PointerPressedEvent, (_, e) => presses.Add(e.Handled),
+            Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
+        host.Window.AddHandler(InputElement.PointerReleasedEvent, (_, e) => releases.Add(e.Handled),
+            Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
+        var point = InlineCodePoint(host, block, code, "a");
+        host.Window.MouseMove(point);
+        host.Pump();
+        Assert.Equal(0, clicks);
+        if (inline is CHyperlink hovered)
+            Assert.Contains(":hover", hovered.Classes);
+        host.Window.MouseDown(point, MouseButton.Left);
+        Assert.Equal(0, clicks);
+        if (inline is CHyperlink pressed)
+            Assert.Contains(":pressed", pressed.Classes);
+        host.Window.MouseUp(point, MouseButton.Left);
+        host.Pump();
+        if (inline is CHyperlink released)
+            Assert.DoesNotContain(":pressed", released.Classes);
+        Assert.Equal(linked, Assert.Single(presses));
+        Assert.Equal(linked, Assert.Single(releases));
+        Assert.Equal(linked ? 1 : 0, clicks);
+        var outside = new Point(host.Window.Bounds.Width - 1, host.Window.Bounds.Height - 1);
+        host.Window.MouseMove(outside);
+        host.Pump();
+        Assert.Equal(linked ? 1 : 0, clicks);
+        if (inline is CHyperlink exited)
+            Assert.DoesNotContain(":hover", exited.Classes);
+        if (linked)
+        {
+            host.Window.MouseMove(point);
+            host.Window.MouseDown(point, MouseButton.Left);
+            host.Window.MouseMove(outside, RawInputModifiers.LeftMouseButton);
+            host.Window.MouseUp(outside, MouseButton.Left);
+            host.Pump();
+            Assert.Equal(1, clicks);
+            host.Window.MouseMove(point);
+            host.Window.MouseDown(point, MouseButton.Left);
+            host.Window.MouseUp(point, MouseButton.Left);
+            host.Pump();
+            Assert.Equal(2, clicks);
+        }
+    }
+
+    private static double InlineTextWidth(CInline inline, string text) =>
+        new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface(inline.FontFamily, inline.FontStyle, inline.FontWeight), inline.FontSize, Brushes.Black)
+            .WidthIncludingTrailingWhitespace;
+
+    private static Point InlineCodePoint(Harness host, CTextBlock block, CCode code, string prefix)
+    {
+        var x = code.Margin.Left + code.BorderThickness.Left + code.Padding.Left + InlineTextWidth(code, prefix) + 0.01;
+        return block.TranslatePoint(new Point(x, block.Bounds.Height / 2), host.Window)!.Value;
+    }
+
+    private static async Task AssertDragCopiesAsync(Harness host, CTextBlock block, Point start, Point end,
+        int startIndex, string expected, bool reverse, string? clipboardText = null)
+    {
+        try
+        {
+            var from = reverse ? end : start;
+            var to = reverse ? start : end;
+            host.Window.MouseMove(from);
+            host.Window.MouseDown(from, MouseButton.Left);
+            host.Window.MouseMove(to, RawInputModifiers.LeftMouseButton);
+            host.Window.MouseUp(to, MouseButton.Left);
+            await host.RenderAsync();
+            Assert.Equal(expected, block.GetSelectedText());
+            var selection = Assert.IsType<Selection>(block.Selection);
+            Assert.Equal(startIndex, Math.Min(selection.From, selection.To));
+            Assert.Equal(startIndex + expected.Length, Math.Max(selection.From, selection.To));
+            await host.Window.Clipboard!.SetTextAsync("not the selection");
+            host.Window.KeyPressQwerty(PhysicalKey.C, RawInputModifiers.Control);
+            host.Window.KeyReleaseQwerty(PhysicalKey.C, RawInputModifiers.Control);
+            host.Pump();
+            Assert.Equal(clipboardText ?? expected, (await host.Window.Clipboard.GetTextAsync())?.TrimEnd('\r', '\n'));
+        }
+        finally
+        {
+            ConversationMarkdownFragment.ClearActiveSelection();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
     public async Task DecoratedListSelection_DragAndCopyPreserveCompleteText(bool fragment, bool reverse)
     {
         const string markdown = "- First `code`\n- Second `tail`\n- After";
