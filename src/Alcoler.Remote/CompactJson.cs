@@ -16,7 +16,7 @@ internal static class CompactJson
     ];
 
     public static byte[] SnapshotFrame(
-        long revision, long sequence, IEnumerable<CompactWireRow> rows, ConversationState state) =>
+        long revision, long sequence, IEnumerable<CompactWireRow> rows, ConversationState state, HistoryBounds? history = null) =>
         GatewayJson.Object(writer =>
         {
             writer.WriteString("type", "snapshot");
@@ -28,10 +28,11 @@ internal static class CompactJson
             writer.WriteEndArray();
             writer.WritePropertyName("state");
             JsonSerializer.Serialize(writer, state, GatewayJson.Options);
+            if (history is not null) WriteHistory(writer, history);
             writer.WriteEndObject();
         });
 
-    public static byte[] DeltaFrame(long sequence, IReadOnlyList<CompactOperation> operations) =>
+    public static byte[] DeltaFrame(long sequence, IReadOnlyList<CompactOperation> operations, HistoryBounds? history = null) =>
         GatewayJson.Object(writer =>
         {
             writer.WriteString("type", "delta");
@@ -52,8 +53,42 @@ internal static class CompactJson
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+            if (history is not null) WriteHistory(writer, history);
             writer.WriteEndObject();
         });
+
+    public static byte[] HistoryFrame(
+        int requestId, long sequence, IEnumerable<CompactWireRow> rows, HistoryBounds history, string direction) =>
+        GatewayJson.Object(writer =>
+        {
+            writer.WriteString("type", "history");
+            writer.WriteNumber("requestId", requestId);
+            writer.WriteStartObject("page");
+            writer.WriteStartArray("rows");
+            foreach (var row in rows) WriteRow(writer, row);
+            writer.WriteEndArray();
+            writer.WriteNumber("sequence", sequence);
+            WriteHistory(writer, history);
+            writer.WriteString("direction", direction);
+            writer.WriteEndObject();
+        });
+
+    public static byte[] StaleHistory(int requestId, long sequence, HistoryBounds history) => GatewayJson.Object(writer =>
+    {
+        writer.WriteString("type", "history");
+        writer.WriteNumber("requestId", requestId);
+        writer.WriteString("error", "stale_history");
+        writer.WriteNumber("sequence", sequence);
+        WriteHistory(writer, history);
+    });
+
+    private static void WriteHistory(Utf8JsonWriter writer, HistoryBounds history)
+    {
+        writer.WriteStartObject("history");
+        writer.WriteString("before", history.Before);
+        writer.WriteString("after", history.After);
+        writer.WriteEndObject();
+    }
 
     public static byte[] TurnDetails(CompactTurnSummary summary, long sequence) => GatewayJson.Object(writer =>
     {

@@ -12,10 +12,14 @@ internal sealed class CompactTranscript
     private readonly Dictionary<string, CompactRowEntry> _byId = new(StringComparer.Ordinal);
     private List<CompactTurn> _turns = [];
     private ConversationState _state;
+    private readonly bool _paged;
+    private int _start;
+    private int _end;
 
-    public CompactTranscript(ConversationSnapshot snapshot)
+    public CompactTranscript(ConversationSnapshot snapshot, bool paged = false, string? around = null)
     {
         _state = snapshot.State;
+        _paged = paged;
         foreach (var row in snapshot.Rows)
         {
             var entry = new CompactRowEntry(row);
@@ -23,12 +27,51 @@ internal sealed class CompactTranscript
             _byId.Add(row.RowId, entry);
         }
         RebuildTurns();
-        foreach (var turn in _turns)
+        (_start, _end) = paged ? SelectWindow(around) : (0, _turns.Count);
+        foreach (var turn in LoadedTurns())
             SetVisible(turn, BuildVisible(turn));
     }
 
+    private HistoryBounds? History => _paged ? new HistoryBounds(
+        _start > 0 ? _turns[_start].Rows[0].RowId : null,
+        _end < _turns.Count ? _turns[_end - 1].Rows[0].RowId : null) : null;
+
     public byte[] SnapshotFrame(long revision, long sequence) =>
-        CompactJson.SnapshotFrame(revision, sequence, VisibleRows(), _state);
+        CompactJson.SnapshotFrame(revision, sequence, VisibleRows(), _state, History);
+
+    public byte[] Page(HistoryRequest request, long sequence)
+    {
+        var history = History!;
+        if (request.Direction != "latest"
+            && (request.Cursor is null || request.Cursor != (request.Direction == "before" ? history.Before : history.After)))
+            return CompactJson.StaleHistory(request.RequestId, sequence, history);
+
+        int start;
+        int end;
+        if (request.Direction == "latest")
+        {
+            (start, end) = SelectWindow(null);
+            foreach (var turn in LoadedTurns()) SetVisible(turn, []);
+            _start = start;
+            _end = end;
+        }
+        else if (request.Direction == "before")
+        {
+            end = _start;
+            start = Extend(end - 1, -1, CompactHistoryBudget.MaxTurns, 0).Index + 1;
+            _start = start;
+        }
+        else
+        {
+            start = _end;
+            end = Extend(start, 1, CompactHistoryBudget.MaxTurns, 0).Index;
+            _end = end;
+        }
+        for (var index = start; index < end; index++)
+            SetVisible(_turns[index], BuildVisible(_turns[index]));
+        return CompactJson.HistoryFrame(request.RequestId, sequence,
+            _turns.Skip(start).Take(end - start).SelectMany(turn => turn.Visible), History!, request.Direction);
+    }
 
     public byte[] Apply(ConversationDelta delta, bool appendText)
     {
@@ -44,16 +87,19 @@ internal sealed class CompactTranscript
                 {
                     var entry = _byId[appended.RowId];
                     entry.Append(appended);
-                    entry.Visible!.Revision = entry.Revision;
-                    direct.Add(appendText
-                        ? new CompactOperation(Original: op)
-                        : new CompactOperation("row_upserted", entry.Visible));
+                    if (entry.Visible is { } visible)
+                    {
+                        visible.Revision = entry.Revision;
+                        direct.Add(appendText
+                            ? new CompactOperation(Original: op)
+                            : new CompactOperation("row_upserted", visible));
+                    }
                 }
                 else
                     direct.Add(new CompactOperation(Original: op));
             }
             _state = nextState;
-            return CompactJson.DeltaFrame(delta.Sequence, direct);
+            return CompactJson.DeltaFrame(delta.Sequence, direct, History);
         }
 
         var regroup = delta.Ops.Any(op => op is RowRemoved || op switch
@@ -63,6 +109,8 @@ internal sealed class CompactTranscript
             _ => false,
         });
         var oldAll = regroup ? VisibleRows().ToList() : null;
+        var loaded = regroup ? LoadedTurns().SelectMany(turn => turn.Rows).ToHashSet() : null;
+        var followTail = _end == _turns.Count;
         HashSet<CompactTurn> dirty = [];
         foreach (var op in delta.Ops)
         {
@@ -92,13 +140,22 @@ internal sealed class CompactTranscript
         {
             _rows.RemoveAll(entry => entry.Removed);
             RebuildTurns();
-            foreach (var turn in _turns)
+            var surviving = _turns.Where(turn => turn.Rows.Any(loaded!.Contains)).ToList();
+            if (!_paged)
+                (_start, _end) = (0, _turns.Count);
+            else if (surviving.Count == 0)
+                (_start, _end) = SelectWindow(null);
+            else
+                (_start, _end) = (surviving[0].Index, followTail ? _turns.Count : surviving[^1].Index + 1);
+            foreach (var turn in LoadedTurns())
                 SetVisible(turn, BuildVisible(turn));
             operations = Difference(oldAll!, VisibleRows().ToList());
         }
         else
         {
-            var changes = _turns.Where(dirty.Contains).Select(turn => (Turn: turn, Rows: BuildVisible(turn))).ToList();
+            if (followTail) _end = _turns.Count;
+            var changes = dirty.Where(IsLoaded).OrderBy(turn => turn.Index)
+                .Select(turn => (Turn: turn, Rows: BuildVisible(turn))).ToList();
             var needsReorder = changes.Any(change => NeedsReorder(change.Turn, change.Rows));
             oldAll = needsReorder ? VisibleRows().ToList() : null;
             operations = [];
@@ -113,7 +170,7 @@ internal sealed class CompactTranscript
         }
         foreach (var op in delta.Ops)
             if (op is StatePatched) operations.Add(new CompactOperation(Original: op));
-        return CompactJson.DeltaFrame(delta.Sequence, operations);
+        return CompactJson.DeltaFrame(delta.Sequence, operations, History);
     }
 
     public static CompactTurnSummary? FindTurn(ConversationSnapshot snapshot, string rowId)
@@ -150,7 +207,7 @@ internal sealed class CompactTranscript
                 continue;
             if (op is not RowTextAppended appended
                 || !_byId.TryGetValue(appended.RowId, out var entry)
-                || entry.Visible is not { Summary: null }
+                || IsLoaded(entry.Turn!) && entry.Visible is not { Summary: null }
                 || !entry.CanAppend)
                 return false;
         }
@@ -172,7 +229,7 @@ internal sealed class CompactTranscript
         {
             if (_turns.Count > 0)
                 dirty.Add(_turns[^1]);
-            _turns.Add(new CompactTurn());
+            _turns.Add(new CompactTurn { Index = _turns.Count });
         }
         entry.Turn = _turns[^1];
         entry.Turn.Rows.Add(entry);
@@ -184,8 +241,9 @@ internal sealed class CompactTranscript
         _turns = [];
         foreach (var entry in _rows)
         {
+            entry.Visible = null;
             if (_turns.Count == 0 || entry.Row is UserMessageRow)
-                _turns.Add(new CompactTurn());
+                _turns.Add(new CompactTurn { Index = _turns.Count });
             entry.Turn = _turns[^1];
             entry.Turn.Rows.Add(entry);
         }
@@ -202,10 +260,10 @@ internal sealed class CompactTranscript
         return visible;
     }
 
-    private static CompactTurnSummary? Summarize(CompactTurn turn, bool active)
+    private static int SummaryFinalIndex(CompactTurn turn, bool active)
     {
-        if (active || turn.Rows.Count < 3 || turn.Rows[0].Row is not UserMessageRow user)
-            return null;
+        if (active || turn.Rows.Count < 3 || turn.Rows[0].Row is not UserMessageRow)
+            return -1;
         var finalIndex = -1;
         for (var index = turn.Rows.Count - 1; index > 0; index--)
         {
@@ -217,9 +275,18 @@ internal sealed class CompactTranscript
             }
         }
         if (finalIndex < 2)
-            return null;
+            return -1;
         for (var index = 1; index <= finalIndex; index++)
-            if (Important(turn.Rows[index].Row)) return null;
+            if (Important(turn.Rows[index].Row)) return -1;
+        return finalIndex;
+    }
+
+    private static CompactTurnSummary? Summarize(CompactTurn turn, bool active)
+    {
+        var finalIndex = SummaryFinalIndex(turn, active);
+        if (finalIndex < 0)
+            return null;
+        var user = (UserMessageRow)turn.Rows[0].Row;
         var answer = (AssistantMessageRow)turn.Rows[finalIndex].Row;
         var finish = user.At;
         foreach (var entry in turn.Rows)
@@ -299,7 +366,45 @@ internal sealed class CompactTranscript
         foreach (var row in rows) row.Entry.Visible = row;
     }
 
-    private IEnumerable<CompactWireRow> VisibleRows() => _turns.SelectMany(turn => turn.Visible);
+    private (int Start, int End) SelectWindow(string? around)
+    {
+        if (_turns.Count == 0)
+            return (0, 0);
+        if (around is null || !_byId.TryGetValue(around, out var anchor))
+            return (Extend(_turns.Count - 1, -1, CompactHistoryBudget.MaxTurns, 0).Index + 1, _turns.Count);
+
+        var center = anchor.Turn!.Index;
+        var (left, bytes) = Extend(center, -1, CompactHistoryBudget.MaxTurns / 2, 0);
+        var start = left + 1;
+        var (end, total) = Extend(center + 1, 1, CompactHistoryBudget.MaxTurns - (center - start + 1), bytes);
+        start = Extend(start - 1, -1, CompactHistoryBudget.MaxTurns - (end - start), total).Index + 1;
+        return (start, end);
+    }
+
+    private (int Index, long Bytes) Extend(int index, int step, int count, long bytes)
+    {
+        for (var added = 0; added < count && index >= 0 && index < _turns.Count; added++)
+        {
+            var turn = _turns[index];
+            var finalIndex = SummaryFinalIndex(turn, index == _turns.Count - 1 && IsActive(_state));
+            long size = 0;
+            for (var row = 0; row < turn.Rows.Count; row++)
+            {
+                if (finalIndex >= 0 && row > 0 && row < finalIndex)
+                    continue;
+                size += CompactHistoryBudget.RowBytes(turn.Rows[row].Row, includeReasoning: finalIndex < 0);
+            }
+            if (bytes > 0 && bytes + size > CompactHistoryBudget.MaxBytes)
+                break;
+            bytes += size;
+            index += step;
+        }
+        return (index, bytes);
+    }
+
+    private bool IsLoaded(CompactTurn turn) => turn.Index >= _start && turn.Index < _end;
+    private IEnumerable<CompactTurn> LoadedTurns() => _turns.Skip(_start).Take(_end - _start);
+    private IEnumerable<CompactWireRow> VisibleRows() => LoadedTurns().SelectMany(turn => turn.Visible);
 }
 
 internal sealed class CompactRowEntry(ConversationRow row)
@@ -354,6 +459,7 @@ internal sealed class CompactRowEntry(ConversationRow row)
 
 internal sealed class CompactTurn
 {
+    public int Index { get; init; }
     public List<CompactRowEntry> Rows { get; } = [];
     public List<CompactWireRow> Visible { get; set; } = [];
 }

@@ -83,7 +83,7 @@ function assertSentIntent(command, intent) {
   assert.deepEqual(command.images, [image]);
 }
 
-function createFixture({ storedMode, compactCapable = true, detailsAvailable = true } = {}) {
+function createFixture({ storedMode, compactCapable = true, historyCapable = true, detailsAvailable = true } = {}) {
   let serial = 0;
   const nodes = new Map();
   const frames = new Map();
@@ -99,13 +99,15 @@ function createFixture({ storedMode, compactCapable = true, detailsAvailable = t
   const storage = new Map([['alcoler.lastWorkspace', 'C:/workspace']]);
   if (storedMode !== undefined) storage.set('alcoler.lastMode', storedMode);
   const location = { hash: '#/new' };
-  const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], reconnects: 0 };
+  const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], history: [], reconnects: 0 };
   const handlers = {
     createSession: async () => ({ id: 'created' }),
     sendCommand: async () => accepted(),
     getSlashCatalog: async () => catalog,
     getTurnDetails: async () => ({ rows: [], version: 'turn-version', sequence: 100 }),
     getRowDetails: async () => ({ row: {}, version: 'row-version', sequence: 100 }),
+    history: async request => ({ rows: [], sequence: 100, history: { before: null, after: null },
+      direction: request.latest ? 'latest' : request.before ? 'before' : 'after' }),
   };
   const api = {
     getToken: () => 'paired-token',
@@ -138,20 +140,48 @@ function createFixture({ storedMode, compactCapable = true, detailsAvailable = t
       constructor(opts) { this.opts = opts; }
       start() {} close() {}
       manualReconnect() { calls.reconnects++; }
+      async requestHistory(request) {
+        calls.history.push(structuredClone(request));
+        const page = await handlers.history(request);
+        this.opts.onHistory(page, request);
+        return page;
+      }
     },
     Transcript: class {
-      constructor(_el, opts) { this.els = new Map(); this.opts = opts; this.supportsCompact = compactCapable; this.viewState = []; }
+      constructor(_el, opts) {
+        this.els = new Map(); this.opts = opts; this.supportsCompact = compactCapable;
+        this.supportsHistory = historyCapable; this.viewState = [];
+      }
+      element(row) {
+        const transcript = this;
+        return { dataset: { rowId: row.rowId }, hidden: false, getBoundingClientRect() {
+          const scroll = node('transcript-scroll');
+          const index = [...transcript.els.keys()].indexOf(row.rowId);
+          const top = (scroll.getBoundingClientRect?.().top || 0) + (row.layoutY ?? index * 100) - scroll.scrollTop;
+          return { top, bottom: top + (row.layoutHeight ?? 100), height: row.layoutHeight ?? 100 };
+        } };
+      }
       rebuild(rows) {
         this.opts.onBeforeChange?.();
         calls.transcript.push(['snapshot', structuredClone(rows)]);
         this.els.clear();
-        for (const [index, row] of rows.entries()) {
-          this.els.set(row.rowId, { dataset: { rowId: row.rowId }, hidden: false,
-            getBoundingClientRect() {
-              const scroll = node('transcript-scroll');
-              const top = (scroll.getBoundingClientRect?.().top || 0) + (row.layoutY ?? index * 100) - scroll.scrollTop;
-              return { top, bottom: top + (row.layoutHeight ?? 100), height: row.layoutHeight ?? 100 };
-            } });
+        for (const row of rows) this.els.set(row.rowId, this.element(row));
+        this.opts.onChange?.();
+      }
+      prepend(rows) {
+        this.opts.onBeforeChange?.();
+        calls.transcript.push(['before', structuredClone(rows)]);
+        const added = rows.filter(row => !this.els.has(row.rowId)).map(row => [row.rowId, this.element(row)]);
+        this.els = new Map([...added, ...this.els]);
+        node('transcript-scroll').scrollHeight += added.length * 100;
+        this.opts.onChange?.();
+      }
+      appendHistory(rows) {
+        this.opts.onBeforeChange?.();
+        calls.transcript.push(['after', structuredClone(rows)]);
+        for (const row of rows) if (!this.els.has(row.rowId)) {
+          this.els.set(row.rowId, this.element(row));
+          node('transcript-scroll').scrollHeight += 100;
         }
         this.opts.onChange?.();
       }
@@ -175,12 +205,12 @@ function createFixture({ storedMode, compactCapable = true, detailsAvailable = t
     get draft() { return controller.shell.draftComposer; },
     get composer() { return controller.shell.sessionComposer; },
     get convo() { return controller.convo; },
-    open(id = 'original', overrides = {}, rows = []) {
+    open(id = 'original', overrides = {}, rows = [], history) {
       location.hash = `#/session/${encodeURIComponent(id)}`;
       controller.route();
       const st = controller.convo;
       st.ws.opts.onStatus('online');
-      st.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(overrides), rows });
+      st.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(overrides), rows, history });
       return st;
     },
     flushLayout() {
@@ -368,6 +398,201 @@ test('detail loaders forward version and cancellation and stale content reconnec
   f.open('other');
   await assert.rejects(st.transcript.opts.loadRow('tool-row', { version: 'old' }), { status: 409 });
   assert.equal(f.calls.reconnects, 1);
+});
+
+test('history negotiation requires the renderer and compact details, and legacy snapshots keep paging hidden', () => {
+  const capable = createFixture();
+  const st = capable.open();
+  assert.equal(st.ws.opts.history, true);
+  assert.equal(capable.node('history-before').hidden, true);
+  assert.equal(capable.node('history-after').hidden, true);
+  assert.equal(createFixture({ historyCapable: false }).open().ws.opts.history, false);
+  assert.equal(createFixture({ compactCapable: false }).open().ws.opts.history, false);
+  assert.equal(createFixture({ detailsAvailable: false }).open().ws.opts.history, false);
+});
+
+test('older-page prefetch preserves the visible row and does not block live updates or sending', async () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 20 }) });
+  const rows = Array.from({ length: 20 }, (_, i) => ({ rowId: `row-${i}` }));
+  const st = f.open('first', {}, rows, { before: 'row-0', after: null });
+  f.flushLayout();
+  const page = deferred();
+  f.handlers.history = () => page.promise;
+  scroll.scrollTop = 150;
+  st.onScroll();
+  assert.deepEqual(f.calls.history, [{ before: 'row-0' }]);
+  assert.equal(f.node('history-before').disabled, true);
+  assert.equal(f.composer.ready, true);
+  const visible = st.transcript.els.get('row-1');
+  st.ws.opts.onDelta({ sequence: 101, ops: [{ $type: 'row_text_appended', rowId: 'live', delta: 'still live' }] });
+  f.composer.setText('continue');
+  await f.sendSession();
+  assert.equal(f.calls.commands[0].$type, 'send_text');
+  page.resolve({ direction: 'before', sequence: 100,
+    rows: Array.from({ length: 5 }, (_, i) => ({ rowId: `older-${i}` })), history: { before: null, after: null } });
+  await new Promise(setImmediate);
+  f.flushLayout();
+  assert.equal(scroll.scrollTop, 650);
+  assert.equal(st.readingAnchor.rowId, 'row-1');
+  assert.equal(st.transcript.els.get('row-1'), visible);
+  assert.equal(st.followLatest, false);
+  assert.equal(st.lastSeq, 101);
+  assert.equal(f.node('history-before').hidden, true);
+  assert.equal(f.composer.ready, true);
+  assert.equal(f.calls.transcript.filter(([type]) => type === 'snapshot').length, 1);
+});
+
+test('a historical window prefetches newer messages without mistaking its bottom for the live tail', async () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const st = f.open('old', {}, Array.from({ length: 20 }, (_, i) => ({ rowId: `row-${i}` })),
+    { before: null, after: 'row-19' });
+  f.flushLayout();
+  const page = deferred();
+  f.handlers.history = () => page.promise;
+  scroll.scrollTop = 1800;
+  st.onScroll();
+  assert.equal(st.followLatest, false);
+  assert.equal(f.node('jump-latest').hidden, false);
+  assert.deepEqual(f.calls.history, [{ after: 'row-19' }]);
+  page.resolve({ direction: 'after', sequence: 100, rows: [{ rowId: 'newer-1' }, { rowId: 'newer-2' }, { rowId: 'newer-3' }],
+    history: { before: null, after: null } });
+  await new Promise(setImmediate);
+  f.flushLayout();
+  assert.equal(scroll.scrollTop, 1800);
+  assert.equal(st.followLatest, false);
+  assert.equal(f.node('history-after').hidden, true);
+  assert.equal([...st.transcript.els.keys()].at(-1), 'newer-3');
+});
+
+test('jump to latest requests only the latest window and replaces the historical view', async () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200 });
+  const st = f.open('old', {}, [{ rowId: 'old' }], { before: null, after: 'old' });
+  f.flushLayout();
+  f.handlers.history = async () => ({ direction: 'latest', sequence: 100,
+    rows: [{ rowId: 'latest' }], history: { before: 'latest', after: null } });
+  f.node('jump-latest').onclick();
+  await new Promise(setImmediate);
+  f.flushLayout();
+  assert.deepEqual(f.calls.history, [{ latest: true }]);
+  assert.deepEqual([...st.transcript.els.keys()], ['latest']);
+  assert.equal(st.followLatest, true);
+  assert.equal(st.readingAnchor, null);
+  assert.equal(scroll.scrollTop, scroll.scrollHeight);
+});
+
+test('jump to latest waits for an in-flight page without issuing overlapping history requests', async () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200 });
+  const st = f.open('old', {}, [{ rowId: 'old' }], { before: 'old', after: 'old' });
+  const older = deferred();
+  f.handlers.history = request => request.latest
+    ? Promise.resolve({ direction: 'latest', sequence: 100, rows: [{ rowId: 'latest' }], history: { before: 'latest', after: null } })
+    : older.promise;
+  f.node('history-before').onclick();
+  f.node('jump-latest').onclick();
+  assert.deepEqual(f.calls.history, [{ before: 'old' }]);
+  older.resolve({ direction: 'before', sequence: 100, rows: [{ rowId: 'older' }], history: { before: null, after: 'old' } });
+  await new Promise(setImmediate);
+  f.flushLayout();
+  assert.deepEqual(f.calls.history, [{ before: 'old' }, { latest: true }]);
+  assert.deepEqual([...st.transcript.els.keys()], ['latest']);
+  assert.equal(st.followLatest, true);
+  assert.equal(st.historyRequest, null);
+});
+
+test('history reconnects target the saved containing row instead of replaying all earlier pages', () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const rows = [{ rowId: 'a', layoutY: 0 }, { rowId: 'b', layoutY: 500 }];
+  const first = f.open('first', {}, rows);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  first.onScroll();
+  assert.equal(first.ws.opts.anchor(), 'b');
+  first.transcript.els.get('b').parentElement = { closest: () => ({ dataset: { rowId: 'containing-turn' },
+    getBoundingClientRect: () => ({ top: -100 }) }) };
+  first.onScroll();
+  assert.equal(first.ws.opts.anchor(), 'containing-turn');
+  f.open('other');
+  const restored = f.open('first', {}, rows);
+  assert.equal(restored.ws.opts.anchor(), 'containing-turn');
+  restored.followLatest = true;
+  assert.equal(restored.ws.opts.anchor(), null);
+});
+
+test('history errors are retryable without disabling the composer or creating a retry loop', async () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200 });
+  const st = f.open('first', {}, [{ rowId: 'first' }], { before: 'first', after: null });
+  f.flushLayout();
+  f.handlers.history = async () => { throw new Error('Network interrupted'); };
+  scroll.scrollTop = 150;
+  st.onScroll();
+  await new Promise(setImmediate);
+  f.flushLayout();
+  assert.equal(f.node('history-before').textContent, 'Retry loading older messages');
+  assert.equal(f.node('history-before').disabled, false);
+  assert.equal(f.composer.ready, true);
+  assert.equal(f.calls.history.length, 1);
+  f.handlers.history = async () => ({ direction: 'before', sequence: 100, rows: [], history: { before: null, after: null } });
+  f.node('history-before').onclick();
+  await new Promise(setImmediate);
+  assert.equal(f.calls.history.length, 2);
+  assert.equal(f.node('history-before').hidden, true);
+});
+
+test('an authoritative reconnect snapshot supersedes an in-flight historical page', async () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200 });
+  const st = f.open('first', {}, [{ rowId: 'first' }], { before: 'first', after: null });
+  f.flushLayout();
+  const page = deferred();
+  f.handlers.history = () => page.promise;
+  scroll.scrollTop = 150;
+  st.onScroll();
+  st.ws.opts.onSnapshot({ revision: 20, sequence: 200, state: sessionState(), rows: [{ rowId: 'current' }],
+    history: { before: null, after: null } });
+  page.resolve({ direction: 'before', sequence: 100, rows: [{ rowId: 'stale' }], history: { before: null, after: null } });
+  await new Promise(setImmediate);
+  assert.deepEqual([...st.transcript.els.keys()], ['current']);
+  assert.equal(st.lastSeq, 200);
+  assert.equal(st.revision, 20);
+  assert.equal(st.historyRequest, null);
+});
+
+test('leaving a session ignores its delayed page and stale cursors reconnect only the active session', async () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200 });
+  const st = f.open('first', {}, [{ rowId: 'first' }], { before: 'first', after: null });
+  f.flushLayout();
+  const page = deferred();
+  f.handlers.history = () => page.promise;
+  scroll.scrollTop = 150;
+  st.onScroll();
+  f.open('other', {}, [{ rowId: 'other' }]);
+  page.reject(Object.assign(new Error('Changed'), { code: 'stale_history' }));
+  await new Promise(setImmediate);
+  assert.deepEqual([...f.convo.transcript.els.keys()], ['other']);
+  assert.equal(f.calls.reconnects, 0);
+  f.handlers.history = async () => { throw Object.assign(new Error('Changed'), { code: 'stale_history' }); };
+  const current = f.open('current', {}, [{ rowId: 'current' }], { before: 'current', after: null });
+  f.flushLayout();
+  scroll.scrollTop = 150;
+  current.onScroll();
+  await new Promise(setImmediate);
+  assert.equal(f.calls.reconnects, 1);
+  assert.equal(f.composer.ready, true);
 });
 
 test('append operations apply once above the snapshot watermark and reconnect snapshots replace the baseline', () => {

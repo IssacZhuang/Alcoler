@@ -170,6 +170,7 @@ export class Transcript {
   constructor(el, { onChange, onBeforeChange, loadTurn, loadRow, _detailCache } = {}) {
     this.el = el;
     this.supportsCompact = true;
+    this.supportsHistory = true;
     this.els = new Map();
     this.states = new Map();
     this.turnStates = new Map();
@@ -216,9 +217,10 @@ export class Transcript {
     return rowSnapshots.has(el) && sameValue(rowSnapshots.get(el), snapshotValue(row));
   }
 
-  rebuild(rows) {
+  rebuild(rows, { retainState = false } = {}) {
     if (this.disposed) return;
-    for (const [id, el] of this.els) this.capture(id, el);
+    const saved = retainState ? this.exportState() : null;
+    if (!retainState) for (const [id, el] of this.els) this.capture(id, el);
     for (const t of this.timers.values()) clearTimeout(t.timer);
     this.timers.clear();
     this.textBuffers.clear();
@@ -228,6 +230,7 @@ export class Transcript {
     for (const id of this.els.keys()) {
       if (!desired.has(id)) { this.remove(id, false); changed = true; }
     }
+    if (retainState && changed) this.cache.clear();
     const added = [];
     let index = 0;
     for (const row of desired.values()) {
@@ -252,6 +255,7 @@ export class Transcript {
     this.els = new Map([...desired.keys()].map(id => [id, this.els.get(id)]));
     for (const id of this.states.keys()) if (!desired.has(id)) this.states.delete(id);
     for (const id of this.turnStates.keys()) if (!desired.has(id)) this.turnStates.delete(id);
+    if (saved) this.restoreRows({ rows: saved.rows.filter(row => !desired.has(row.rowId)) });
     if (changed) this.notify();
     for (const el of added) this.activate(el);
   }
@@ -265,6 +269,33 @@ export class Transcript {
     this.el.appendChild(el);
     hydrateThumbs(this.el, el, this.notify, this.beforeChange);
     if (notify) { this.notify(); this.activate(el); }
+  }
+
+  prepend(rows) {
+    this.insertHistory(rows, true);
+  }
+
+  appendHistory(rows) {
+    this.insertHistory(rows);
+  }
+
+  insertHistory(rows, prepend = false) {
+    if (this.disposed) return;
+    const anchor = prepend ? this.el.childNodes[0] || null : null;
+    const added = new Map();
+    for (const row of rows || []) {
+      if (!row?.rowId || this.els.has(row.rowId)) continue;
+      const el = rowElement(row, this.state(row.rowId));
+      this.beforeChange();
+      this.els.set(row.rowId, el);
+      added.set(row.rowId, el);
+      this.el.insertBefore(el, anchor);
+      hydrateThumbs(this.el, el, this.notify, this.beforeChange);
+    }
+    if (!added.size) return;
+    if (prepend) this.els = new Map([...added, ...this.els]);
+    this.notify();
+    for (const el of added.values()) this.activate(el);
   }
 
   upsert(row) {
@@ -564,12 +595,7 @@ export class Transcript {
     return { rows };
   }
 
-  restoreState(saved) {
-    if (this.disposed) return;
-    if (this.els.size) this.beforeChange();
-    for (const id of this.loads.keys()) this.retireLoad(id);
-    this.states.clear();
-    this.turnStates.clear();
+  restoreRows(saved) {
     for (const row of viewRows(saved)) {
       this.states.set(row.rowId, {
         open: new Set((Array.isArray(row.open) ? row.open : []).filter(disclosureKey)),
@@ -580,6 +606,15 @@ export class Transcript {
         all: (Array.isArray(item.all) ? item.all : []).filter(sectionKey).slice(0, 128) }));
       if (details.length) this.turnStates.set(row.rowId, { rows: details });
     }
+  }
+
+  restoreState(saved) {
+    if (this.disposed) return;
+    if (this.els.size) this.beforeChange();
+    for (const id of this.loads.keys()) this.retireLoad(id);
+    this.states.clear();
+    this.turnStates.clear();
+    this.restoreRows(saved);
     const updated = [];
     for (const el of this.els.values()) {
       this.replace(el, rowSources.get(el), false, true);

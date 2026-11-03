@@ -442,7 +442,31 @@ public sealed class WebSocketStreamTests
     }
 
     [Fact]
-    public async Task Stream_PingDeltaAndCloseOutput_NeverSendConcurrently()
+    public async Task Stream_StalledHistorySend_DeadlineAbortsAndReleasesObserver()
+    {
+        var (sessionId, _) = await _harness.NewSessionAsync();
+        using var projection = new TrackedProjection(_harness.Runtime.Subscribe(sessionId));
+        _harness.Runtime.UseProjection(sessionId, () => projection);
+        using var socket = new TestWebSocket
+        {
+            OnSend = (type, cancellationToken) => type == "history"
+                ? Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)
+                : Task.CompletedTask,
+        };
+        var run = SessionStream.RunAsync(CreateState(), sessionId, socket, CancellationToken.None,
+            sendTimeout: TimeSpan.FromMilliseconds(50), compact: true, history: true);
+        await socket.SnapshotSent.Task.WaitAsync(FrameBudget);
+        socket.QueueMessage("{\"type\":\"history\",\"requestId\":1,\"latest\":true}");
+        await run.WaitAsync(FrameBudget);
+        Assert.True(socket.WasAborted);
+        Assert.True(socket.IsDisposed);
+        Assert.True(projection.Disposed.IsCompletedSuccessfully);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stream_PingDeltaAndCloseOutput_NeverSendConcurrently(bool history)
     {
         var (sessionId, _) = await _harness.NewSessionAsync();
         var store = new SessionEventStore(sessionId, TimeProvider.System);
@@ -452,6 +476,7 @@ public sealed class WebSocketStreamTests
         using var request = new CancellationTokenSource();
         var pingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releasePing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var historySent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         socket.OnSend = async (type, cancellationToken) =>
         {
             if (type == "ping")
@@ -459,15 +484,18 @@ public sealed class WebSocketStreamTests
                 pingStarted.TrySetResult();
                 await releasePing.Task.WaitAsync(cancellationToken);
             }
+            if (type == "history") historySent.TrySetResult();
         };
         var run = SessionStream.RunAsync(CreateState(), sessionId, socket, request.Token,
-            pingInterval: TimeSpan.FromMilliseconds(10));
+            pingInterval: TimeSpan.FromMilliseconds(10), compact: history, history: history);
         try
         {
             await pingStarted.Task.WaitAsync(FrameBudget);
+            if (history) socket.QueueMessage("{\"type\":\"history\",\"requestId\":1,\"latest\":true}");
             store.Append(new SessionTitleChangedEvent("queued while ping sends"));
-            projection.Dispose();
             releasePing.TrySetResult();
+            if (history) await historySent.Task.WaitAsync(FrameBudget);
+            projection.Dispose();
             await run.WaitAsync(FrameBudget);
             Assert.Equal(1, socket.MaxConcurrentSends);
             Assert.Equal(1, socket.CloseOutputCount);
@@ -588,7 +616,7 @@ public sealed class WebSocketStreamTests
 
     private sealed class TestWebSocket : WebSocket
     {
-        private readonly Channel<Exception> _receiveFailures = Channel.CreateUnbounded<Exception>();
+        private readonly Channel<(Exception? Error, string? Text)> _receives = Channel.CreateUnbounded<(Exception?, string?)>();
         private WebSocketState _state = WebSocketState.Open;
         private int _activeSends;
         private int _maxConcurrentSends;
@@ -605,12 +633,16 @@ public sealed class WebSocketStreamTests
         public override WebSocketState State => _state;
         public override string? SubProtocol => null;
 
-        public void FailReceive(Exception failure) => _receiveFailures.Writer.TryWrite(failure);
+        public void FailReceive(Exception failure) => _receives.Writer.TryWrite((failure, null));
+        public void QueueMessage(string text) => _receives.Writer.TryWrite((null, text));
 
         public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken)
         {
-            var failure = await _receiveFailures.Reader.ReadAsync(cancellationToken);
-            throw failure;
+            var received = await _receives.Reader.ReadAsync(cancellationToken);
+            if (received.Error is { } failure) throw failure;
+            var payload = Encoding.UTF8.GetBytes(received.Text!);
+            payload.CopyTo(buffer.AsSpan());
+            return new WebSocketReceiveResult(payload.Length, WebSocketMessageType.Text, true);
         }
 
         public override async Task SendAsync(

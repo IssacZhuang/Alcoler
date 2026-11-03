@@ -3,15 +3,27 @@ import { getToken } from './api.js';
 const MAX_ATTEMPTS = 8;
 const CONNECT_TIMEOUT = 15000;
 const HEARTBEAT_TIMEOUT = 45000;
+const HISTORY_TIMEOUT = 15000;
+
+function validHistory(history) {
+  return history && typeof history === 'object' && ['before', 'after'].every(key =>
+    history[key] === null || (typeof history[key] === 'string' && history[key].length > 0));
+}
+
+const historyError = code => Object.assign(new Error(code), { code });
 
 export class StreamClient {
-  constructor({ sessionId, onSnapshot, onDelta, onStatus, resume, appendText = false, compact = false }) {
+  constructor({ sessionId, onSnapshot, onDelta, onStatus, resume, appendText = false, compact = false,
+    history = false, anchor, onHistory }) {
     this.sessionId = sessionId;
     this.appendText = appendText;
     this.compact = compact;
+    this.history = history;
+    this.anchor = anchor;
     this.onSnapshot = onSnapshot;
     this.onDelta = onDelta;
     this.onStatus = onStatus;
+    this.onHistory = onHistory;
     this.resume = resume;
     this.status = 'offline';
     this.attempts = 0;
@@ -22,6 +34,9 @@ export class StreamClient {
     this.heartbeatTimer = 0;
     this.lastMessageAt = 0;
     this.hasSnapshot = false;
+    this.hasHistory = false;
+    this.historyRequest = null;
+    this.nextRequestId = 0;
     this.resuming = null;
   }
 
@@ -42,7 +57,8 @@ export class StreamClient {
       return;
     }
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}/api/sessions/${encodeURIComponent(this.sessionId)}/stream?token=${encodeURIComponent(token)}${this.appendText ? '&appendText=1' : ''}${this.compact ? '&compact=1' : ''}`;
+    const around = this.history ? this.anchor?.() : null;
+    const url = `${proto}//${location.host}/api/sessions/${encodeURIComponent(this.sessionId)}/stream?token=${encodeURIComponent(token)}${this.appendText ? '&appendText=1' : ''}${this.compact || this.history ? '&compact=1' : ''}${this.history ? '&history=1' : ''}${typeof around === 'string' && around ? '&around=' + encodeURIComponent(around) : ''}`;
     let ws;
     try {
       ws = new WebSocket(url);
@@ -58,7 +74,9 @@ export class StreamClient {
       this.handleMessage(event.data);
     };
     ws.onclose = () => this.reconnectSocket(ws);
-    ws.onerror = () => { };
+    ws.onerror = () => {
+      if (this.ws === ws && !this.closed) this.rejectHistory('history_disconnected');
+    };
   }
 
   handleMessage(data) {
@@ -71,7 +89,9 @@ export class StreamClient {
         if (!msg.snapshot) return;
         clearTimeout(this.connectTimer);
         this.connectTimer = 0;
+        this.rejectHistory('stale_history');
         this.hasSnapshot = true;
+        this.hasHistory = !!(this.history && validHistory(msg.snapshot.history));
         this.attempts = 0;
         if (this.onSnapshot) this.onSnapshot(msg.snapshot);
         if (this.closed || !this.ws) return;
@@ -81,7 +101,11 @@ export class StreamClient {
       case 'delta':
         if (this.hasSnapshot && this.onDelta) this.onDelta(msg.delta);
         break;
+      case 'history':
+        this.handleHistory(msg);
+        break;
       case 'error':
+        this.rejectHistory(msg.code || 'history_error');
         if (msg.code === 'session_not_found') this.handleEnded();
         break;
       case 'ended':
@@ -90,6 +114,58 @@ export class StreamClient {
       default:
         break;
     }
+  }
+
+  requestHistory(request) {
+    const keys = request && typeof request === 'object' && !Array.isArray(request) ? Object.keys(request) : [];
+    const direction = keys[0];
+    const value = keys.length === 1 ? request[direction] : null;
+    if (keys.length !== 1 || !(direction === 'latest' ? value === true
+      : ['before', 'after'].includes(direction) && typeof value === 'string' && value.length > 0)) {
+      return Promise.reject(historyError('invalid_history_request'));
+    }
+    const ws = this.ws;
+    if (this.closed || !this.hasSnapshot || !this.hasHistory || !ws || ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(historyError('history_unavailable'));
+    }
+    if (this.historyRequest) return Promise.reject(historyError('history_pending'));
+    const requestId = ++this.nextRequestId;
+    return new Promise((resolve, reject) => {
+      const pending = { ws, requestId, request: { [direction]: value }, resolve, reject, timer: 0 };
+      this.historyRequest = pending;
+      pending.timer = setTimeout(() => {
+        if (this.historyRequest === pending) this.rejectHistory('history_timeout');
+      }, HISTORY_TIMEOUT);
+      try { ws.send(JSON.stringify({ type: 'history', requestId, ...pending.request })); }
+      catch (error) { this.rejectHistory(error); }
+    });
+  }
+
+  handleHistory(msg) {
+    const pending = this.historyRequest;
+    if (!pending || pending.ws !== this.ws || msg.requestId !== pending.requestId) return;
+    if (msg.error) { this.rejectHistory(msg.error); return; }
+    const page = msg.page;
+    if (!page || !Array.isArray(page.rows) || page.rows.some(row => typeof row?.rowId !== 'string' || !row.rowId)
+      || !Number.isSafeInteger(page.sequence) || page.sequence < 0 || !validHistory(page.history)
+      || page.direction !== Object.keys(pending.request)[0]) {
+      this.rejectHistory('invalid_history_response');
+      return;
+    }
+    try { this.onHistory?.(page, pending.request); }
+    catch (error) { this.rejectHistory(error); return; }
+    if (this.historyRequest !== pending) return;
+    clearTimeout(pending.timer);
+    this.historyRequest = null;
+    pending.resolve(page);
+  }
+
+  rejectHistory(error) {
+    const pending = this.historyRequest;
+    if (!pending) return;
+    this.historyRequest = null;
+    clearTimeout(pending.timer);
+    pending.reject(typeof error === 'string' ? historyError(error) : error);
   }
 
   watchHeartbeat() {
@@ -171,6 +247,8 @@ export class StreamClient {
     this.connectTimer = 0;
     this.heartbeatTimer = 0;
     this.hasSnapshot = false;
+    this.hasHistory = false;
+    this.rejectHistory('history_disconnected');
     const ws = this.ws;
     this.ws = null;
     if (!ws) return;

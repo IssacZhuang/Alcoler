@@ -296,10 +296,18 @@ internal static class GatewayEndpoints
                 await GatewayJson.Error(400, "bad_request", "websocket").ExecuteAsync(context);
                 return;
             }
+            var compact = context.Request.Query["compact"] == "1";
+            var history = compact && context.Request.Query["history"] == "1";
+            var around = history ? context.Request.Query["around"] : default;
+            if (around.Count > 1 || around.ToString().Length > HistoryRequest.MaxCursorLength)
+            {
+                await GatewayJson.Error(400, "bad_request", "around").ExecuteAsync(context);
+                return;
+            }
             var socket = await context.WebSockets.AcceptWebSocketAsync();
             await SessionStream.RunAsync(state, new SessionId(sessionId), socket, context.RequestAborted,
-                appendText: context.Request.Query["appendText"] == "1",
-                compact: context.Request.Query["compact"] == "1");
+                appendText: context.Request.Query["appendText"] == "1", compact: compact, history: history,
+                around: string.IsNullOrEmpty(around.ToString()) ? null : around.ToString());
         });
     }
 

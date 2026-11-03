@@ -888,6 +888,8 @@ function startConversation(sh, id, restore) {
     scroll: $('transcript-scroll'),
     transcript: $('transcript'),
     loading: $('transcript-loading'),
+    before: $('history-before'),
+    after: $('history-after'),
     title: $('sess-title'),
     phase: $('phase-text'),
     dot: $('conn-dot'),
@@ -912,6 +914,10 @@ function startConversation(sh, id, restore) {
     revision: 0,
     lastSeq: null,
     snapshotReady: false,
+    history: null,
+    historyRequest: null,
+    historyError: null,
+    jumpAfterHistory: false,
     sent: new Set(),
     titleFallback: sessionTitles.get(id) || 'Session',
     transcript: null,
@@ -942,6 +948,8 @@ function startConversation(sh, id, restore) {
   convo = st;
 
   els.loading.hidden = false;
+  if (els.before) els.before.hidden = true;
+  if (els.after) els.after.hidden = true;
   els.transcript.textContent = '';
   els.title.textContent = st.titleFallback;
   document.title = st.titleFallback + ' — Alcoler';
@@ -975,7 +983,72 @@ function startConversation(sh, id, restore) {
     st.ignoredScrollTop = null;
     els.scroll.scrollTop = els.scroll.scrollHeight;
   };
-  const updateJump = () => { els.jump.hidden = nearBottom(); };
+  const updateJump = () => {
+    els.jump.hidden = !st.history?.after && nearBottom();
+    els.jump.disabled = st.historyRequest?.direction === 'latest';
+  };
+  const updateHistory = history => {
+    st.history = history && typeof history === 'object' ? {
+      before: typeof history.before === 'string' ? history.before : null,
+      after: typeof history.after === 'string' ? history.after : null,
+    } : null;
+    if (st.history?.after) st.followLatest = false;
+    renderHistoryControls();
+  };
+  const renderHistoryControls = () => {
+    for (const [direction, button] of [['before', els.before], ['after', els.after]]) {
+      if (!button) continue;
+      const older = direction === 'before';
+      button.hidden = !st.history?.[direction];
+      button.disabled = !!st.historyRequest || st.connStatus !== 'online';
+      button.textContent = st.historyRequest?.direction === direction
+        ? `Loading ${older ? 'older' : 'newer'} messages...`
+        : st.historyError === direction ? `Retry loading ${older ? 'older' : 'newer'} messages`
+        : `Load ${older ? 'older' : 'newer'} messages`;
+      button.setAttribute('aria-busy', String(st.historyRequest?.direction === direction));
+    }
+    updateJump();
+  };
+  const loadHistory = async direction => {
+    if (st.disposed || convo !== st || !st.snapshotReady || !st.history || st.connStatus !== 'online') return;
+    if (st.historyRequest) {
+      if (direction === 'latest') st.jumpAfterHistory = true;
+      return;
+    }
+    const cursor = st.history[direction];
+    if (direction !== 'latest' && !cursor) return;
+    if (direction === 'before' && st.followLatest) {
+      st.followLatest = false;
+      st.readingAnchor = captureReadingAnchor(st);
+    }
+    const pending = { direction };
+    st.historyRequest = pending;
+    st.historyError = null;
+    renderHistoryControls();
+    try {
+      await st.ws.requestHistory(direction === 'latest' ? { latest: true } : { [direction]: cursor });
+    } catch (error) {
+      if (st.disposed || convo !== st || st.historyRequest !== pending) return;
+      st.historyError = direction;
+      if (error?.code === 'stale_history' || error?.code === 'history_timeout') st.ws.manualReconnect();
+    } finally {
+      if (!st.disposed && convo === st && st.historyRequest === pending) {
+        st.historyRequest = null;
+        renderHistoryControls();
+        if (st.jumpAfterHistory) {
+          st.jumpAfterHistory = false;
+          if (st.history?.after) void loadHistory('latest');
+          else { toBottom(); updateJump(); }
+        }
+        refreshLayout();
+      }
+    }
+  };
+  const maybeLoadHistory = () => {
+    if (st.followLatest || st.restoringReading || st.historyRequest || st.historyError) return;
+    if (els.scroll.scrollTop < 240 && st.history?.before) void loadHistory('before');
+    else if (els.scroll.scrollHeight - els.scroll.scrollTop - els.scroll.clientHeight < 240 && st.history?.after) void loadHistory('after');
+  };
   const refreshLayout = () => {
     if (st.disposed || convo !== st || st.layoutFrame) return;
     st.layoutFrame = requestAnimationFrame(() => {
@@ -991,6 +1064,7 @@ function startConversation(sh, id, restore) {
       }
       st.restoringViewport = false;
       updateJump();
+      maybeLoadHistory();
     });
   };
   st.refreshLayout = refreshLayout;
@@ -1061,15 +1135,19 @@ function startConversation(sh, id, restore) {
     }
     if (st.restoringViewport) return;
     st.restoringReading = false;
-    st.followLatest = nearBottom();
+    st.followLatest = !st.history?.after && nearBottom();
     st.readingAnchor = st.followLatest ? null : captureReadingAnchor(st);
     updateJump();
+    maybeLoadHistory();
   };
   els.transcript.addEventListener('click', onTranscriptClick, true);
   els.scroll.addEventListener('scroll', onScroll, { passive: true });
   st.onTranscriptClick = onTranscriptClick;
   st.onScroll = onScroll;
+  if (els.before) els.before.onclick = () => { void loadHistory('before'); };
+  if (els.after) els.after.onclick = () => { void loadHistory('after'); };
   els.jump.onclick = () => {
+    if (st.history?.after) { void loadHistory('latest'); return; }
     toBottom();
     updateJump();
   };
@@ -1126,6 +1204,7 @@ function startConversation(sh, id, restore) {
     els.dot.title = status === 'online' ? 'Live updates connected' : status === 'offline' ? 'Disconnected' : 'Connecting to live updates';
     els.dot.setAttribute('aria-label', els.dot.title);
     sh.sessionComposer.setReady(st.snapshotReady && status === 'online');
+    renderHistoryControls();
     updateQueue();
     st.updateConn();
   };
@@ -1448,6 +1527,10 @@ function startConversation(sh, id, restore) {
   const applySnapshot = snapshot => {
     if (!snapshot || st.disposed || convo !== st) return;
     if (!st.followLatest && st.snapshotReady && !st.restoringViewport && !st.restoringReading) st.readingAnchor = captureReadingAnchor(st);
+    st.historyRequest = null;
+    st.historyError = null;
+    st.jumpAfterHistory = false;
+    updateHistory(snapshot.history);
     st.restoringReading = !st.followLatest && !!st.readingAnchor;
     st.restoringViewport = true;
     st.snapshotReady = true;
@@ -1457,7 +1540,7 @@ function startConversation(sh, id, restore) {
     st.state = snapshot.state || {};
     st.applyingSnapshot = true;
     try {
-      st.transcript.rebuild(snapshot.rows || []);
+      st.transcript.rebuild(snapshot.rows || [], { retainState: !!snapshot.history });
     } finally {
       st.applyingSnapshot = false;
     }
@@ -1466,6 +1549,20 @@ function startConversation(sh, id, restore) {
     st.updateConn();
     if (st.followLatest) toBottom();
     else restoreReadingAnchor(st, st.readingAnchor);
+    refreshLayout();
+  };
+
+  const applyHistory = page => {
+    if (!page || st.disposed || convo !== st || !st.historyRequest) return;
+    if (page.direction === 'latest') {
+      toBottom();
+      st.applyingSnapshot = true;
+      try { st.transcript.rebuild(page.rows || [], { retainState: true }); }
+      finally { st.applyingSnapshot = false; }
+    } else if (page.direction === 'before') st.transcript.prepend(page.rows || []);
+    else if (page.direction === 'after') st.transcript.appendHistory(page.rows || []);
+    updateHistory(page.history);
+    if (st.followLatest) toBottom();
     refreshLayout();
   };
 
@@ -1489,6 +1586,7 @@ function startConversation(sh, id, restore) {
         stateChanged = true;
       }
     }
+    if (Object.hasOwn(delta, 'history')) updateHistory(delta.history);
     if (stateChanged) updateChrome();
     refreshLayout();
   };
@@ -1497,10 +1595,15 @@ function startConversation(sh, id, restore) {
     sessionId: id,
     onSnapshot: applySnapshot,
     onDelta: applyDelta,
+    onHistory: applyHistory,
     onStatus: status => st.setConn(status),
     resume: () => api.resumeSession(id),
     appendText: typeof st.transcript.appendText === 'function',
     compact: st.transcript.supportsCompact === true && typeof api.getTurnDetails === 'function' && typeof api.getRowDetails === 'function',
+    history: st.transcript.supportsHistory === true && st.transcript.supportsCompact === true
+      && typeof api.getTurnDetails === 'function' && typeof api.getRowDetails === 'function'
+      && !!els.before && !!els.after,
+    anchor: () => st.followLatest ? null : st.readingAnchor?.parent?.rowId || st.readingAnchor?.rowId || null,
   });
   st.ws.start();
 
@@ -1537,6 +1640,9 @@ function disposeConversation() {
   saveReadingState(st);
   convo = null;
   st.disposed = true;
+  for (const button of [st.els.before, st.els.after]) {
+    if (button) { button.hidden = true; button.onclick = null; }
+  }
   if (st.queueView) st.queueView.dispose();
   if (st.ws) st.ws.close();
   if (st.layoutFrame) cancelAnimationFrame(st.layoutFrame);

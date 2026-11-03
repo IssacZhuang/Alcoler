@@ -1566,3 +1566,393 @@ test('hasPendingDetails follows restored nested requests through success, failur
   assert.equal(transcript.hasPendingDetails(), false);
   assert.equal(root.childNodes.length, 0);
 }));
+
+test('history pages preserve input order, existing DOM and disclosures, and ignore duplicate row IDs', () => withDom(async root => {
+  const ids = () => root.childNodes.map(node => node.dataset.rowId);
+  const events = [];
+  const transcript = new Transcript(root, {
+    onBeforeChange: () => events.push(['before', ids()]), onChange: () => events.push(['after', ids()]),
+  });
+  assert.equal(transcript.supportsHistory, true);
+  transcript.rebuild([turn(), tool({ output: [{ text: 'x'.repeat(2000) + ' retained full tail' }] }),
+    assistant('live', 'Current answer', { parts: [
+      { $type: 'reasoning', text: 'Current reasoning' }, { $type: 'text', text: 'Current answer' },
+    ] })]);
+  const existing = [...root.childNodes];
+  const detail = setDisclosure(transcript.els.get('tool-1'), 'tool', true);
+  const body = detail.querySelector('.tool-body');
+  body.querySelector('.out-more[data-section="output-0"]').fire('click');
+  const thinking = setDisclosure(transcript.els.get('live'), 'thinking', true);
+  const saved = transcript.exportState();
+  events.length = 0;
+  transcript.prepend([turn({ rowId: 'older-1' }), turn({ rowId: 'older-2' }),
+    assistant('older-1', 'stale duplicate'), null, assistant('live', 'stale answer')]);
+  assert.deepEqual(ids(), ['older-1', 'older-2', 'user-1', 'tool-1', 'live']);
+  assert.deepEqual(events, [['before', ['user-1', 'tool-1', 'live']], ['after', ids()]]);
+  events.length = 0;
+  transcript.appendHistory([turn({ rowId: 'newer-1' }), tool({ output: [{ text: 'stale output' }] }),
+    turn({ rowId: 'newer-2' }), turn({ rowId: 'newer-1', detailVersion: 'stale-version' })]);
+  assert.deepEqual(ids(), ['older-1', 'older-2', 'user-1', 'tool-1', 'live', 'newer-1', 'newer-2']);
+  assert.deepEqual(events, [['before', ['older-1', 'older-2', 'user-1', 'tool-1', 'live']], ['after', ids()]]);
+  assert.deepEqual([...transcript.els.keys()], ids());
+  existing.forEach((node, index) => assert.equal(root.childNodes[index + 2], node));
+  assert.equal(transcript.els.get('tool-1').querySelector('.tool-body'), body);
+  assert.equal(detail.open, true);
+  assert.equal(thinking.open, true);
+  assert.match(body.textContent, /retained full tail/);
+  assert.equal(body.querySelector('.out-more[data-section="output-0"]'), null);
+  assert.doesNotMatch(root.textContent, /stale/);
+  assert.deepEqual(transcript.exportState(), saved);
+  const writes = root.writes;
+  events.length = 0;
+  transcript.prepend([assistant('live', 'stale'), turn({ rowId: 'older-1' })]);
+  transcript.appendHistory([tool(), turn({ rowId: 'newer-1' })]);
+  transcript.prepend(null);
+  transcript.appendHistory([]);
+  assert.equal(root.writes, writes);
+  assert.deepEqual(events, []);
+  transcript.dispose();
+  transcript.prepend([turn()]);
+  transcript.appendHistory([turn()]);
+  assert.deepEqual(events, []);
+  assert.equal(root.childNodes.length, 0);
+}));
+
+test('prepending into an empty transcript retains row order and activates later appended rows normally', () => withDom(async root => {
+  const transcript = new Transcript(root);
+  transcript.prepend([turn({ rowId: 'first' }), turn({ rowId: 'second' })]);
+  transcript.appendHistory([turn({ rowId: 'third' }), turn({ rowId: 'fourth' })]);
+  assert.deepEqual(root.childNodes.map(node => node.dataset.rowId), ['first', 'second', 'third', 'fourth']);
+  assert.deepEqual([...transcript.els.keys()], ['first', 'second', 'third', 'fourth']);
+  transcript.dispose();
+}));
+
+test('history insertion retains pending live text chunks and active tool timers instead of replaying stale page rows', t => withDom(async root => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const transcript = new Transcript(root);
+  const stream = assistant('stream', '', { isStreaming: true, parts: [
+    { $type: 'reasoning', text: 'Keep reasoning open' }, { $type: 'text', text: 'start' },
+  ] });
+  const active = tool({ rowId: 'active', status: 'Running', input: { description: 'initial tool' } });
+  transcript.rebuild([turn(), active, stream]);
+  transcript.appendText({ rowId: 'stream', delta: ' shown', at: 'shown' });
+  transcript.appendText({ rowId: 'stream', delta: ' buffered', at: 'buffered' });
+  transcript.upsert({ ...active, input: { description: 'shown tool' } });
+  transcript.upsert({ ...active, input: { description: 'buffered tool' } });
+  const liveNode = transcript.els.get('stream'), toolNode = transcript.els.get('active');
+  const thinking = setDisclosure(liveNode, 'thinking', true);
+  const buffer = transcript.textBuffers.get('stream');
+  const textTimer = transcript.timers.get('stream'), toolTimer = transcript.timers.get('active');
+  const staleStream = assistant('stream', 'stale sealed answer');
+  transcript.prepend([turn({ rowId: 'older' }), staleStream, tool({ rowId: 'active', status: 'Failed' })]);
+  transcript.appendHistory([staleStream, turn({ rowId: 'newer' })]);
+  assert.equal(transcript.els.get('stream'), liveNode);
+  assert.equal(transcript.els.get('active'), toolNode);
+  assert.equal(transcript.textBuffers.get('stream'), buffer);
+  assert.deepEqual(buffer.chunks, [' buffered']);
+  assert.equal(transcript.timers.get('stream'), textTimer);
+  assert.equal(transcript.timers.get('active'), toolTimer);
+  assert.ok(textTimer.timer);
+  assert.ok(toolTimer.timer);
+  assert.equal(thinking.open, true);
+  assert.doesNotMatch(root.textContent, /stale sealed|buffered tool|start shown buffered/);
+  now += 150;
+  t.mock.timers.tick(150);
+  assert.match(root.textContent, /start shown buffered/);
+  assert.match(root.textContent, /buffered tool/);
+  assert.equal(transcript.els.get('stream').querySelector('.thinking').open, true);
+  assert.equal(buffer.row.at, 'buffered');
+  assert.equal(buffer.chunks.length, 0);
+  transcript.dispose();
+}));
+
+test('history insertion keeps pending turn detail requests attached to the same disclosure and DOM', () => withDom(async root => {
+  const pending = deferred();
+  let calls = 0;
+  const transcript = new Transcript(root, { loadTurn: () => { calls++; return pending.promise; } });
+  transcript.rebuild([turn()]);
+  const node = transcript.els.get('user-1');
+  const detail = setDisclosure(node, 'turn', true);
+  const body = detail.querySelector('.turn-body');
+  const entry = transcript.loads.get('user-1');
+  transcript.prepend([turn({ rowId: 'older' }), turn({ detailVersion: 'stale-version' })]);
+  transcript.appendHistory([turn({ rowId: 'newer' }), turn({ detailVersion: 'another-stale-version' })]);
+  assert.equal(transcript.els.get('user-1'), node);
+  assert.equal(node.querySelector('.turn-process'), detail);
+  assert.equal(detail.querySelector('.turn-body'), body);
+  assert.equal(transcript.loads.get('user-1'), entry);
+  assert.equal(entry.controller.signal.aborted, false);
+  assert.equal(transcript.hasPendingDetails(), true);
+  assert.equal(calls, 1);
+  pending.resolve({ version: 'turn-v1', rows: [assistant('process', 'original request completed')] });
+  await flushArtifacts();
+  assert.match(body.textContent, /original request completed/);
+  assert.equal(transcript.hasPendingDetails(), false);
+  assert.equal(detail.open, true);
+  transcript.dispose();
+}));
+
+test('history pages retain nested loaded details, cached payloads, playing media, and thumbnail leases', t => withDom(async root => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = { getItem: () => 'history-artifact-token' };
+  t.after(() => { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous; });
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', (_url, options) => new Promise((resolve, reject) => {
+    requests.push({ options });
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+  }));
+  let turnLoads = 0, toolLoads = 0;
+  const transcript = new Transcript(root, {
+    loadTurn: () => { turnLoads++; return { version: 'turn-v1', rows: [compactTool()] }; },
+    loadRow: () => { toolLoads++; return { version: 'tool-v1', row: tool({ output: [
+      { text: 'x'.repeat(2000) + ' cached full tail' },
+      { artifactUri: 'artifact:history-audio', mimeType: 'audio/wav', fileName: 'audio.wav' },
+      { artifactUri: 'alcoler-artifact://history/thumbnail-lease', mimeType: 'image/png', fileName: 'image.png' },
+    ] }) }; },
+  });
+  transcript.rebuild([turn()]);
+  const node = transcript.els.get('user-1');
+  setDisclosure(node, 'turn', true);
+  await flushArtifacts();
+  const turnEntry = transcript.loads.get('user-1'), child = turnEntry.child;
+  setDisclosure(turnEntry.body, 'tool', true);
+  await flushArtifacts();
+  const toolEntry = child.loads.get('tool-1'), body = toolEntry.body;
+  body.querySelector('.out-more[data-section="output-0"]').fire('click');
+  const audio = body.querySelector('audio'), thumb = body.querySelector('.thumb');
+  audio.src = '/playing-history-audio';
+  audio.currentTime = 42;
+  const cacheEntries = [...transcript.cache.entries];
+  const cacheBytes = transcript.cache.bytes;
+  assert.equal(cacheEntries.length, 2);
+  assert.equal(requests.length, 1);
+  transcript.prepend([turn({ rowId: 'older' }), turn({ detailVersion: 'stale-version' })]);
+  transcript.appendHistory([turn({ rowId: 'newer' }), turn({ detailVersion: 'stale-version' })]);
+  assert.equal(transcript.els.get('user-1'), node);
+  assert.equal(transcript.loads.get('user-1'), turnEntry);
+  assert.equal(turnEntry.child, child);
+  assert.equal(child.loads.get('tool-1'), toolEntry);
+  assert.equal(toolEntry.body, body);
+  assert.equal(body.querySelector('audio'), audio);
+  assert.equal(body.querySelector('.thumb'), thumb);
+  assert.equal(audio.src, '/playing-history-audio');
+  assert.equal(audio.currentTime, 42);
+  assert.equal(audio.pauses, undefined);
+  assert.equal(turnEntry.controller.signal.aborted, false);
+  assert.equal(toolEntry.controller.signal.aborted, false);
+  assert.equal(requests[0].options.signal.aborted, false);
+  assert.equal(requests.length, 1);
+  assert.equal(turnLoads, 1);
+  assert.equal(toolLoads, 1);
+  assert.deepEqual([...transcript.cache.entries], cacheEntries);
+  assert.equal(transcript.cache.bytes, cacheBytes);
+  assert.match(body.textContent, /cached full tail/);
+  assert.equal(body.querySelector('.out-more[data-section="output-0"]'), null);
+  transcript.dispose();
+  assert.equal(requests[0].options.signal.aborted, true);
+  assert.equal(audio.pauses, 1);
+  assert.equal(audio.src, null);
+  await flushArtifacts();
+}));
+
+test('off-window saved disclosures survive initial rebuild and activate with nested state at either history edge', () => withDom(async root => {
+  const saved = { rows: ['older', 'newer', 'unloaded'].map(rowId => ({ rowId, open: ['turn'], all: [], details: {
+    rows: [{ rowId: rowId + '-tool', open: ['tool'], all: ['output-0'] },
+      { rowId: rowId + '-reason', open: ['thinking'], all: [] },
+      { rowId: rowId + '-hidden', open: ['tool'], all: ['input'] }],
+  } })) };
+  const turns = [], tools = [];
+  const transcript = new Transcript(root, {
+    loadTurn: (id, { version }) => { turns.push(id); return { version, rows: [compactTool({ rowId: id + '-tool' }),
+      assistant(id + '-reason', '', { parts: [{ $type: 'reasoning', text: 'Restored reasoning ' + id }] })] }; },
+    loadRow: (id, { version }) => { tools.push(id); return { version, row: tool({ rowId: id,
+      output: [{ text: 'x'.repeat(2000) + ' restored full tail ' + id }] }) }; },
+  });
+  transcript.restoreState(saved);
+  transcript.rebuild([turn({ rowId: 'current' })], { retainState: true });
+  transcript.rebuild([turn({ rowId: 'current' })], { retainState: true });
+  assert.deepEqual(transcript.exportState(), saved);
+  assert.deepEqual(turns, []);
+  assert.deepEqual(tools, []);
+  transcript.prepend([turn({ rowId: 'older' })]);
+  await flushArtifacts();
+  transcript.appendHistory([turn({ rowId: 'newer' })]);
+  await flushArtifacts();
+  assert.deepEqual(turns, ['older', 'newer']);
+  assert.deepEqual(tools, ['older-tool', 'newer-tool']);
+  for (const id of ['older', 'newer']) {
+    const node = transcript.els.get(id);
+    assert.equal(node.querySelector('.turn-process').open, true);
+    assert.equal(node.querySelector('.tool').open, true);
+    assert.equal(node.querySelector('.thinking').open, true);
+    assert.match(node.textContent, new RegExp('restored full tail ' + id + '-tool'));
+    assert.equal(node.querySelector('.out-more[data-section="output-0"]'), null);
+    assert.equal(transcript.loads.get(id).child.exportState().rows.some(row => row.rowId === id + '-hidden'), false);
+  }
+  const exported = transcript.exportState();
+  assert.deepEqual(exported.rows.find(row => row.rowId === 'unloaded'), saved.rows[2]);
+  assert.doesNotMatch(JSON.stringify(exported), /restored full tail|Restored reasoning|detailVersion|parts/);
+  transcript.dispose();
+}));
+
+test('off-window saved state retains its existing row bound and never needs transcript payloads', () => withDom(async root => {
+  const transcript = new Transcript(root);
+  transcript.restoreState({ rows: Array.from({ length: 2050 }, (_, index) => ({ rowId: 'saved-' + index,
+    open: ['turn'], all: [], parts: [{ text: 'must not retain history payload' }] })) });
+  transcript.rebuild([turn({ rowId: 'current' })], { retainState: true });
+  const saved = transcript.exportState();
+  assert.equal(saved.rows.length, 2000);
+  assert.equal(saved.rows[0].rowId, 'saved-0');
+  assert.equal(saved.rows.at(-1).rowId, 'saved-1999');
+  assert.doesNotMatch(JSON.stringify(saved), /payload|parts/);
+  transcript.dispose();
+}));
+
+test('paged rebuilds retain nested disclosures across latest and page-back without retaining old payloads or media', t => withDom(async root => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = { getItem: () => 'history-roundtrip-token' };
+  t.after(() => { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous; });
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', (_url, options) => new Promise((resolve, reject) => {
+    requests.push({ options });
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+  }));
+  let turnLoads = 0, toolLoads = 0;
+  const transcript = new Transcript(root, {
+    loadTurn: () => { turnLoads++; return { version: 'turn-v1', rows: [compactTool(),
+      assistant('reason', '', { parts: [{ $type: 'reasoning', text: 'Sensitive nested reasoning' }] })] }; },
+    loadRow: () => { toolLoads++; return { version: 'tool-v1', row: tool({ output: [
+      { text: 'x'.repeat(2000) + ' sensitive restored full tail' },
+      { artifactUri: 'artifact:history-roundtrip-audio', mimeType: 'audio/wav', fileName: 'audio.wav' },
+      { artifactUri: 'alcoler-artifact://history/roundtrip-thumbnail', mimeType: 'image/png', fileName: 'image.png' },
+    ] }) }; },
+  });
+  const historical = turn({ rowId: 'historical' }), latest = turn({ rowId: 'latest' });
+  transcript.rebuild([historical], { retainState: true });
+  const oldNode = transcript.els.get('historical');
+  setDisclosure(oldNode, 'turn', true);
+  await flushArtifacts();
+  const entry = transcript.loads.get('historical'), child = entry.child;
+  setDisclosure(entry.body, 'tool', true);
+  setDisclosure(entry.body, 'thinking', true);
+  await flushArtifacts();
+  const toolEntry = child.loads.get('tool-1');
+  toolEntry.body.querySelector('.out-more[data-section="output-0"]').fire('click');
+  const audio = toolEntry.body.querySelector('audio');
+  audio.src = '/playing-history-roundtrip';
+  audio.currentTime = 19;
+  transcript.state('historical').open.add('unknown-disclosure');
+  child.state('tool-1').all.add('unknown-section');
+  const saved = transcript.exportState();
+  assert.equal(transcript.cache.entries.size, 2);
+  transcript.rebuild([structuredClone(historical)], { retainState: true });
+  assert.equal(transcript.els.get('historical'), oldNode);
+  assert.equal(transcript.loads.get('historical'), entry);
+  assert.equal(transcript.cache.entries.size, 2);
+  transcript.rebuild([latest], { retainState: true });
+  await flushArtifacts();
+  assert.deepEqual(root.childNodes.map(node => node.dataset.rowId), ['latest']);
+  assert.equal(oldNode.isConnected, false);
+  assert.equal(child.disposed, true);
+  assert.equal(child.els.size, 0);
+  assert.equal(child.loads.size, 0);
+  assert.equal(entry.value, null);
+  assert.equal(entry.child, null);
+  assert.equal(toolEntry.value, null);
+  assert.equal(entry.controller.signal.aborted, true);
+  assert.equal(toolEntry.controller.signal.aborted, true);
+  assert.equal(requests[0].options.signal.aborted, true);
+  assert.equal(audio.src, null);
+  assert.equal(audio.pauses, 1);
+  assert.equal(transcript.loads.size, 0);
+  assert.equal(transcript.cache.entries.size, 0);
+  assert.equal(transcript.cache.bytes, 0);
+  assert.deepEqual(transcript.exportState(), saved);
+  assert.equal(transcript.states.get('historical').open.has('unknown-disclosure'), false);
+  assert.doesNotMatch(JSON.stringify(transcript.turnStates.get('historical')), /sensitive|Sensitive|unknown|output"|parts|artifactUri|detailVersion/);
+  transcript.rebuild([structuredClone(latest)], { retainState: true });
+  transcript.prepend([historical]);
+  await flushArtifacts();
+  const restored = transcript.els.get('historical');
+  assert.notEqual(restored, oldNode);
+  assert.equal(restored.querySelector('.turn-process').open, true);
+  assert.equal(restored.querySelector('.tool').open, true);
+  assert.equal(restored.querySelector('.thinking').open, true);
+  assert.match(restored.textContent, /sensitive restored full tail/);
+  assert.equal(restored.querySelector('.out-more[data-section="output-0"]'), null);
+  assert.equal(turnLoads, 2);
+  assert.equal(toolLoads, 2);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].options.signal.aborted, false);
+  transcript.rebuild([latest], { retainState: true });
+  transcript.remove('historical');
+  assert.equal(transcript.states.has('historical'), false);
+  assert.equal(transcript.turnStates.has('historical'), false);
+  transcript.prepend([historical]);
+  assert.equal(transcript.els.get('historical').querySelector('.turn-process').open, false);
+  assert.equal(turnLoads, 2);
+  assert.equal(toolLoads, 2);
+  transcript.dispose();
+  await flushArtifacts();
+}));
+
+test('paged rebuilds bound retained invisible disclosure metadata and sanitize nested state', () => withElements(() => {
+  const transcript = new Transcript(container());
+  const rows = Array.from({ length: 2050 }, (_, index) => ({ $type: 'system_notice', rowId: 'loaded-' + index, text: 'row' }));
+  transcript.rebuild(rows);
+  for (const row of rows) {
+    transcript.state(row.rowId).open.add('turn');
+    transcript.state(row.rowId).open.add('unknown-disclosure');
+    transcript.turnStates.set(row.rowId, { rows: [{ rowId: row.rowId + '-tool', open: ['tool', 'unknown-disclosure'],
+      all: ['output-0', 'unknown-section'], output: 'must not retain detail payload' }] });
+  }
+  for (let index = 0; index < 3; index++) {
+    const current = { $type: 'system_notice', rowId: 'current-' + index, text: 'current' };
+    transcript.rebuild([current], { retainState: true });
+    assert.equal([...transcript.states.keys()].filter(id => !transcript.els.has(id)).length, 2000);
+    assert.ok(transcript.turnStates.size <= 2000);
+    assert.equal(transcript.els.size, 1);
+    assert.equal(transcript.exportState().rows.length, 2000);
+    assert.doesNotMatch(JSON.stringify([...transcript.turnStates]), /payload|unknown|"output"/);
+    for (const [id, state] of transcript.states) {
+      if (transcript.els.has(id)) continue;
+      assert.equal(state.open.has('unknown-disclosure'), false);
+    }
+    transcript.state(current.rowId).open.add('thinking');
+  }
+  transcript.dispose();
+}));
+
+test('legacy complete rebuilds prune departing and unrelated restored state while explicit removals stay destructive', () => withDom(async root => {
+  const transcript = new Transcript(root);
+  const loaded = assistant('loaded', '', { parts: [{ $type: 'reasoning', text: 'Reasoning' }] });
+  transcript.restoreState({ rows: [
+    { rowId: 'loaded', open: ['thinking'], all: [] },
+    { rowId: 'unloaded', open: ['turn'], all: [], details: {
+      rows: [{ rowId: 'nested-tool', open: ['tool'], all: ['output-0'] }],
+    } },
+  ] });
+  transcript.rebuild([loaded], { retainState: true });
+  assert.equal(root.querySelector('.thinking').open, true);
+  assert.equal(transcript.states.has('unloaded'), true);
+  assert.equal(transcript.turnStates.has('unloaded'), true);
+  transcript.rebuild([assistant('latest', 'Latest')]);
+  assert.equal(transcript.states.has('loaded'), false);
+  assert.equal(transcript.states.has('unloaded'), false);
+  assert.equal(transcript.turnStates.size, 0);
+  transcript.prepend([loaded]);
+  setDisclosure(transcript.els.get('loaded'), 'thinking', true);
+  transcript.rebuild([assistant('latest', 'Latest')], { retainState: true });
+  assert.equal(transcript.states.has('loaded'), true);
+  transcript.remove('loaded');
+  assert.equal(transcript.states.has('loaded'), false);
+  transcript.prepend([loaded]);
+  assert.equal(transcript.els.get('loaded').querySelector('.thinking').open, false);
+  setDisclosure(transcript.els.get('loaded'), 'thinking', true);
+  transcript.remove('loaded');
+  assert.equal(transcript.states.has('loaded'), false);
+  assert.equal(transcript.turnStates.has('loaded'), false);
+  transcript.dispose();
+}));

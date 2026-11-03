@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Threading.Channels;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
@@ -16,13 +17,15 @@ internal static class SessionStream
 
     public static async Task RunAsync(
         GatewayState state, SessionId sessionId, WebSocket socket, CancellationToken requestAborted,
-        TimeSpan? pingInterval = null, TimeSpan? sendTimeout = null, bool appendText = false, bool compact = false)
+        TimeSpan? pingInterval = null, TimeSpan? sendTimeout = null, bool appendText = false, bool compact = false,
+        bool history = false, string? around = null)
     {
         var writeTimeout = sendTimeout ?? SendTimeout;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
         using var sendGate = new SemaphoreSlim(1, 1);
         Task? receive = null;
         Task? ping = null;
+        Task? deltas = null;
         IConversationProjection? projection = null;
         IDisposable? registration = null;
         try
@@ -35,23 +38,49 @@ internal static class SessionStream
                 return;
             }
             registration = state.Streams.Register(sessionId, projection);
-            receive = ReceiveLoopAsync(socket, sendGate, cancellation);
+            var updates = compact && history ? Channel.CreateBounded<StreamUpdate>(new BoundedChannelOptions(HistoryRequest.QueueCapacity)
+            {
+                SingleReader = true,
+                FullMode = BoundedChannelFullMode.Wait,
+            }) : null;
+            receive = ReceiveLoopAsync(socket, sendGate, cancellation, updates?.Writer);
             var snapshot = projection.Snapshot();
-            var compactRows = compact ? new CompactTranscript(snapshot) : null;
+            var compactRows = compact ? new CompactTranscript(snapshot, updates is not null, around) : null;
             var legacyRows = appendText || compact ? null : new LegacyRows(snapshot);
             await SendAsync(socket, sendGate,
                 compactRows?.SnapshotFrame(snapshot.Revision, snapshot.Sequence) ?? GatewayJson.SnapshotFrame(snapshot),
                 cancellation.Token, writeTimeout);
             ping = PingLoopAsync(socket, sendGate, cancellation, pingInterval ?? PingInterval, writeTimeout);
             var lastSequence = snapshot.Sequence;
-            await foreach (var delta in projection.Deltas(cancellation.Token).ConfigureAwait(false))
+            if (updates is not null)
             {
-                if (delta.Sequence <= lastSequence)
-                    continue;
-                await SendAsync(socket, sendGate,
-                    compactRows?.Apply(delta, appendText) ?? GatewayJson.DeltaFrame(legacyRows?.Apply(delta) ?? delta),
-                    cancellation.Token, writeTimeout);
-                lastSequence = delta.Sequence;
+                deltas = PumpDeltasAsync(projection, updates.Writer, cancellation);
+                await foreach (var update in updates.Reader.ReadAllAsync(cancellation.Token).ConfigureAwait(false))
+                {
+                    if (update.Delta is { } delta)
+                    {
+                        if (delta.Sequence <= lastSequence)
+                            continue;
+                        await SendAsync(socket, sendGate, compactRows!.Apply(delta, appendText), cancellation.Token, writeTimeout);
+                        lastSequence = delta.Sequence;
+                    }
+                    else if (update.History is { } request)
+                        await SendAsync(socket, sendGate, compactRows!.Page(request, lastSequence), cancellation.Token, writeTimeout);
+                    else
+                        break;
+                }
+            }
+            else
+            {
+                await foreach (var delta in projection.Deltas(cancellation.Token).ConfigureAwait(false))
+                {
+                    if (delta.Sequence <= lastSequence)
+                        continue;
+                    await SendAsync(socket, sendGate,
+                        compactRows?.Apply(delta, appendText) ?? GatewayJson.DeltaFrame(legacyRows?.Apply(delta) ?? delta),
+                        cancellation.Token, writeTimeout);
+                    lastSequence = delta.Sequence;
+                }
             }
             await SendAsync(socket, sendGate, EndedFrame, cancellation.Token, writeTimeout);
             await CloseAsync(socket, sendGate, WebSocketCloseStatus.NormalClosure, "ended");
@@ -73,7 +102,7 @@ internal static class SessionStream
             try
             {
                 cancellation.Cancel();
-                await Task.WhenAll(receive ?? Task.CompletedTask, ping ?? Task.CompletedTask);
+                await Task.WhenAll(receive ?? Task.CompletedTask, ping ?? Task.CompletedTask, deltas ?? Task.CompletedTask);
             }
             finally
             {
@@ -217,24 +246,73 @@ internal static class SessionStream
         }
     }
 
-    private static async Task ReceiveLoopAsync(
-        WebSocket socket, SemaphoreSlim gate, CancellationTokenSource cancellation)
+    private sealed record StreamUpdate(ConversationDelta? Delta = null, HistoryRequest? History = null);
+
+    private static async Task PumpDeltasAsync(
+        IConversationProjection projection, ChannelWriter<StreamUpdate> updates, CancellationTokenSource cancellation)
     {
-        var buffer = new byte[4096];
+        var completed = false;
+        try
+        {
+            await foreach (var delta in projection.Deltas(cancellation.Token).ConfigureAwait(false))
+                await updates.WriteAsync(new StreamUpdate(Delta: delta), cancellation.Token);
+            await updates.WriteAsync(new StreamUpdate(), cancellation.Token);
+            completed = true;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (!completed) cancellation.Cancel();
+        }
+    }
+
+    private static async Task ReceiveLoopAsync(
+        WebSocket socket, SemaphoreSlim gate, CancellationTokenSource cancellation, ChannelWriter<StreamUpdate>? updates)
+    {
+        var buffer = new byte[HistoryRequest.MaxBytes + 1];
+        var length = 0;
         try
         {
             while (true)
             {
-                var received = await socket.ReceiveAsync(buffer, cancellation.Token);
+                var received = await socket.ReceiveAsync(new ArraySegment<byte>(buffer, length, buffer.Length - length), cancellation.Token);
                 if (received.MessageType == WebSocketMessageType.Close)
                 {
                     cancellation.Cancel();
                     await CloseAsync(socket, gate, WebSocketCloseStatus.NormalClosure, "closed");
                     return;
                 }
-                // This socket is a one-way projection feed; non-empty client frames end it.
-                if (received.Count > 0)
+                if (updates is null)
+                {
+                    if (received.Count > 0)
+                        return;
+                    continue;
+                }
+                if (received.MessageType != WebSocketMessageType.Text)
+                {
+                    await CloseAsync(socket, gate, WebSocketCloseStatus.InvalidMessageType, "history_requires_text");
                     return;
+                }
+                length += received.Count;
+                if (length > HistoryRequest.MaxBytes)
+                {
+                    await CloseAsync(socket, gate, WebSocketCloseStatus.MessageTooBig, "history_too_large");
+                    return;
+                }
+                if (!received.EndOfMessage)
+                    continue;
+                if (length == 0)
+                    continue;
+                var request = HistoryRequest.Parse(buffer.AsMemory(0, length));
+                if (request is null)
+                {
+                    await CloseAsync(socket, gate, WebSocketCloseStatus.InvalidPayloadData, "invalid_history");
+                    return;
+                }
+                await updates.WriteAsync(new StreamUpdate(History: request), cancellation.Token);
+                length = 0;
             }
         }
         catch (OperationCanceledException)
