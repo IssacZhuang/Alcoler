@@ -41,6 +41,36 @@ public sealed class StaticShellTests
     }
 
     [Fact]
+    public async Task Composers_DefaultToFullAccessAndAllowLocalImageSelection()
+    {
+        var body = await _harness.Client.GetStringAsync(string.Empty);
+        Assert.Equal(2, Regex.Matches(body, @"<option value=""yolo"" selected>Full access</option>").Count);
+        Assert.Equal(2, Regex.Matches(body, @"aria-label=""Attach images"" title=""Attach images""").Count);
+        var inputs = Regex.Matches(body, @"<input class=""composer-file""[^>]*>");
+        Assert.Equal(2, inputs.Count);
+        foreach (Match input in inputs)
+        {
+            Assert.Contains("type=\"file\"", input.Value);
+            Assert.Contains("accept=\"image/*\"", input.Value);
+            Assert.Contains("multiple", input.Value);
+            Assert.DoesNotContain("capture", input.Value);
+        }
+    }
+
+    [Fact]
+    public async Task MobileSessionStyles_KeepRowsAndTheirControlsCompact()
+    {
+        var css = await _harness.Client.GetStringAsync("styles.css");
+        var start = css.IndexOf("@media (max-width: 899px)", StringComparison.Ordinal);
+        var end = css.IndexOf("/* ---------- Desktop layout ---------- */", start, StringComparison.Ordinal);
+        var mobile = css[start..end];
+        Assert.Matches(@"(?s)\.sidebar \.session-group\s*\{[^}]*margin-bottom: 4px;", mobile);
+        Assert.Matches(@"(?s)\.sidebar \.session-group-head,\s*\.sidebar \.session-group-more \.sl-show-more\s*\{[^}]*min-height: 32px;", mobile);
+        Assert.Matches(@"(?s)\.sidebar \.session-row\s*\{[^}]*min-height: 36px;[^}]*padding: 4px;", mobile);
+        Assert.Matches(@"(?s)\.sidebar \.session-list \.icon-btn\s*\{[^}]*height: 32px;[^}]*min-height: 32px;[^}]*min-width: 32px;[^}]*width: 32px;", mobile);
+    }
+
+    [Fact]
     public async Task ComposerPickers_ShareTheBottomToolbar()
     {
         var body = await _harness.Client.GetStringAsync(string.Empty);

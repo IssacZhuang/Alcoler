@@ -182,7 +182,7 @@ function createShell() {
     modelsFetchedAt: 0,
     modelCatalogSignature: '',
     draftWorkspace: '',
-    draftMode: 'build',
+    draftMode: 'yolo',
     draftPlanEnabled: false,
     draftWorkflows: [],
     draftLiteralText: null,
@@ -247,7 +247,7 @@ function createShell() {
   });
 
   const storedMode = storageGet(MODE_KEY);
-  sh.draftMode = ['build', 'edit', 'yolo'].includes(storedMode) ? storedMode : 'build';
+  sh.draftMode = ['build', 'edit', 'yolo'].includes(storedMode) ? storedMode : 'yolo';
   sh.draftWorkspace = storageGet(WORKSPACE_KEY).trim();
   sh.draftComposer.setMode(sh.draftMode);
   sh.draftComposer.setReady(true);
@@ -730,7 +730,7 @@ async function sendDraft(sh, text, images, modelSelection) {
     try {
       handle = await api.createSession({
         workspaceRoot,
-        mode: sh.draftMode || 'build',
+        mode: sh.draftMode || 'yolo',
         planEnabled: sh.draftPlanEnabled,
         activeWorkflows: sh.draftWorkflows,
       });

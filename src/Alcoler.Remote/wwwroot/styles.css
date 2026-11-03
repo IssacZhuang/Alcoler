@@ -3412,6 +3412,27 @@ svg {
   .shell[data-route="draft"] .sidebar {
     display: none;
   }
+
+  .sidebar .session-group {
+    margin-bottom: 4px;
+  }
+
+  .sidebar .session-group-head,
+  .sidebar .session-group-more .sl-show-more {
+    min-height: 32px;
+  }
+
+  .sidebar .session-row {
+    min-height: 36px;
+    padding: 4px;
+  }
+
+  .sidebar .session-list .icon-btn {
+    height: 32px;
+    min-height: 32px;
+    min-width: 32px;
+    width: 32px;
+  }
 }
 
 /* ---------- Desktop layout ---------- */

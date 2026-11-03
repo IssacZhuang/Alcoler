@@ -82,7 +82,7 @@ function assertSentIntent(command, intent) {
   assert.deepEqual(command.images, [image]);
 }
 
-function createFixture() {
+function createFixture({ storedMode } = {}) {
   let serial = 0;
   const nodes = new Map();
   const node = key => {
@@ -95,6 +95,7 @@ function createFixture() {
     return nodes.get(key);
   };
   const storage = new Map([['alcoler.lastWorkspace', 'C:/workspace']]);
+  if (storedMode !== undefined) storage.set('alcoler.lastMode', storedMode);
   const location = { hash: '#/new' };
   const calls = { creates: [], commands: [], catalogs: [] };
   const handlers = {
@@ -153,6 +154,36 @@ function createFixture() {
   };
   return fixture;
 }
+
+test('new tasks default to full access when no valid mode was saved', async () => {
+  for (const storedMode of [undefined, '', 'unknown']) {
+    const f = createFixture({ storedMode });
+    assert.equal(f.controller.shell.draftMode, 'yolo');
+    assert.equal(f.draft.mode, 'yolo');
+    f.draft.setText('new task');
+    await f.sendDraft();
+    assert.equal(f.calls.creates[0].mode, 'yolo');
+  }
+});
+
+test('new tasks preserve explicitly saved permission modes', async () => {
+  for (const storedMode of ['build', 'edit', 'yolo']) {
+    const f = createFixture({ storedMode });
+    assert.equal(f.draft.mode, storedMode);
+    f.draft.setText('new task');
+    await f.sendDraft();
+    assert.equal(f.calls.creates[0].mode, storedMode);
+  }
+});
+
+test('existing sessions keep their authoritative permission mode instead of the new-task default', () => {
+  for (const mode of ['Build', 'Edit', 'Yolo']) {
+    const f = createFixture();
+    f.open('existing', { mode });
+    assert.equal(f.composer.mode, mode.toLowerCase());
+    assert.equal(f.calls.commands.length, 0);
+  }
+});
 
 for (const outcome of ['accepted', 'rejected', 'unconfirmed']) {
   test(`navigation during a bare workflow toggle (${outcome}) recovers images and full queued intent without retrying the toggle`, async () => {

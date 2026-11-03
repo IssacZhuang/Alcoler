@@ -438,26 +438,46 @@ public sealed partial class RemoteAccessViewModel : ObservableObject, IAsyncDisp
         }
     }
 
-    private static IEnumerable<System.Net.IPAddress> EnumeratePrivateIPv4Addresses()
+    private static IReadOnlyList<System.Net.IPAddress> EnumeratePrivateIPv4Addresses()
     {
+        var tailnet = new List<System.Net.IPAddress>();
+        var lan = new List<System.Net.IPAddress>();
         var seen = new HashSet<System.Net.IPAddress>();
         foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
         {
             if (nic.OperationalStatus != OperationalStatus.Up
-                || nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
+                || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
             {
                 continue;
             }
             foreach (var address in nic.GetIPProperties().UnicastAddresses)
             {
                 var ip = address.Address;
-                if (ip.AddressFamily != AddressFamily.InterNetwork || !IsPrivateIPv4(ip) || !seen.Add(ip))
+                if (ip.AddressFamily != AddressFamily.InterNetwork || !seen.Add(ip))
                 {
                     continue;
                 }
-                yield return ip;
+                if (IsTailnetIPv4(ip) && IsTailnetInterface(nic))
+                    tailnet.Add(ip);
+                else if (nic.NetworkInterfaceType != NetworkInterfaceType.Tunnel && IsPrivateIPv4(ip))
+                    lan.Add(ip);
             }
         }
+        // A tailnet origin stays reachable off-LAN, so it must lead the pairing
+        // list and QR: the PWA pairs against one origin, and LAN origins die off-site.
+        tailnet.AddRange(lan);
+        return tailnet;
+    }
+
+    private static bool IsTailnetInterface(NetworkInterface nic) =>
+        nic.NetworkInterfaceType == NetworkInterfaceType.Tunnel
+        || nic.Name.Contains("tailscale", StringComparison.OrdinalIgnoreCase)
+        || nic.Description.Contains("tailscale", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTailnetIPv4(System.Net.IPAddress address)
+    {
+        var bytes = address.GetAddressBytes();
+        return bytes[0] == 100 && bytes[1] is >= 64 and <= 127;
     }
 
     private static bool IsPrivateIPv4(System.Net.IPAddress address)

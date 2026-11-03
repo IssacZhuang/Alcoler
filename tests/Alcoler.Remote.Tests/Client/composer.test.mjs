@@ -22,6 +22,7 @@ class Element {
   setAttribute(name, value) { this.attributes.set(name, value); }
   closest() { return null; }
   change(value) { this.value = value; this.listeners.get('change')?.(); }
+  click() { this.clicks = (this.clicks || 0) + 1; this.listeners.get('click')?.(); }
 }
 
 const originalDocument = globalThis.document;
@@ -33,7 +34,8 @@ afterEach(() => {
 
 function createComposer(options = {}) {
   const elements = new Map([
-    '.composer-input', '.composer-send', '.mode-select', '.model-select', '.model-picker', '.model-label',
+    '.composer-input', '.composer-send', '.composer-attach', '.composer-file',
+    '.mode-select', '.model-select', '.model-picker', '.model-label',
     '.model-chevron', '.effort-select', '.effort-picker', '.effort-label', '.effort-icon', '.effort-chevron',
   ].map(selector => [selector, new Element()]));
   const composer = new Composer({ querySelector: selector => elements.get(selector) || null }, options);
@@ -214,6 +216,36 @@ test('only explicit model and effort changes replace a withdrawn message model i
   assert.deepEqual(changes, [selection('second', 'shared', 'max', 4096)]);
   elements.get('.model-select').change('0');
   assert.deepEqual(changes[1], selection('first', 'shared', 'high'));
+});
+
+test('the image attachment button opens the file picker and respects the disabled state', () => {
+  const { composer, elements } = createComposer();
+  const button = elements.get('.composer-attach');
+  const input = elements.get('.composer-file');
+  assert.match(button.innerHTML, /<rect x="3" y="3" width="18" height="18"/);
+  assert.match(button.innerHTML, /m21 15-5-5L5 21/);
+  button.click();
+  assert.equal(input.clicks, 1);
+  composer.setDisabled(true);
+  button.click();
+  assert.equal(input.clicks, 1);
+  composer.dispose();
+  assert.equal(button.listeners.size, 0);
+  assert.equal(input.listeners.size, 0);
+});
+
+test('file selection processes every chosen local image and resets the picker for reuse', async () => {
+  const { composer, elements } = createComposer();
+  const input = elements.get('.composer-file');
+  const files = [{ name: 'first.png', type: 'image/png' }, { name: 'second.jpg', type: 'image/jpeg' }];
+  const added = [];
+  composer.addFile = async file => added.push(file);
+  input.files = files;
+  input.value = 'local images';
+  await input.listeners.get('change')();
+  assert.deepEqual(added, files);
+  assert.equal(input.value, '');
+  composer.dispose();
 });
 
 test('attachment preparation blocks sending and notifies queue controls about draft changes', () => {

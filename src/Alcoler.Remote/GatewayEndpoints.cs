@@ -415,14 +415,14 @@ internal static class GatewayEndpoints
     {
         switch (mode)
         {
-            case null:
-            case "":
             case "build":
                 permissionMode = PermissionMode.Build;
                 return true;
             case "edit":
                 permissionMode = PermissionMode.Edit;
                 return true;
+            case null:
+            case "":
             case "yolo":
                 permissionMode = PermissionMode.Yolo;
                 return true;

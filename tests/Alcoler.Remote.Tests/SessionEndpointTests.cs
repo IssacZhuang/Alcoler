@@ -238,8 +238,13 @@ public sealed class SessionEndpointTests
         }
     }
 
-    [Fact]
-    public async Task CreateSession_RoundTripsWorkspaceTitleAndYoloMode()
+    [Theory]
+    [InlineData(null, "Yolo")]
+    [InlineData("", "Yolo")]
+    [InlineData("build", "Build")]
+    [InlineData("edit", "Edit")]
+    [InlineData("yolo", "Yolo")]
+    public async Task CreateSession_RoundTripsWorkspaceTitleAndPermissionMode(string? mode, string expectedMode)
     {
         var (_, token) = await _harness.PairAsync();
         var workspaceRoot = $@"C:\remote-tests\{Guid.NewGuid():N}";
@@ -248,7 +253,7 @@ public sealed class SessionEndpointTests
             HttpMethod.Post,
             "api/sessions",
             token,
-            GatewayHarness.Serialize(new { workspaceRoot, title = "Remote suite", mode = "yolo" }));
+            GatewayHarness.Serialize(new { workspaceRoot, title = "Remote suite", mode }));
         Assert.Equal(HttpStatusCode.OK, created.StatusCode);
         var createdBody = await created.Content.ReadAsStringAsync();
         using var handle = JsonDocument.Parse(createdBody);
@@ -269,13 +274,13 @@ public sealed class SessionEndpointTests
         // Enum members serialize in Pascal case on the gateway wire (AlcolerJson shape).
         var permissionMode = entry.Value.GetProperty("permissionMode").GetString();
         Assert.True(
-            string.Equals("yolo", permissionMode, StringComparison.OrdinalIgnoreCase),
+            string.Equals(expectedMode, permissionMode, StringComparison.OrdinalIgnoreCase),
             $"permissionMode was {permissionMode}");
         Assert.False(entry.Value.GetProperty("isArchived").GetBoolean());
     }
 
     [Fact]
-    public async Task CreateSession_PassesPlanAndWorkflowIntentWithBackwardCompatibleDefaults()
+    public async Task CreateSession_PassesPlanAndWorkflowIntentWithDefaultFullAccess()
     {
         var runtime = new SessionCreationRuntime();
         var harness = new SessionCreationGatewayHarness(runtime);
@@ -301,13 +306,14 @@ public sealed class SessionEndpointTests
             {
                 Assert.Equal(HttpStatusCode.OK, legacy.StatusCode);
             }
-            Assert.Equal(PermissionMode.Build, runtime.Options[1].PermissionMode);
+            Assert.Equal(PermissionMode.Yolo, runtime.Options[1].PermissionMode);
             Assert.False(runtime.Options[1].PlanEnabled);
             Assert.Null(runtime.Options[1].ActiveWorkflows);
 
             using var cleared = await harness.SendWithTokenAsync(HttpMethod.Post, "api/sessions", token,
                 GatewayHarness.Serialize(new { workspaceRoot, planEnabled = false, activeWorkflows = Array.Empty<string>() }));
             Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
+            Assert.Equal(PermissionMode.Yolo, runtime.Options[2].PermissionMode);
             Assert.False(runtime.Options[2].PlanEnabled);
             Assert.Empty(Assert.IsType<string[]>(runtime.Options[2].ActiveWorkflows));
         }

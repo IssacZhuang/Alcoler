@@ -25,7 +25,10 @@ internal static class NetworkPolicy
             (bytes[0] == 10 ||
             (bytes[0] == 172 && (uint)(bytes[1] - 16) <= 15) ||
             (bytes[0] == 192 && bytes[1] == 168) ||
-            (bytes[0] == 169 && bytes[1] == 254));
+            (bytes[0] == 169 && bytes[1] == 254) ||
+            // RFC 6598 CGNAT range; overlay networks (Tailscale tailnets) source
+            // their clients from here with device-level encryption.
+            (bytes[0] == 100 && (uint)(bytes[1] - 64) <= 63));
     }
 
     private static bool IsPrivateV6(IPAddress address)

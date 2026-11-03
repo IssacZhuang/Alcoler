@@ -42,7 +42,7 @@ export class Composer {
       root, onComplete: () => { this.autosize(); this.update(); },
     });
 
-    if (this.attachBtn) this.attachBtn.innerHTML = icon('camera');
+    if (this.attachBtn) this.attachBtn.innerHTML = icon('image');
     if (this.modeIcon) this.modeIcon.innerHTML = icon('wrench');
     if (this.modelChevron) this.modelChevron.innerHTML = icon('chevron-down');
     if (this.effortIcon) this.effortIcon.innerHTML = icon('brain');
