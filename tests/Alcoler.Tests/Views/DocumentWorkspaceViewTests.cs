@@ -28,7 +28,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task CustomControl_PreservesInstanceAndEditsAcrossActivationAndCollapse()
     {
-        using var harness = new Harness(shell: true);
+        using var harness = await Harness.CreateAsync(shell: true);
         var editor = new TrackingTextBox { Text = "Original text", AcceptsReturn = true };
         var first = harness.Open("extension-editor", "Extension editor", editor);
         var second = harness.Open("extension-border", "Extension border", new Border { Background = Brushes.Blue });
@@ -79,7 +79,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task StatusPlan_OpensReadOnlyMarkdownDocument()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var plan = new StatusPlan
         {
             RowId = "plan-row",
@@ -108,7 +108,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task LocalDataTemplate_RendersUnknownViewModelAndRetainsItsView()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var built = new List<TextBox>();
         harness.View.DataTemplates.Add(new FuncDataTemplate<ExtensionContent>((content, _) =>
         {
@@ -149,7 +149,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task HeaderAndTabs_Keep48PixelChromeShrinkFrom156To60AndOverflow()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         harness.Open("first", "First", new Border());
         await RenderAsync(harness.Window);
         Assert.Equal(48, Named<Border>(harness.View, "DocumentHeader").Bounds.Height);
@@ -191,7 +191,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task PointerSwitchAndInactiveClose_DoNotActivateTheClosedDocument()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var first = harness.Open("first", "First", new TextBox());
         var second = harness.Open("second", "Second", new TextBox());
         var third = harness.Open("third", "Third", new TextBox());
@@ -224,7 +224,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task MiddleClick_ClosesInactiveTabWithoutChangingSelection()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var first = harness.Open("first", "First", new Border());
         var second = harness.Open("second", "Second", new Border());
         await RenderAsync(harness.Window);
@@ -240,7 +240,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task TabKeyboard_ArrowsSelectAndWrapAndDeleteClosesFocusedTab()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var first = harness.Open("first", "First", new Border());
         var second = harness.Open("second", "Second", new Border());
         var third = harness.Open("third", "Third", new Border());
@@ -271,7 +271,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task PointerDrag_ReordersTabsWithoutReplacingTheirBodies()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var first = harness.Open("first", "First", new TextBox { Text = "Retained" });
         var second = harness.Open("second", "Second", new Border());
         var third = harness.Open("third", "Third", new Border());
@@ -296,7 +296,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task Overview_SearchesVisibleTitlesCaseInsensitivelyAndActivatesResult()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var alpha = harness.Open("alpha", "Alpha source", new Border());
         harness.Open("beta", "Beta source", new Border());
         var alphabet = harness.Open("alphabet", "Alphabet notes", new Border());
@@ -327,7 +327,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task ContextMenu_CloseOthersAndCloseAllAffectOnlyTheVisibleScope()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var first = harness.Open("first", "First", new Border());
         var retained = harness.Open("retained", "Retained", new Border());
         harness.Open("third", "Third", new Border());
@@ -368,7 +368,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task ContextMenu_MoveCommandsReorderVisibleTabs()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         var first = harness.Open("first", "First", new Border());
         var second = harness.Open("second", "Second", new Border());
         var third = harness.Open("third", "Third", new Border());
@@ -387,7 +387,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task EmptyShellToggle_ShowsEmptyStateWithoutOpeningBuiltInDocuments()
     {
-        using var harness = new Harness(shell: true);
+        using var harness = await Harness.CreateAsync(shell: true);
         await RenderAsync(harness.Window);
         Assert.Empty(harness.Documents.Items);
         Assert.False(harness.Documents.IsVisible);
@@ -414,7 +414,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task ShellCtrlW_WithComposerFocusClosesOnlyTheActiveExpandedRightDocument()
     {
-        using var harness = new Harness(shell: true);
+        using var harness = await Harness.CreateAsync(shell: true);
         var first = harness.Open("first", "First", new TextBox { Text = "First document" });
         var second = harness.Open("second", "Second", new TextBox { Text = "Second document" });
         await RenderAsync(harness.Window);
@@ -482,7 +482,7 @@ public class DocumentWorkspaceViewTests
                 presenters.Add((tabId, presenter));
                 return presenter;
             });
-            using var harness = new Harness(shell: true, workbench: new WorkbenchViewModel(runtime,
+            using var harness = await Harness.CreateAsync(shell: true, workbench: new WorkbenchViewModel(runtime,
                 AvaloniaUiScheduler.Instance, new WorkbenchConfig([]), browserPane: rootBrowser));
             controller.Publish(other.Id, BrowserStatus("other-tab"));
             if (statusBeforeBind)
@@ -573,7 +573,7 @@ public class DocumentWorkspaceViewTests
     [AvaloniaFact]
     public async Task NativeTemplates_RenderGitBrowserTextAndFakeTerminalWithoutStartingResources()
     {
-        using var harness = new Harness();
+        using var harness = await Harness.CreateAsync();
         using var gitService = new InertGitService();
         using var browserController = new InertBrowserController();
         var terminalService = new InertTerminalService();
@@ -728,9 +728,12 @@ public class DocumentWorkspaceViewTests
 
     private sealed class Harness : IDisposable
     {
-        public Harness(bool shell = false, WorkbenchViewModel? workbench = null)
+        public static async Task<Harness> CreateAsync(bool shell = false, WorkbenchViewModel? workbench = null) =>
+            new(shell, workbench ?? await ShellSmokeTests.CreateWorkbenchAsync());
+
+        private Harness(bool shell, WorkbenchViewModel workbench)
         {
-            Workbench = workbench ?? ShellSmokeTests.CreateWorkbench();
+            Workbench = workbench;
             Root = Workbench.CurrentWorkspaceRoot;
             OwnerId = Workbench.CurrentDocumentOwnerId;
             if (shell)

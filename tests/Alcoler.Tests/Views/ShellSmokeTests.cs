@@ -48,9 +48,9 @@ public sealed class ShellTestApp : Avalonia.Application
 public class ShellSmokeTests
 {
     [AvaloniaFact]
-    public void MainWindow_Constructs_And_HostsAllRegions()
+    public async Task MainWindow_Constructs_And_HostsAllRegions()
     {
-        var viewModel = CreateWorkbench();
+        var viewModel = await CreateWorkbenchAsync();
         var window = new MainWindow(viewModel);
         window.Show();
 
@@ -62,9 +62,9 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
-    public void WorkbenchBanner_FloatsOverContentWithoutDisplacingIt()
+    public async Task WorkbenchBanner_FloatsOverContentWithoutDisplacingIt()
     {
-        using var viewModel = CreateWorkbench();
+        using var viewModel = await CreateWorkbenchAsync();
         var window = new MainWindow(viewModel);
         window.Show();
         try
@@ -91,9 +91,9 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
-    public void WorkbenchBanner_TimerPausesForRecoveryTextAndStopsWhenCleared()
+    public async Task WorkbenchBanner_TimerPausesForRecoveryTextAndStopsWhenCleared()
     {
-        using var viewModel = CreateWorkbench();
+        using var viewModel = await CreateWorkbenchAsync();
         var window = new MainWindow(viewModel);
         window.Show();
         try
@@ -127,9 +127,9 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
-    public void ErrorToast_ShowsMessageAndLogPath_AndDismisses()
+    public async Task ErrorToast_ShowsMessageAndLogPath_AndDismisses()
     {
-        using var viewModel = CreateWorkbench();
+        using var viewModel = await CreateWorkbenchAsync();
         var window = new MainWindow(viewModel);
         window.Show();
         try
@@ -239,9 +239,9 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
-    public void Sidebar_RendersGroupsSessionsAndActiveState()
+    public async Task Sidebar_RendersGroupsSessionsAndActiveState()
     {
-        var viewModel = CreateWorkbench();
+        var viewModel = await CreateWorkbenchAsync();
         var alphaA = new SessionSummaryViewModel(NewId(), "Session A", @"C:\ws\alpha", DateTimeOffset.UtcNow.AddMinutes(-5));
         var alphaB = new SessionSummaryViewModel(NewId(), "Session B", @"C:\ws\alpha", DateTimeOffset.UtcNow.AddMinutes(-1));
         var betaC = new SessionSummaryViewModel(NewId(), "Session C", @"C:\ws\beta", DateTimeOffset.UtcNow.AddHours(-2));
@@ -282,9 +282,9 @@ public class ShellSmokeTests
     }
 
     [AvaloniaFact]
-    public void Sidebar_ShowsEmptyState_WhenNoSessions()
+    public async Task Sidebar_ShowsEmptyState_WhenNoSessions()
     {
-        var viewModel = CreateWorkbench();
+        var viewModel = await CreateWorkbenchAsync();
         var window = new MainWindow(viewModel);
         window.Show();
         Dispatcher.UIThread.RunJobs();
@@ -359,13 +359,13 @@ public class ShellSmokeTests
         Assert.False(sidebar.Groups[0].IsExpanded);
     }
 
-    internal static WorkbenchViewModel CreateWorkbench()
+    internal static async Task<WorkbenchViewModel> CreateWorkbenchAsync()
     {
         var runtime = new FakeAgentRuntime();
         var sessionId = new SessionId(Guid.NewGuid().ToString("N"));
         runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
         var viewModel = new WorkbenchViewModel(runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]));
-        viewModel.OpenSessionAsync(sessionId).GetAwaiter().GetResult();
+        await viewModel.OpenSessionAsync(sessionId);
         return viewModel;
     }
 

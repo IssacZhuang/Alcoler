@@ -74,10 +74,24 @@ test('an already-running session receives subsequent chunks only after its snaps
   assert.deepEqual(statuses, ['connecting', 'online']);
 });
 
+test('compact transcript negotiation is opt-in and survives reconnect independently of append support', t => {
+  const { client, sockets } = fixture(t, { compact: true, appendText: false });
+  client.start();
+  let url = new URL(sockets[0].url);
+  assert.equal(url.searchParams.get('compact'), '1');
+  assert.equal(url.searchParams.has('appendText'), false);
+  snapshot(sockets[0]);
+  client.manualReconnect();
+  url = new URL(sockets[1].url);
+  assert.equal(url.searchParams.get('compact'), '1');
+  assert.equal(url.searchParams.has('appendText'), false);
+});
+
 test('older callers never advertise append support without a capable transcript', t => {
   const { client, sockets } = fixture(t, { appendText: undefined });
   client.start();
   assert.equal(new URL(sockets[0].url).searchParams.has('appendText'), false);
+  assert.equal(new URL(sockets[0].url).searchParams.has('compact'), false);
 });
 
 test('manual reconnect closes the old socket and ignores its queued callbacks', t => {

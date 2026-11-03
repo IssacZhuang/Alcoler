@@ -19,7 +19,8 @@ const loadController = new Function('dependencies', `
   shell = createShell();
   return {
     get shell() { return shell; }, get convo() { return convo; },
-    get pendingRestores() { return pendingRestores; }, route, sendDraft,
+    get pendingRestores() { return pendingRestores; },
+    get readingStates() { return readingStates; }, route, sendDraft,
   };
 `);
 
@@ -82,9 +83,10 @@ function assertSentIntent(command, intent) {
   assert.deepEqual(command.images, [image]);
 }
 
-function createFixture({ storedMode } = {}) {
+function createFixture({ storedMode, compactCapable = true, detailsAvailable = true } = {}) {
   let serial = 0;
   const nodes = new Map();
+  const frames = new Map();
   const node = key => {
     if (!nodes.has(key)) nodes.set(key, {
       hidden: false, textContent: '', className: '', dataset: {},
@@ -97,11 +99,13 @@ function createFixture({ storedMode } = {}) {
   const storage = new Map([['alcoler.lastWorkspace', 'C:/workspace']]);
   if (storedMode !== undefined) storage.set('alcoler.lastMode', storedMode);
   const location = { hash: '#/new' };
-  const calls = { creates: [], commands: [], catalogs: [], transcript: [], reconnects: 0 };
+  const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], reconnects: 0 };
   const handlers = {
     createSession: async () => ({ id: 'created' }),
     sendCommand: async () => accepted(),
     getSlashCatalog: async () => catalog,
+    getTurnDetails: async () => ({ rows: [], version: 'turn-version', sequence: 100 }),
+    getRowDetails: async () => ({ row: {}, version: 'row-version', sequence: 100 }),
   };
   const api = {
     getToken: () => 'paired-token',
@@ -112,6 +116,14 @@ function createFixture({ storedMode } = {}) {
       return handlers.sendCommand(id, command);
     },
   };
+  if (detailsAvailable) {
+    for (const method of ['getTurnDetails', 'getRowDetails']) {
+      api[method] = async (id, rowId, options) => {
+        calls.details.push({ method, id, rowId, options });
+        return handlers[method](id, rowId, options);
+      };
+    }
+  }
   const schedule = () => ++serial;
   const controller = loadController({
     api, Composer: FakeComposer, prepareSubmission,
@@ -119,7 +131,8 @@ function createFixture({ storedMode } = {}) {
     matchMedia: () => ({ matches: true }), location,
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     setTimeout: schedule, clearTimeout: noop, setInterval: schedule, clearInterval: noop,
-    requestAnimationFrame: schedule, cancelAnimationFrame: noop,
+    requestAnimationFrame: fn => { const id = ++serial; frames.set(id, fn); return id; },
+    cancelAnimationFrame: id => frames.delete(id),
     ResizeObserver: class { observe() {} disconnect() {} },
     StreamClient: class {
       constructor(opts) { this.opts = opts; }
@@ -127,8 +140,24 @@ function createFixture({ storedMode } = {}) {
       manualReconnect() { calls.reconnects++; }
     },
     Transcript: class {
-      constructor() { this.els = new Map(); }
-      rebuild(rows) { calls.transcript.push(['snapshot', structuredClone(rows)]); }
+      constructor(_el, opts) { this.els = new Map(); this.opts = opts; this.supportsCompact = compactCapable; this.viewState = []; }
+      rebuild(rows) {
+        this.opts.onBeforeChange?.();
+        calls.transcript.push(['snapshot', structuredClone(rows)]);
+        this.els.clear();
+        for (const [index, row] of rows.entries()) {
+          this.els.set(row.rowId, { dataset: { rowId: row.rowId }, hidden: false,
+            getBoundingClientRect() {
+              const scroll = node('transcript-scroll');
+              const top = (scroll.getBoundingClientRect?.().top || 0) + (row.layoutY ?? index * 100) - scroll.scrollTop;
+              return { top, bottom: top + (row.layoutHeight ?? 100), height: row.layoutHeight ?? 100 };
+            } });
+        }
+        this.opts.onChange?.();
+      }
+      exportState() { return structuredClone(this.viewState); }
+      restoreState(state) { this.viewState = structuredClone(state); }
+      hasPendingDetails() { return this.pendingDetails === true; }
       append(row) { calls.transcript.push(['append', structuredClone(row)]); }
       upsert(row) { calls.transcript.push(['upsert', structuredClone(row)]); }
       appendText(op) { calls.transcript.push(['text', structuredClone(op)]); return op.rowId !== 'missing'; }
@@ -146,13 +175,18 @@ function createFixture({ storedMode } = {}) {
     get draft() { return controller.shell.draftComposer; },
     get composer() { return controller.shell.sessionComposer; },
     get convo() { return controller.convo; },
-    open(id = 'original', overrides = {}) {
+    open(id = 'original', overrides = {}, rows = []) {
       location.hash = `#/session/${encodeURIComponent(id)}`;
       controller.route();
       const st = controller.convo;
       st.ws.opts.onStatus('online');
-      st.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(overrides), rows: [] });
+      st.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(overrides), rows });
       return st;
+    },
+    flushLayout() {
+      const pending = [...frames];
+      frames.clear();
+      for (const [, fn] of pending) fn();
     },
     withdraw(draft) { controller.convo.queueView.opts.onRestore(structuredClone(draft)); },
     sendSession() {
@@ -166,6 +200,175 @@ function createFixture({ storedMode } = {}) {
   };
   return fixture;
 }
+
+test('switching sessions restores disclosure metadata and a row-relative reading position', () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 20 }) });
+  const rows = [{ rowId: 'a', layoutY: 0 }, { rowId: 'b', layoutY: 500 }, { rowId: 'c', layoutY: 1000 }];
+  const first = f.open('first', {}, rows);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  first.onScroll();
+  first.transcript.viewState = [{ rowId: 'b', open: ['turn'], all: ['input'] }];
+  f.open('other');
+  const saved = f.controller.readingStates.get('first');
+  assert.equal(saved.anchor.rowId, 'b');
+  assert.equal(saved.anchor.offset, -50);
+  assert.equal(saved.followLatest, false);
+  assert.deepEqual(Object.keys(saved).sort(), ['anchor', 'followLatest', 'transcript']);
+  const restored = f.open('first', {}, rows.map(row => ({ ...row, layoutY: row.layoutY + 200 })));
+  f.flushLayout();
+  assert.equal(restored.followLatest, false);
+  assert.equal(scroll.scrollTop, 750);
+  assert.deepEqual(restored.transcript.viewState, first.transcript.viewState);
+});
+
+test('reconnect snapshots preserve the reading anchor when preceding content changes height', () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const rows = [{ rowId: 'a', layoutY: 0 }, { rowId: 'b', layoutY: 500 }, { rowId: 'c', layoutY: 1000 }];
+  const st = f.open('first', {}, rows);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  st.onScroll();
+  st.ws.opts.onSnapshot({ revision: 11, sequence: 200, state: sessionState(), rows: rows.map(row => ({ ...row, layoutY: row.layoutY + 300 })) });
+  f.flushLayout();
+  assert.equal(st.followLatest, false);
+  assert.equal(scroll.scrollTop, 850);
+  assert.equal(st.readingAnchor.rowId, 'b');
+});
+
+test('asynchronously expanded content keeps the current reading anchor without following the tail', () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const rows = [{ rowId: 'a', layoutY: 0 }, { rowId: 'b', layoutY: 500 }];
+  const st = f.open('first', {}, rows);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  st.onScroll();
+  st.transcript.opts.onBeforeChange();
+  rows[1].layoutY += 120;
+  st.transcript.opts.onChange();
+  f.flushLayout();
+  assert.equal(scroll.scrollTop, 670);
+  assert.equal(st.followLatest, false);
+});
+
+test('layout callbacks before the first snapshot cannot overwrite a saved reading anchor', () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const rows = [{ rowId: 'a', layoutY: 0 }, { rowId: 'b', layoutY: 500 }];
+  const st = f.open('first', {}, rows);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  st.onScroll();
+  f.open('other');
+  f.location.hash = '#/session/first';
+  f.controller.route();
+  const waiting = f.convo;
+  waiting.refreshLayout();
+  f.flushLayout();
+  assert.equal(waiting.readingAnchor.rowId, 'b');
+  waiting.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(), rows });
+  f.flushLayout();
+  assert.equal(scroll.scrollTop, 550);
+});
+
+test('nested reading anchors survive the placeholder layout until restored details finish loading', () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const full = [{ rowId: 'parent', layoutY: 0 }, { rowId: 'detail', layoutY: 500 }, { rowId: 'after', layoutY: 1000 }];
+  const first = f.open('first', {}, full);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  first.onScroll();
+  f.open('other');
+  f.location.hash = '#/session/first';
+  f.controller.route();
+  const restoring = f.convo;
+  restoring.transcript.pendingDetails = true;
+  restoring.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(), rows: [full[0], { rowId: 'after', layoutY: 200 }] });
+  f.flushLayout();
+  assert.equal(restoring.readingAnchor.rowId, 'detail');
+  assert.equal(restoring.restoringReading, true);
+  restoring.transcript.pendingDetails = false;
+  restoring.transcript.rebuild(full.map(row => ({ ...row, layoutY: row.layoutY + 200 })));
+  f.flushLayout();
+  assert.equal(scroll.scrollTop, 750);
+  assert.equal(restoring.readingAnchor.rowId, 'detail');
+  assert.equal(restoring.restoringReading, false);
+});
+
+test('deliberate scrolling while details load cancels automatic return to the old reading anchor', () => {
+  const f = createFixture();
+  const scroll = f.node('transcript-scroll');
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const full = [{ rowId: 'parent', layoutY: 0 }, { rowId: 'detail', layoutY: 500 }, { rowId: 'after', layoutY: 1000 }];
+  const first = f.open('first', {}, full);
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  first.onScroll();
+  f.open('other');
+  f.location.hash = '#/session/first';
+  f.controller.route();
+  const restoring = f.convo;
+  restoring.transcript.pendingDetails = true;
+  restoring.ws.opts.onSnapshot({ revision: 10, sequence: 100, state: sessionState(), rows: [full[0], { rowId: 'after', layoutY: 200 }] });
+  f.flushLayout();
+  scroll.scrollTop = 200;
+  restoring.onScroll();
+  assert.equal(restoring.readingAnchor.rowId, 'after');
+  assert.equal(restoring.restoringReading, false);
+  restoring.transcript.pendingDetails = false;
+  restoring.transcript.rebuild(full);
+  f.flushLayout();
+  assert.equal(restoring.readingAnchor.rowId, 'after');
+  assert.equal(scroll.scrollTop, 1000);
+});
+
+test('reading state retention is bounded and new sessions continue to follow the latest content', () => {
+  const f = createFixture();
+  f.node('transcript-scroll').scrollHeight = 2000;
+  for (let i = 0; i < 35; i++) f.open(`session-${i}`);
+  f.flushLayout();
+  assert.equal(f.controller.readingStates.size, 32);
+  assert.equal(f.controller.readingStates.has('session-0'), false);
+  assert.equal(f.controller.readingStates.has('session-33'), true);
+  assert.equal(f.convo.followLatest, true);
+  assert.equal(f.node('transcript-scroll').scrollTop, 2000);
+});
+
+test('compact streams require both renderer and detail API support', () => {
+  const capable = createFixture();
+  assert.equal(capable.open().ws.opts.compact, true);
+  const oldRenderer = createFixture({ compactCapable: false });
+  assert.equal(oldRenderer.open().ws.opts.compact, false);
+  const oldApi = createFixture({ detailsAvailable: false });
+  const st = oldApi.open();
+  assert.equal(st.ws.opts.compact, false);
+  assert.equal(st.transcript.opts.loadTurn, undefined);
+});
+
+test('detail loaders forward version and cancellation and stale content reconnects only its active session', async () => {
+  const f = createFixture();
+  const st = f.open();
+  const options = { version: 'turn-version', signal: new AbortController().signal };
+  assert.deepEqual(await st.transcript.opts.loadTurn('user-row', options), { rows: [], version: 'turn-version', sequence: 100 });
+  assert.equal(f.calls.details[0].id, 'original');
+  assert.equal(f.calls.details[0].rowId, 'user-row');
+  assert.equal(f.calls.details[0].options, options);
+  f.handlers.getRowDetails = async () => { throw Object.assign(new Error('Changed'), { status: 409 }); };
+  await assert.rejects(st.transcript.opts.loadRow('tool-row', { version: 'old' }), { status: 409 });
+  assert.equal(f.calls.reconnects, 1);
+  f.open('other');
+  await assert.rejects(st.transcript.opts.loadRow('tool-row', { version: 'old' }), { status: 409 });
+  assert.equal(f.calls.reconnects, 1);
+});
 
 test('append operations apply once above the snapshot watermark and reconnect snapshots replace the baseline', () => {
   const f = createFixture();

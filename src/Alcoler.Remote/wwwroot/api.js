@@ -105,6 +105,19 @@ export function resumeSession(id) {
   return json(`/api/sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' });
 }
 
+export function getTurnDetails(id, rowId, options = {}) {
+  return transcriptDetails(id, 'turns', rowId, options);
+}
+
+export function getRowDetails(id, rowId, options = {}) {
+  return transcriptDetails(id, 'rows', rowId, options);
+}
+
+function transcriptDetails(id, kind, rowId, { signal, version } = {}) {
+  const query = version ? `?version=${encodeURIComponent(version)}` : '';
+  return json(`/api/sessions/${encodeURIComponent(id)}/${kind}/${encodeURIComponent(rowId)}${query}`, { signal });
+}
+
 export function archiveSession(id, archived = true) {
   return json(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST', body: { archived } });
 }

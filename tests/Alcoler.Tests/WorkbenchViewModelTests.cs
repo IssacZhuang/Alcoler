@@ -485,13 +485,18 @@ public sealed class WorkbenchViewModelTests : IDisposable
         using var workbench = new WorkbenchViewModel(runtime, scheduler, config);
         try
         {
-            await workbench.OpenSessionAsync(sessionId);
+            var opening = workbench.OpenSessionAsync(sessionId);
             await runtime.SubscriptionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(opening.IsCompleted);
+            Assert.Null(workbench.Active);
+            runtime.ReleaseSubscription();
+            await opening.WaitAsync(TimeSpan.FromSeconds(5));
             var conversation = workbench.Active!;
             Assert.Equal(PermissionMode.Edit, conversation.Composer.Mode);
+            Assert.Equal(PermissionMode.Yolo, conversation.Composer.SessionMode);
+            Assert.True(conversation.Composer.PlanEnabled);
             conversation.Composer.PlanEnabled = false;
 
-            runtime.ReleaseSubscription();
             await runtime.InitialSnapshotPublished.Task.WaitAsync(TimeSpan.FromSeconds(5));
             scheduler.RunPending();
 

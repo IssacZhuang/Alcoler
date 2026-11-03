@@ -1189,6 +1189,70 @@ svg {
   display: none;
 }
 
+.turn-process {
+  margin: 0 0 12px;
+  min-width: 0;
+}
+
+.turn-head {
+  align-items: center;
+  border-radius: var(--r-xs);
+  color: var(--secondary);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 3px;
+}
+
+.turn-head:focus-visible,
+.detail-retry:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.turn-count {
+  color: var(--tertiary);
+}
+
+.turn-head > svg {
+  height: 14px;
+  transition: transform 0.15s ease;
+  width: 14px;
+}
+
+.turn-process[open] > .turn-head > svg {
+  transform: rotate(90deg);
+}
+
+.turn-body {
+  border-left: 1px solid var(--surface);
+  margin: 4px 0 12px 3px;
+  min-width: 0;
+  padding: 4px 0 4px 10px;
+}
+
+.detail-loading,
+.detail-error {
+  align-items: center;
+  color: var(--secondary);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--font);
+  font-size: 12px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px;
+}
+
+.detail-error {
+  color: var(--error);
+}
+
+.detail-retry {
+  min-height: 36px;
+}
+
 .row-user {
   align-items: flex-end;
   display: flex;

@@ -211,7 +211,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
         var runtime = new FakeAgentRuntime();
         var parentId = StrongId.NewSessionId();
         var childId = StrongId.NewSessionId();
-        runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+        runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()), _root);
         runtime.RegisterSession(childId, new ConversationSnapshot(0, 1,
         [
             new UserMessageRow("user", "Review this change", DateTimeOffset.UtcNow),
@@ -257,7 +257,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
     [Fact]
     public async Task StatusActivity_SubagentPreservesRichRowsAndLiveDisclosureStateWithoutDuplicateObservations()
     {
-        var runtime = new ParentScopedRuntime();
+        var runtime = new ParentScopedRuntime(_root);
         var parentId = StrongId.NewSessionId();
         var childId = StrongId.NewSessionId();
         runtime.RegisterParent(parentId);
@@ -375,7 +375,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
     [Fact]
     public async Task StatusActivity_EmptyAvailableSubagentRemainsLiveForFirstOutput()
     {
-        var runtime = new ParentScopedRuntime();
+        var runtime = new ParentScopedRuntime(_root);
         var parentId = StrongId.NewSessionId();
         var childId = StrongId.NewSessionId();
         runtime.RegisterParent(parentId);
@@ -409,7 +409,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
     [Fact]
     public async Task StatusActivity_SubagentIsolationAndGapResubscribeKeepCapturedParentAfterNavigation()
     {
-        var runtime = new ParentScopedRuntime();
+        var runtime = new ParentScopedRuntime(_root);
         var firstParentId = StrongId.NewSessionId();
         var secondParentId = StrongId.NewSessionId();
         var childId = StrongId.NewSessionId();
@@ -485,7 +485,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
     [InlineData(true)]
     public async Task StatusActivity_CloseReopenAndWorkbenchDisposalReleaseObservationsWithoutStoppingAgent(bool closeImmediately)
     {
-        var runtime = new ParentScopedRuntime();
+        var runtime = new ParentScopedRuntime(_root);
         var parentId = StrongId.NewSessionId();
         var childId = StrongId.NewSessionId();
         runtime.RegisterParent(parentId);
@@ -588,7 +588,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
 
-    private sealed class ParentScopedRuntime : IAgentRuntime, ISessionActivityRuntime
+    private sealed class ParentScopedRuntime(string workspaceRoot) : IAgentRuntime, ISessionActivityRuntime
     {
         private readonly Dictionary<(SessionId Parent, SessionId Child), ChildProjectionSource> _children = [];
 
@@ -600,7 +600,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
         public ConcurrentQueue<(SessionId Parent, BackgroundJobId JobId)> StoppedBackgroundJobs { get; } = new();
 
         public void RegisterParent(SessionId sessionId) =>
-            Parents.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+            Parents.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()), workspaceRoot);
 
         public ChildProjectionSource RegisterChild(SessionId parentId, SessionId childId, ConversationSnapshot snapshot)
         {

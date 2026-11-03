@@ -14,6 +14,7 @@ internal sealed class GatewayState(
     public PairingTokenStore PairingTokens { get; } = pairingTokens;
     public AuditLog Audit { get; } = audit;
     public FailureRateLimiter PairRateLimit { get; } = pairRateLimit;
+    public StreamProjectionRegistry Streams { get; } = new();
 
     public static GatewayState Create(RemoteGatewayOptions options)
     {

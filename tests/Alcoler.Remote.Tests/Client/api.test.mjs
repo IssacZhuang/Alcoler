@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { getSlashCatalog } from '../../../src/Alcoler.Remote/wwwroot/api.js';
+import { getSlashCatalog, getTurnDetails, getRowDetails } from '../../../src/Alcoler.Remote/wwwroot/api.js';
 
 const originalFetch = globalThis.fetch;
 const originalStorage = globalThis.localStorage;
@@ -40,6 +40,29 @@ test('session discovery never sends a client workspace override', async () => {
 test('an unset workspace can discover built-ins without a session', async () => {
   await getSlashCatalog();
   assert.equal(requests[0].url, '/api/slash-catalog?workspaceRoot=');
+});
+
+for (const [kind, load] of [['turns', getTurnDetails], ['rows', getRowDetails]]) {
+  test(`${kind} detail requests encode identifiers and versions and propagate cancellation`, async () => {
+    const controller = new AbortController();
+    const session = 'sess_中文 & session';
+    const row = 'row/? symbols';
+    const version = 'opaque+/= version';
+    await load(session, row, { signal: controller.signal, version });
+    assert.equal(requests[0].url, `/api/sessions/${encodeURIComponent(session)}/${kind}/${encodeURIComponent(row)}?version=${encodeURIComponent(version)}`);
+    assert.equal(requests[0].options.headers.Authorization, 'Bearer paired-device-token');
+    assert.equal(requests[0].options.cache, 'no-store');
+    assert.equal(requests[0].options.signal, controller.signal);
+    await load('session', 'row');
+    assert.equal(requests[1].url, `/api/sessions/session/${kind}/row`);
+  });
+}
+
+test('detail version conflicts remain distinguishable from missing content', async () => {
+  globalThis.fetch = async () => ({ ok: false, status: 409, json: async () => ({ error: 'stale_details' }) });
+  await assert.rejects(getTurnDetails('session', 'row', { version: 'old' }), { status: 409, code: 'stale_details' });
+  globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) });
+  await assert.rejects(getRowDetails('session', 'removed'), { status: 404, code: 'not_found' });
 });
 
 let artifactFixtureId = 0;

@@ -14,6 +14,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Rendering.Composition;
 using Avalonia.Styling;
@@ -235,7 +236,7 @@ public sealed class DocumentAdapterViewTests : IDisposable
         var activity = AgentActivityRow(childId, "Inspect child transcript", startedAt);
         runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1,
             [new UserMessageRow("parent-user", "Keep the parent conversation active", startedAt), activity],
-            TestSnapshots.State() with { Title = "Parent conversation" }));
+            TestSnapshots.State() with { Title = "Parent conversation" }), _root);
         var reasoningPart = new ReasoningPart(StrongId.NewPartId(), "Inspect the child workspace first.");
         var textPart = new TextPart(StrongId.NewPartId(), "The child is reviewing the change.");
         var assistant = new AssistantMessageRow("child-assistant", StrongId.NewMessageId(),
@@ -264,7 +265,7 @@ public sealed class DocumentAdapterViewTests : IDisposable
             Assert.InRange(statusOrigin.Y, 15, 17);
             Assert.InRange(statusOrigin.X + status.Bounds.Width, conversationArea.Bounds.Width - 17, conversationArea.Bounds.Width - 15);
             await ExpandAgentsAsync(window, status);
-            await ClickAsync(window, AgentActivityButton(status, childId));
+            await ClickAsync(window, () => AgentActivityButton(status, childId));
             await WaitUntilAsync(window, () => workbench.Documents.ActiveDocument?.Content is SubagentDocumentViewModel
                 && childProjection.SubscribeCount == 1
                 && window.GetVisualDescendants().OfType<TimelineView>().Count() == 2);
@@ -371,7 +372,7 @@ public sealed class DocumentAdapterViewTests : IDisposable
             Assert.Same(parent, workbench.Active);
             Assert.DoesNotContain(parent.Items, item => item.RowId is "child-assistant" or "child-tool");
 
-            await ClickAsync(window, AgentActivityButton(status, childId));
+            await ClickAsync(window, () => AgentActivityButton(status, childId));
             Pump(window);
             Assert.Same(document, workbench.Documents.ActiveDocument);
             Assert.Same(document, Assert.Single(workbench.Documents.Items));
@@ -421,9 +422,20 @@ public sealed class DocumentAdapterViewTests : IDisposable
             await WaitUntilAsync(window, () => parent.Status.Agents.Count == 1);
             var status = window.FindControl<ConversationStatusView>("SessionStatus")!;
             await ExpandAgentsAsync(window, status);
-            await ClickAsync(window, AgentActivityButton(status, childId));
+            var requests = 0;
+            status.ActivityRequested += activity =>
+            {
+                Assert.Equal(childId, activity.ChildSessionId);
+                requests++;
+            };
+            string State() => $"requests={requests}, active={workbench.Active?.SessionId}, " +
+                $"document={workbench.Documents.ActiveDocument?.Id}/{workbench.Documents.ActiveDocument?.Content.GetType().Name}, " +
+                $"documents={workbench.Documents.Items.Count}, banner={workbench.Banner}, " +
+                $"observes={runtime.ObserveCount}, snapshots={childProjection.SnapshotCount}, subscriptions={childProjection.SubscribeCount}";
+            var gesture = await ClickAsync(window, () => AgentActivityButton(status, childId), State);
+            Assert.True(requests == 1, State() + "\n" + gesture);
             await WaitUntilAsync(window, () => workbench.Documents.ActiveDocument?.Content is SubagentDocumentViewModel
-                && childProjection.SubscribeCount == 1);
+                && childProjection.SubscribeCount == 1, () => State() + "\n" + gesture);
             var document = Assert.Single(workbench.Documents.Items);
             var transcript = Assert.IsType<SubagentDocumentViewModel>(document.Content);
             var documentsView = Assert.Single(window.GetVisualDescendants().OfType<DocumentWorkspaceView>());
@@ -462,21 +474,21 @@ public sealed class DocumentAdapterViewTests : IDisposable
         new("child-activity", "subagent", "Child agent started", new SubagentState(StrongId.NewSubagentId(),
             childId, title, SubagentStatus.Running, null, startedAt, null));
 
-    private static Button AgentActivityButton(ConversationStatusView status, SessionId childId) =>
-        Assert.Single(status.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("activityRow")
+    private static Button? AgentActivityButton(ConversationStatusView status, SessionId childId) =>
+        status.GetVisualDescendants().OfType<Button>().SingleOrDefault(button => button.Classes.Contains("activityRow")
             && button.DataContext is StatusActivity { ChildSessionId: var id } && id == childId);
 
     private static async Task ExpandAgentsAsync(Window window, ConversationStatusView status)
     {
         if (!status.IsExpanded)
         {
-            await ClickAsync(window, status.FindControl<Button>("SummaryButton")!);
+            await ClickAsync(window, () => status.FindControl<Button>("SummaryButton"));
             Pump(window);
         }
         var agents = status.FindControl<Expander>("AgentsSection")!;
         Assert.False(agents.IsExpanded);
-        await ClickAsync(window, Assert.Single(agents.GetVisualDescendants().OfType<ToggleButton>(),
-            button => button.Classes.Contains("sectionHeader")));
+        await ClickAsync(window, () => agents.GetVisualDescendants().OfType<ToggleButton>()
+            .SingleOrDefault(button => button.Classes.Contains("sectionHeader")));
         Pump(window);
         Assert.True(status.IsExpanded);
         Assert.True(agents.IsExpanded);
@@ -496,28 +508,133 @@ public sealed class DocumentAdapterViewTests : IDisposable
         }
     }
 
-    private static async Task ClickAsync(Window window, Button button)
+    private static Task<string> ClickAsync(Window window, Button button) => ClickAsync(window, () => button);
+
+    private static async Task<string> ClickAsync(Window window, Func<Button?> findButton,
+        Func<string>? diagnostics = null)
     {
         await WaitForPaneAnimationsAsync(window);
-        Pump(window);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
         var visual = ElementComposition.GetElementVisual(window);
         Assert.NotNull(visual);
-        var rendered = visual.Compositor.RequestCompositionBatchCommitAsync().Rendered;
-        Dispatcher.UIThread.RunJobs();
-        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
-        await rendered.WaitAsync(TimeSpan.FromSeconds(5));
-        Dispatcher.UIThread.RunJobs();
-        Assert.True(button.IsEffectivelyVisible);
-        Assert.True(button.IsEffectivelyEnabled);
-        Assert.True(button.Bounds.Width > 0 && button.Bounds.Height > 0);
-        var point = button.TranslatePoint(new Point(button.Bounds.Width / 2, button.Bounds.Height / 2), window)!.Value;
-        Assert.True(new Rect(window.ClientSize).Contains(point));
-        var hit = Assert.IsAssignableFrom<Visual>(window.InputHitTest(point));
-        Assert.True(ReferenceEquals(hit, button) || hit.GetVisualAncestors().Contains(button),
-            $"Expected {button.Name} at {point}, hit {hit.GetType().Name}.");
-        window.MouseMove(point);
-        window.MouseDown(point, MouseButton.Left);
-        window.MouseUp(point, MouseButton.Left);
+        while (true)
+        {
+            Pump(window);
+            var rendered = visual.Compositor.RequestCompositionBatchCommitAsync().Rendered;
+            Dispatcher.UIThread.RunJobs();
+            AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+            await rendered.WaitAsync(TimeSpan.FromSeconds(5));
+            var button = findButton();
+            var point = button?.TranslatePoint(new Point(button.Bounds.Width / 2, button.Bounds.Height / 2), window);
+            var hit = point is { } location ? window.InputHitTest(location) as Visual : null;
+            if (button is { IsEffectivelyVisible: true, IsEffectivelyEnabled: true } &&
+                button.Bounds.Width > 0 && button.Bounds.Height > 0 && point is { } target &&
+                new Rect(window.ClientSize).Contains(target) && hit is not null &&
+                (ReferenceEquals(hit, button) || hit.GetVisualAncestors().Contains(button)))
+            {
+                var status = button.GetVisualAncestors().OfType<ConversationStatusView>().FirstOrDefault();
+                var activityTimer = status is null ? null : Assert.IsType<DispatcherTimer>(typeof(ConversationStatusView)
+                    .GetField("_activityTimer", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .GetValue(status));
+                var timerWasEnabled = activityTimer?.IsEnabled == true;
+                var timerInterval = activityTimer?.Interval ?? default;
+                var targetActivity = button.Classes.Contains("activityRow") ? button.DataContext as StatusActivity : null;
+                Queue<string> events = new();
+                IPointer? pointer = null;
+                var clicks = 0;
+                var activityRequests = 0;
+                void Record(string stage)
+                {
+                    if (events.Count == 24)
+                        events.Dequeue();
+                    var current = findButton();
+                    events.Enqueue($"{stage}: target={DescribeButton(button)}, current={DescribeButton(current)}, " +
+                        $"capture={pointer?.Captured?.GetType().Name}/{DescribeButton(pointer?.Captured as Button)}, " +
+                        $"clock={activityTimer?.IsEnabled}/{activityTimer?.Interval}");
+                }
+                void Pressed(object? sender, PointerPressedEventArgs e)
+                {
+                    pointer = e.Pointer;
+                    Record($"pressed source={e.Source?.GetType().Name} handled={e.Handled}");
+                }
+                void Released(object? sender, PointerReleasedEventArgs e) =>
+                    Record($"released source={e.Source?.GetType().Name} handled={e.Handled}");
+                void CaptureLost(object? sender, PointerCaptureLostEventArgs e) => Record("capture-lost");
+                void Clicked(object? sender, RoutedEventArgs e)
+                {
+                    if (e.Source is Button clicked && (ReferenceEquals(clicked, button) ||
+                        (targetActivity is { } activity && clicked.DataContext is StatusActivity live &&
+                         activity.Id == live.Id)))
+                    {
+                        clicks++;
+                        Record($"click source={DescribeButton(clicked)}");
+                    }
+                }
+                void Requested(StatusActivity activity)
+                {
+                    if (activity.Id != targetActivity?.Id)
+                        return;
+                    activityRequests++;
+                    Record($"activity-request child={activity.ChildSessionId}");
+                }
+                if (status is not null)
+                    status.ActivityRequested += Requested;
+                window.AddHandler(InputElement.PointerPressedEvent, Pressed, RoutingStrategies.Bubble, handledEventsToo: true);
+                window.AddHandler(InputElement.PointerReleasedEvent, Released, RoutingStrategies.Bubble, handledEventsToo: true);
+                window.AddHandler(Button.ClickEvent, Clicked, RoutingStrategies.Bubble, handledEventsToo: true);
+                button.AddHandler(InputElement.PointerCaptureLostEvent, CaptureLost);
+                try
+                {
+                    if (activityTimer is not null)
+                    {
+                        // Headless input pumps dispatcher jobs between events of one synthetic gesture.
+                        activityTimer.Stop();
+                        activityTimer.Interval = TimeSpan.FromDays(1);
+                    }
+                    Record($"before-move point={target}");
+                    window.MouseMove(target);
+                    Record("after-move");
+                    window.MouseDown(target, MouseButton.Left);
+                    Record("after-down");
+                    Record("before-up");
+                    window.MouseUp(target, MouseButton.Left);
+                    Record("after-up");
+                    Assert.True(clicks == 1, $"Expected one routed Click, got {clicks}. {diagnostics?.Invoke()}\n" +
+                        string.Join("\n", events));
+                    Assert.True(targetActivity is null || activityRequests == 1,
+                        $"Expected one ActivityRequested, got {activityRequests}. {diagnostics?.Invoke()}\n" + string.Join("\n", events));
+                    return string.Join("\n", events);
+                }
+                finally
+                {
+                    if (activityTimer is not null)
+                    {
+                        activityTimer.Stop();
+                        activityTimer.Interval = timerInterval;
+                        if (timerWasEnabled)
+                            activityTimer.Start();
+                    }
+                    if (status is not null)
+                        status.ActivityRequested -= Requested;
+                    window.RemoveHandler(InputElement.PointerPressedEvent, Pressed);
+                    window.RemoveHandler(InputElement.PointerReleasedEvent, Released);
+                    window.RemoveHandler(Button.ClickEvent, Clicked);
+                    button.RemoveHandler(InputElement.PointerCaptureLostEvent, CaptureLost);
+                }
+            }
+            Assert.True(DateTime.UtcNow < deadline,
+                $"Button {button?.Name} was not attached and hit-testable; point={point}, hit={hit?.GetType().Name}.");
+            await Task.Delay(10);
+        }
+    }
+
+    private static string DescribeButton(Button? button)
+    {
+        if (button is null)
+            return "none";
+        var activity = button.DataContext as StatusActivity;
+        return $"{button.GetType().Name}#{button.GetHashCode()}({button.Name}, attached={button.GetVisualRoot() is not null}, " +
+            $"pressed={button.IsPressed}, activity={activity?.Id}, child={activity?.ChildSessionId}, command={button.Command?.GetType().Name})";
     }
 
     private static void Pump(Window window)
@@ -528,7 +645,7 @@ public sealed class DocumentAdapterViewTests : IDisposable
         window.UpdateLayout();
     }
 
-    private static async Task WaitUntilAsync(Window window, Func<bool> condition)
+    private static async Task WaitUntilAsync(Window window, Func<bool> condition, Func<string>? diagnostics = null)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (true)
@@ -541,7 +658,7 @@ public sealed class DocumentAdapterViewTests : IDisposable
                 Pump(window);
                 return;
             }
-            Assert.True(DateTime.UtcNow < deadline, "Document view update did not arrive within 10 seconds.");
+            Assert.True(DateTime.UtcNow < deadline, "Document view update did not arrive within 10 seconds. " + diagnostics?.Invoke());
             await Task.Delay(10);
         }
     }

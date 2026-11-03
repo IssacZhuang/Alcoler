@@ -20,6 +20,7 @@ internal sealed class FakeSession
     public bool Archived { get; set; }
     public long Revision { get; set; }
     public long Sequence { get; set; }
+    public int ProjectionCount { get; set; }
     public List<ConversationRow> Rows { get; } = [];
     public List<Channel<ConversationDelta>> Views { get; } = [];
     public Func<IConversationProjection>? ProjectionFactory { get; set; }

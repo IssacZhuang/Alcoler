@@ -31,8 +31,22 @@ function container() {
     childNodes: [], listeners: new Map(),
     addEventListener(name, fn) { this.listeners.set(name, fn); },
     removeEventListener(name) { this.listeners.delete(name); },
-    appendChild(el) { this.childNodes.push(el); },
-    replaceChildren(fragment) { this.childNodes = fragment?.children || []; },
+    appendChild(el) { this.insertBefore(el, null); },
+    insertBefore(el, anchor) {
+      const previous = this.childNodes.indexOf(el);
+      if (previous >= 0) this.childNodes.splice(previous, 1);
+      const index = anchor ? this.childNodes.indexOf(anchor) : this.childNodes.length;
+      assert.ok(index >= 0, 'insertBefore anchor must belong to its parent');
+      this.childNodes.splice(index, 0, el);
+      el.remove = () => { const at = this.childNodes.indexOf(el); if (at >= 0) this.childNodes.splice(at, 1); };
+      el.replaceWith = replacement => {
+        const at = this.childNodes.indexOf(el);
+        assert.ok(at >= 0, 'replaceWith target must belong to its parent');
+        this.childNodes.splice(at, 1);
+        this.insertBefore(replacement, this.childNodes[at] || null);
+      };
+    },
+    replaceChildren(fragment) { this.childNodes = []; for (const el of fragment?.children || []) this.appendChild(el); },
     querySelectorAll: () => [],
   };
 }
@@ -447,8 +461,6 @@ test('assistant rows can become visible and invisible on updates without losing 
   transcript.rebuild([tool(), row]);
   assert.equal(transcript.els.get(row.rowId).hidden, true);
   for (const parts of [[{ $type: 'text', text: 'Visible follow-up' }], [{ $type: 'tool_result' }]]) {
-    const current = transcript.els.get(row.rowId);
-    current.replaceWith = replacement => { root.childNodes[1] = replacement; };
     transcript.upsert({ ...row, parts });
     assert.equal(transcript.els.size, 2);
     assert.equal(root.childNodes[1], transcript.els.get(row.rowId));
@@ -491,7 +503,6 @@ test('row replacements and reconnect rebuilds retain disclosure and Show all sta
   transcript.state(row.rowId).all.add('output-0');
   const old = transcript.els.get(row.rowId);
   old.querySelectorAll = selector => selector.startsWith('details') ? [{ dataset: { disclosure: 'tool' }, open: true }] : [];
-  old.replaceWith = replacement => { root.childNodes = [replacement]; };
   transcript.upsert({ ...row, duration: 2500 });
   assert.match(transcript.els.get(row.rowId).innerHTML, /data-disclosure="tool" open/);
   assert.match(transcript.els.get(row.rowId).innerHTML, /full tail/);
@@ -539,7 +550,7 @@ test('delegated Show all retrieves model text rather than a giant HTML attribute
   const block = { querySelector: selector => selector === '.out-clip' ? clip : { classList: { remove() {} } } };
   const button = { dataset: { section: 'output-0' },
     closest: selector => selector === '.row' ? el : block, remove: () => { removed = true; } };
-  transcript.showAll({ target: { closest: () => button }, preventDefault() {} });
+  transcript.showAll({ target: { closest: selector => selector === '.out-more[data-section]' ? button : null }, preventDefault() {} });
   assert.equal(clip.textContent, full);
   assert.equal(removed, true);
   assert.equal(transcript.state('tool-1').all.has('output-0'), true);
@@ -670,6 +681,209 @@ function artifactTarget(kind, uri) {
   return target;
 }
 
+const decodeHtml = text => text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, entity) => {
+  if (entity[0] === '#') return String.fromCodePoint(parseInt(entity.slice(entity[1] === 'x' ? 2 : 1), entity[1] === 'x' ? 16 : 10));
+  return { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[entity];
+});
+const encodeHtml = text => String(text).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const voidTags = new Set(['img', 'input', 'hr', 'br', 'wbr', 'source']);
+const dataKey = key => key.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+
+class DomElement {
+  constructor(tag = 'div', text = '') {
+    this.tagName = tag.toUpperCase();
+    this.nodeType = tag === '#text' ? 3 : 1;
+    this.text = text;
+    this.childNodes = [];
+    this.parentNode = null;
+    this.dataset = {};
+    this.attrs = new Map();
+    this.listeners = new Map();
+    this.writes = 0;
+    this.classList = {
+      contains: name => this.className.split(/\s+/).includes(name),
+      add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(' '); },
+      remove: (...names) => { this.className = this.className.split(/\s+/).filter(name => !names.includes(name)).join(' '); },
+    };
+  }
+  get children() { return this.childNodes.filter(node => node.nodeType === 1); }
+  get isConnected() { return !!this._connected || !!this.parentNode?.isConnected; }
+  get className() { return this.attrs.get('class') || ''; }
+  set className(value) { this.setAttribute('class', value); }
+  get open() { return this.attrs.has('open'); }
+  set open(value) { if (value) this.setAttribute('open', ''); else this.removeAttribute('open'); }
+  get hidden() { return this.attrs.has('hidden'); }
+  set hidden(value) { if (value) this.setAttribute('hidden', ''); else this.removeAttribute('hidden'); }
+  get src() { return this.getAttribute('src'); }
+  set src(value) { this.setAttribute('src', value); }
+  get textContent() { return this.nodeType === 3 ? this.text : this.childNodes.map(node => node.textContent).join(''); }
+  set textContent(value) { this.replaceChildren(new DomElement('#text', String(value))); }
+  touch() {
+    let root = this;
+    while (root.parentNode) root = root.parentNode;
+    if (root._connected) root.writes++;
+  }
+  setAttribute(name, value) {
+    this.touch();
+    if (name.startsWith('data-')) this.dataset[dataKey(name)] = String(value);
+    else this.attrs.set(name, String(value));
+  }
+  getAttribute(name) { return name.startsWith('data-') ? this.dataset[dataKey(name)] ?? null : this.attrs.get(name) ?? null; }
+  removeAttribute(name) {
+    this.touch();
+    if (name.startsWith('data-')) delete this.dataset[dataKey(name)];
+    else this.attrs.delete(name);
+  }
+  get innerHTML() { return this.childNodes.map(node => node.outerHTML).join(''); }
+  get outerHTML() {
+    if (this.nodeType === 3) return encodeHtml(this.text);
+    const attrs = [...this.attrs, ...Object.entries(this.dataset).map(([key, value]) => [
+      'data-' + key.replace(/[A-Z]/g, char => '-' + char.toLowerCase()), value])];
+    const tag = this.tagName.toLowerCase();
+    const attributes = attrs.map(([key, value]) => value === '' ? ` ${key}` : ` ${key}="${encodeHtml(value)}"`).join('');
+    return `<${tag}${attributes}>${voidTags.has(tag) ? '' : this.innerHTML + `</${tag}>`}`;
+  }
+  set innerHTML(html) {
+    this.replaceChildren();
+    const stack = [this];
+    for (const token of String(html).match(/<[^>]+>|[^<]+/g) || []) {
+      if (token.startsWith('</')) { assert.ok(stack.length > 1, 'balanced closing tag'); stack.pop(); continue; }
+      if (!token.startsWith('<')) { stack.at(-1).appendChild(new DomElement('#text', decodeHtml(token))); continue; }
+      if (token.startsWith('<!--')) continue;
+      const match = /^<([\w-]+)([\s\S]*?)\/?>$/.exec(token);
+      assert.ok(match, `supported HTML token: ${token}`);
+      const node = new DomElement(match[1]);
+      for (const attr of match[2].matchAll(/([^\s=]+)(?:="([^"]*)"|='([^']*)'|=([^\s]+))?/g)) {
+        node.setAttribute(attr[1], decodeHtml(attr[2] ?? attr[3] ?? attr[4] ?? ''));
+      }
+      stack.at(-1).appendChild(node);
+      if (!voidTags.has(match[1]) && !token.endsWith('/>')) stack.push(node);
+    }
+    assert.equal(stack.length, 1, 'balanced HTML tree');
+  }
+  appendChild(node) { return this.insertBefore(node, null); }
+  insertBefore(node, anchor) {
+    if (node === anchor) return node;
+    assert.ok(anchor === null || anchor.parentNode === this, 'anchor belongs to parent');
+    node.remove();
+    this.touch();
+    const index = anchor ? this.childNodes.indexOf(anchor) : this.childNodes.length;
+    this.childNodes.splice(index, 0, node);
+    node.parentNode = this;
+    return node;
+  }
+  remove() {
+    if (!this.parentNode) return;
+    this.touch();
+    const siblings = this.parentNode.childNodes;
+    siblings.splice(siblings.indexOf(this), 1);
+    this.parentNode = null;
+  }
+  replaceWith(node) {
+    assert.ok(this.parentNode, 'replacement target belongs to parent');
+    this.parentNode.insertBefore(node, this);
+    this.remove();
+  }
+  replaceChildren(...nodes) {
+    this.touch();
+    for (const child of [...this.childNodes]) child.remove();
+    for (const node of nodes) this.appendChild(node);
+  }
+  matches(selector) {
+    return selector.split(',').some(part => {
+      const chain = part.trim().split(/\s+(?![^\[]*\])/);
+      const matchOne = (node, simple) => {
+        if (node.nodeType !== 1) return false;
+        const tag = /^[\w-]+/.exec(simple)?.[0];
+        if (tag && tag.toUpperCase() !== node.tagName) return false;
+        for (const match of simple.matchAll(/\.([\w-]+)/g)) if (!node.classList.contains(match[1])) return false;
+        for (const match of simple.matchAll(/\[([\w-]+)(?:="?([^"\]]+)"?)?\]/g)) {
+          const attr = node.getAttribute(match[1]);
+          if (attr == null || (match[2] !== undefined && attr !== match[2])) return false;
+        }
+        return true;
+      };
+      if (!matchOne(this, chain.pop())) return false;
+      let ancestor = this.parentNode;
+      while (chain.length) {
+        const simple = chain.pop();
+        while (ancestor && !matchOne(ancestor, simple)) ancestor = ancestor.parentNode;
+        if (!ancestor) return false;
+        ancestor = ancestor.parentNode;
+      }
+      return true;
+    });
+  }
+  closest(selector) { for (let node = this; node; node = node.parentNode) if (node.matches(selector)) return node; return null; }
+  querySelectorAll(selector) {
+    const matches = [];
+    const visit = node => { for (const child of node.children) { if (child.matches(selector)) matches.push(child); visit(child); } };
+    visit(this);
+    return matches;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  addEventListener(name, handler, capture = false) {
+    if (!this.listeners.has(name)) this.listeners.set(name, []);
+    this.listeners.get(name).push({ handler, capture });
+  }
+  removeEventListener(name, handler) {
+    this.listeners.set(name, (this.listeners.get(name) || []).filter(listener => listener.handler !== handler));
+  }
+  fire(name) {
+    const path = [];
+    for (let node = this; node; node = node.parentNode) path.push(node);
+    const event = { target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    for (const node of [...path].reverse()) for (const listener of [...node.listeners.get(name) || []]) if (listener.capture) listener.handler(event);
+    for (const node of path) {
+      if (name === 'toggle' && node !== this) break;
+      for (const listener of [...node.listeners.get(name) || []]) if (!listener.capture) listener.handler(event);
+    }
+    return event;
+  }
+  pause() { this.pauses = (this.pauses || 0) + 1; }
+  load() { this.loads = (this.loads || 0) + 1; }
+  play() { return Promise.resolve(); }
+}
+
+async function withDom(run) {
+  const previous = { document: globalThis.document, Image: globalThis.Image };
+  globalThis.document = { createElement: tag => new DomElement(tag) };
+  globalThis.Image = class extends DomElement { constructor() { super('img'); } };
+  const root = new DomElement();
+  root._connected = true;
+  try { return await run(root); }
+  finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+    }
+  }
+}
+
+function setDisclosure(root, key, open) {
+  const detail = root.querySelector(`details[data-disclosure="${key}"]`);
+  assert.ok(detail, `${key} disclosure exists`);
+  detail.open = open;
+  detail.fire('toggle');
+  return detail;
+}
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+const assistant = (rowId, text, overrides = {}) => ({ $type: 'assistant_message', rowId,
+  parts: [{ $type: 'text', text }], isStreaming: false, ...overrides });
+const compactTool = (overrides = {}) => {
+  const { output, ...header } = tool();
+  return { ...header, detailsDeferred: true, detailVersion: 'tool-v1', ...overrides };
+};
+const turn = (overrides = {}) => ({ $type: 'turn_summary', rowId: 'user-1',
+  user: { $type: 'user_message', rowId: 'user-1', text: 'Visible question' },
+  answer: assistant('answer-1', '**Visible answer**'), duration: '00:00:01.5000000', detailCount: 2,
+  detailVersion: 'turn-v1', ...overrides });
+
 const flushArtifacts = () => new Promise(resolve => setImmediate(resolve));
 
 test('mixed cached API modules still support new rendering without missing named exports', () => {
@@ -764,3 +978,591 @@ test('detaching one thumbnail keeps shared hydration alive; disposing the last c
   assert.equal(first.children.length, 0);
   assert.equal(second.children.length, 0);
 });
+
+test('equivalent reconnect snapshots retain row, disclosure, Show-all, and playing media identity without DOM writes', () => withDom(async root => {
+  const rows = [{ $type: 'user_message', rowId: 'user', text: 'Question' }, tool({ output: [
+    { text: 'x'.repeat(2000) + ' retained tail' },
+    { artifactUri: 'artifact:audio-identity', mimeType: 'audio/wav', fileName: 'audio.wav' },
+  ] }), assistant('answer', 'Answer', { parts: [{ $type: 'reasoning', text: 'Reasoning' }, { $type: 'text', text: 'Answer' }] })];
+  let changes = 0, captures = 0;
+  const transcript = new Transcript(root, { onChange: () => changes++, onBeforeChange: () => captures++ });
+  transcript.rebuild(rows);
+  const toolNode = transcript.els.get('tool-1');
+  setDisclosure(toolNode, 'tool', true);
+  const button = toolNode.querySelector('.out-more[data-section="output-0"]');
+  assert.ok(button);
+  button.fire('click');
+  const thinking = setDisclosure(transcript.els.get('answer'), 'thinking', true);
+  const body = toolNode.querySelector('.tool-body');
+  const audio = body.querySelector('audio');
+  audio.src = '/playing';
+  audio.currentTime = 37;
+  const before = [...root.childNodes];
+  const counts = [root.writes, changes, captures];
+  transcript.rebuild(structuredClone(rows));
+  assert.deepEqual(root.childNodes, before);
+  before.forEach((node, index) => assert.equal(root.childNodes[index], node));
+  assert.equal(transcript.els.get('tool-1'), toolNode);
+  assert.equal(toolNode.querySelector('.tool-body'), body);
+  assert.equal(body.querySelector('audio'), audio);
+  assert.equal(audio.currentTime, 37);
+  assert.equal(audio.src, '/playing');
+  assert.equal(thinking.open, true);
+  assert.match(root.textContent, /retained tail/);
+  assert.deepEqual([root.writes, changes, captures], counts);
+  transcript.dispose();
+  assert.equal(audio.pauses, 1);
+  assert.equal(audio.src, null);
+  assert.equal(root.childNodes.length, 0);
+}));
+
+test('keyed snapshots update same-length and in-place corrections, reorder, insert, and remove exactly', () => withDom(async root => {
+  const first = assistant('first', 'alpha');
+  const second = assistant('second', 'fixed');
+  const transcript = new Transcript(root);
+  transcript.rebuild([first, second, tool()]);
+  const fixed = transcript.els.get('second');
+  const removed = transcript.els.get('tool-1');
+  setDisclosure(removed, 'tool', true);
+  transcript.rebuild([second, { ...first, parts: [{ $type: 'text', text: 'bravo' }] }, assistant('new', 'new')]);
+  assert.deepEqual(root.childNodes.map(node => node.dataset.rowId), ['second', 'first', 'new']);
+  assert.equal(root.childNodes[0], fixed);
+  assert.equal(removed.isConnected, false);
+  assert.equal(transcript.states.has('tool-1'), false);
+  assert.match(root.textContent, /bravo/);
+  assert.doesNotMatch(root.textContent, /alpha/);
+  const corrected = assistant('first', 'gamma');
+  transcript.upsert(corrected);
+  corrected.parts[0].text = 'delta';
+  transcript.rebuild([corrected, second]);
+  assert.equal(root.childNodes[1], fixed);
+  assert.match(root.textContent, /delta/);
+  assert.doesNotMatch(root.textContent, /gamma/);
+  transcript.rebuild([]);
+  assert.equal(root.childNodes.length, 0);
+  transcript.dispose();
+}));
+
+test('folded turns build only the question, summary control, and final answer with no process DOM or fetch', () => withDom(async root => {
+  let requests = 0;
+  const summary = turn({ answer: assistant('answer-1', '', { parts: [
+    { $type: 'reasoning', text: 'Hidden final reasoning' }, { $type: 'text', text: '**Visible answer**' },
+    { $type: 'file', artifactUri: 'artifact:answer-pdf', mimeType: 'application/pdf', fileName: 'answer.pdf' },
+  ] }) });
+  Object.defineProperty(summary, 'process', { enumerable: true, get() { throw new Error('must not inspect hidden process'); } });
+  const transcript = new Transcript(root, { loadTurn: () => { requests++; throw new Error('must stay folded'); } });
+  assert.equal(transcript.supportsCompact, true);
+  transcript.rebuild([summary]);
+  assert.equal(requests, 0);
+  assert.equal(root.querySelectorAll('.row').length, 1);
+  assert.equal(root.querySelector('.turn-body').childNodes.length, 0);
+  assert.equal(root.querySelectorAll('.tool').length, 0);
+  assert.equal(root.querySelectorAll('.thinking').length, 0);
+  assert.match(root.textContent, /Visible question/);
+  assert.match(root.textContent, /Worked for 1\.5s/);
+  assert.match(root.innerHTML, /<strong>Visible answer<\/strong>/);
+  assert.match(root.textContent, /answer\.pdf/);
+  assert.doesNotMatch(root.innerHTML, /Hidden final reasoning|tool-body|first output/);
+  transcript.dispose();
+}));
+
+test('process expansion fetches once, preserves pending identity across snapshots, and builds tools only as compact headers', () => withDom(async root => {
+  const pending = deferred();
+  const calls = [];
+  const transcript = new Transcript(root, { loadTurn: (id, options) => { calls.push({ id, options }); return pending.promise; } });
+  const summary = turn();
+  transcript.rebuild([summary]);
+  const node = transcript.els.get(summary.rowId);
+  const detail = setDisclosure(node, 'turn', true);
+  assert.match(detail.textContent, /Loading details/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].id, 'user-1');
+  assert.equal(calls[0].options.version, 'turn-v1');
+  assert.equal(calls[0].options.signal.aborted, false);
+  transcript.rebuild([structuredClone(summary)]);
+  assert.equal(transcript.els.get(summary.rowId), node);
+  assert.equal(calls.length, 1);
+  pending.resolve({ version: 'turn-v1', sequence: 20, rows: [
+    assistant('reason', '', { parts: [{ $type: 'reasoning', text: 'Fetched reasoning only' }] }), compactTool(),
+  ] });
+  await flushArtifacts();
+  const process = detail.querySelector('.turn-body');
+  assert.equal(process.querySelectorAll('.row').length, 2);
+  assert.equal(process.querySelector('.tool-body').childNodes.length, 0);
+  assert.match(process.textContent, /Fetched reasoning only/);
+  assert.doesNotMatch(process.textContent, /first output/);
+  setDisclosure(node, 'turn', false);
+  assert.equal(process.childNodes.length, 0);
+  assert.doesNotMatch(root.textContent, /Fetched reasoning only|Example\.cs/);
+  assert.equal(transcript.loads.size, 0);
+  setDisclosure(node, 'turn', true);
+  assert.equal(calls.length, 1);
+  assert.equal(process.querySelectorAll('.row').length, 2);
+  transcript.dispose();
+}));
+
+test('deferred tools unwrap full-row envelopes, reuse lazy preview and Show-all, and release closed DOM and media', () => withDom(async root => {
+  const pending = deferred();
+  const calls = [];
+  const transcript = new Transcript(root, { loadRow: (id, options) => { calls.push({ id, options }); return pending.promise; } });
+  transcript.rebuild([compactTool()]);
+  const node = transcript.els.get('tool-1');
+  const detail = setDisclosure(node, 'tool', true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.version, 'tool-v1');
+  pending.resolve({ version: 'tool-v1', sequence: 12, row: tool({ output: [
+    { text: 'x'.repeat(2000) + '<script>full fetched tail</script>' },
+    { artifactUri: 'artifact:tool-video', mimeType: 'video/webm', fileName: 'clip.webm' },
+  ] }) });
+  await flushArtifacts();
+  const body = detail.querySelector('.tool-body');
+  assert.doesNotMatch(body.textContent, /full fetched tail/);
+  const button = body.querySelector('.out-more[data-section="output-0"]');
+  assert.ok(button);
+  button.fire('click');
+  assert.match(body.textContent, /<script>full fetched tail<\/script>/);
+  assert.equal(body.querySelector('script'), null);
+  const video = body.querySelector('video');
+  video.src = '/playing';
+  setDisclosure(node, 'tool', false);
+  assert.equal(body.childNodes.length, 0);
+  assert.equal(video.isConnected, false);
+  assert.equal(video.src, null);
+  assert.equal(video.pauses, 1);
+  assert.equal(transcript.loads.size, 0);
+  assert.equal(calls[0].options.signal.aborted, true);
+  setDisclosure(node, 'tool', true);
+  assert.equal(calls.length, 1);
+  assert.match(body.textContent, /full fetched tail/);
+  transcript.dispose();
+}));
+
+test('late turn requests cannot resurrect collapsed, changed-version, removed, or disposed process rows', () => withDom(async root => {
+  const calls = [];
+  let changes = 0;
+  const transcript = new Transcript(root, { onChange: () => changes++, loadTurn: (id, options) => {
+    const pending = deferred(); calls.push({ id, options, ...pending }); return pending.promise;
+  } });
+  transcript.rebuild([turn()]);
+  setDisclosure(root, 'turn', true);
+  setDisclosure(root, 'turn', false);
+  assert.equal(calls[0].options.signal.aborted, true);
+  calls[0].resolve({ version: 'turn-v1', rows: [assistant('late', 'collapsed secret')] });
+  await flushArtifacts();
+  assert.doesNotMatch(root.textContent, /collapsed secret/);
+  setDisclosure(root, 'turn', true);
+  transcript.rebuild([turn({ detailVersion: 'turn-v2' })]);
+  assert.equal(calls[1].options.signal.aborted, true);
+  assert.equal(calls[2].options.version, 'turn-v2');
+  calls[1].resolve({ version: 'turn-v1', rows: [assistant('old', 'old version secret')] });
+  calls[2].resolve({ version: 'turn-v2', rows: [assistant('new', 'current process')] });
+  await flushArtifacts();
+  assert.match(root.textContent, /current process/);
+  assert.doesNotMatch(root.textContent, /old version secret/);
+  transcript.rebuild([turn({ detailVersion: 'turn-v3' })]);
+  transcript.remove('user-1');
+  assert.equal(calls[3].options.signal.aborted, true);
+  calls[3].resolve({ version: 'turn-v3', rows: [assistant('removed', 'removed secret')] });
+  await flushArtifacts();
+  assert.equal(root.childNodes.length, 0);
+  transcript.rebuild([turn({ detailVersion: 'turn-v4' })]);
+  setDisclosure(root, 'turn', true);
+  transcript.dispose();
+  const finalChanges = changes;
+  assert.equal(calls[4].options.signal.aborted, true);
+  calls[4].resolve({ version: 'turn-v4', rows: [assistant('disposed', 'disposed secret')] });
+  await flushArtifacts();
+  assert.equal(changes, finalChanges);
+  assert.equal(root.childNodes.length, 0);
+  assert.equal(transcript.cache.entries.size, 0);
+}));
+
+test('tool failures and mismatched versions stay local and offer retry without accepting stale payloads', () => withDom(async root => {
+  const calls = [];
+  const transcript = new Transcript(root, { loadRow: (id, options) => {
+    const pending = deferred(); calls.push({ id, options, ...pending }); return pending.promise;
+  } });
+  transcript.rebuild([compactTool()]);
+  setDisclosure(root, 'tool', true);
+  calls[0].reject(Object.assign(new Error('stale_details'), { status: 409 }));
+  await flushArtifacts();
+  assert.match(root.textContent, /Details changed/);
+  assert.equal(root.querySelector('.detail-error').getAttribute('role'), 'alert');
+  root.querySelector('.detail-retry').fire('click');
+  assert.equal(calls.length, 2);
+  calls[1].resolve({ version: 'wrong-version', row: tool({ output: [{ text: 'must never render' }] }) });
+  await flushArtifacts();
+  assert.match(root.textContent, /Could not load details/);
+  assert.doesNotMatch(root.textContent, /must never render/);
+  assert.equal(transcript.cache.entries.size, 0);
+  root.querySelector('.detail-retry').fire('click');
+  calls[2].reject(Object.assign(new Error('gone'), { status: 404 }));
+  await flushArtifacts();
+  assert.match(root.textContent, /no longer available/);
+  root.querySelector('.detail-retry').fire('click');
+  calls[3].resolve({ version: 'tool-v1', row: tool({ output: [{ text: 'retried full output' }] }) });
+  await flushArtifacts();
+  assert.match(root.textContent, /retried full output/);
+  assert.equal(root.querySelector('.detail-error'), null);
+  transcript.dispose();
+}));
+
+test('loaded expanded tools re-fetch changed versions and ignore obsolete responses after collapse or replacement', () => withDom(async root => {
+  const calls = [];
+  const transcript = new Transcript(root, { loadRow: (id, options) => {
+    const pending = deferred(); calls.push({ id, options, ...pending }); return pending.promise;
+  } });
+  transcript.rebuild([compactTool()]);
+  setDisclosure(root, 'tool', true);
+  calls[0].resolve({ version: 'tool-v1', row: tool({ output: [{ text: 'old body' }] }) });
+  await flushArtifacts();
+  const oldBody = root.querySelector('.tool-body');
+  transcript.upsert(compactTool({ detailVersion: 'tool-v2' }));
+  assert.equal(oldBody.isConnected, false);
+  assert.equal(root.querySelector('details').open, true);
+  assert.doesNotMatch(root.textContent, /old body/);
+  assert.equal(calls[1].options.version, 'tool-v2');
+  setDisclosure(root, 'tool', false);
+  assert.equal(calls[1].options.signal.aborted, true);
+  setDisclosure(root, 'tool', true);
+  calls[1].resolve({ version: 'tool-v2', row: tool({ output: [{ text: 'obsolete body' }] }) });
+  calls[2].resolve({ version: 'tool-v2', row: tool({ output: [{ text: 'new body' }] }) });
+  await flushArtifacts();
+  assert.match(root.textContent, /new body/);
+  assert.doesNotMatch(root.textContent, /obsolete body|old body/);
+  transcript.upsert(assistant('tool-1', 'replacement answer'));
+  assert.equal(transcript.loads.size, 0);
+  assert.equal(root.querySelector('.tool'), null);
+  assert.match(root.textContent, /replacement answer/);
+  transcript.dispose();
+}));
+
+test('turn load errors retry locally, and compact rows without callbacks fail safely instead of exposing header input as full detail', () => withDom(async root => {
+  let attempts = 0;
+  const transcript = new Transcript(root, { loadTurn: () => {
+    attempts++;
+    if (attempts === 1) throw new Error('offline');
+    return { version: 'turn-v1', sequence: 3, rows: [] };
+  } });
+  transcript.rebuild([turn()]);
+  setDisclosure(root, 'turn', true);
+  assert.match(root.textContent, /Could not load details/);
+  root.querySelector('.detail-retry').fire('click');
+  await flushArtifacts();
+  assert.match(root.textContent, /No process details/);
+  assert.equal(attempts, 2);
+  transcript.dispose();
+  const legacy = new Transcript(root);
+  legacy.rebuild([compactTool()]);
+  setDisclosure(root, 'tool', true);
+  assert.match(root.textContent, /Could not load details/);
+  assert.doesNotMatch(root.textContent, /No output yet/);
+  legacy.dispose();
+}));
+
+test('lightweight disclosure state restores before rebuild, including nested process tools, without retaining any payload', () => withDom(async root => {
+  const full = tool({ output: [{ text: 'x'.repeat(2000) + 'sensitive output tail' }] });
+  let turnLoads = 0, rowLoads = 0;
+  const options = {
+    loadTurn: () => { turnLoads++; return { version: 'turn-v1', rows: [compactTool(), assistant('reason', '', {
+      parts: [{ $type: 'reasoning', text: 'sensitive reasoning payload' }],
+    })] }; },
+    loadRow: () => { rowLoads++; return { version: 'tool-v1', row: full }; },
+  };
+  const transcript = new Transcript(root, options);
+  transcript.rebuild([turn()]);
+  setDisclosure(root, 'turn', true);
+  await flushArtifacts();
+  const process = root.querySelector('.turn-body');
+  setDisclosure(process, 'tool', true);
+  setDisclosure(process, 'thinking', true);
+  await flushArtifacts();
+  process.querySelector('.out-more[data-section="output-0"]').fire('click');
+  const state = transcript.exportState();
+  assert.doesNotMatch(JSON.stringify(state), /sensitive|Visible|parts|input|artifactUri|detailVersion/);
+  assert.deepEqual(state.rows[0].open, ['turn']);
+  assert.ok(state.rows[0].details.rows.find(row => row.rowId === 'tool-1').all.includes('output-0'));
+  setDisclosure(root, 'turn', false);
+  const closedState = transcript.exportState();
+  assert.equal(closedState.rows[0].open.length, 0);
+  assert.equal(closedState.rows[0].details.rows.length, 2);
+  assert.equal(process.childNodes.length, 0);
+  transcript.dispose();
+  const restored = new Transcript(root, options);
+  restored.restoreState(state);
+  assert.equal(root.childNodes.length, 0);
+  restored.rebuild([turn()]);
+  await flushArtifacts();
+  assert.equal(turnLoads, 2);
+  assert.equal(rowLoads, 2);
+  assert.equal(root.querySelector('.turn-process').open, true);
+  assert.equal(root.querySelector('.tool').open, true);
+  assert.equal(root.querySelector('.thinking').open, true);
+  assert.match(root.textContent, /sensitive output tail/);
+  assert.equal(root.querySelector('.out-more[data-section="output-0"]'), null);
+  restored.restoreState(closedState);
+  assert.equal(root.querySelector('.turn-process').open, false);
+  assert.equal(root.querySelector('.turn-body').childNodes.length, 0);
+  assert.doesNotMatch(root.textContent, /sensitive/);
+  restored.dispose();
+}));
+
+test('restoreState reapplies Show-all on live legacy rows and sanitizes unknown payload fields', () => withDom(async root => {
+  const transcript = new Transcript(root);
+  transcript.rebuild([tool({ output: [{ text: 'x'.repeat(2000) + 'restored tail' }] })]);
+  transcript.restoreState({ rows: [{ rowId: 'tool-1', open: ['tool', 'unknown payload'], all: ['output-0', 'secret text'],
+    text: 'do not retain', row: { output: 'do not retain' } }] });
+  assert.equal(root.querySelector('.tool').open, true);
+  assert.match(root.textContent, /restored tail/);
+  assert.doesNotMatch(JSON.stringify(transcript.exportState()), /do not retain|secret|unknown/);
+  transcript.restoreState({ rows: [{ rowId: 'tool-1', open: ['tool'], all: [] }] });
+  assert.doesNotMatch(root.textContent, /restored tail/);
+  assert.ok(root.querySelector('.out-more'));
+  transcript.dispose();
+}));
+
+test('fetched detail caching is bounded by entry count and bytes, evicts older fetches, and clears on disposal', () => withDom(async root => {
+  let calls = 0;
+  const transcript = new Transcript(root, { loadRow: (id, { version }) => {
+    calls++;
+    return { version, row: tool({ rowId: id, output: [{ text: id === 'large' ? 'z'.repeat(600_000) : 'cached ' + id }] }) };
+  } });
+  const rows = [...Array.from({ length: 10 }, (_, i) => compactTool({ rowId: `tool-${i}` })), compactTool({ rowId: 'large' })];
+  transcript.rebuild(rows);
+  for (const row of rows) {
+    const node = transcript.els.get(row.rowId);
+    setDisclosure(node, 'tool', true);
+    await flushArtifacts();
+    setDisclosure(node, 'tool', false);
+    assert.equal(transcript.loads.size, 0);
+    assert.ok(transcript.cache.entries.size <= 8);
+    assert.ok(transcript.cache.bytes <= 1024 * 1024);
+    assert.equal(node.querySelector('.tool-body').childNodes.length, 0);
+  }
+  assert.equal(calls, 11);
+  const recent = transcript.els.get('tool-9');
+  setDisclosure(recent, 'tool', true);
+  assert.equal(calls, 11);
+  setDisclosure(recent, 'tool', false);
+  setDisclosure(transcript.els.get('tool-0'), 'tool', true);
+  await flushArtifacts();
+  assert.equal(calls, 12);
+  setDisclosure(transcript.els.get('large'), 'tool', true);
+  await flushArtifacts();
+  assert.equal(calls, 13);
+  transcript.remove('tool-0');
+  assert.equal([...transcript.cache.entries.values()].some(entry => entry.id === 'tool-0'), false);
+  transcript.dispose();
+  assert.equal(transcript.cache.bytes, 0);
+  assert.equal(transcript.cache.entries.size, 0);
+  assert.equal(transcript.loads.size, 0);
+}));
+
+test('parsed DOM streaming retires pending buffers on equivalent snapshots and never overwrites authoritative same-length final text', t => withDom(async root => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const transcript = new Transcript(root);
+  transcript.append(assistant('stream', 'start', { isStreaming: true }));
+  transcript.appendText({ rowId: 'stream', delta: '!', at: 'first' });
+  transcript.appendText({ rowId: 'stream', delta: '?', at: 'pending' });
+  const visible = transcript.els.get('stream');
+  const snapshot = assistant('stream', 'start!', { isStreaming: true, at: 'first' });
+  transcript.rebuild([snapshot]);
+  assert.equal(transcript.els.get('stream'), visible);
+  assert.equal(transcript.timers.size, 0);
+  assert.equal(transcript.textBuffers.size, 0);
+  now += 500;
+  t.mock.timers.tick(500);
+  assert.equal(root.textContent, 'start!');
+  transcript.appendText({ rowId: 'stream', delta: ' discarded', at: 'later' });
+  transcript.upsert(assistant('stream', 'final!'));
+  t.mock.timers.tick(500);
+  assert.equal(root.textContent, 'final!');
+  assert.equal(transcript.appendText({ rowId: 'stream', delta: 'invalid' }), false);
+  transcript.dispose();
+}));
+
+test('async detail mutations notify viewport hooks before writes and after layout content changes', () => withDom(async root => {
+  const pending = deferred();
+  const events = [];
+  const transcript = new Transcript(root, {
+    onBeforeChange: () => events.push(['before', root.textContent]),
+    onChange: () => events.push(['after', root.textContent]),
+    loadTurn: () => pending.promise,
+  });
+  transcript.rebuild([turn()]);
+  events.length = 0;
+  setDisclosure(root, 'turn', true);
+  assert.deepEqual(events.map(event => event[0]), ['before', 'after']);
+  assert.doesNotMatch(events[0][1], /Loading details/);
+  assert.match(events[1][1], /Loading details/);
+  events.length = 0;
+  pending.resolve({ version: 'turn-v1', rows: [assistant('process', 'asynchronous process')] });
+  await flushArtifacts();
+  assert.deepEqual(events.map(event => event[0]), ['before', 'after']);
+  assert.match(events[0][1], /Loading details/);
+  assert.doesNotMatch(events[0][1], /asynchronous process/);
+  assert.match(events[1][1], /asynchronous process/);
+  transcript.dispose();
+}));
+
+test('equivalent snapshots preserve thumbnail leases, changed rows preserve matching artifacts, and removal aborts hydration', t => withDom(async root => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = { getItem: () => 'renderer-artifact-token' };
+  t.after(() => { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous; });
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', (_url, options) => new Promise((resolve, reject) => {
+    requests.push({ options, resolve });
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+  }));
+  let changes = 0;
+  const row = { $type: 'user_message', rowId: 'image-user', text: 'original', images: [
+    { artifactUri: 'alcoler-artifact://renderer/live-identity', mimeType: 'image/png', fileName: 'image.png' },
+  ] };
+  const transcript = new Transcript(root, { onChange: () => changes++ });
+  transcript.rebuild([row]);
+  await flushArtifacts();
+  const thumb = root.querySelector('.thumb');
+  assert.equal(requests.length, 1);
+  transcript.rebuild([structuredClone(row)]);
+  assert.equal(root.querySelector('.thumb'), thumb);
+  assert.equal(requests[0].options.signal.aborted, false);
+  transcript.upsert({ ...row, text: 'changed' });
+  assert.equal(root.querySelector('.thumb'), thumb);
+  assert.equal(requests.length, 1);
+  transcript.remove(row.rowId);
+  assert.equal(requests[0].options.signal.aborted, true);
+  const stopped = changes;
+  await flushArtifacts();
+  assert.equal(changes, stopped);
+  assert.equal(root.childNodes.length, 0);
+  transcript.dispose();
+}));
+
+test('collapsing a process cancels nested tool requests and cannot refill its shared cache from late responses', () => withDom(async root => {
+  const pending = deferred();
+  let signal;
+  const transcript = new Transcript(root, {
+    loadTurn: () => ({ version: 'turn-v1', rows: [compactTool()] }),
+    loadRow: (_id, options) => { signal = options.signal; return pending.promise; },
+  });
+  transcript.rebuild([turn()]);
+  setDisclosure(root, 'turn', true);
+  await flushArtifacts();
+  setDisclosure(root.querySelector('.turn-body'), 'tool', true);
+  const child = transcript.loads.get('user-1').child;
+  setDisclosure(root, 'turn', false);
+  assert.equal(signal.aborted, true);
+  assert.equal(child.disposed, true);
+  assert.equal(child.loads.size, 0);
+  assert.equal(child.els.size, 0);
+  pending.resolve({ version: 'tool-v1', row: tool({ output: [{ text: 'late nested secret' }] }) });
+  await flushArtifacts();
+  assert.doesNotMatch(root.textContent, /late nested secret/);
+  assert.equal([...transcript.cache.entries.values()].some(entry => entry.id === 'tool-1'), false);
+  transcript.dispose();
+}));
+
+test('disposing from a detail layout callback cannot retain the just-fetched payload', () => withDom(async root => {
+  let transcript;
+  transcript = new Transcript(root, {
+    loadRow: () => ({ version: 'tool-v1', row: tool({ output: [{ text: 'close on load' }] }) }),
+    onChange: () => { if (root.textContent.includes('close on load')) transcript.dispose(); },
+  });
+  transcript.rebuild([compactTool()]);
+  setDisclosure(root, 'tool', true);
+  await flushArtifacts();
+  assert.equal(transcript.disposed, true);
+  assert.equal(transcript.cache.entries.size, 0);
+  assert.equal(transcript.loads.size, 0);
+  assert.equal(root.childNodes.length, 0);
+}));
+
+test('malformed turn responses remain retryable and release partially built detail transcripts', () => withDom(async root => {
+  const replies = [
+    { version: 'turn-v1', rows: [null] },
+    { version: 'turn-v1', rows: [assistant('broken', '', { parts: {} })] },
+    { version: 'turn-v1', rows: [assistant('valid', 'valid process after retry')] },
+  ];
+  const transcript = new Transcript(root, { loadTurn: () => replies.shift() });
+  transcript.rebuild([turn()]);
+  setDisclosure(root, 'turn', true);
+  await flushArtifacts();
+  assert.ok(root.querySelector('.detail-retry'));
+  root.querySelector('.detail-retry').fire('click');
+  await flushArtifacts();
+  assert.ok(root.querySelector('.detail-retry'));
+  assert.equal(transcript.loads.get('user-1').child, null);
+  assert.equal(transcript.cache.entries.size, 0);
+  root.querySelector('.detail-retry').fire('click');
+  await flushArtifacts();
+  assert.match(root.textContent, /valid process after retry/);
+  transcript.dispose();
+}));
+
+test('hasPendingDetails follows restored nested requests through success, failure, retry, changed versions, collapse, and disposal', () => withDom(async root => {
+  const turns = [], tools = [], changes = [];
+  let transcript;
+  transcript = new Transcript(root, {
+    loadTurn: (id, options) => { const pending = deferred(); turns.push({ id, options, ...pending }); return pending.promise; },
+    loadRow: (id, options) => { const pending = deferred(); tools.push({ id, options, ...pending }); return pending.promise; },
+    onChange: () => changes.push(transcript.hasPendingDetails()),
+  });
+  assert.equal(transcript.hasPendingDetails(), false);
+  transcript.restoreState({ rows: [{ rowId: 'user-1', open: ['turn'], all: [], details: {
+    rows: [{ rowId: 'tool-1', open: ['tool'], all: [] }],
+  } }] });
+  assert.equal(transcript.hasPendingDetails(), false);
+  transcript.rebuild([turn()]);
+  assert.equal(transcript.hasPendingDetails(), true);
+  assert.equal(changes.at(-1), true);
+  turns[0].resolve({ version: 'turn-v1', rows: [compactTool()] });
+  await flushArtifacts();
+  const firstChild = transcript.loads.get('user-1').child;
+  assert.equal(transcript.loads.get('user-1').loading, false);
+  assert.equal(firstChild.hasPendingDetails(), true);
+  assert.equal(transcript.hasPendingDetails(), true);
+  tools[0].reject(new Error('offline'));
+  await flushArtifacts();
+  assert.equal(firstChild.loads.size, 1);
+  assert.equal(firstChild.hasPendingDetails(), false);
+  assert.equal(transcript.hasPendingDetails(), false);
+  assert.equal(changes.at(-1), false);
+  root.querySelector('.detail-retry').fire('click');
+  assert.equal(firstChild.hasPendingDetails(), true);
+  assert.equal(transcript.hasPendingDetails(), true);
+  tools[1].resolve({ version: 'tool-v1', row: tool() });
+  await flushArtifacts();
+  assert.equal(firstChild.hasPendingDetails(), false);
+  assert.equal(transcript.hasPendingDetails(), false);
+  assert.equal(changes.at(-1), false);
+  transcript.rebuild([turn({ detailVersion: 'turn-v2' })]);
+  assert.equal(firstChild.disposed, true);
+  assert.equal(firstChild.hasPendingDetails(), false);
+  assert.equal(transcript.hasPendingDetails(), true);
+  turns[1].resolve({ version: 'turn-v2', rows: [compactTool({ detailVersion: 'tool-v2' })] });
+  await flushArtifacts();
+  const secondChild = transcript.loads.get('user-1').child;
+  assert.equal(secondChild.hasPendingDetails(), true);
+  assert.equal(transcript.hasPendingDetails(), true);
+  setDisclosure(root, 'turn', false);
+  assert.equal(tools[2].options.signal.aborted, true);
+  assert.equal(secondChild.hasPendingDetails(), false);
+  assert.equal(transcript.hasPendingDetails(), false);
+  tools[2].resolve({ version: 'tool-v2', row: tool({ output: [{ text: 'late ignored details' }] }) });
+  await flushArtifacts();
+  assert.equal(transcript.hasPendingDetails(), false);
+  assert.doesNotMatch(root.textContent, /late ignored details/);
+  setDisclosure(root, 'turn', true);
+  assert.equal(turns.length, 2);
+  assert.equal(tools.length, 4);
+  assert.equal(transcript.hasPendingDetails(), true);
+  transcript.dispose();
+  assert.equal(tools[3].options.signal.aborted, true);
+  assert.equal(transcript.hasPendingDetails(), false);
+  tools[3].reject(new DOMException('Aborted', 'AbortError'));
+  await flushArtifacts();
+  assert.equal(transcript.hasPendingDetails(), false);
+  assert.equal(root.childNodes.length, 0);
+}));

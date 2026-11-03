@@ -65,6 +65,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DraftConversationViewModel, DraftDocumentOwner> _draftDocumentOwners = new();
     private string? _focusedWorkspaceRoot;
     private long _navigationVersion;
+    private CancellationTokenSource? _openSessionCts;
+    private readonly SessionReadingStateCache _readingStates = new();
     private string? _paneRoot;
     private ShellEnvironment? _paneShell;
     private bool _terminalAutoStarted;
@@ -348,7 +350,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
         _disposed = true;
+        BeginNavigation();
         // Dispose runs a second time through explicit close plus using; the swap keeps the
         // maintenance teardown idempotent.
         var maintenanceCts = Interlocked.Exchange(ref _maintenanceCts, null);
@@ -385,6 +390,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             host.ModelSelectionChanged -= observer;
         _selectionObservers.Clear();
         _hub.Dispose();
+        _readingStates.Clear();
         Terminal?.Dispose();
         Documents.PropertyChanged -= OnDocumentsPropertyChanged;
         Documents.Dispose();
@@ -402,96 +408,99 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
     }
 
-    public async Task OpenSessionAsync(SessionId sessionId)
+    public async Task OpenSessionAsync(SessionId sessionId, CancellationToken cancellationToken = default)
     {
+        if (_disposed)
+            return;
+        var navigation = BeginNavigation();
         if (Active?.SessionId == sessionId)
-        {
             return;
-        }
-        var navigation = ++_navigationVersion;
-        using var residentProbe = _runtime.TryObserve(sessionId);
-        if (residentProbe is null)
+        using var opening = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _openSessionCts = opening;
+        ProjectionStore? acquired = null;
+        ConversationViewModel? conversation = null;
+        var adopted = false;
+        try
         {
-            var handle = await _runtime.ResumeSessionAsync(sessionId, CancellationToken.None);
-            _sessionRoots[sessionId] = handle.WorkspaceRoot;
-        }
-        if (navigation != _navigationVersion)
-        {
-            return;
-        }
-        if (!_sessionRoots.ContainsKey(sessionId))
-        {
-            var summaries = await _runtime.ListSessionsAsync(null, 200, CancellationToken.None);
-            foreach (var summary in summaries)
-                _sessionRoots[summary.Id] = summary.WorkspaceRoot;
-            if (navigation != _navigationVersion)
+            var handle = await Task.Run(() => _runtime.ResumeSessionAsync(sessionId, opening.Token).AsTask(), opening.Token)
+                .WaitAsync(opening.Token);
+            if (_disposed || navigation != _navigationVersion)
                 return;
-        }
-        var workspaceRoot = _sessionRoots.GetValueOrDefault(sessionId) ?? CurrentWorkspaceRoot;
-        _sessionRoots.TryAdd(sessionId, workspaceRoot);
-        RevealWorkspace(workspaceRoot);
-        CloseActive();
-        Draft = null;
-        var store = _hub.Acquire(sessionId);
-        _sessionDrafts.TryGetValue(sessionId, out var saved);
-        var savedText = saved?.Composer.Draft;
-        var savedMode = saved?.Composer.Mode;
-        var conversation = new ConversationViewModel(_runtime, store, saved?.Composer, ModelChoices,
-            WorkbenchModelCatalog.DefaultSelection(_config))
-        { WorkspaceRoot = workspaceRoot };
-        conversation.Composer.ConfigureWorkspace(workspaceRoot);
-        using var resumedProbe = residentProbe is null ? _runtime.TryObserve(sessionId) : null;
-        var snapshot = (residentProbe ?? resumedProbe)?.Snapshot();
-        var initialState = snapshot?.State ?? store.State;
-        conversation.ApplyUpdate(new ProjectionUpdate(snapshot?.Sequence ?? 0, initialState, [],
-            Reset: true, ResetRows: snapshot?.Rows ?? store.Rows));
-        if (saved is not null)
-        {
-            if (FindModel(saved.Selection) is { } model)
+            acquired = _hub.Acquire(sessionId);
+            await acquired.Initialized.WaitAsync(opening.Token);
+            opening.Token.ThrowIfCancellationRequested();
+            if (_disposed || navigation != _navigationVersion)
+                return;
+
+            var workspaceRoot = handle.WorkspaceRoot;
+            _sessionRoots[sessionId] = workspaceRoot;
+            RevealWorkspace(workspaceRoot);
+            CloseActive();
+            Draft = null;
+            _sessionDrafts.TryGetValue(sessionId, out var saved);
+            var savedText = saved?.Composer.Draft;
+            var savedMode = saved?.Composer.Mode;
+            conversation = new ConversationViewModel(_runtime, acquired, saved?.Composer, ModelChoices,
+                WorkbenchModelCatalog.DefaultSelection(_config), readingState: _readingStates.Get(sessionId))
+            { WorkspaceRoot = workspaceRoot };
+            conversation.Composer.ConfigureWorkspace(workspaceRoot);
+            if (saved is not null)
             {
-                conversation.ConfigureModel(model);
+                if (FindModel(saved.Selection) is { } model)
+                    conversation.ConfigureModel(model);
+                conversation.RestoreComposerState(savedText!, savedMode!.Value, saved.Selection);
+                conversation.Banner = saved.Banner;
+                if (saved.UnsentText is not null)
+                {
+                    Banner = saved.Banner;
+                    UnsentText = saved.UnsentText;
+                }
             }
-            conversation.RestoreComposerState(savedText!, savedMode!.Value, saved.Selection);
-            conversation.Banner = saved.Banner;
-            if (saved.UnsentText is not null)
+            _sessionDrafts.Remove(sessionId);
+            if (GetSavedSelection(workspaceRoot, sessionId.Value) is { } persistedSelection)
+                conversation.RestoreModelSelection(persistedSelection);
+            if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
+                conversation.RestorePendingMode(pendingMode);
+            conversation.Composer.RestorePlanEnabled(conversation.PlanEnabled);
+            ObserveMode(conversation.Composer, () => sessionId);
+            ObserveSelection(conversation, () => sessionId.Value);
+            conversation.ModeSubmitted += (mode, _) => ClearSubmittedMode(sessionId, mode);
+            conversation.ForkRequested = boundaryId => ForkSessionAsync(sessionId, boundaryId);
+            conversation.NextSubmissionSequence = () => ++_submissionSequence;
+            conversation.ModelSelectionSubmitted += (selection, sequence) => RecordAcceptedSelection(workspaceRoot, sessionId, selection, sequence);
+            adopted = true;
+            Active = conversation;
+            Sidebar.SetActive(sessionId);
+            Sidebar.SyncActiveState(sessionId, _activities?.GetSessionActivity(sessionId));
+            BrowserPane?.Bind(sessionId);
+            EnsureDocumentContext();
+            TryShowActiveBrowserDocument();
+            _focusedWorkspaceRoot = workspaceRoot;
+            EnsurePanes(workspaceRoot);
+            EnsureDocumentContext();
+            await Sidebar.RefreshAsync();
+        }
+        catch (OperationCanceledException) when (opening.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (!adopted)
             {
-                Banner = saved.Banner;
-                UnsentText = saved.UnsentText;
+                conversation?.Dispose();
+                if (acquired is not null)
+                    _hub.Release(sessionId);
             }
+            if (ReferenceEquals(_openSessionCts, opening))
+                _openSessionCts = null;
         }
-        // The saved draft is consumed on open; CloseActive re-saves whatever is still unsent.
-        _sessionDrafts.Remove(sessionId);
-        if (GetSavedSelection(workspaceRoot, sessionId.Value) is { } persistedSelection)
-            conversation.RestoreModelSelection(persistedSelection);
-        if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) == true)
-            conversation.RestorePendingMode(pendingMode);
-        // The live projection owns plan state for an existing session, even when a saved composer carried Plan.
-        conversation.Composer.RestorePlanEnabled(initialState.PlanEnabled);
-        ObserveMode(conversation.Composer, () => sessionId);
-        ObserveSelection(conversation, () => sessionId.Value);
-        conversation.ModeSubmitted += (mode, _) => ClearSubmittedMode(sessionId, mode);
-        conversation.ForkRequested = boundaryId => ForkSessionAsync(sessionId, boundaryId);
-        conversation.NextSubmissionSequence = () => ++_submissionSequence;
-        conversation.ModelSelectionSubmitted += (selection, sequence) => RecordAcceptedSelection(workspaceRoot, sessionId, selection, sequence);
-        Active = conversation;
-        Sidebar.SetActive(sessionId);
-        Sidebar.SyncActiveState(sessionId, _activities?.GetSessionActivity(sessionId));
-        BrowserPane?.Bind(sessionId);
-        EnsureDocumentContext();
-        TryShowActiveBrowserDocument();
-        if (_sessionRoots.TryGetValue(sessionId, out var root))
-        {
-            _focusedWorkspaceRoot = root;
-            EnsurePanes(root);
-            EnsureDocumentContext();
-        }
-        await Sidebar.RefreshAsync();
-        if (Active?.SessionId == sessionId && _sessionRoots.TryGetValue(sessionId, out root))
-        {
-            _focusedWorkspaceRoot = root;
-            EnsurePanes(root);
-            EnsureDocumentContext();
-        }
+    }
+
+    private long BeginNavigation()
+    {
+        _openSessionCts?.Cancel();
+        _openSessionCts = null;
+        return ++_navigationVersion;
     }
 
     private async Task ForkSessionAsync(SessionId sourceSessionId, MessageId boundaryMessageId)
@@ -513,7 +522,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
 
     public void ShowNewTask(string? workspaceRoot = null)
     {
-        ++_navigationVersion;
+        if (_disposed)
+            return;
+        BeginNavigation();
         if (workspaceRoot is not null)
         {
             RevealWorkspace(workspaceRoot);
@@ -765,6 +776,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         draft.UnsentText = null;
         SessionId? createdId = null;
         var submitting = false;
+        ProjectionStore? submissionStore = null;
         try
         {
             var images = draft.Composer.SnapshotImages();
@@ -805,12 +817,13 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 await OpenSessionAsync(handle.Id);
             }
             submitting = true;
-            using var createdProjection = _runtime.TryObserve(handle.Id);
-            var revision = createdProjection?.Snapshot().Revision ?? 0;
+            submissionStore = _hub.Acquire(handle.Id);
+            await submissionStore.Initialized;
             var send = new SendTextCommand(
-                StrongId.NewCommandId(), handle.Id, revision, text, mode, selection, Images: images,
+                StrongId.NewCommandId(), handle.Id, submissionStore.Revision, text, mode, selection, Images: images,
                 PlanEnabled: planEnabled);
             var ack = await Task.Run(() => _runtime.SubmitAsync(send, CancellationToken.None).AsTask());
+            submissionStore.SetRevision(ack.Revision);
             if (ack.Accepted)
             {
                 ClearSubmittedMode(handle.Id, mode);
@@ -836,6 +849,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
         finally
         {
+            if (submissionStore is not null)
+                _hub.Release(submissionStore.SessionId);
             draft.Composer.IsSending = false;
         }
     }
@@ -938,7 +953,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 _sessionRoots.TryAdd(summary.Id, summary.WorkspaceRoot);
                 Sidebar.SyncActiveState(summary.Id, _activities?.GetSessionActivity(summary.Id));
             }
-            if (_focusedWorkspaceRoot is null && Active is null && Draft is { } initial
+            if (_openSessionCts is null && _focusedWorkspaceRoot is null && Active is null && Draft is { } initial
                 && string.IsNullOrEmpty(initial.Composer.Draft) && !initial.Composer.IsSending
                 && displayed.OrderByDescending(summary => summary.UpdatedAt).FirstOrDefault() is { } recent)
             {
@@ -1260,6 +1275,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             return;
         }
         var sessionId = Active.SessionId;
+        _readingStates.Save(sessionId, Active.CaptureReadingState());
         _sessionDrafts[sessionId] = new SessionDraft(Active.Composer, Active.CurrentSelection, Active.Banner,
             _sessionDrafts.GetValueOrDefault(sessionId)?.UnsentText);
         UnobserveSelection(Active);

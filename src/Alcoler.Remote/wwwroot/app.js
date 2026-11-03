@@ -21,6 +21,8 @@ const MODE_KEY = 'alcoler.lastMode';
 
 const sessionTitles = new Map();
 const pendingRestores = new Map();
+const readingStates = new Map();
+const READING_STATE_LIMIT = 32;
 
 let pairingToken = null;
 let shell = null;
@@ -317,6 +319,7 @@ function disposeShell() {
     }
   }
   pendingRestores.clear();
+  readingStates.clear();
   if (sh.draftComposer) sh.draftComposer.dispose();
   if (sh.sessionComposer) sh.sessionComposer.dispose();
   if (sh.list) sh.list.dispose();
@@ -817,7 +820,70 @@ function openSession(id, restore) {
   startConversation(sh, id, restore);
 }
 
+function transcriptNodes(st) {
+  return st.els.transcript.querySelectorAll?.('.row[data-row-id]') || st.transcript.els.values();
+}
+
+function captureReadingAnchor(st) {
+  const scroll = st.els.scroll;
+  const top = scroll.getBoundingClientRect?.().top;
+  if (top == null) return { scrollTop: scroll.scrollTop };
+  let nearest = null;
+  let distance = Infinity;
+  for (const el of transcriptNodes(st)) {
+    if (el.hidden || !el.dataset?.rowId) continue;
+    const rect = el.getBoundingClientRect?.();
+    if (!rect || rect.height <= 0 || rect.bottom <= top) continue;
+    const score = rect.top <= top ? top - rect.top : rect.top - top + scroll.clientHeight;
+    if (score < distance) {
+      nearest = el;
+      distance = score;
+    }
+  }
+  if (!nearest) return { scrollTop: scroll.scrollTop };
+  const anchor = { rowId: nearest.dataset.rowId,
+    offset: nearest.getBoundingClientRect().top - top, scrollTop: scroll.scrollTop };
+  const parent = nearest.parentElement?.closest?.('.row[data-row-id]');
+  if (parent) anchor.parent = { rowId: parent.dataset.rowId, offset: parent.getBoundingClientRect().top - top };
+  return anchor;
+}
+
+function restoreReadingAnchor(st, anchor) {
+  if (!anchor) return;
+  const top = st.els.scroll.getBoundingClientRect?.().top;
+  if (top != null) {
+    const nodes = [...transcriptNodes(st)];
+    for (const candidate of [anchor, anchor.parent]) {
+      if (!candidate?.rowId) continue;
+      const el = nodes.find(row => row.dataset?.rowId === candidate.rowId && !row.hidden);
+      const rect = el?.getBoundingClientRect?.();
+      if (!rect || rect.height <= 0) continue;
+      const previous = st.els.scroll.scrollTop;
+      st.els.scroll.scrollTop += rect.top - top - candidate.offset;
+      if (st.els.scroll.scrollTop !== previous) st.ignoredScrollTop = st.els.scroll.scrollTop;
+      return;
+    }
+  }
+  if (Number.isFinite(anchor.scrollTop)) {
+    const previous = st.els.scroll.scrollTop;
+    st.els.scroll.scrollTop = anchor.scrollTop;
+    if (st.els.scroll.scrollTop !== previous) st.ignoredScrollTop = st.els.scroll.scrollTop;
+  }
+}
+
+function saveReadingState(st) {
+  if (!st.snapshotReady) return;
+  readingStates.delete(st.sessionId);
+  readingStates.set(st.sessionId, {
+    followLatest: st.followLatest,
+    anchor: st.followLatest ? null : st.restoringReading ? st.readingAnchor : captureReadingAnchor(st),
+    transcript: st.transcript.exportState?.() ?? null,
+  });
+  while (readingStates.size > READING_STATE_LIMIT) readingStates.delete(readingStates.keys().next().value);
+}
+
 function startConversation(sh, id, restore) {
+  const savedReading = readingStates.get(id);
   const els = {
     scroll: $('transcript-scroll'),
     transcript: $('transcript'),
@@ -850,7 +916,12 @@ function startConversation(sh, id, restore) {
     titleFallback: sessionTitles.get(id) || 'Session',
     transcript: null,
     ws: null,
-    followLatest: true,
+    followLatest: savedReading?.followLatest ?? true,
+    readingAnchor: savedReading?.anchor ?? null,
+    applyingSnapshot: false,
+    restoringViewport: false,
+    restoringReading: !!savedReading?.anchor && !savedReading?.followLatest,
+    ignoredScrollTop: null,
     layoutFrame: 0,
     lastPendingKey: null,
     queueView: null,
@@ -899,6 +970,9 @@ function startConversation(sh, id, restore) {
   const nearBottom = () => els.scroll.scrollHeight - els.scroll.scrollTop - els.scroll.clientHeight < 80;
   const toBottom = () => {
     st.followLatest = true;
+    st.readingAnchor = null;
+    st.restoringReading = false;
+    st.ignoredScrollTop = null;
     els.scroll.scrollTop = els.scroll.scrollHeight;
   };
   const updateJump = () => { els.jump.hidden = nearBottom(); };
@@ -906,13 +980,40 @@ function startConversation(sh, id, restore) {
     if (st.disposed || convo !== st || st.layoutFrame) return;
     st.layoutFrame = requestAnimationFrame(() => {
       st.layoutFrame = 0;
-      if (st.disposed || convo !== st) return;
+      if (st.disposed || convo !== st || !st.snapshotReady) return;
       if (st.followLatest) toBottom();
+      else {
+        restoreReadingAnchor(st, st.readingAnchor);
+        if (!st.transcript.hasPendingDetails?.()) {
+          st.restoringReading = false;
+          st.readingAnchor = captureReadingAnchor(st);
+        }
+      }
+      st.restoringViewport = false;
       updateJump();
     });
   };
   st.refreshLayout = refreshLayout;
-  st.transcript = new Transcript(els.transcript, { onChange: refreshLayout });
+  const loadDetails = async (loader, rowId, options) => {
+    try {
+      return await loader(id, rowId, options);
+    } catch (error) {
+      if (error?.status === 409 && convo === st && !st.disposed) st.ws?.manualReconnect();
+      throw error;
+    }
+  };
+  st.transcript = new Transcript(els.transcript, {
+    onBeforeChange: () => {
+      if (!st.snapshotReady || st.followLatest || st.applyingSnapshot) return;
+      if (!st.restoringReading && !st.restoringViewport) st.readingAnchor = captureReadingAnchor(st);
+      st.restoringReading = true;
+      st.restoringViewport = true;
+    },
+    onChange: refreshLayout,
+    loadTurn: typeof api.getTurnDetails === 'function' ? (rowId, options) => loadDetails(api.getTurnDetails, rowId, options) : undefined,
+    loadRow: typeof api.getRowDetails === 'function' ? (rowId, options) => loadDetails(api.getRowDetails, rowId, options) : undefined,
+  });
+  if (savedReading?.transcript) st.transcript.restoreState?.(savedReading.transcript);
   st.resizeObserver = new ResizeObserver(refreshLayout);
   st.resizeObserver.observe(els.transcript);
 
@@ -925,6 +1026,12 @@ function startConversation(sh, id, restore) {
   st.closeOverlay = closeOverlay;
 
   const onTranscriptClick = async event => {
+    if (event.target.closest('summary, .out-more')) {
+      st.followLatest = false;
+      st.restoringReading = false;
+      st.ignoredScrollTop = null;
+      st.readingAnchor = captureReadingAnchor(st);
+    }
     const copyBtn = event.target.closest('[data-copy]');
     if (copyBtn) {
       const code = copyBtn.closest('.md-code');
@@ -946,10 +1053,19 @@ function startConversation(sh, id, restore) {
   };
 
   const onScroll = () => {
+    if (st.disposed || convo !== st || !st.snapshotReady) return;
+    if (st.ignoredScrollTop != null) {
+      const ignored = st.ignoredScrollTop;
+      st.ignoredScrollTop = null;
+      if (Math.abs(els.scroll.scrollTop - ignored) < 1) return;
+    }
+    if (st.restoringViewport) return;
+    st.restoringReading = false;
     st.followLatest = nearBottom();
+    st.readingAnchor = st.followLatest ? null : captureReadingAnchor(st);
     updateJump();
   };
-  els.transcript.addEventListener('click', onTranscriptClick);
+  els.transcript.addEventListener('click', onTranscriptClick, true);
   els.scroll.addEventListener('scroll', onScroll, { passive: true });
   st.onTranscriptClick = onTranscriptClick;
   st.onScroll = onScroll;
@@ -1331,20 +1447,25 @@ function startConversation(sh, id, restore) {
 
   const applySnapshot = snapshot => {
     if (!snapshot || st.disposed || convo !== st) return;
+    if (!st.followLatest && st.snapshotReady && !st.restoringViewport && !st.restoringReading) st.readingAnchor = captureReadingAnchor(st);
+    st.restoringReading = !st.followLatest && !!st.readingAnchor;
+    st.restoringViewport = true;
     st.snapshotReady = true;
     els.loading.hidden = true;
     if (typeof snapshot.revision === 'number') st.revision = snapshot.revision;
     if (typeof snapshot.sequence === 'number') st.lastSeq = snapshot.sequence;
     st.state = snapshot.state || {};
-    const stick = st.transcript.els.size === 0 || st.followLatest;
-    const scrollTop = els.scroll.scrollTop;
-    st.followLatest = stick;
-    st.transcript.rebuild(snapshot.rows || []);
+    st.applyingSnapshot = true;
+    try {
+      st.transcript.rebuild(snapshot.rows || []);
+    } finally {
+      st.applyingSnapshot = false;
+    }
     sh.sessionComposer.setReady(st.connStatus === 'online');
     updateChrome();
     st.updateConn();
-    if (stick) toBottom();
-    else els.scroll.scrollTop = scrollTop;
+    if (st.followLatest) toBottom();
+    else restoreReadingAnchor(st, st.readingAnchor);
     refreshLayout();
   };
 
@@ -1379,6 +1500,7 @@ function startConversation(sh, id, restore) {
     onStatus: status => st.setConn(status),
     resume: () => api.resumeSession(id),
     appendText: typeof st.transcript.appendText === 'function',
+    compact: st.transcript.supportsCompact === true && typeof api.getTurnDetails === 'function' && typeof api.getRowDetails === 'function',
   });
   st.ws.start();
 
@@ -1412,6 +1534,7 @@ function applyRestore(st, restore) {
 function disposeConversation() {
   const st = convo;
   if (!st) return;
+  saveReadingState(st);
   convo = null;
   st.disposed = true;
   if (st.queueView) st.queueView.dispose();
@@ -1421,7 +1544,7 @@ function disposeConversation() {
   st.closeOverlay?.();
   st.transcript.dispose();
   if (st.onTranscriptClick && st.els.transcript) {
-    st.els.transcript.removeEventListener('click', st.onTranscriptClick);
+    st.els.transcript.removeEventListener('click', st.onTranscriptClick, true);
   }
   if (st.onScroll && st.els.scroll) {
     st.els.scroll.removeEventListener('scroll', st.onScroll);

@@ -220,7 +220,7 @@ public class ComposerAndInteractionSmokeTests
     [AvaloniaFact]
     public async Task PermissionCard_OpenFullPlan_OpensMarkdownPlanDocumentInSidePane()
     {
-        using var workbench = ShellSmokeTests.CreateWorkbench();
+        using var workbench = await ShellSmokeTests.CreateWorkbenchAsync();
         var toolCallId = StrongId.NewToolCallId();
         var request = new PermissionRequest(
             StrongId.NewInteractionId(),

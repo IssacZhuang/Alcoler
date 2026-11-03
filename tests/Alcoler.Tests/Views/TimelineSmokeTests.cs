@@ -849,6 +849,196 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
         }
     }
 
+    [AvaloniaTheory]
+    [InlineData("turn")]
+    [InlineData("tool")]
+    [InlineData("files")]
+    [InlineData("reasoning")]
+    public async Task ExplicitExpansion_FromPinnedBottomKeepsTheVisibleAnchorInsteadOfFollowingTheFinalAnswer(string kind)
+    {
+        EnsureFluentTheme();
+        var (view, conversation, store) = CreateTimeline();
+        var window = Host(view, 680, 520);
+        try
+        {
+            var at = DateTimeOffset.UtcNow;
+            List<ConversationRow> rows =
+            [
+                new SystemNoticeRow("prefix", "notice", string.Join("\n", Enumerable.Repeat("Earlier completed work", 40))),
+                new UserMessageRow("u1", "Inspect this process", at),
+            ];
+            if (kind == "turn")
+                rows.AddRange(Enumerable.Range(0, 18).Select(index => new ToolCallRow($"t{index}", StrongId.NewToolCallId(),
+                    "Read", JsonSerializer.SerializeToElement(new { path = $"file{index}.txt" }), ToolCallStatus.Succeeded,
+                    null, false, TimeSpan.FromSeconds(1), at)));
+            if (kind == "tool")
+                rows.Add(new ToolCallRow("t1", StrongId.NewToolCallId(), "Read", JsonSerializer.SerializeToElement(
+                    Enumerable.Range(0, 80).ToDictionary(index => $"field{index}", _ => "Input detail")),
+                    ToolCallStatus.Succeeded, null, false, TimeSpan.FromSeconds(1), at));
+            if (kind == "files")
+                rows.Add(new FileChangeSummaryRow("f1", Enumerable.Range(0, 30)
+                    .Select(index => new FileChangeSummaryItem($"file{index}.txt", 1, 1)).ToArray(), 30, 30));
+            List<MessagePart> parts = [new TextPart(StrongId.NewPartId(), "Final answer")];
+            if (kind == "reasoning")
+                parts.Insert(0, new ReasoningPart(StrongId.NewPartId(), string.Join("\n", Enumerable.Repeat("Long reasoning", 40))));
+            rows.Add(new AssistantMessageRow("a1", StrongId.NewMessageId(), parts, false, at));
+            conversation.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true, ResetRows: rows));
+            var user = Assert.Single(conversation.Items.OfType<UserMessageItemViewModel>());
+            if (kind != "turn" && user.HasTurnSummary)
+                conversation.ToggleTurnSummary(user);
+            await RenderAsync(window);
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            var panel = Assert.IsType<ConversationPanel>(items.ItemsPanelRoot);
+            var anchor = Assert.IsType<TimelineScrollAnchor>(panel.CaptureReadingAnchor());
+            Assert.InRange(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y, 0, 1);
+            Assert.True(conversation.CaptureReadingState().FollowLatest);
+            var button = kind switch
+            {
+                "turn" => Assert.Single(view.GetVisualDescendants().OfType<Button>(), control => control.Classes.Contains("turnSummaryRow")),
+                "tool" => Assert.Single(view.GetVisualDescendants().OfType<Button>(), control => control.Classes.Contains("toolRow") && control.DataContext is ToolCallItemViewModel),
+                "files" => Assert.Single(view.GetVisualDescendants().OfType<Button>(), control => control.Classes.Contains("fileSummaryHeader")),
+                _ => Assert.Single(view.GetVisualDescendants().OfType<Button>(), control => control.Name == "ThinkingToggle"),
+            };
+            var before = button.TranslatePoint(default, view.Scroller)!.Value.Y;
+            var point = button.TranslatePoint(new Point(button.Bounds.Width / 2, button.Bounds.Height / 2), window)!.Value;
+            Assert.True(new Rect(window.ClientSize).Contains(point));
+            window.MouseMove(point);
+            window.MouseDown(point, MouseButton.Left);
+            window.MouseUp(point, MouseButton.Left);
+            await RenderAsync(window);
+            await RenderAsync(window);
+
+            Assert.False(conversation.CaptureReadingState().FollowLatest);
+            AssertRowAnchor(view, panel, anchor);
+            Assert.InRange(Math.Abs(button.TranslatePoint(default, view.Scroller)!.Value.Y - before), 0, 1);
+            Assert.True(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y > 200,
+                DescribeTimeline(view));
+            Assert.True(kind switch
+            {
+                "turn" => user.IsTurnExpanded,
+                "tool" => Assert.Single(conversation.Items.OfType<ToolCallItemViewModel>()).IsExpanded,
+                "files" => Assert.Single(conversation.Items.OfType<FileChangeSummaryItemViewModel>()).IsExpanded,
+                _ => Assert.Single(conversation.Items.OfType<AssistantMessageItemViewModel>()).IsReasoningExpanded,
+            });
+        }
+        finally
+        {
+            window.Close();
+            conversation.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadingState_RestoresRealRowAnchorAfterFoldingAndKeepsItWhenRowsAboveGrow(bool recreateView)
+    {
+        EnsureFluentTheme();
+        var (view, original, store) = CreateTimeline();
+        var window = Host(view, 680, 320);
+        using var otherStore = new ProjectionStore(() => throw new NotSupportedException(), StrongId.NewSessionId(),
+            InlineUiScheduler.Instance, TestSnapshots.State());
+        using var other = new ConversationViewModel(new FakeAgentRuntime(), otherStore);
+        using var restoredStore = new ProjectionStore(() => throw new NotSupportedException(), StrongId.NewSessionId(),
+            InlineUiScheduler.Instance, TestSnapshots.State());
+        ConversationViewModel? restored = null;
+        try
+        {
+            var at = DateTimeOffset.UtcNow;
+            var rows = Enumerable.Range(0, 24).SelectMany(index => new ConversationRow[]
+            {
+                new UserMessageRow($"u{index}", $"Request {index}", at),
+                new ToolCallRow($"t{index}", StrongId.NewToolCallId(), "Read",
+                    JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }), ToolCallStatus.Succeeded,
+                    null, false, TimeSpan.FromSeconds(1), at),
+                new AssistantMessageRow($"a{index}", StrongId.NewMessageId(),
+                    [new ReasoningPart(StrongId.NewPartId(), $"Reasoning {index}"),
+                     new TextPart(StrongId.NewPartId(), $"Answer {index}. The reader can return to this completed turn.")], false, at),
+            }).ToArray();
+            original.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true, ResetRows: rows));
+            var user = Assert.IsType<UserMessageItemViewModel>(original.Items[36]);
+            var tool = Assert.IsType<ToolCallItemViewModel>(original.Items[37]);
+            var assistant = Assert.IsType<AssistantMessageItemViewModel>(original.Items[38]);
+            original.ToggleTurnSummary(user);
+            tool.IsExpanded = true;
+            assistant.IsReasoningExpanded = true;
+            await RenderAsync(window);
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            items.ScrollIntoView(37);
+            await RenderAsync(window);
+            var toolContainer = Assert.Single(((ConversationPanel)items.ItemsPanelRoot!).Children,
+                child => ReferenceEquals(child.DataContext, tool));
+            var top = toolContainer.TranslatePoint(default, view.Scroller)!.Value.Y;
+            view.Scroller.Offset = new Vector(0, view.Scroller.Offset.Y + top + 18);
+            await RenderAsync(window);
+            var saved = original.CaptureReadingState();
+            var anchor = Assert.IsType<TimelineScrollAnchor>(saved.Anchor);
+            Assert.Equal(tool.RowId, anchor.RowId);
+            Assert.False(saved.FollowLatest);
+            Assert.InRange(Math.Abs(anchor.RelativeOffset + 18), 0, 1);
+
+            other.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true,
+                ResetRows: Enumerable.Range(0, 30).Select(index => (ConversationRow)new UserMessageRow(
+                    $"other{index}", "Other history " + new string('x', 100), at)).ToArray()));
+            restored = new ConversationViewModel(new FakeAgentRuntime(), restoredStore, readingState: saved);
+            restored.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true,
+                ResetRows: [new SystemNoticeRow("new-prefix", "notice", "New context above the saved reading position"), .. rows]));
+            original.Dispose();
+            if (recreateView)
+            {
+                view = new TimelineView();
+                window.Content = view;
+            }
+            view.DataContext = restored;
+            view.DataContext = other;
+            await RenderAsync(window);
+            Assert.InRange(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y, 0, 1);
+            view.DataContext = restored;
+            await RenderAsync(window);
+            await RenderAsync(window);
+
+            items = view.FindControl<ItemsControl>("TimelineItems")!;
+            var panel = Assert.IsType<ConversationPanel>(items.ItemsPanelRoot);
+            var restoredTool = Assert.Single(restored.Items.OfType<ToolCallItemViewModel>(), item => item.RowId == tool.RowId);
+            Assert.NotSame(tool, restoredTool);
+            Assert.True(restoredTool.IsExpanded);
+            Assert.False(restoredTool.IsFolded);
+            Assert.True(Assert.Single(restored.Items.OfType<UserMessageItemViewModel>(), item => item.RowId == user.RowId).IsTurnExpanded);
+            Assert.True(Assert.Single(restored.Items.OfType<AssistantMessageItemViewModel>(), item => item.RowId == assistant.RowId).IsReasoningExpanded);
+            Assert.All(panel.Children, child => Assert.Contains(child.DataContext, restored.Items));
+            Assert.True(panel.Children.Count < restored.Items.Count / 2, DescribeTimeline(view));
+            AssertRowAnchor(view, panel, anchor);
+
+            var before = view.Scroller.Offset.Y;
+            var above = Assert.IsType<UserMessageRow>(rows[36]);
+            Assert.Contains(panel.Children, child => (child.DataContext as TimelineItemViewModel)?.RowId == above.RowId);
+            restored.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(),
+                [new RowUpserted(above with { Text = string.Join("\n", Enumerable.Repeat("Earlier content grew while reading.", 24)) })], Reset: false));
+            await RenderAsync(window);
+            await RenderAsync(window);
+
+            Assert.True(view.Scroller.Offset.Y > before + 200, DescribeTimeline(view));
+            AssertRowAnchor(view, panel, anchor);
+            Assert.False(restored.CaptureReadingState().FollowLatest);
+        }
+        finally
+        {
+            window.Close();
+            original.Dispose();
+            restored?.Dispose();
+            store.Dispose();
+        }
+    }
+
+    private static void AssertRowAnchor(TimelineView view, ConversationPanel panel, TimelineScrollAnchor anchor)
+    {
+        var container = Assert.Single(panel.Children,
+            child => (child.DataContext as TimelineItemViewModel)?.RowId == anchor.RowId);
+        var top = container.TranslatePoint(default, view.Scroller)!.Value.Y;
+        Assert.InRange(Math.Abs(top - anchor.RelativeOffset), 0, 1);
+    }
+
     [AvaloniaFact]
     public void AutoScroll_PinsToBottomOnlyWhenUserIsNearBottom()
     {

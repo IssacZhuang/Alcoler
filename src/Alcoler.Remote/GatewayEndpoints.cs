@@ -28,6 +28,7 @@ internal static class GatewayEndpoints
         MapModels(app, state);
         MapSlashCatalog(app, state);
         MapSessions(app, state);
+        CompactDetailEndpoints.Map(app, state);
         MapCommands(app, state);
         MapArtifacts(app, state);
         MapPair(app, state);
@@ -297,7 +298,8 @@ internal static class GatewayEndpoints
             }
             var socket = await context.WebSockets.AcceptWebSocketAsync();
             await SessionStream.RunAsync(state, new SessionId(sessionId), socket, context.RequestAborted,
-                appendText: context.Request.Query["appendText"] == "1");
+                appendText: context.Request.Query["appendText"] == "1",
+                compact: context.Request.Query["compact"] == "1");
         });
     }
 

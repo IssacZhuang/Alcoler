@@ -18,6 +18,7 @@ public sealed class SessionProjectionHub : IDisposable
     private readonly TimeProvider _timeProvider;
     private readonly object _sync = new();
     private readonly Dictionary<SessionId, Entry> _stores = [];
+    private bool _disposed;
 
     public SessionProjectionHub(
         IAgentRuntime runtime,
@@ -37,10 +38,12 @@ public sealed class SessionProjectionHub : IDisposable
     {
         lock (_sync)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (_stores.TryGetValue(sessionId, out var entry))
             {
                 entry.WarmTimer?.Dispose();
                 entry.WarmTimer = null;
+                entry.WarmGeneration++;
                 entry.RefCount++;
                 return entry.Store;
             }
@@ -73,35 +76,22 @@ public sealed class SessionProjectionHub : IDisposable
             }
 
             entry.WarmTimer?.Dispose();
+            var generation = ++entry.WarmGeneration;
             entry.WarmTimer = _timeProvider.CreateTimer(
-                static state => ((SessionProjectionHub)state!).Evict(),
-                this,
-                _keepWarm,
-                Timeout.InfiniteTimeSpan);
+                _ => Evict(sessionId, entry, generation), null, _keepWarm, Timeout.InfiniteTimeSpan);
         }
     }
 
-    private void Evict()
+    private void Evict(SessionId sessionId, Entry released, long generation)
     {
         lock (_sync)
         {
-            List<SessionId>? evicted = null;
-            foreach (var (sessionId, entry) in _stores)
-            {
-                if (entry.RefCount <= 0)
-                {
-                    entry.WarmTimer?.Dispose();
-                    entry.Store.Dispose();
-                    (evicted ??= []).Add(sessionId);
-                }
-            }
-            if (evicted is not null)
-            {
-                foreach (var sessionId in evicted)
-                {
-                    _stores.Remove(sessionId);
-                }
-            }
+            if (!_stores.TryGetValue(sessionId, out var entry) || !ReferenceEquals(entry, released) ||
+                entry.RefCount > 0 || entry.WarmGeneration != generation)
+                return;
+            entry.WarmTimer?.Dispose();
+            entry.Store.Dispose();
+            _stores.Remove(sessionId);
         }
     }
 
@@ -109,6 +99,7 @@ public sealed class SessionProjectionHub : IDisposable
     {
         lock (_sync)
         {
+            _disposed = true;
             foreach (var entry in _stores.Values)
             {
                 entry.WarmTimer?.Dispose();
@@ -123,5 +114,6 @@ public sealed class SessionProjectionHub : IDisposable
         public ProjectionStore Store { get; } = store;
         public int RefCount { get; set; } = refCount;
         public ITimer? WarmTimer { get; set; }
+        public long WarmGeneration { get; set; }
     }
 }

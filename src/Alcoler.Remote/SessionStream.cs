@@ -16,7 +16,7 @@ internal static class SessionStream
 
     public static async Task RunAsync(
         GatewayState state, SessionId sessionId, WebSocket socket, CancellationToken requestAborted,
-        TimeSpan? pingInterval = null, TimeSpan? sendTimeout = null, bool appendText = false)
+        TimeSpan? pingInterval = null, TimeSpan? sendTimeout = null, bool appendText = false, bool compact = false)
     {
         var writeTimeout = sendTimeout ?? SendTimeout;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
@@ -24,6 +24,7 @@ internal static class SessionStream
         Task? receive = null;
         Task? ping = null;
         IConversationProjection? projection = null;
+        IDisposable? registration = null;
         try
         {
             projection = await ResolveProjectionAsync(state.Options.Runtime(), sessionId, cancellation.Token);
@@ -33,11 +34,13 @@ internal static class SessionStream
                 await CloseAsync(socket, sendGate, (WebSocketCloseStatus)4404, "session_not_found");
                 return;
             }
+            registration = state.Streams.Register(sessionId, projection);
             receive = ReceiveLoopAsync(socket, sendGate, cancellation);
             var snapshot = projection.Snapshot();
-            var legacyRows = appendText ? null : new LegacyRows(snapshot);
+            var compactRows = compact ? new CompactTranscript(snapshot) : null;
+            var legacyRows = appendText || compact ? null : new LegacyRows(snapshot);
             await SendAsync(socket, sendGate,
-                GatewayJson.SnapshotFrame(snapshot),
+                compactRows?.SnapshotFrame(snapshot.Revision, snapshot.Sequence) ?? GatewayJson.SnapshotFrame(snapshot),
                 cancellation.Token, writeTimeout);
             ping = PingLoopAsync(socket, sendGate, cancellation, pingInterval ?? PingInterval, writeTimeout);
             var lastSequence = snapshot.Sequence;
@@ -46,7 +49,7 @@ internal static class SessionStream
                 if (delta.Sequence <= lastSequence)
                     continue;
                 await SendAsync(socket, sendGate,
-                    GatewayJson.DeltaFrame(legacyRows?.Apply(delta) ?? delta),
+                    compactRows?.Apply(delta, appendText) ?? GatewayJson.DeltaFrame(legacyRows?.Apply(delta) ?? delta),
                     cancellation.Token, writeTimeout);
                 lastSequence = delta.Sequence;
             }
@@ -76,6 +79,7 @@ internal static class SessionStream
             {
                 try
                 {
+                    registration?.Dispose();
                     projection?.Dispose();
                 }
                 finally
@@ -136,7 +140,7 @@ internal static class SessionStream
         }
     }
 
-    private static async Task<IConversationProjection?> ResolveProjectionAsync(
+    internal static async Task<IConversationProjection?> ResolveProjectionAsync(
         IAgentRuntime runtime, SessionId sessionId, CancellationToken cancellationToken)
     {
         try

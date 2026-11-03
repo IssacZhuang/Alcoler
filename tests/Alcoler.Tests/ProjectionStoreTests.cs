@@ -410,6 +410,188 @@ public class ProjectionStoreTests(Xunit.Abstractions.ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task Initialized_ExposesCoherentStateBeforeUiDeliveryAndDoesNotRepeatInitialMaterialization()
+    {
+        var scheduler = new QueuedUiScheduler();
+        var state = TestSnapshots.State(TurnPhase.Streaming) with { PlanEnabled = true };
+        var (store, projection) = Create(new ConversationSnapshot(7, 4, [UserRow("u1", "ready")], state), scheduler: scheduler);
+        using (store)
+        {
+            store.Start();
+            await store.Initialized.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(7, store.Revision);
+            using var conversation = new Alcoler.ViewModel.ConversationViewModel(new FakeAgentRuntime(), store);
+            var repeats = 0;
+            conversation.TimelineAppended += () => repeats++;
+            Assert.Equal(TurnPhase.Streaming.ToString(), conversation.PhaseText);
+            Assert.True(conversation.Composer.PlanEnabled);
+            Assert.Single(conversation.Items);
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+            Assert.Equal(0, repeats);
+            Assert.Equal(1, projection.SnapshotCount);
+        }
+    }
+
+    [Fact]
+    public async Task ReaderAttachingBeforeInitialization_DoesNotSkipTheInitialSequenceZeroUpdate()
+    {
+        var scheduler = new QueuedUiScheduler();
+        var state = TestSnapshots.State(TurnPhase.Streaming) with { PlanEnabled = true };
+        var (store, projection) = Create(new ConversationSnapshot(0, 0, [UserRow("u1", "ready")], state), scheduler: scheduler);
+        using (store)
+        {
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            projection.BeforeSnapshot = () =>
+            {
+                entered.TrySetResult();
+                Assert.True(release.Task.Wait(TimeSpan.FromSeconds(10)));
+            };
+            try
+            {
+                store.Start();
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                using var conversation = new Alcoler.ViewModel.ConversationViewModel(new FakeAgentRuntime(), store);
+                Assert.Empty(conversation.Items);
+                release.TrySetResult();
+                await store.Initialized.WaitAsync(TimeSpan.FromSeconds(5));
+                await WaitUntil(() => scheduler.Count == 1);
+                scheduler.RunNext();
+                Assert.Single(conversation.Items);
+                Assert.Equal(TurnPhase.Streaming.ToString(), conversation.PhaseText);
+                Assert.True(conversation.Composer.PlanEnabled);
+            }
+            finally
+            {
+                release.TrySetResult();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ReaderAttachingInsideCoalescedBatch_DoesNotRepeatTextOrLosePendingRowsAndState()
+    {
+        var scheduler = new QueuedUiScheduler();
+        var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State(), row), scheduler: scheduler);
+        using (store)
+        {
+            store.Start();
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+            projection.Emit(new ConversationDelta(2, [new RowTextAppended("a1", " one", row.At)]));
+            await WaitUntil(() => Assert.IsType<TextPart>(Assert.Single(
+                Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows)).Parts)).Text == "initial one");
+            using var conversation = new Alcoler.ViewModel.ConversationViewModel(new FakeAgentRuntime(), store);
+            projection.Emit(new ConversationDelta(3,
+            [
+                new RowTextAppended("a1", " two", row.At),
+                new RowAppended(UserRow("u2", "new row")),
+                new StatePatched(TestSnapshots.State(TurnPhase.Streaming, contextUsageTokens: 42)),
+            ]));
+            await WaitUntil(() => store.State.ContextUsageTokens == 42);
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+
+            Assert.Equal("initial one two", Assert.IsType<Alcoler.ViewModel.AssistantMessageItemViewModel>(conversation.Items[0]).MarkdownText);
+            Assert.Equal("u2", conversation.Items[1].RowId);
+            Assert.Equal(TurnPhase.Streaming.ToString(), conversation.PhaseText);
+            Assert.Equal(1, projection.SnapshotCount);
+        }
+    }
+
+    [Fact]
+    public async Task Hub_ReacquireKeepsTheWarmStoreAndItsLiveStateWithoutAnotherProjection()
+    {
+        var runtime = new FakeAgentRuntime();
+        var id = StrongId.NewSessionId();
+        var projection = runtime.RegisterSession(id, Snapshot(1, TestSnapshots.State(), UserRow("u1", "ready")));
+        using var hub = new SessionProjectionHub(runtime, InlineUiScheduler.Instance);
+        var original = hub.Acquire(id);
+        await original.Initialized.WaitAsync(TimeSpan.FromSeconds(5));
+        hub.Release(id);
+        projection.Emit(new ConversationDelta(2, [new StatePatched(TestSnapshots.State(TurnPhase.ExecutingTools))]));
+        await WaitUntil(() => original.State.Phase == TurnPhase.ExecutingTools);
+
+        var warm = hub.Acquire(id);
+
+        Assert.Same(original, warm);
+        Assert.Equal(TurnPhase.ExecutingTools, warm.CaptureUpdate().State.Phase);
+        Assert.Equal(1, runtime.SubscribeCount);
+        Assert.Equal(1, projection.SnapshotCount);
+        hub.Release(id);
+        hub.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => hub.Acquire(id));
+    }
+
+    [Fact]
+    public async Task Hub_WarmTimersOnlyEvictTheirOwnReleaseAndIgnoreSupersededCallbacks()
+    {
+        var runtime = new FakeAgentRuntime();
+        var first = StrongId.NewSessionId();
+        var second = StrongId.NewSessionId();
+        runtime.RegisterSession(first, Snapshot(0, TestSnapshots.State()));
+        runtime.RegisterSession(second, Snapshot(0, TestSnapshots.State()));
+        var time = new CapturedTimerProvider();
+        using var hub = new SessionProjectionHub(runtime, InlineUiScheduler.Instance, timeProvider: time);
+        var firstStore = hub.Acquire(first);
+        var secondStore = hub.Acquire(second);
+        await Task.WhenAll(firstStore.Initialized, secondStore.Initialized).WaitAsync(TimeSpan.FromSeconds(5));
+        hub.Release(first);
+        hub.Release(second);
+        time.Timers[0].Fire();
+        Assert.Same(secondStore, hub.Acquire(second));
+        var reopened = hub.Acquire(first);
+        await reopened.Initialized.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.NotSame(firstStore, reopened);
+        hub.Release(second);
+        time.Timers[1].Fire();
+        Assert.Same(secondStore, hub.Acquire(second));
+        Assert.Equal(3, runtime.SubscribeCount);
+        hub.Release(first);
+        time.Timers[0].Fire();
+        Assert.Same(reopened, hub.Acquire(first));
+        hub.Release(first);
+        hub.Release(second);
+    }
+
+    [Fact]
+    public async Task Dispose_DoesNotWaitForABlockedInitialSnapshot()
+    {
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State()));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        projection.BeforeSnapshot = () =>
+        {
+            entered.TrySetResult();
+            Assert.True(release.Task.Wait(TimeSpan.FromSeconds(10)));
+        };
+        try
+        {
+            store.Start();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Run(store.Dispose).WaitAsync(TimeSpan.FromSeconds(2));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.Initialized);
+        }
+        finally
+        {
+            release.TrySetResult();
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task InitialSubscriptionFailure_CompletesInitializationWithTheError()
+    {
+        using var store = new ProjectionStore(() => throw new InvalidOperationException("subscribe failed"),
+            StrongId.NewSessionId(), InlineUiScheduler.Instance, TestSnapshots.State());
+        store.Start();
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => store.Initialized.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("subscribe failed", exception.Message);
+    }
+
+    [Fact]
     public void SetRevision_NeverMovesBackwards()
     {
         var (store, _) = Create(Snapshot(1, TestSnapshots.State()));
@@ -440,6 +622,31 @@ public class ProjectionStoreTests(Xunit.Abstractions.ITestOutputHelper output)
         public Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public void Dispose() { }
+    }
+
+    private sealed class CapturedTimerProvider : TimeProvider
+    {
+        public List<CapturedTimer> Timers { get; } = [];
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new CapturedTimer(callback, state);
+            Timers.Add(timer);
+            return timer;
+        }
+    }
+
+    private sealed class CapturedTimer(TimerCallback callback, object? state) : ITimer
+    {
+        private bool _disposed;
+        public void Fire() => callback(state);
+        public bool Change(TimeSpan dueTime, TimeSpan period) => !_disposed;
+        public void Dispose() => _disposed = true;
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class QueuedUiScheduler : IUiScheduler

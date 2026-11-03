@@ -188,12 +188,19 @@ public sealed class WorkspaceRemovalTests : IDisposable
         var betaSession = runtime.AddSession(beta, "Beta");
         var removalRefresh = runtime.DelayNextList();
         var removing = workbench.RemoveWorkspaceAsync(alpha);
-        var navigationRefresh = runtime.DelayNextList();
+        var snapshotEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSnapshot = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        runtime.ProjectionFor(betaSession.Id).BeforeSnapshot = () =>
+        {
+            snapshotEntered.TrySetResult();
+            Assert.True(releaseSnapshot.Task.Wait(TimeSpan.FromSeconds(10)));
+        };
         var opening = workbench.OpenSessionAsync(betaSession.Id);
 
-        removalRefresh.SetResult([alphaSession, betaSession]);
         try
         {
+            await snapshotEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            removalRefresh.SetResult([alphaSession, betaSession]);
             Assert.False(opening.IsCompleted);
             await removing;
             Assert.Same(conversation, workbench.Active);
@@ -201,7 +208,8 @@ public sealed class WorkspaceRemovalTests : IDisposable
         }
         finally
         {
-            navigationRefresh.TrySetResult([alphaSession, betaSession]);
+            releaseSnapshot.TrySetResult();
+            removalRefresh.TrySetResult([alphaSession, betaSession]);
             await opening;
         }
 
@@ -271,7 +279,7 @@ public sealed class WorkspaceRemovalTests : IDisposable
     [AvaloniaFact]
     public async Task GroupContextFlyout_RemoveProjectHidesTheGroupWithoutConfirmWhenIdle()
     {
-        using var viewModel = CreateWorkbench();
+        using var viewModel = await CreateWorkbenchAsync();
         var session = new SessionSummaryViewModel(
             StrongId.NewSessionId(), "Alpha", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         viewModel.Sidebar.ApplySummaries([session]);
@@ -324,9 +332,11 @@ public sealed class WorkspaceRemovalTests : IDisposable
             var now = DateTimeOffset.UtcNow;
             var summary = new SessionSummary(StrongId.NewSessionId(), title, root, PermissionMode.Build, null, now, now);
             _summaries.Add(summary);
-            _inner.RegisterSession(summary.Id, new ConversationSnapshot(0, 0, [], TestSnapshots.State() with { Title = title }));
+            _inner.RegisterSession(summary.Id, new ConversationSnapshot(0, 0, [], TestSnapshots.State() with { Title = title }), root);
             return summary;
         }
+
+        public FakeConversationProjection ProjectionFor(SessionId sessionId) => _inner.ProjectionFor(sessionId);
 
         public TaskCompletionSource<IReadOnlyList<SessionSummary>> DelayNextList()
         {

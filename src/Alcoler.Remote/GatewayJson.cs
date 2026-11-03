@@ -32,6 +32,8 @@ internal static class GatewayJson
 
     public static IResult Plain(byte[] json) => Raw(json, "application/json");
 
+    public static IResult Plain(byte[] json, int statusCode) => new BytesResult(json, "application/json", statusCode);
+
     public static IResult Raw(ReadOnlyMemory<byte> content, string contentType, bool enableRanges = false) =>
         new BytesResult(content, contentType, enableRanges: enableRanges);
 

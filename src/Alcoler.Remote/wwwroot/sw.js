@@ -3,7 +3,7 @@
 // with background update for same-origin shell assets. WebSockets are never
 // intercepted by the fetch handler, so the stream is untouched.
 
-const VERSION = 'alcoler-shell-v13';
+const VERSION = 'alcoler-shell-v14';
 
 const SHELL = [
   './',

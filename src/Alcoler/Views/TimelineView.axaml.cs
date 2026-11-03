@@ -37,10 +37,14 @@ public partial class TimelineView : UserControl
 
     private ConversationViewModel? _conversation;
     private bool _pendingScrollToEnd;
-    private bool _awaitingLayout;
     private bool _followingTail = true;
     private bool _scrollBarInteracting;
     private bool _scrollingToTail;
+    private bool _restoringAnchor;
+    private TimelineScrollAnchor? _pendingAnchor;
+    private int _anchorAttempts;
+
+    private ConversationPanel? Panel => TimelineItems.ItemsPanelRoot as ConversationPanel;
 
     // InitializeComponent is supplied by the Avalonia name generator; a manual
     // AvaloniaXamlLoader.Load overload here would leave x:Name fields unassigned.
@@ -50,6 +54,7 @@ public partial class TimelineView : UserControl
         DataContextChanged += OnDataContextChanged;
         TimelineScroll.ScrollChanged += OnTimelineScrollChanged;
         TimelineScroll.PropertyChanged += OnScrollPropertyChanged;
+        TimelineScroll.LayoutUpdated += OnLayoutUpdatedForScroll;
         TimelineScroll.AddHandler(PointerPressedEvent, OnTimelinePointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
         TimelineScroll.AddHandler(PointerReleasedEvent, OnTimelinePointerReleased, RoutingStrategies.Bubble, handledEventsToo: true);
         TimelineScroll.AddHandler(Thumb.DragStartedEvent, OnTimelineThumbDragStarted, RoutingStrategies.Bubble, handledEventsToo: true);
@@ -67,23 +72,84 @@ public partial class TimelineView : UserControl
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
-        if (_conversation is not null)
-        {
-            _conversation.TimelineAppended -= OnTimelineAppended;
-        }
+        UnsubscribeConversation();
+        ClearPendingAnchor();
         _conversation = DataContext as ConversationViewModel;
         _pendingScrollToEnd = false;
         _scrollBarInteracting = false;
-        _followingTail = true;
+        _followingTail = _conversation?.ReadingState.FollowLatest ?? true;
         if (_conversation is null)
-        {
             return;
-        }
         _conversation.TimelineAppended += OnTimelineAppended;
-        if (_conversation.Items.Count > 0)
+        _conversation.TimelineChanging += PreserveReadingPosition;
+        _conversation.ReadingStateCapturing += CaptureReadingPosition;
+        if (_followingTail)
         {
-            RequestScrollToEndAfterLayout();
+            if (_conversation.Items.Count > 0)
+                RequestScrollToEndAfterLayout();
         }
+        else
+        {
+            TimelineScroll.SetCurrentValue(ScrollViewer.OffsetProperty, TimelineScroll.Offset);
+            if (_conversation.ReadingState.Anchor is { } anchor)
+                RequestAnchorRestore(anchor);
+        }
+    }
+
+    private void UnsubscribeConversation()
+    {
+        if (_conversation is null)
+            return;
+        _conversation.TimelineAppended -= OnTimelineAppended;
+        _conversation.TimelineChanging -= PreserveReadingPosition;
+        _conversation.ReadingStateCapturing -= CaptureReadingPosition;
+        _conversation = null;
+    }
+
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        if (_conversation is null)
+            OnDataContextChanged(this, EventArgs.Empty);
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        CaptureReadingPosition();
+        UnsubscribeConversation();
+        ClearPendingAnchor();
+        _pendingScrollToEnd = false;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    private void CaptureReadingPosition()
+    {
+        if (_conversation is null || _restoringAnchor)
+            return;
+        var anchor = _pendingAnchor ?? Panel?.CaptureReadingAnchor() ?? _conversation.ReadingState.Anchor;
+        _conversation.SaveReadingPosition(anchor, _followingTail);
+    }
+
+    private void PreserveReadingPosition()
+    {
+        if (_followingTail || _scrollBarInteracting || _pendingAnchor is not null)
+            return;
+        if (Panel?.CaptureReadingAnchor() is { } anchor)
+            RequestAnchorRestore(anchor);
+    }
+
+    private void RequestAnchorRestore(TimelineScrollAnchor anchor)
+    {
+        _pendingAnchor = anchor;
+        _anchorAttempts = 0;
+        Panel?.SetReadingAnchor(anchor.RowId);
+        TimelineScroll.InvalidateMeasure();
+    }
+
+    private void ClearPendingAnchor()
+    {
+        _pendingAnchor = null;
+        Panel?.SetReadingAnchor(null);
     }
 
     private void OnTimelineAppended()
@@ -98,7 +164,8 @@ public partial class TimelineView : UserControl
 
     private void OnTimelineScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
-        if (_scrollBarInteracting || !ReferenceEquals(e.Source, TimelineScroll))
+        if (_scrollBarInteracting || _restoringAnchor || _pendingAnchor is not null ||
+            !ReferenceEquals(e.Source, TimelineScroll))
         {
             return;
         }
@@ -123,11 +190,13 @@ public partial class TimelineView : UserControl
             if (!_followingTail)
                 _pendingScrollToEnd = false;
         }
+        CaptureReadingPosition();
     }
 
     private void OnScrollPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        if (e.Property == ScrollViewer.OffsetProperty && !_scrollingToTail && !_scrollBarInteracting &&
+        if (e.Property == ScrollViewer.OffsetProperty && !_scrollingToTail && !_restoringAnchor &&
+            _pendingAnchor is null && !_scrollBarInteracting &&
             e.GetNewValue<Vector>().Y < e.GetOldValue<Vector>().Y && !IsNearBottom())
         {
             _followingTail = false;
@@ -167,6 +236,7 @@ public partial class TimelineView : UserControl
             return;
         _scrollBarInteracting = false;
         _followingTail = IsNearBottom();
+        CaptureReadingPosition();
     }
 
     private void OnTimelinePointerWheelChanged(object? sender, PointerWheelEventArgs e)
@@ -191,8 +261,10 @@ public partial class TimelineView : UserControl
     {
         _followingTail = false;
         _pendingScrollToEnd = false;
+        ClearPendingAnchor();
         // ScrollToEnd retains an infinite base value that re-coerces to the new tail as content grows.
         TimelineScroll.SetCurrentValue(ScrollViewer.OffsetProperty, TimelineScroll.Offset);
+        CaptureReadingPosition();
     }
 
     private bool IsNearBottom() =>
@@ -202,37 +274,68 @@ public partial class TimelineView : UserControl
     private void RequestScrollToEndAfterLayout()
     {
         _pendingScrollToEnd = true;
-        if (_awaitingLayout)
-        {
-            return;
-        }
-        _awaitingLayout = true;
-        TimelineScroll.LayoutUpdated += OnLayoutUpdatedForScroll;
+        TimelineScroll.InvalidateMeasure();
     }
 
     private void OnLayoutUpdatedForScroll(object? sender, EventArgs e)
     {
-        TimelineScroll.LayoutUpdated -= OnLayoutUpdatedForScroll;
-        _awaitingLayout = false;
-        if (!_pendingScrollToEnd)
-        {
+        if (_conversation is null || _scrollingToTail || _restoringAnchor || _scrollBarInteracting)
             return;
-        }
-        _pendingScrollToEnd = false;
-        if (_followingTail && !_scrollBarInteracting)
+        if (_pendingAnchor is { } anchor && Panel is { } panel)
         {
-            _scrollingToTail = true;
-            try
+            var item = _conversation.Items.FirstOrDefault(item => item.RowId == anchor.RowId);
+            if (item is null || item.IsFolded || _anchorAttempts++ >= 12)
             {
-                if (TimelineItems.ItemCount > 0)
-                    TimelineItems.ScrollIntoView(TimelineItems.ItemCount - 1);
-                TimelineScroll.ScrollToEnd();
+                ClearPendingAnchor();
             }
-            finally
+            else
             {
-                _scrollingToTail = false;
+                panel.SetReadingAnchor(anchor.RowId);
+                if (!panel.TryGetReadingAnchorPosition(out var position))
+                {
+                    TimelineScroll.InvalidateMeasure();
+                    return;
+                }
+                var difference = position - anchor.RelativeOffset;
+                if (Math.Abs(difference) > 0.5)
+                {
+                    _restoringAnchor = true;
+                    try
+                    {
+                        var offset = TimelineScroll.Offset;
+                        var target = Math.Clamp(offset.Y + difference, 0,
+                            Math.Max(0, TimelineScroll.Extent.Height - TimelineScroll.Viewport.Height));
+                        TimelineScroll.SetCurrentValue(ScrollViewer.OffsetProperty, new Vector(offset.X, target));
+                        TimelineScroll.InvalidateMeasure();
+                    }
+                    finally
+                    {
+                        _restoringAnchor = false;
+                    }
+                    return;
+                }
+                ClearPendingAnchor();
             }
         }
+        if (_pendingScrollToEnd)
+        {
+            _pendingScrollToEnd = false;
+            if (_followingTail)
+            {
+                _scrollingToTail = true;
+                try
+                {
+                    if (TimelineItems.ItemCount > 0)
+                        TimelineItems.ScrollIntoView(TimelineItems.ItemCount - 1);
+                    TimelineScroll.ScrollToEnd();
+                }
+                finally
+                {
+                    _scrollingToTail = false;
+                }
+            }
+        }
+        CaptureReadingPosition();
     }
 
     private void OnOpenPlanClick(object? sender, RoutedEventArgs e)
@@ -265,10 +368,19 @@ public partial class TimelineView : UserControl
         }
     }
 
+    private void BeginReadingInteraction()
+    {
+        PauseFollowing();
+        PreserveReadingPosition();
+    }
+
+    private void OnReasoningToggleClick(object? sender, RoutedEventArgs e) => BeginReadingInteraction();
+
     private void OnToolRowClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: ToolCallItemViewModel item })
         {
+            BeginReadingInteraction();
             item.IsExpanded = !item.IsExpanded;
             e.Handled = true;
         }
@@ -278,6 +390,7 @@ public partial class TimelineView : UserControl
     {
         if (sender is Button { DataContext: UserMessageItemViewModel item } && _conversation is not null)
         {
+            BeginReadingInteraction();
             _conversation.ToggleTurnSummary(item);
             e.Handled = true;
         }
@@ -287,6 +400,7 @@ public partial class TimelineView : UserControl
     {
         if (sender is Button { DataContext: FileChangeSummaryItemViewModel item })
         {
+            BeginReadingInteraction();
             item.IsExpanded = !item.IsExpanded;
             e.Handled = true;
         }

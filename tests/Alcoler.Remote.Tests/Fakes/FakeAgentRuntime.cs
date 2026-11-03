@@ -132,6 +132,7 @@ public sealed class FakeAgentRuntime : IAgentRuntime, ISessionActivityRuntime
         lock (_lock)
         {
             var session = RequireSession(sessionId);
+            session.ProjectionCount++;
             return session.ProjectionFactory?.Invoke() ?? new FakeConversationProjection(session);
         }
     }
@@ -141,15 +142,90 @@ public sealed class FakeAgentRuntime : IAgentRuntime, ISessionActivityRuntime
         lock (_lock)
         {
             var session = RequireSession(sessionId);
+            session.ProjectionCount++;
             return session.ProjectionFactory?.Invoke() ?? new FakeConversationProjection(session);
         }
     }
 
-    public void UseProjection(SessionId sessionId, Func<IConversationProjection> factory)
+    public void UseProjection(SessionId sessionId, Func<IConversationProjection>? factory)
     {
         lock (_lock)
             RequireSession(sessionId).ProjectionFactory = factory;
     }
+
+    internal void SetTranscript(SessionId sessionId, IReadOnlyList<ConversationRow> rows, ConversationState state)
+    {
+        lock (_lock)
+        {
+            var session = RequireSession(sessionId);
+            lock (session.Gate)
+            {
+                session.Rows.Clear();
+                session.Rows.AddRange(rows);
+                session.State = state;
+            }
+        }
+    }
+
+    internal ConversationDelta Publish(SessionId sessionId, params RowOp[] operations)
+    {
+        lock (_lock)
+        {
+            var session = RequireSession(sessionId);
+            lock (session.Gate)
+            {
+                foreach (var operation in operations)
+                {
+                    switch (operation)
+                    {
+                        case RowAppended appended:
+                            session.Rows.Add(appended.Row);
+                            break;
+                        case RowUpserted upserted:
+                            var index = session.Rows.FindIndex(row => row.RowId == upserted.Row.RowId);
+                            if (index < 0) session.Rows.Add(upserted.Row);
+                            else session.Rows[index] = upserted.Row;
+                            break;
+                        case RowRemoved removed:
+                            session.Rows.RemoveAll(row => row.RowId == removed.RowId);
+                            break;
+                        case RowTextAppended appended:
+                            var textIndex = session.Rows.FindIndex(row => row.RowId == appended.RowId);
+                            var assistant = (AssistantMessageRow)session.Rows[textIndex];
+                            var text = (TextPart)AssertTextPart(assistant);
+                            session.Rows[textIndex] = assistant with
+                            {
+                                Parts = [text with { Text = text.Text + appended.Delta }], At = appended.At,
+                            };
+                            break;
+                        case StatePatched patched:
+                            session.State = patched.State;
+                            break;
+                    }
+                }
+                return session.Publish(operations);
+            }
+        }
+    }
+
+    internal int ProjectionCount(SessionId sessionId)
+    {
+        lock (_lock)
+            return RequireSession(sessionId).ProjectionCount;
+    }
+
+    internal int ObserverCount(SessionId sessionId)
+    {
+        lock (_lock)
+        {
+            var session = RequireSession(sessionId);
+            lock (session.Gate)
+                return session.Views.Count;
+        }
+    }
+
+    private static MessagePart AssertTextPart(AssistantMessageRow row) => row.Parts is [TextPart text]
+        ? text : throw new InvalidOperationException("Expected a single text part.");
 
     public InteractionId SeedPendingPermission(SessionId sessionId)
     {

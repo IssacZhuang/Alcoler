@@ -698,7 +698,7 @@ public sealed class DraftConversationLifecycleTests
         var secondRoot = Path.Combine(Path.GetTempPath(), "alcoler-model-second");
         var sessionId = StrongId.NewSessionId();
         var runtime = new FakeAgentRuntime();
-        runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State(modelSelection: new ModelSelection("custom", "first"))));
+        runtime.RegisterSession(sessionId, new ConversationSnapshot(0, 1, [], TestSnapshots.State(modelSelection: new ModelSelection("custom", "first"))), firstRoot);
         var config = SelectionConfig();
         config.Save(path);
         try
@@ -1055,8 +1055,11 @@ public sealed class DraftConversationLifecycleTests
             return new SessionHandle(LastSessionId, options.WorkspaceRoot, options.Title ?? "");
         }
 
-        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken)
+        {
+            var summary = _summaries.Single(item => item.Id == sessionId);
+            return ValueTask.FromResult(new SessionHandle(sessionId, summary.WorkspaceRoot, summary.Title));
+        }
 
         public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken) =>
             ValueTask.FromResult<IReadOnlyList<SessionSummary>>(_summaries.ToArray());

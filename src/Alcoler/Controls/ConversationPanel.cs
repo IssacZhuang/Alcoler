@@ -39,6 +39,8 @@ public sealed class ConversationPanel : VirtualizingPanel
     private ScrollViewer? _scrollOwner;
     private int _tailIndex = -1;
     private int _scrollToIndex = -1;
+    private string? _readingAnchorId;
+    private int _readingAnchorIndex = -1;
     private bool _inLayout;
     private Control? _ownVisibilityChange;
 
@@ -51,11 +53,54 @@ public sealed class ConversationPanel : VirtualizingPanel
     public int FirstRealizedIndex => _realized.Count == 0 ? -1 : _realized.Keys.Min();
     public int LastRealizedIndex => _realized.Count == 0 ? -1 : _realized.Keys.Max();
 
+    internal TimelineScrollAnchor? CaptureReadingAnchor()
+    {
+        if (_scrollOwner is null || _offsetCount != Items.Count + 1 || Items.Count == 0 ||
+            this.TranslatePoint(default, _scrollOwner) is not { } origin)
+            return null;
+        var top = Math.Max(0, -origin.Y);
+        var start = Math.Clamp(OffsetUpperBound(0, _offsetCount, top) - 1, 0, Items.Count - 1);
+        for (var index = start; index < Items.Count; index++)
+        {
+            if (Items[index] is TimelineItemViewModel { IsFolded: false } item && _offsets[index + 1] > top)
+                return new TimelineScrollAnchor(item.RowId, origin.Y + _offsets[index]);
+        }
+        return null;
+    }
+
+    internal void SetReadingAnchor(string? rowId)
+    {
+        if (_readingAnchorId == rowId)
+            return;
+        _readingAnchorId = rowId;
+        _readingAnchorIndex = -1;
+        InvalidateMeasure();
+    }
+
+    internal bool TryGetReadingAnchorPosition(out double position)
+    {
+        position = 0;
+        if (_scrollOwner is null || _readingAnchorIndex < 0 || _readingAnchorIndex >= Items.Count ||
+            _offsetCount != Items.Count + 1 || !_heights.ContainsKey(Key(Items[_readingAnchorIndex])) ||
+            this.TranslatePoint(default, _scrollOwner) is not { } origin)
+            return false;
+        position = origin.Y + _offsets[_readingAnchorIndex];
+        return true;
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
         _inLayout = true;
         try
         {
+            _readingAnchorIndex = -1;
+            if (_readingAnchorId is not null)
+                for (var index = 0; index < Items.Count; index++)
+                    if (Items[index] is TimelineItemViewModel item && item.RowId == _readingAnchorId)
+                    {
+                        _readingAnchorIndex = index;
+                        break;
+                    }
             if (_width != availableSize.Width)
             {
                 _width = availableSize.Width;
@@ -124,6 +169,8 @@ public sealed class ConversationPanel : VirtualizingPanel
             ProcessMeasure(_tailIndex, start, end, constraint, ref width);
         if (_scrollToIndex >= 0 && _scrollToIndex < firstDirty)
             ProcessMeasure(_scrollToIndex, start, end, constraint, ref width);
+        if (_readingAnchorIndex >= 0 && _readingAnchorIndex < firstDirty)
+            ProcessMeasure(_readingAnchorIndex, start, end, constraint, ref width);
         _realizedSnapshot.Clear();
         foreach (var pair in _realized)
         {
@@ -172,7 +219,7 @@ public sealed class ConversationPanel : VirtualizingPanel
     {
         var key = Key(Items[i]);
         var height = _heights.GetValueOrDefault(key, EstimateHeight(Items[i]));
-        var retain = i == _tailIndex || i == _scrollToIndex ||
+        var retain = i == _tailIndex || i == _scrollToIndex || i == _readingAnchorIndex ||
             (_realized.TryGetValue(i, out var existing) && existing.Container.IsKeyboardFocusWithin);
         if (retain || (height > 0 && _offsets[i] + height >= start && _offsets[i] <= end))
         {
@@ -520,7 +567,8 @@ public sealed class ConversationPanel : VirtualizingPanel
             _offsets = [0];
             _offsetCount = 1;
             _firstDirtyOffset = 0;
-            _tailIndex = _scrollToIndex = -1;
+            _tailIndex = _scrollToIndex = _readingAnchorIndex = -1;
+            _readingAnchorId = null;
         }
         base.OnItemsControlChanged(oldValue);
         if (ItemsControl is not null)

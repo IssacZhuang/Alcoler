@@ -82,20 +82,115 @@ const OUTPUT_BLOCKS = 24;
 const STREAM_INTERVAL = 150;
 const FCS_MAX_FILES = 12;
 const rowSources = new WeakMap();
+const rowSnapshots = new WeakMap();
+
+function snapshotValue(value, seen = new Map()) {
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  const copy = Array.isArray(value) ? new Array(value.length) : Object.create(null);
+  seen.set(value, copy);
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (Object.hasOwn(descriptor, 'value')) copy[key] = snapshotValue(descriptor.value, seen);
+  }
+  return copy;
+}
+
+function sameValue(a, b, seen = new Map()) {
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return Object.is(a, b);
+  if (Array.isArray(a) !== Array.isArray(b) || (Array.isArray(a) && a.length !== b.length)) return false;
+  if (seen.has(a)) return seen.get(a) === b;
+  seen.set(a, b);
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every(key => Object.hasOwn(b, key) && sameValue(a[key], b[key], seen));
+}
 
 function rowState() {
   return { open: new Set(), all: new Set() };
 }
 
+const DETAIL_CACHE_BYTES = 1024 * 1024;
+const DETAIL_CACHE_ENTRIES = 8;
+const VIEW_STATE_ROWS = 2000;
+const disclosureKey = key => ['tool', 'thinking', 'turn'].includes(key);
+const sectionKey = key => typeof key === 'string' && /^(input|outputs|output-\d+|context:(description|file_path|path|command|pattern|query|url|action))$/.test(key);
+
+function payloadSize(value, limit, seen = new Set()) {
+  if (typeof value === 'string') return value.length * 2;
+  if (!value || typeof value !== 'object') return 8;
+  if (seen.has(value)) return 0;
+  seen.add(value);
+  let size = 32;
+  for (const key of Object.keys(value)) {
+    size += key.length * 2 + payloadSize(value[key], limit - size, seen);
+    if (size > limit) break;
+  }
+  return size;
+}
+
+class DetailCache {
+  constructor() { this.entries = new Map(); this.bytes = 0; }
+  key(kind, id, version) { return JSON.stringify([kind, id, version ?? null]); }
+  get(kind, id, version) {
+    const key = this.key(kind, id, version);
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.value;
+  }
+  set(kind, id, version, value) {
+    this.deleteRow(id);
+    const size = payloadSize(value, DETAIL_CACHE_BYTES);
+    if (size > DETAIL_CACHE_BYTES) return;
+    while (this.entries.size >= DETAIL_CACHE_ENTRIES || this.bytes + size > DETAIL_CACHE_BYTES) {
+      this.delete(this.entries.keys().next().value);
+    }
+    this.entries.set(this.key(kind, id, version), { id, value, size });
+    this.bytes += size;
+  }
+  delete(key) {
+    const entry = this.entries.get(key);
+    if (entry) this.bytes -= entry.size;
+    this.entries.delete(key);
+  }
+  deleteRow(id) {
+    for (const [key, entry] of this.entries) if (entry.id === id) this.delete(key);
+  }
+  clear() { this.entries.clear(); this.bytes = 0; }
+}
+
+function viewRows(state) {
+  if (!Array.isArray(state?.rows)) return [];
+  return state.rows.slice(0, VIEW_STATE_ROWS).filter(row => typeof row?.rowId === 'string' && row.rowId.length <= 512);
+}
+
 export class Transcript {
-  constructor(el, { onChange } = {}) {
+  constructor(el, { onChange, onBeforeChange, loadTurn, loadRow, _detailCache } = {}) {
     this.el = el;
+    this.supportsCompact = true;
     this.els = new Map();
     this.states = new Map();
+    this.turnStates = new Map();
+    this.loads = new Map();
+    this.cache = _detailCache || new DetailCache();
+    this.ownsCache = !_detailCache;
+    this.loadTurn = loadTurn;
+    this.loadRow = loadRow;
     this.timers = new Map();
     this.textBuffers = new Map();
     this.disposed = false;
-    this.notify = () => { if (!this.disposed) onChange?.(); };
+    this.dirty = false;
+    this.beforeChange = () => {
+      if (this.disposed || this.dirty) return;
+      onBeforeChange?.();
+      this.dirty = true;
+    };
+    this.notify = () => {
+      this.dirty = false;
+      if (!this.disposed) onChange?.();
+    };
     this.onToggle = event => this.toggle(event);
     this.onClick = event => this.showAll(event);
     el.addEventListener('toggle', this.onToggle, true);
@@ -110,10 +205,15 @@ export class Transcript {
   capture(rowId, el) {
     const state = this.state(rowId);
     for (const detail of el.querySelectorAll('details[data-disclosure]')) {
+      if (detail.closest?.('.row') && detail.closest('.row') !== el) continue;
       if (detail.open) state.open.add(detail.dataset.disclosure);
       else state.open.delete(detail.dataset.disclosure);
     }
     return state;
+  }
+
+  equivalent(el, row) {
+    return rowSnapshots.has(el) && sameValue(rowSnapshots.get(el), snapshotValue(row));
   }
 
   rebuild(rows) {
@@ -122,42 +222,57 @@ export class Transcript {
     for (const t of this.timers.values()) clearTimeout(t.timer);
     this.timers.clear();
     this.textBuffers.clear();
-    const changed = this.el.childNodes.length > 0;
-    const previous = this.els;
-    this.els = new Map();
-    const states = new Map();
-    const frag = document.createDocumentFragment();
-    for (const row of rows || []) {
-      if (!row || !row.rowId) continue;
-      const state = this.state(row.rowId);
-      const el = rowElement(row, state);
-      if (previous.has(row.rowId)) preserveArtifacts(previous.get(row.rowId), el);
-      states.set(row.rowId, state);
-      this.els.set(row.rowId, el);
-      frag.appendChild(el);
+    const desired = new Map();
+    for (const row of rows || []) if (row?.rowId) desired.set(row.rowId, row);
+    let changed = false;
+    for (const id of this.els.keys()) {
+      if (!desired.has(id)) { this.remove(id, false); changed = true; }
     }
-    this.states = states;
-    releaseArtifacts(this.el);
-    this.el.replaceChildren(frag);
-    hydrateThumbs(this.el, null, this.notify);
-    if (changed || this.els.size) this.notify();
+    const added = [];
+    let index = 0;
+    for (const row of desired.values()) {
+      let el = this.els.get(row.rowId);
+      if (!el) {
+        this.append(row, false);
+        el = this.els.get(row.rowId);
+        added.push(el);
+        changed = true;
+      } else if (this.replace(el, row, false)) {
+        el = this.els.get(row.rowId);
+        added.push(el);
+        changed = true;
+      }
+      if (this.el.childNodes[index] !== el) {
+        this.beforeChange();
+        this.el.insertBefore(el, this.el.childNodes[index] || null);
+        changed = true;
+      }
+      index++;
+    }
+    this.els = new Map([...desired.keys()].map(id => [id, this.els.get(id)]));
+    for (const id of this.states.keys()) if (!desired.has(id)) this.states.delete(id);
+    for (const id of this.turnStates.keys()) if (!desired.has(id)) this.turnStates.delete(id);
+    if (changed) this.notify();
+    for (const el of added) this.activate(el);
   }
 
-  append(row) {
-    if (!row || !row.rowId || this.disposed) return;
+  append(row, notify = true) {
+    if (!row?.rowId || this.disposed) return;
     if (this.els.has(row.rowId)) { this.upsert(row); return; }
     const el = rowElement(row, this.state(row.rowId));
+    this.beforeChange();
     this.els.set(row.rowId, el);
     this.el.appendChild(el);
-    hydrateThumbs(this.el, el, this.notify);
-    this.notify();
+    hydrateThumbs(this.el, el, this.notify, this.beforeChange);
+    if (notify) { this.notify(); this.activate(el); }
   }
 
   upsert(row) {
-    if (!row || !row.rowId || this.disposed) return;
+    if (!row?.rowId || this.disposed) return;
     this.textBuffers.delete(row.rowId);
     const existing = this.els.get(row.rowId);
     if (!existing) { this.append(row); return; }
+    if (this.equivalent(existing, row)) { this.cancelTimer(row.rowId); return; }
     const status = normKey(row.status);
     if ((row.$type === 'assistant_message' && row.isStreaming)
       || (row.$type === 'tool_call' && ['pending', 'running', 'awaitingPermission'].includes(status))) {
@@ -223,34 +338,164 @@ export class Transcript {
     }, wait);
   }
 
-  replace(existing, row) {
-    const el = rowElement(row, this.capture(row.rowId, existing));
+  replace(existing, row, notify = true, restoring = false) {
+    const state = restoring ? this.state(row.rowId) : this.capture(row.rowId, existing);
+    if (!restoring && this.equivalent(existing, row)) return false;
+    this.beforeChange();
+    const previous = rowSnapshots.get(existing);
+    this.retireLoad(row.rowId);
+    if (previous?.detailVersion !== row.detailVersion || previous?.$type !== row.$type) this.cache.deleteRow(row.rowId);
+    const el = rowElement(row, state);
     preserveArtifacts(existing, el);
     releaseArtifacts(existing);
     this.els.set(row.rowId, el);
     existing.replaceWith(el);
-    hydrateThumbs(this.el, el, this.notify);
+    hydrateThumbs(this.el, el, this.notify, this.beforeChange);
+    if (notify) { this.notify(); this.activate(el); }
+    return true;
+  }
+
+  activate(el) {
+    const row = rowSources.get(el);
+    if (row?.$type !== 'turn_summary' && !row?.detailsDeferred) return;
+    const detail = el.querySelector(`details[data-disclosure="${row.$type === 'turn_summary' ? 'turn' : 'tool'}"]`);
+    if (detail?.open) this.openDetails(el, detail);
+  }
+
+  currentLoad(entry) {
+    return !this.disposed && this.loads.get(entry.id) === entry
+      && this.els.get(entry.id) === entry.el && entry.detail.open
+      && rowSources.get(entry.el)?.detailVersion === entry.version;
+  }
+
+  hasPendingDetails() {
+    if (this.disposed) return false;
+    for (const entry of this.loads.values()) {
+      if (!this.currentLoad(entry)) continue;
+      if ((entry.loading && !entry.controller.signal.aborted) || entry.child?.hasPendingDetails()) return true;
+    }
+    return false;
+  }
+
+  openDetails(el, detail) {
+    const row = rowSources.get(el);
+    if (this.loads.has(row.rowId)) return;
+    const kind = row.$type === 'turn_summary' ? 'turn' : 'tool';
+    const body = detail.querySelector(kind === 'turn' ? '.turn-body' : '.tool-body');
+    const entry = { id: row.rowId, version: row.detailVersion, kind, el, detail, body,
+      controller: new AbortController(), loading: false, value: null, child: null };
+    this.loads.set(entry.id, entry);
+    const cached = this.cache.get(kind, entry.id, entry.version);
+    if (cached) {
+      try { this.finishDetails(entry, cached); }
+      catch (error) { this.cache.deleteRow(entry.id); this.failDetails(entry, error); }
+      return;
+    }
+    entry.loading = true;
+    this.beforeChange();
+    body.innerHTML = '<div class="detail-loading" role="status">Loading details\u2026</div>';
+    this.notify();
+    const loader = kind === 'turn' ? this.loadTurn : this.loadRow;
+    let promise;
+    try {
+      if (!loader) throw new Error('Details are unavailable in this client. Reconnect to update.');
+      promise = loader(entry.id, { signal: entry.controller.signal, version: entry.version });
+    } catch (error) { this.failDetails(entry, error); return; }
+    Promise.resolve(promise).then(value => {
+      if (!this.currentLoad(entry)) return;
+      if (!value || value.version !== entry.version
+        || (kind === 'turn' ? !Array.isArray(value.rows) || value.rows.some(row => !row?.rowId || !row.$type
+          || row.$type === 'turn_summary' || row.$type === 'user_message')
+          : value.row?.$type !== 'tool_call' || value.row.rowId !== entry.id || value.row.detailsDeferred)) {
+        throw new Error('Details changed or are unavailable. Retry after reconnecting.');
+      }
+      this.finishDetails(entry, value);
+      if (this.currentLoad(entry)) this.cache.set(kind, entry.id, entry.version, value);
+    }).catch(error => this.failDetails(entry, error));
+  }
+
+  finishDetails(entry, value) {
+    if (!this.currentLoad(entry)) return;
+    entry.loading = false;
+    this.beforeChange();
+    entry.value = value;
+    entry.body.dataset.loaded = '1';
+    if (entry.kind === 'tool') {
+      entry.body.innerHTML = toolBodyHtml(value.row, this.state(entry.id));
+      hydrateThumbs(this.el, entry.body, this.notify, this.beforeChange);
+      this.notify();
+      return;
+    }
+    entry.body.replaceChildren();
+    if (!value.rows.length) {
+      entry.body.innerHTML = '<div class="tool-empty">No process details</div>';
+      this.notify();
+      return;
+    }
+    entry.child = new Transcript(entry.body, {
+      loadTurn: this.loadTurn, loadRow: this.loadRow, _detailCache: this.cache,
+      onBeforeChange: this.beforeChange, onChange: this.notify,
+    });
+    entry.child.restoreState(this.turnStates.get(entry.id));
+    entry.child.rebuild(value.rows);
+  }
+
+  failDetails(entry, error) {
+    if (!this.currentLoad(entry)) return;
+    entry.loading = false;
+    this.beforeChange();
+    entry.child?.dispose();
+    entry.child = null;
+    entry.value = null;
+    releaseArtifacts(entry.body);
+    delete entry.body.dataset.loaded;
+    const message = error?.status === 409 ? 'Details changed. Reconnect, then retry.'
+      : error?.status === 404 ? 'These details are no longer available.' : 'Could not load details.';
+    entry.body.innerHTML = `<div class="detail-error" role="alert"><span>${message}</span><button type="button" class="link-btn detail-retry">Retry</button></div>`;
     this.notify();
   }
 
+  retireLoad(rowId) {
+    const entry = this.loads.get(rowId);
+    if (!entry) return;
+    entry.loading = false;
+    this.loads.delete(rowId);
+    entry.controller.abort();
+    if (entry.child) {
+      this.turnStates.set(rowId, entry.child.exportState());
+      entry.child.dispose();
+    }
+    entry.value = null;
+    entry.child = null;
+  }
+
   toggle(event) {
+    if (this.disposed) return;
     const detail = event.target;
     if (!detail.matches?.('details[data-disclosure]')) return;
     const el = detail.closest('.row');
     if (!el || this.els.get(el.dataset.rowId) !== el) return;
+    const row = rowSources.get(el);
     const state = this.state(el.dataset.rowId);
     const key = detail.dataset.disclosure;
     let changed = state.open.has(key) !== detail.open;
     if (detail.open) state.open.add(key);
     else state.open.delete(key);
-    if (key === 'tool') {
-      const body = detail.querySelector('.tool-body');
+    if (key === 'tool' || key === 'turn') {
+      const body = detail.querySelector(key === 'turn' ? '.turn-body' : '.tool-body');
+      if (detail.open && (key === 'turn' || row.detailsDeferred)) {
+        this.openDetails(el, detail);
+        return;
+      }
       if (detail.open && !body.dataset.loaded) {
-        body.innerHTML = toolBodyHtml(rowSources.get(el), state);
+        this.beforeChange();
+        body.innerHTML = toolBodyHtml(row, state);
         body.dataset.loaded = '1';
-        hydrateThumbs(this.el, body, this.notify);
+        hydrateThumbs(this.el, body, this.notify, this.beforeChange);
         changed = true;
-      } else if (!detail.open && body.dataset.loaded) {
+      } else if (!detail.open && (body.dataset.loaded || this.loads.has(row.rowId))) {
+        this.beforeChange();
+        this.retireLoad(row.rowId);
         releaseArtifacts(body);
         body.replaceChildren();
         delete body.dataset.loaded;
@@ -261,15 +506,27 @@ export class Transcript {
   }
 
   showAll(event) {
+    if (this.disposed) return;
+    const retry = event.target.closest?.('.detail-retry');
+    if (retry) {
+      const el = retry.closest('.row');
+      if (!el || this.els.get(el.dataset.rowId) !== el) return;
+      event.preventDefault();
+      const detail = retry.closest('details[data-disclosure]');
+      this.retireLoad(el.dataset.rowId);
+      this.openDetails(el, detail);
+      return;
+    }
     const button = event.target.closest?.('.out-more[data-section]');
     if (!button) return;
     const el = button.closest('.row');
     if (!el || this.els.get(el.dataset.rowId) !== el) return;
-    const row = rowSources.get(el);
+    const row = this.loads.get(el.dataset.rowId)?.value?.row || rowSources.get(el);
     const state = this.state(el.dataset.rowId);
     const key = button.dataset.section;
     event.preventDefault();
     if (key === 'outputs') {
+      this.beforeChange();
       state.all.add(key);
       const body = el.querySelector('.tool-body');
       const replacement = document.createElement('div');
@@ -277,11 +534,12 @@ export class Transcript {
       preserveArtifacts(body, replacement);
       releaseArtifacts(body);
       body.replaceChildren(...replacement.childNodes);
-      hydrateThumbs(this.el, body, this.notify);
+      hydrateThumbs(this.el, body, this.notify, this.beforeChange);
     } else {
       const text = toolSectionText(row, key);
       const block = button.closest('.tool-text-block');
       if (text == null || !block) return;
+      this.beforeChange();
       state.all.add(key);
       block.querySelector('.out-clip').textContent = text;
       block.querySelector('pre').classList.remove('is-clipped');
@@ -290,14 +548,63 @@ export class Transcript {
     this.notify();
   }
 
-  remove(rowId) {
+  exportState() {
+    if (this.disposed) return { rows: [] };
+    for (const [id, el] of this.els) this.capture(id, el);
+    const rows = [];
+    for (const [rowId, state] of this.states) {
+      const details = this.loads.get(rowId)?.child?.exportState() || this.turnStates.get(rowId);
+      const open = [...state.open].filter(disclosureKey);
+      const all = [...state.all].filter(sectionKey).slice(0, 128);
+      if (open.length || all.length || details?.rows.length) {
+        rows.push({ rowId, open, all, ...(details?.rows.length ? { details } : {}) });
+      }
+      if (rows.length >= VIEW_STATE_ROWS) break;
+    }
+    return { rows };
+  }
+
+  restoreState(saved) {
+    if (this.disposed) return;
+    if (this.els.size) this.beforeChange();
+    for (const id of this.loads.keys()) this.retireLoad(id);
+    this.states.clear();
+    this.turnStates.clear();
+    for (const row of viewRows(saved)) {
+      this.states.set(row.rowId, {
+        open: new Set((Array.isArray(row.open) ? row.open : []).filter(disclosureKey)),
+        all: new Set((Array.isArray(row.all) ? row.all : []).filter(sectionKey).slice(0, 128)),
+      });
+      const details = viewRows(row.details).map(item => ({ rowId: item.rowId,
+        open: (Array.isArray(item.open) ? item.open : []).filter(disclosureKey),
+        all: (Array.isArray(item.all) ? item.all : []).filter(sectionKey).slice(0, 128) }));
+      if (details.length) this.turnStates.set(row.rowId, { rows: details });
+    }
+    const updated = [];
+    for (const el of this.els.values()) {
+      this.replace(el, rowSources.get(el), false, true);
+      updated.push(this.els.get(el.dataset.rowId));
+    }
+    if (updated.length) this.notify();
+    for (const el of updated) this.activate(el);
+  }
+
+  remove(rowId, notify = true) {
+    if (this.disposed) return;
     this.cancelTimer(rowId);
     this.textBuffers.delete(rowId);
     const el = this.els.get(rowId);
-    if (el) { releaseArtifacts(el); el.remove(); }
+    if (el) {
+      this.beforeChange();
+      this.retireLoad(rowId);
+      releaseArtifacts(el);
+      el.remove();
+    }
     this.els.delete(rowId);
     this.states.delete(rowId);
-    if (el) this.notify();
+    this.turnStates.delete(rowId);
+    this.cache.deleteRow(rowId);
+    if (el && notify) this.notify();
   }
 
   cancelTimer(rowId) {
@@ -307,15 +614,20 @@ export class Transcript {
   }
 
   dispose() {
+    if (this.disposed) return;
     this.disposed = true;
     this.el.removeEventListener('toggle', this.onToggle, true);
     this.el.removeEventListener('click', this.onClick);
     for (const t of this.timers.values()) clearTimeout(t.timer);
     this.timers.clear();
     this.textBuffers.clear();
+    for (const id of this.loads.keys()) this.retireLoad(id);
     releaseArtifacts(this.el);
+    this.el.replaceChildren();
     this.els.clear();
     this.states.clear();
+    this.turnStates.clear();
+    if (this.ownsCache) this.cache.clear();
   }
 }
 
@@ -323,7 +635,12 @@ export function rowElement(row, state = rowState()) {
   const div = document.createElement('div');
   div.dataset.rowId = row.rowId;
   rowSources.set(div, row);
+  rowSnapshots.set(div, snapshotValue(row));
   switch (row.$type) {
+    case 'turn_summary':
+      div.className = 'row row-turn';
+      div.innerHTML = turnHtml(row, state);
+      break;
     case 'user_message':
       div.className = 'row row-user';
       div.innerHTML = userHtml(row);
@@ -378,6 +695,14 @@ function userHtml(row) {
   const imgs = row.images || [];
   if (imgs.length) h += `<div class="msg-images">${imgs.map(imgThumb).join('')}</div>`;
   return h;
+}
+
+function turnHtml(row, state) {
+  const duration = fmtDuration(row.duration);
+  const count = Math.max(0, Number(row.detailCount) || 0);
+  const answer = row.answer ? { ...row.answer, isStreaming: false,
+    parts: (row.answer.parts || []).filter(part => part?.$type !== 'reasoning') } : null;
+  return `${row.user ? `<div class="row-user turn-user">${userHtml(row.user)}</div>` : ''}<details class="turn-process" data-disclosure="turn"${state.open.has('turn') ? ' open' : ''}><summary class="turn-head"><span>${duration ? `Worked for ${esc(duration)}` : 'Process details'}</span><span class="turn-count">${fmtNum(count)} ${count === 1 ? 'step' : 'steps'}</span>${icon('chevron-right')}</summary><div class="turn-body"></div></details>${answer ? `<div class="row-assistant turn-answer">${assistantHtml(answer, state)}</div>` : ''}`;
 }
 
 function assistantHtml(row, state) {
@@ -486,7 +811,8 @@ function toolGlyph(path, strokeWidth = 1.8) {
 
 function toolDisclosureHtml(row, head, state, error) {
   const open = state.open.has('tool');
-  return `<details class="tool${error ? ' is-error' : ''}" data-disclosure="tool"${open ? ' open' : ''}>${head}<div class="tool-body"${open ? ' data-loaded="1"' : ''}>${open ? toolBodyHtml(row, state) : ''}</div></details>`;
+  const loaded = open && !row.detailsDeferred;
+  return `<details class="tool${error ? ' is-error' : ''}" data-disclosure="tool"${open ? ' open' : ''}>${head}<div class="tool-body"${loaded ? ' data-loaded="1"' : ''}>${loaded ? toolBodyHtml(row, state) : ''}</div></details>`;
 }
 
 function agentCallHtml(row, state, status, error, name) {
@@ -662,7 +988,7 @@ export function releaseArtifacts(root) {
   for (const target of root.querySelectorAll(artifactSelector)) artifactBindings.get(target)?.dispose();
 }
 
-export function hydrateThumbs(scope, root, onChange = () => {}) {
+export function hydrateThumbs(scope, root, onChange = () => {}, onBeforeChange = () => {}) {
   const el = root || scope;
   el.querySelectorAll(artifactSelector).forEach(target => {
     if (artifactBindings.has(target)) return;
@@ -697,6 +1023,7 @@ export function hydrateThumbs(scope, root, onChange = () => {}) {
     const play = target.matches('audio,video') ? target.closest('.media-attachment')?.querySelector('.media-play') : null;
     const fail = () => {
       if (!alive()) return;
+      onBeforeChange();
       if (target.matches('.thumb')) {
         target.classList.add('thumb-error');
         const span = document.createElement('span');
@@ -746,6 +1073,7 @@ export function hydrateThumbs(scope, root, onChange = () => {}) {
       lease = acquireArtifactObjectUrl(uri, target.dataset.mime);
       lease.promise.then(url => {
         if (!alive()) { binding.dispose(); return; }
+        onBeforeChange();
         target.dataset.url = url;
         const img = new Image();
         img.alt = target.dataset.name || 'image';

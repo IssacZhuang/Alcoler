@@ -5,9 +5,10 @@ const CONNECT_TIMEOUT = 15000;
 const HEARTBEAT_TIMEOUT = 45000;
 
 export class StreamClient {
-  constructor({ sessionId, onSnapshot, onDelta, onStatus, resume, appendText = false }) {
+  constructor({ sessionId, onSnapshot, onDelta, onStatus, resume, appendText = false, compact = false }) {
     this.sessionId = sessionId;
     this.appendText = appendText;
+    this.compact = compact;
     this.onSnapshot = onSnapshot;
     this.onDelta = onDelta;
     this.onStatus = onStatus;
@@ -41,7 +42,7 @@ export class StreamClient {
       return;
     }
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}/api/sessions/${encodeURIComponent(this.sessionId)}/stream?token=${encodeURIComponent(token)}${this.appendText ? '&appendText=1' : ''}`;
+    const url = `${proto}//${location.host}/api/sessions/${encodeURIComponent(this.sessionId)}/stream?token=${encodeURIComponent(token)}${this.appendText ? '&appendText=1' : ''}${this.compact ? '&compact=1' : ''}`;
     let ws;
     try {
       ws = new WebSocket(url);

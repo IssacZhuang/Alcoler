@@ -487,8 +487,11 @@ public sealed class SidebarTitleFlowTests : IDisposable
         public ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+        public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken)
+        {
+            var summary = _summaries[sessionId];
+            return ValueTask.FromResult(new SessionHandle(sessionId, summary.WorkspaceRoot, summary.Title));
+        }
 
         public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken)
         {

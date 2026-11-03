@@ -57,21 +57,37 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private TurnPhase _lastPhase = TurnPhase.Idle;
     private DateTimeOffset? _turnStartedAt;
     private bool _turnLayoutDirty;
+    private long _storeSequence;
+    private bool _hasStoreSnapshot;
+    private bool _disposed;
+    private TimelineReadingState _readingState;
+    private readonly Dictionary<string, TimelineExpansion> _restoredExpansion;
 
     public ConversationViewModel(IAgentRuntime runtime, ProjectionStore store, ComposerViewModel? composer = null,
         IReadOnlyList<ModelChoice>? modelChoices = null, ModelSelection? defaultSelection = null,
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null, TimelineReadingState? readingState = null)
     {
         _runtime = runtime;
         _store = store;
         _artifacts = artifacts ?? new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath);
         _modelChoices = modelChoices;
         _defaultSelection = defaultSelection;
+        _readingState = readingState ?? TimelineReadingState.Initial;
+        _restoredExpansion = _readingState.ExpandedRows.TakeLast(TimelineReadingState.MaxExpandedRows)
+            .ToDictionary(row => row.RowId, row => row.Expansion, StringComparer.Ordinal);
+        foreach (var (rowId, expansion) in _restoredExpansion)
+            if (expansion.HasFlag(TimelineExpansion.Turn))
+                _turnExpansion[rowId] = true;
         Composer = composer ?? new ComposerViewModel();
         SessionId = store.SessionId;
         Status = new ConversationStatusViewModel(SessionId, runtime);
-        _store.Updated += ApplyUpdate;
-        ApplyUpdate(new ProjectionUpdate(0, store.State, [], Reset: true, ResetRows: store.Rows));
+        lock (_applyGate)
+        {
+            _store.Updated += OnStoreUpdated;
+            var initial = store.CaptureUpdate(out _hasStoreSnapshot);
+            _storeSequence = initial.Sequence;
+            ApplyUpdateCore(initial);
+        }
     }
 
     public SessionId SessionId { get; }
@@ -100,6 +116,57 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     /// <summary>Raised after rows were appended so the view can keep the timeline pinned to the bottom.</summary>
     public event Action? TimelineAppended;
+
+    internal event Action? TimelineChanging;
+    internal event Action? ReadingStateCapturing;
+
+    internal TimelineReadingState ReadingState => _readingState;
+
+    internal void SaveReadingPosition(TimelineScrollAnchor? anchor, bool followLatest) =>
+        _readingState = _readingState with { Anchor = anchor, FollowLatest = followLatest };
+
+    internal TimelineReadingState CaptureReadingState()
+    {
+        ReadingStateCapturing?.Invoke();
+        List<TimelineExpandedRow> expanded = [];
+        HashSet<string> captured = new(StringComparer.Ordinal);
+        var center = _readingState.Anchor is { } anchor && _itemsByRowId.TryGetValue(anchor.RowId, out var anchorItem)
+            ? Items.IndexOf(anchorItem) : Items.Count - 1;
+        for (var index = center; index >= 0; index--)
+            if (Items[index] is UserMessageItemViewModel turn)
+            {
+                Capture(turn);
+                break;
+            }
+        for (var distance = 0; expanded.Count < TimelineReadingState.MaxExpandedRows &&
+            (center - distance >= 0 || center + distance < Items.Count); distance++)
+        {
+            if (center - distance >= 0)
+                Capture(Items[center - distance]);
+            if (distance > 0 && center + distance < Items.Count)
+                Capture(Items[center + distance]);
+        }
+        return _readingState = _readingState with { ExpandedRows = expanded.ToArray() };
+
+        void Capture(TimelineItemViewModel item)
+        {
+            if (expanded.Count >= TimelineReadingState.MaxExpandedRows || captured.Contains(item.RowId))
+                return;
+            var expansion = item switch
+            {
+                UserMessageItemViewModel when _turnExpansion.GetValueOrDefault(item.RowId) => TimelineExpansion.Turn,
+                ToolCallItemViewModel { IsExpanded: true } => TimelineExpansion.Tool,
+                AssistantMessageItemViewModel { IsReasoningExpanded: true } => TimelineExpansion.Reasoning,
+                FileChangeSummaryItemViewModel { IsExpanded: true } => TimelineExpansion.Files,
+                _ => TimelineExpansion.None,
+            };
+            if (expansion != TimelineExpansion.None)
+            {
+                captured.Add(item.RowId);
+                expanded.Add(new TimelineExpandedRow(item.RowId, expansion));
+            }
+        }
+    }
 
     [ObservableProperty]
     private string _title = string.Empty;
@@ -160,19 +227,33 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     [ObservableProperty]
     private string? _banner;
 
-    internal void ApplyUpdate(ProjectionUpdate update)
+    private void OnStoreUpdated(ProjectionUpdate update)
     {
-        // Updates enter both from the projection pump and from synchronous construction
-        // paths; schedulers that run posted callbacks on the pump thread would otherwise
-        // mutate the status row collections concurrently.
         lock (_applyGate)
         {
+            if (_disposed || (_hasStoreSnapshot && update.Sequence <= _storeSequence))
+                return;
+            // A coalesced batch can straddle the snapshot used to attach this reader.
+            if (_hasStoreSnapshot && !update.Reset && update.FromSequence <= _storeSequence)
+                update = _store.CaptureUpdate();
+            _storeSequence = update.Sequence;
+            _hasStoreSnapshot = true;
             ApplyUpdateCore(update);
+        }
+    }
+
+    internal void ApplyUpdate(ProjectionUpdate update)
+    {
+        lock (_applyGate)
+        {
+            if (!_disposed)
+                ApplyUpdateCore(update);
         }
     }
 
     private void ApplyUpdateCore(ProjectionUpdate update)
     {
+        TimelineChanging?.Invoke();
         Status.ApplyUpdate(update);
         if (update.Reset)
         {
@@ -244,6 +325,26 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
     }
 
+    private TimelineItemViewModel? CreateTimelineItem(ConversationRow row)
+    {
+        var item = TimelineItemFactory.Create(row);
+        if (!_restoredExpansion.Remove(row.RowId, out var expansion))
+            return item;
+        switch (item)
+        {
+            case ToolCallItemViewModel tool:
+                tool.IsExpanded = expansion.HasFlag(TimelineExpansion.Tool);
+                break;
+            case AssistantMessageItemViewModel assistant:
+                assistant.IsReasoningExpanded = expansion.HasFlag(TimelineExpansion.Reasoning);
+                break;
+            case FileChangeSummaryItemViewModel files:
+                files.IsExpanded = expansion.HasFlag(TimelineExpansion.Files);
+                break;
+        }
+        return item;
+    }
+
     private void ReconcileRows(IReadOnlyList<ConversationRow> rows)
     {
         List<TimelineItemViewModel> items = [];
@@ -259,7 +360,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             var existing = _itemsByRowId.GetValueOrDefault(row.RowId);
             var item = existing is not null && TryUpdateItem(existing, row)
                 ? existing
-                : TimelineItemFactory.Create(row);
+                : CreateTimelineItem(row);
             if (item is not null)
             {
                 items.Add(item);
@@ -417,7 +518,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         }
         switch (op)
         {
-            case RowAppended appended when TimelineItemFactory.Create(appended.Row) is { } item:
+            case RowAppended appended when CreateTimelineItem(appended.Row) is { } item:
                 _itemsByRowId[item.RowId] = item;
                 Items.Add(item);
                 _itemsInCollection.Add(item);
@@ -433,7 +534,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 {
                     return false;
                 }
-                if (TimelineItemFactory.Create(upserted.Row) is { } replacement)
+                if (CreateTimelineItem(upserted.Row) is { } replacement)
                 {
                     _itemsByRowId[replacement.RowId] = replacement;
                     var index = Items.IndexOf(existing!);
@@ -891,8 +992,12 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         var finalIndex = FindFinalAssistantIndex(start, end);
         if (finalIndex < 0)
             return;
+        TimelineChanging?.Invoke();
         var expanded = !anchor.IsTurnExpanded;
-        _turnExpansion[anchor.RowId] = expanded;
+        if (expanded)
+            _turnExpansion[anchor.RowId] = true;
+        else
+            _turnExpansion.Remove(anchor.RowId);
         anchor.IsTurnExpanded = expanded;
         for (var index = start + 1; index < finalIndex; index++)
             Items[index].IsFolded = !expanded;
@@ -1171,7 +1276,13 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
 
     public void Dispose()
     {
-        _store.Updated -= ApplyUpdate;
-        Status.Dispose();
+        lock (_applyGate)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            _store.Updated -= OnStoreUpdated;
+            Status.Dispose();
+        }
     }
 }

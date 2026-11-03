@@ -54,7 +54,7 @@ public sealed class SidebarActivityIndicatorTests
     [AvaloniaFact]
     public async Task SessionContextFlyout_UsesSessionDataContextForArchiveActions()
     {
-        using var viewModel = ShellSmokeTests.CreateWorkbench();
+        using var viewModel = await ShellSmokeTests.CreateWorkbenchAsync();
         var active = new SessionSummaryViewModel(
             StrongId.NewSessionId(), "Active", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         var archived = new SessionSummaryViewModel(
@@ -158,9 +158,9 @@ public sealed class SidebarActivityIndicatorTests
     }
 
     [AvaloniaFact]
-    public void Sidebar_ShowsActiveDot_WhenTaskIsActiveWithoutIndicator()
+    public async Task Sidebar_ShowsActiveDot_WhenTaskIsActiveWithoutIndicator()
     {
-        var viewModel = ShellSmokeTests.CreateWorkbench();
+        var viewModel = await ShellSmokeTests.CreateWorkbenchAsync();
         var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Active", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         viewModel.Sidebar.ApplySummaries([session]);
         viewModel.Sidebar.SetActive(session.Id);
@@ -173,7 +173,7 @@ public sealed class SidebarActivityIndicatorTests
     [AvaloniaFact]
     public async Task Sidebar_RunningIndicatorUsesThemeAccentAndKeepsTime()
     {
-        using var viewModel = ShellSmokeTests.CreateWorkbench();
+        using var viewModel = await ShellSmokeTests.CreateWorkbenchAsync();
         var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Active", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         viewModel.Sidebar.ApplySummaries([session]);
         session.Indicator = SessionActivityIndicator.Running;
@@ -219,7 +219,7 @@ public sealed class SidebarActivityIndicatorTests
     [AvaloniaFact]
     public async Task Sidebar_ShowsWaitingBadgeInsteadOfTime()
     {
-        using var viewModel = ShellSmokeTests.CreateWorkbench();
+        using var viewModel = await ShellSmokeTests.CreateWorkbenchAsync();
         var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Active", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         viewModel.Sidebar.ApplySummaries([session]);
         session.Indicator = SessionActivityIndicator.AwaitingConfirmation;

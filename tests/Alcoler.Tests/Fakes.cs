@@ -21,6 +21,9 @@ public sealed class FakeConversationProjection : IConversationProjection
     public FakeConversationProjection(ConversationSnapshot snapshot) => _snapshot = snapshot;
 
     public int SubscribeCount { get; private set; }
+    private int _snapshotCount;
+    public int SnapshotCount => Volatile.Read(ref _snapshotCount);
+    public Action? BeforeSnapshot { get; set; }
 
     public void SetSnapshot(ConversationSnapshot snapshot)
     {
@@ -36,6 +39,8 @@ public sealed class FakeConversationProjection : IConversationProjection
 
     public ConversationSnapshot Snapshot()
     {
+        Interlocked.Increment(ref _snapshotCount);
+        BeforeSnapshot?.Invoke();
         lock (_sync)
         {
             return _snapshot;
@@ -70,25 +75,45 @@ public sealed class FakeConversationProjection : IConversationProjection
 public sealed class FakeAgentRuntime : IAgentRuntime
 {
     private readonly Dictionary<SessionId, FakeConversationProjection> _projections = [];
+    private readonly Dictionary<SessionId, SessionHandle> _handles = [];
+    private int _subscribeCount;
+    private int _observeCount;
+
+    public int SubscribeCount => Volatile.Read(ref _subscribeCount);
+    public int ObserveCount => Volatile.Read(ref _observeCount);
+    public Func<SessionId, CancellationToken, ValueTask<SessionHandle>>? ResumeHandler { get; set; }
 
     public List<ConversationCommand> Submitted { get; } = [];
 
     public bool RejectNextCommand { get; set; }
+    public Func<ConversationCommand, CommandAck>? AckHandler { get; set; }
 
     public FakeConversationProjection ProjectionFor(SessionId sessionId) => _projections[sessionId];
 
-    public FakeConversationProjection RegisterSession(SessionId sessionId, ConversationSnapshot snapshot)
+    public FakeConversationProjection RegisterSession(SessionId sessionId, ConversationSnapshot snapshot, string? workspaceRoot = null)
     {
         var projection = new FakeConversationProjection(snapshot);
         _projections[sessionId] = projection;
+        _handles[sessionId] = new SessionHandle(sessionId, workspaceRoot ?? Environment.CurrentDirectory, snapshot.State.Title);
         return projection;
     }
 
-    public ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken) =>
-        throw new NotSupportedException();
+    public ValueTask<SessionHandle> CreateSessionAsync(SessionOptions options, CancellationToken cancellationToken)
+    {
+        var id = StrongId.NewSessionId();
+        var state = TestSnapshots.State(modelSelection: options.ModelSelection) with
+        {
+            Title = options.Title ?? "Test session",
+            Mode = options.PermissionMode,
+            PlanEnabled = options.PlanEnabled,
+            ActiveWorkflows = options.ActiveWorkflows,
+        };
+        RegisterSession(id, new ConversationSnapshot(0, 0, [], state), options.WorkspaceRoot);
+        return ValueTask.FromResult(_handles[id]);
+    }
 
     public ValueTask<SessionHandle> ResumeSessionAsync(SessionId sessionId, CancellationToken cancellationToken) =>
-        throw new NotSupportedException();
+        ResumeHandler?.Invoke(sessionId, cancellationToken) ?? ValueTask.FromResult(_handles[sessionId]);
 
     public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(string? workspaceRoot, int limit, CancellationToken cancellationToken) =>
         ValueTask.FromResult<IReadOnlyList<SessionSummary>>([]);
@@ -96,6 +121,8 @@ public sealed class FakeAgentRuntime : IAgentRuntime
     public ValueTask<CommandAck> SubmitAsync(ConversationCommand command, CancellationToken cancellationToken)
     {
         Submitted.Add(command);
+        if (AckHandler is { } handler)
+            return ValueTask.FromResult(handler(command));
         var ack = RejectNextCommand
             ? CommandAck.Rejected(command.CommandId, 0, "rejected for test")
             : CommandAck.AcceptedAt(command.CommandId, 1);
@@ -106,10 +133,17 @@ public sealed class FakeAgentRuntime : IAgentRuntime
         TimeSpan idleThreshold, SessionId? keepOpen, CancellationToken cancellationToken) =>
         ValueTask.FromResult(0);
 
-    public IConversationProjection Subscribe(SessionId sessionId) => _projections[sessionId];
+    public IConversationProjection Subscribe(SessionId sessionId)
+    {
+        Interlocked.Increment(ref _subscribeCount);
+        return _projections[sessionId];
+    }
 
-    public IConversationProjection? TryObserve(SessionId sessionId) =>
-        _projections.TryGetValue(sessionId, out var projection) ? projection : null;
+    public IConversationProjection? TryObserve(SessionId sessionId)
+    {
+        Interlocked.Increment(ref _observeCount);
+        return _projections.TryGetValue(sessionId, out var projection) ? projection : null;
+    }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

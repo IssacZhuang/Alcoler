@@ -11,7 +11,8 @@ public sealed record ProjectionUpdate(
     ConversationState State,
     IReadOnlyList<RowOp> Ops,
     bool Reset,
-    IReadOnlyList<ConversationRow>? ResetRows = null);
+    IReadOnlyList<ConversationRow>? ResetRows = null,
+    long? FromSequence = null);
 
 /// <summary>
 /// UI-side data layer over an <see cref="IAgentRuntime"/> projection: wholesale snapshot on
@@ -31,6 +32,7 @@ public sealed class ProjectionStore : IDisposable
     private readonly List<ConversationRow> _rows = [];
     private readonly Dictionary<string, int> _rowIndex = [];
     private readonly Dictionary<string, StreamingRow> _streamingRows = new(StringComparer.Ordinal);
+    private readonly TaskCompletionSource _initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private IConversationProjection? _projection;
     private CancellationTokenSource? _pumpCts;
@@ -39,6 +41,7 @@ public sealed class ProjectionStore : IDisposable
     private long _sequence;
     private long _revision;
     private readonly PendingRowOps _pending = new();
+    private long _pendingFirstSequence;
     private ConversationSnapshot? _pendingReset;
     private ITimer? _flushTimer;
     private bool _deliveryScheduled;
@@ -62,6 +65,20 @@ public sealed class ProjectionStore : IDisposable
 
     public SessionId SessionId { get; }
 
+    public Task Initialized => _initialized.Task;
+
+    public ProjectionUpdate CaptureUpdate() => CaptureUpdate(out _);
+
+    internal ProjectionUpdate CaptureUpdate(out bool initialized)
+    {
+        lock (_sync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            initialized = _initialized.Task.IsCompletedSuccessfully;
+            return new ProjectionUpdate(_sequence, _state, [], Reset: true, ResetRows: MaterializeRows());
+        }
+    }
+
     public ConversationState State
     {
         get { lock (_sync) return _state; }
@@ -73,12 +90,17 @@ public sealed class ProjectionStore : IDisposable
         {
             lock (_sync)
             {
-                var rows = _rows.ToArray();
-                foreach (var (rowId, streaming) in _streamingRows)
-                    rows[_rowIndex[rowId]] = streaming.Materialize();
-                return rows;
+                return MaterializeRows();
             }
         }
+    }
+
+    private ConversationRow[] MaterializeRows()
+    {
+        var rows = _rows.ToArray();
+        foreach (var (rowId, streaming) in _streamingRows)
+            rows[_rowIndex[rowId]] = streaming.Materialize();
+        return rows;
     }
 
     public long Revision
@@ -88,7 +110,7 @@ public sealed class ProjectionStore : IDisposable
 
     public event Action<ProjectionUpdate>? Updated;
 
-    /// <summary>Revision advances only through command acks; snapshots never move it backwards.</summary>
+    /// <summary>Older snapshots and acknowledgements must not move the revision backwards.</summary>
     public void SetRevision(long revision)
     {
         lock (_sync)
@@ -129,6 +151,7 @@ public sealed class ProjectionStore : IDisposable
                 return;
             }
             _disposed = true;
+            _initialized.TrySetCanceled();
             _pumpCts?.Cancel();
             _pumpCts?.Dispose();
             _flushTimer?.Dispose();
@@ -148,17 +171,20 @@ public sealed class ProjectionStore : IDisposable
             IConversationProjection projection;
             try
             {
+                projection = _subscribe();
                 lock (_sync)
                 {
                     if (_disposed)
+                    {
+                        projection.Dispose();
                         return;
-                    _projection = _subscribe();
-                    projection = _projection;
+                    }
+                    _projection = projection;
                 }
             }
-            catch (Exception) when (!ct.IsCancellationRequested)
+            catch (Exception exception)
             {
-                // The session runtime is gone; there is nothing left to observe.
+                _initialized.TrySetException(exception);
                 break;
             }
 
@@ -170,8 +196,9 @@ public sealed class ProjectionStore : IDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
             }
-            catch (Exception) when (!ct.IsCancellationRequested)
+            catch (Exception exception)
             {
+                _initialized.TrySetException(exception);
             }
             finally
             {
@@ -213,6 +240,7 @@ public sealed class ProjectionStore : IDisposable
         var snapshot = projection.Snapshot();
         lock (_sync)
         {
+            ct.ThrowIfCancellationRequested();
             _rows.Clear();
             _rowIndex.Clear();
             _streamingRows.Clear();
@@ -223,8 +251,10 @@ public sealed class ProjectionStore : IDisposable
             }
             _state = snapshot.State;
             _sequence = snapshot.Sequence;
+            _revision = Math.Max(_revision, snapshot.Revision);
             _pending.Clear();
             _pendingReset = snapshot;
+            _initialized.TrySetResult();
         }
         RequestDelivery();
 
@@ -244,6 +274,8 @@ public sealed class ProjectionStore : IDisposable
                 }
                 if (!ApplyOps(delta.Ops))
                     return PumpOutcome.Gap;
+                if (_pending.IsEmpty)
+                    _pendingFirstSequence = delta.Sequence;
                 _pending.Add(delta.Ops);
 
                 if (_coalesceWindow is { } window)
@@ -362,7 +394,7 @@ public sealed class ProjectionStore : IDisposable
             }
             else if (_pending.Take() is { } ops)
             {
-                update = new ProjectionUpdate(_sequence, _state, ops, Reset: false);
+                update = new ProjectionUpdate(_sequence, _state, ops, Reset: false, FromSequence: _pendingFirstSequence);
             }
         }
         if (update is not null)

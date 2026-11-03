@@ -51,9 +51,9 @@ public sealed class DraftConversationSmokeTests
     }
 
     [AvaloniaFact]
-    public void CtrlN_UsesDraftInsteadOfModal_AndPreservesText()
+    public async Task CtrlN_UsesDraftInsteadOfModal_AndPreservesText()
     {
-        using var workbench = ShellSmokeTests.CreateWorkbench();
+        using var workbench = await ShellSmokeTests.CreateWorkbenchAsync();
         var window = new MainWindow(workbench);
         window.Show();
         try
