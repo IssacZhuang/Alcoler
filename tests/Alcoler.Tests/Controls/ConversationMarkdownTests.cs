@@ -28,23 +28,25 @@ using Assert = Xunit.Assert;
 
 namespace Alcoler.Tests.Controls;
 
-public class ConversationMarkdownTests
+public class ConversationMarkdownTests(Xunit.Abstractions.ITestOutputHelper output)
 {
-    [AvaloniaFact]
-    public void TypographyAndInlineSurfaces_ResolveInBothThemes()
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TypographyAndInlineSurfaces_ResolveInBothThemes(bool fragment)
     {
-        var view = new ConversationMarkdown
-        {
-            Markdown = "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nBody **strong** with `inline` and [link](https://example.com).",
-        };
+        const string markdown = "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six\n\nBody **strong** with `inline` and [link](https://example.com).";
+        Control view = fragment
+            ? new ConversationMarkdownFragment { Markdown = markdown }
+            : new ConversationMarkdown { Markdown = markdown };
         using var host = new Harness(view);
         var blocks = view.GetVisualDescendants().OfType<CTextBlock>().ToArray();
         var body = Assert.Single(blocks, block => block.Classes.Contains("Paragraph"));
         Assert.Equal(14, body.FontSize);
         Assert.Equal("JetBrains Mono", body.FontFamily.Name);
         Assert.Equal(24.5, body.LineHeight);
-        Assert.Equal(0, blocks[0].Margin.Top);
-        Assert.Equal(0, body.Margin.Bottom);
+        Assert.Equal(fragment ? 24 : 0, blocks[0].Margin.Top);
+        Assert.Equal(fragment ? 16 : 0, body.Margin.Bottom);
         var sizes = new double[] { 18, 16, 14, 14, 14, 14 };
         var weights = new[] { FontWeight.SemiBold, FontWeight.SemiBold, FontWeight.SemiBold, FontWeight.SemiBold, FontWeight.Medium, FontWeight.Normal };
         for (var level = 1; level <= 6; level++)
@@ -833,13 +835,15 @@ public class ConversationMarkdownTests
         host.Pump();
     }
 
-    [AvaloniaFact]
-    public void ListsQuotesTablesAndRules_KeepNeutralScopedAppearance()
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ListsQuotesTablesAndRules_KeepNeutralScopedAppearance(bool fragment)
     {
-        var view = new ConversationMarkdown
-        {
-            Markdown = "Before\n\n- first\n  - nested\n- second\n\n1. ordered\n2. next\n\n> quoted\n>\n> second quote paragraph\n\n| Name | Value |\n| --- | --- |\n| one | two |\n| three | four |\n\n---\n\nAfter",
-        };
+        const string markdown = "Before\n\n- first\n  - nested\n- second\n\n1. ordered\n2. next\n\n> quoted\n>\n> second quote paragraph\n\n| Name | Value |\n| --- | --- |\n| one | two |\n| three | four |\n\n---\n\nAfter";
+        Control view = fragment
+            ? new ConversationMarkdownFragment { Markdown = markdown }
+            : new ConversationMarkdown { Markdown = markdown };
         using var host = new Harness(view);
         var markers = view.GetVisualDescendants().OfType<CTextBlock>()
             .Where(block => block.Classes.Contains("ListMarker")).ToArray();
@@ -980,11 +984,15 @@ public class ConversationMarkdownTests
         Assert.False(viewer.SelectionEnabled);
     }
 
-    [AvaloniaFact]
-    public async Task CopyCode_WorksWithMouseAndKeyboardAndPreservesTrailingNewline()
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CopyCode_WorksWithMouseAndKeyboardAndPreservesTrailingNewline(bool fragment)
     {
         const string code = "Console.WriteLine(\"hello\");\n\nreturn;\n";
-        var view = new ConversationMarkdown { Markdown = "```csharp\n" + code + "```" };
+        Control view = fragment
+            ? new ConversationMarkdownFragment { Markdown = "```csharp\n" + code + "```" }
+            : new ConversationMarkdown { Markdown = "```csharp\n" + code + "```" };
         using var host = new Harness(view);
         var copy = Assert.Single(view.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("copyCode"));
         var block = Assert.Single(view.GetVisualDescendants().OfType<CTextBlock>(), text => text.Classes.Contains("CodeBlock"));
@@ -1024,10 +1032,14 @@ public class ConversationMarkdownTests
         }
     }
 
-    [AvaloniaFact]
-    public void ScopedStyling_DoesNotChangeOtherMarkdownViewers()
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ScopedStyling_DoesNotChangeOtherMarkdownViewers(bool fragment)
     {
-        var conversation = new ConversationMarkdown { Markdown = "Body `inline`" };
+        Control conversation = fragment
+            ? new ConversationMarkdownFragment { Markdown = "Body `inline`" }
+            : new ConversationMarkdown { Markdown = "Body `inline`" };
         var other = new MarkdownScrollViewer { Markdown = "Other `inline`" };
         var panel = new StackPanel();
         panel.Children.Add(conversation);
@@ -1035,9 +1047,64 @@ public class ConversationMarkdownTests
         using var host = new Harness(panel);
         var conversationCode = Assert.Single(conversation.GetLogicalDescendants().OfType<CCode>());
         var otherCode = Assert.Single(other.GetLogicalDescendants().OfType<CCode>());
-        Assert.Equal(new Thickness(6, 2), conversationCode.Padding);
-        Assert.Equal(default, otherCode.Padding);
-        Assert.Equal(default, otherCode.CornerRadius);
+        foreach (var theme in new[] { ThemeVariant.Dark, ThemeVariant.Light })
+        {
+            host.Window.RequestedThemeVariant = theme;
+            host.Pump();
+            Assert.Equal(new Thickness(6, 2), conversationCode.Padding);
+            Assert.Equal(new CornerRadius(6), conversationCode.CornerRadius);
+            Assert.Equal(12, conversationCode.FontSize);
+            Assert.Equal("JetBrains Mono", conversationCode.MonospaceFontFamily.Name);
+            AssertBrush(conversation, theme, "AlcolerSurface", conversationCode.Background);
+            Assert.Equal(default, otherCode.Padding);
+            Assert.Equal(default, otherCode.CornerRadius);
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LocalStyles_WrapperClassChangesDoNotReformatLongAnswers(bool fragment)
+    {
+        var markdown = string.Join("\n\n", Enumerable.Range(0, 64).Select(index =>
+            $"Paragraph {index}. **Strong** text with `inline code` and [a link](https://example.com)."));
+        Control view = fragment
+            ? new ConversationMarkdownFragment { Markdown = markdown }
+            : new ConversationMarkdown { Markdown = markdown };
+        using var host = new Harness(view);
+        await host.RenderAsync();
+        var blocks = view.GetVisualDescendants().OfType<CTextBlock>().ToArray();
+        Assert.Equal(64, blocks.Length);
+        var first = blocks[0];
+        first.Select(1, first.Text.Length - 1);
+        var selected = first.GetSelectedText();
+        var bounds = blocks.Select(block => block.Bounds).ToArray();
+        var code = Assert.Single(first.GetLogicalDescendants().OfType<CCode>());
+        var brush = code.Background;
+
+        view.Classes.Remove("conversationMarkdown");
+        host.Pump();
+        view.Classes.Add("conversationMarkdown");
+        await host.RenderAsync();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 12; index++)
+        {
+            view.Classes.Remove("conversationMarkdown");
+            host.Pump();
+            view.Classes.Add("conversationMarkdown");
+            host.Pump();
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        await host.RenderAsync();
+
+        output.WriteLine($"12 wrapper-class cycles, fragment={fragment}: {allocated:N0} bytes allocated.");
+        Assert.True(allocated < 512_000, $"Wrapper-class changes allocated {allocated:N0} bytes.");
+        Assert.Equal(bounds, blocks.Select(block => block.Bounds));
+        Assert.Equal(selected, first.GetSelectedText());
+        Assert.Equal(new Thickness(6, 2), code.Padding);
+        Assert.Equal(brush, code.Background);
+        Assert.Equal(14, first.FontSize);
+        Assert.Equal("JetBrains Mono", first.FontFamily.Name);
     }
 
     private static void AssertBrush(Control control, ThemeVariant theme, string resource, IBrush? actual) =>

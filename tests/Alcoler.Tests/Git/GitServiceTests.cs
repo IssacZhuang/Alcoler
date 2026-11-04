@@ -1,3 +1,6 @@
+using System.Collections;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using Alcoler.Git;
 using LibGit2Sharp;
 using Xunit;
@@ -97,11 +100,213 @@ public sealed class GitServiceTests : IDisposable
         var root = _service.FindRepositoryRoot(repositoryRoot);
         Assert.NotNull(root);
 
-        // The work-tree root returned by detection must be a valid key for the other calls.
+        var cached = Assert.Single(CachedRepositories(_service));
+        var nested = FilePath(repositoryRoot, "nested");
+        Directory.CreateDirectory(nested);
+        string[] paths = [root!, root! + System.IO.Path.DirectorySeparatorChar, Repository.Discover(root!), nested];
+        for (var index = 0; index < 20; index++)
+        {
+            Assert.Equal(root, _service.FindRepositoryRoot(paths[index % paths.Length]));
+            Assert.Same(cached, Assert.Single(CachedRepositories(_service)));
+        }
+
         var status = _service.GetStatus(root!);
         Assert.Empty(status.Staged);
         Assert.Empty(status.Unstaged);
         Assert.Empty(status.Untracked);
+        Assert.Same(cached, Assert.Single(CachedRepositories(_service)));
+    }
+
+    [Fact]
+    public void RepositoryCache_EvictsLeastRecentlyUsed_AtCapacity()
+    {
+        var time = new CapturedTimerProvider();
+        using var service = new LibGit2GitService(time);
+        var roots = new List<string>();
+        var repositories = new List<Repository>();
+        for (var index = 0; index < LibGit2GitService.MaxCachedRepositories; index++)
+        {
+            var root = InitRepo($"repo-{index}");
+            roots.Add(root);
+            Assert.NotNull(service.FindRepositoryRoot(root));
+            repositories.Add(CachedRepositories(service).Last());
+            time.Advance(TimeSpan.FromSeconds(1));
+        }
+        service.GetStatus(roots[0]);
+        time.Advance(TimeSpan.FromSeconds(1));
+
+        Assert.NotNull(service.FindRepositoryRoot(InitRepo("overflow")));
+
+        var cached = CachedRepositories(service);
+        Assert.Equal(LibGit2GitService.MaxCachedRepositories, cached.Length);
+        Assert.Contains(repositories[0], cached);
+        Assert.DoesNotContain(repositories[1], cached);
+        Assert.True(RepositoryHandle(repositories[1]).IsClosed);
+        Assert.False(RepositoryHandle(repositories[0]).IsClosed);
+    }
+
+    [Fact]
+    public void RepositoryCache_ReleasesIdleRepositories_AndReopensOnUse()
+    {
+        var time = new CapturedTimerProvider();
+        using var service = new LibGit2GitService(time);
+        var root = InitRepo();
+        Assert.NotNull(service.FindRepositoryRoot(root));
+        var repository = Assert.Single(CachedRepositories(service));
+
+        time.Advance(LibGit2GitService.RepositoryIdleTimeout);
+
+        Assert.Empty(CachedRepositories(service));
+        Assert.True(RepositoryHandle(repository).IsClosed);
+        Assert.True(Assert.Single(time.Timers).IsDisposed);
+        Assert.NotNull(service.FindRepositoryRoot(root));
+        Assert.NotSame(repository, Assert.Single(CachedRepositories(service)));
+        Assert.Empty(service.GetStatus(root).Untracked);
+    }
+
+    [Fact]
+    public void RepositoryCache_RefreshesIdleDeadline_AndIgnoresEarlyCallbacks()
+    {
+        var time = new CapturedTimerProvider();
+        using var service = new LibGit2GitService(time);
+        var root = InitRepo();
+        Assert.NotNull(service.FindRepositoryRoot(root));
+        var repository = Assert.Single(CachedRepositories(service));
+        var timer = Assert.Single(time.Timers);
+        var halfTimeout = LibGit2GitService.RepositoryIdleTimeout / 2;
+
+        time.Advance(halfTimeout);
+        service.GetStatus(root);
+        time.Advance(halfTimeout);
+        timer.Fire();
+
+        Assert.Same(repository, Assert.Single(CachedRepositories(service)));
+        Assert.False(RepositoryHandle(repository).IsClosed);
+        Assert.Equal(time.GetTimestamp() + halfTimeout.Ticks, timer.DueAt);
+
+        time.Advance(halfTimeout);
+
+        Assert.Empty(CachedRepositories(service));
+        Assert.True(RepositoryHandle(repository).IsClosed);
+    }
+
+    [Fact]
+    public void Dispose_ClosesAllRepositories_AndIgnoresQueuedEviction()
+    {
+        var time = new CapturedTimerProvider();
+        var service = new LibGit2GitService(time);
+        Assert.NotNull(service.FindRepositoryRoot(InitRepo("first")));
+        Assert.NotNull(service.FindRepositoryRoot(InitRepo("second")));
+        var repositories = CachedRepositories(service);
+        var timer = Assert.Single(time.Timers);
+
+        service.Dispose();
+        time.Advance(LibGit2GitService.RepositoryIdleTimeout);
+        timer.Fire();
+        service.Dispose();
+
+        Assert.Empty(CachedRepositories(service));
+        Assert.All(repositories, repository => Assert.True(RepositoryHandle(repository).IsClosed));
+        Assert.True(timer.IsDisposed);
+        Assert.Single(time.Timers);
+        Assert.Throws<ObjectDisposedException>(() => service.FindRepositoryRoot(_workspace.Path));
+        Assert.Throws<ObjectDisposedException>(() => service.GetStatus(_workspace.Path));
+    }
+
+    [Fact]
+    public async Task Dispose_WaitsForRunningRepositoryOperation()
+    {
+        using var service = new LibGit2GitService();
+        var root = InitRepo();
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var disposing = new ManualResetEventSlim();
+        Repository? repository = null;
+        var method = typeof(LibGit2GitService)
+            .GetMethod("WithRepository", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(int));
+        var operation = Task.Run(() => method.Invoke(service, [root, (Func<Repository, int>)(value =>
+        {
+            repository = value;
+            entered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("The repository operation was not released.");
+            return value.RetrieveStatus().Count();
+        })]));
+        Task? disposal = null;
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+            disposal = Task.Run(() =>
+            {
+                disposing.Set();
+                service.Dispose();
+            });
+            Assert.True(disposing.Wait(TimeSpan.FromSeconds(10)));
+            Assert.False(disposal.IsCompleted);
+            Assert.False(RepositoryHandle(repository!).IsClosed);
+        }
+        finally
+        {
+            release.Set();
+            await operation.WaitAsync(TimeSpan.FromSeconds(10));
+            if (disposal is not null)
+                await disposal.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        Assert.True(RepositoryHandle(repository!).IsClosed);
+        Assert.Throws<ObjectDisposedException>(() => service.GetStatus(root));
+    }
+
+    [Fact]
+    public async Task RepositoryCache_DoesNotEvictRunningOperation()
+    {
+        var time = new CapturedTimerProvider();
+        using var service = new LibGit2GitService(time);
+        var root = InitRepo();
+        Assert.NotNull(service.FindRepositoryRoot(root));
+        var repository = Assert.Single(CachedRepositories(service));
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var evicting = new ManualResetEventSlim();
+        var method = typeof(LibGit2GitService)
+            .GetMethod("WithRepository", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(int));
+        var operation = Task.Run(() => method.Invoke(service, [root, (Func<Repository, int>)(value =>
+        {
+            entered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("The repository operation was not released.");
+            return value.RetrieveStatus().Count();
+        })]));
+        Task? eviction = null;
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+            time.Advance(LibGit2GitService.RepositoryIdleTimeout, fireTimers: false);
+            var timer = Assert.Single(time.Timers);
+            eviction = Task.Run(() =>
+            {
+                evicting.Set();
+                timer.Fire();
+            });
+            Assert.True(evicting.Wait(TimeSpan.FromSeconds(10)));
+            Assert.False(eviction.IsCompleted);
+            Assert.False(RepositoryHandle(repository).IsClosed);
+        }
+        finally
+        {
+            release.Set();
+            await operation.WaitAsync(TimeSpan.FromSeconds(10));
+            if (eviction is not null)
+                await eviction.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        Assert.Same(repository, Assert.Single(CachedRepositories(service)));
+        Assert.False(RepositoryHandle(repository).IsClosed);
+
+        time.Advance(LibGit2GitService.RepositoryIdleTimeout);
+
+        Assert.Empty(CachedRepositories(service));
+        Assert.True(RepositoryHandle(repository).IsClosed);
     }
 
     [Fact]
@@ -402,6 +607,82 @@ public sealed class GitServiceTests : IDisposable
         service.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() => service.GetStatus(repositoryRoot));
+    }
+
+    private static Repository[] CachedRepositories(LibGit2GitService service)
+    {
+        var cache = (IDictionary)typeof(LibGit2GitService)
+            .GetField("_repositories", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(service)!;
+        return cache.Values.Cast<object>()
+            .Select(entry => (Repository)entry.GetType().GetProperty("Repository")!.GetValue(entry)!)
+            .ToArray();
+    }
+
+    private static SafeHandle RepositoryHandle(Repository repository) =>
+        (SafeHandle)typeof(Repository)
+            .GetField("handle", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(repository)!;
+
+    private sealed class CapturedTimerProvider : TimeProvider
+    {
+        private long _timestamp;
+        public List<CapturedTimer> Timers { get; } = [];
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _timestamp;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new CapturedTimer(this, callback, state);
+            timer.Change(dueTime, period);
+            Timers.Add(timer);
+            return timer;
+        }
+
+        public void Advance(TimeSpan elapsed, bool fireTimers = true)
+        {
+            _timestamp += elapsed.Ticks;
+            if (!fireTimers)
+                return;
+            foreach (var timer in Timers.ToArray())
+                timer.FireIfDue();
+        }
+    }
+
+    private sealed class CapturedTimer(CapturedTimerProvider time, TimerCallback callback, object? state) : ITimer
+    {
+        public bool IsDisposed { get; private set; }
+        public long? DueAt { get; private set; }
+        public void Fire() => callback(state);
+
+        public void FireIfDue()
+        {
+            if (!IsDisposed && DueAt is { } dueAt && dueAt <= time.GetTimestamp())
+            {
+                DueAt = null;
+                Fire();
+            }
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            if (IsDisposed)
+                return false;
+            DueAt = dueTime == Timeout.InfiniteTimeSpan ? null : time.GetTimestamp() + dueTime.Ticks;
+            return true;
+        }
+
+        public void Dispose()
+        {
+            IsDisposed = true;
+            DueAt = null;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
     }
 
     private void CommitLog(string repositoryRoot)

@@ -817,29 +817,29 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
             Pump();
             var item = Assert.IsType<AgentCallItemViewModel>(Assert.Single(viewModel.Items));
             foreach (var variant in new[] { ThemeVariant.Dark, ThemeVariant.Light })
-            foreach (var width in new[] { 900d, 360 })
-            {
-                window.RequestedThemeVariant = variant;
-                window.Width = width;
-                Pump();
-                var header = Assert.Single(view.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("agentRow"));
-                var texts = header.GetVisualDescendants().OfType<TextBlock>().Where(block => block.IsEffectivelyVisible).ToArray();
-                Assert.Contains(texts, block => block.Text == "SubAgent");
-                var type = Assert.Single(texts, block => block.Text == "Explore");
-                Assert.Equal("JetBrains Mono", type.FontFamily.Name);
-                Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(view.FindResource(variant, "AlcolerAgentExplore")).Color,
-                    Assert.IsAssignableFrom<ISolidColorBrush>(type.Foreground).Color);
-                Assert.Equal(failed, texts.Any(block => block.Text == "Failed"));
-                Assert.DoesNotContain(texts, block => block.Text is "Completed" or "Running" or "60.0s" || block.Text!.Contains("Raw child result"));
-                Assert.DoesNotContain(header.GetVisualDescendants().OfType<Icon>(), icon => icon.Classes.Contains("disclosure"));
-                Assert.Empty(view.GetVisualDescendants().OfType<SelectableTextBlock>());
-                Assert.InRange(header.Bounds.Height, 27, 29);
-                AssertWithin(header, view);
-                foreach (var control in header.GetVisualDescendants().OfType<Control>().Where(control => control.IsEffectivelyVisible && control is TextBlock or Icon))
-                    AssertWithin(control, header);
-                Assert.True(view.Scroller.Extent.Width <= view.Scroller.Viewport.Width);
-                Assert.Equal(item.AccessibleText, Avalonia.Automation.AutomationProperties.GetName(header));
-            }
+                foreach (var width in new[] { 900d, 360 })
+                {
+                    window.RequestedThemeVariant = variant;
+                    window.Width = width;
+                    Pump();
+                    var header = Assert.Single(view.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("agentRow"));
+                    var texts = header.GetVisualDescendants().OfType<TextBlock>().Where(block => block.IsEffectivelyVisible).ToArray();
+                    Assert.Contains(texts, block => block.Text == "SubAgent");
+                    var type = Assert.Single(texts, block => block.Text == "Explore");
+                    Assert.Equal("JetBrains Mono", type.FontFamily.Name);
+                    Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(view.FindResource(variant, "AlcolerAgentExplore")).Color,
+                        Assert.IsAssignableFrom<ISolidColorBrush>(type.Foreground).Color);
+                    Assert.Equal(failed, texts.Any(block => block.Text == "Failed"));
+                    Assert.DoesNotContain(texts, block => block.Text is "Completed" or "Running" or "60.0s" || block.Text!.Contains("Raw child result"));
+                    Assert.DoesNotContain(header.GetVisualDescendants().OfType<Icon>(), icon => icon.Classes.Contains("disclosure"));
+                    Assert.Empty(view.GetVisualDescendants().OfType<SelectableTextBlock>());
+                    Assert.InRange(header.Bounds.Height, 27, 29);
+                    AssertWithin(header, view);
+                    foreach (var control in header.GetVisualDescendants().OfType<Control>().Where(control => control.IsEffectivelyVisible && control is TextBlock or Icon))
+                        AssertWithin(control, header);
+                    Assert.True(view.Scroller.Extent.Width <= view.Scroller.Viewport.Width);
+                    Assert.Equal(item.AccessibleText, Avalonia.Automation.AutomationProperties.GetName(header));
+                }
         }
         finally
         {
@@ -1244,8 +1244,10 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
         }
     }
 
-    [AvaloniaFact]
-    public async Task ScrollExtent_MixedToolHistoryRetainsMeasuredAnswerHeightWhileReadingEarlierRows()
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ScrollExtent_MixedToolHistoryRetainsMeasuredAnswerHeightWhileReadingEarlierRows(bool streaming)
     {
         EnsureFluentTheme();
         var (view, viewModel, store) = CreateTimeline();
@@ -1256,10 +1258,11 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
                 StrongId.NewToolCallId(), "Read", JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }),
                 ToolCallStatus.Succeeded, null, false, TimeSpan.FromMilliseconds(3), DateTimeOffset.UtcNow)).ToArray();
             var text = string.Join("\n\n", Enumerable.Range(0, 60).Select(index =>
-                $"Long answer paragraph {index}. The measured height of this streaming message must remain known while reading earlier operations."));
+                $"Long answer paragraph {index}. The **measured height** with `inline code` must remain known while reading earlier operations."));
             var assistant = new AssistantMessageRow("a1", StrongId.NewMessageId(),
-                [new TextPart(StrongId.NewPartId(), text)], true, DateTimeOffset.UtcNow);
-            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(TurnPhase.Streaming), [], Reset: true,
+                [new TextPart(StrongId.NewPartId(), text)], streaming, DateTimeOffset.UtcNow);
+            var state = streaming ? TestSnapshots.State(TurnPhase.Streaming) : TestSnapshots.State();
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, state, [], Reset: true,
                 ResetRows: [.. tools, assistant]));
             var items = view.FindControl<ItemsControl>("TimelineItems")!;
             items.ScrollIntoView(viewModel.Items.Count - 1);
@@ -1271,18 +1274,30 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
             view.Scroller.ScrollToHome();
             await RenderAsync(window);
             Assert.InRange(view.Scroller.Extent.Height, measuredExtent - 64, measuredExtent + 64);
+            var tail = Assert.IsAssignableFrom<Control>(items.ContainerFromIndex(viewModel.Items.Count - 1));
+            Assert.True(tail.TranslatePoint(default, view.Scroller)!.Value.Y > view.Scroller.Viewport.Height);
             var offset = view.Scroller.Offset;
-            viewModel.ApplyUpdate(new ProjectionUpdate(2, TestSnapshots.State(TurnPhase.Streaming),
+            viewModel.ApplyUpdate(new ProjectionUpdate(2, state,
                 [new RowUpserted(assistant with { Parts = [new TextPart(StrongId.NewPartId(), text + "\n\n" + text)] })], Reset: false));
             await RenderAsync(window);
             Assert.True(view.Scroller.Extent.Height > measuredExtent + 1000);
             Assert.Equal(offset, view.Scroller.Offset);
-            var streamingExtent = view.Scroller.Extent;
+            Assert.Equal(streaming ? 119 : 120,
+                tail.GetVisualDescendants().OfType<ColorTextBlock.Avalonia.CTextBlock>()
+                    .Count(block => block.Text.StartsWith("Long answer paragraph", StringComparison.Ordinal)));
+            if (streaming)
+            {
+                Assert.Equal(text + "\n\n" + text, StreamingText(view));
+                var unsealed = Assert.Single(tail.GetVisualDescendants().OfType<SelectableTextBlock>(),
+                    block => block.Classes.Contains("streamingTail") && block.IsVisible);
+                Assert.StartsWith("Long answer paragraph 59.", unsealed.Text, StringComparison.Ordinal);
+            }
+            var expandedExtent = view.Scroller.Extent;
             var offscreenTool = (ToolCallRow)tools[70];
-            viewModel.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(TurnPhase.Streaming),
+            viewModel.ApplyUpdate(new ProjectionUpdate(3, state,
                 [new RowUpserted(offscreenTool with { Duration = TimeSpan.FromSeconds(5) })], Reset: false));
             await RenderAsync(window);
-            Assert.Equal(streamingExtent, view.Scroller.Extent);
+            Assert.Equal(expandedExtent, view.Scroller.Extent);
             Assert.Equal(offset, view.Scroller.Offset);
             Assert.True(view.GetVisualDescendants().OfType<Button>().Count(button => button.Classes.Contains("toolRow")) < tools.Length,
                 DescribeTimeline(view));

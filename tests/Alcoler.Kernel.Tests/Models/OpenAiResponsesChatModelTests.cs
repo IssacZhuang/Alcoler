@@ -4,7 +4,9 @@ using Alcoler.Adapters.Models;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
+using Alcoler.Contracts.Serialization;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Models;
 using Xunit;
 
 namespace Alcoler.Kernel.Tests.Models;
@@ -201,6 +203,128 @@ public class OpenAiResponsesChatModelTests
         Assert.Equal("opaque", reasoning.GetProperty("encrypted_content").GetString());
         Assert.False(reasoning.TryGetProperty("id", out _));
         Assert.Equal(0, reasoning.GetProperty("summary").GetArrayLength());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Request_RetryRebuildsIdenticalByteContentWithoutMutatingInputs(bool account)
+    {
+        var attempts = 0;
+        var tokenResolutions = 0;
+        var responses = new List<HttpResponseMessage>();
+        var handler = new RecordingHandler((request, _) =>
+        {
+            Assert.IsType<ByteArrayContent>(request.Content);
+            Assert.Equal("application/json; charset=utf-8", request.Content.Headers.ContentType!.ToString());
+            Assert.Equal("text/event-stream", Assert.Single(request.Headers.Accept).MediaType);
+            var response = ++attempts == 1
+                ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("unavailable") }
+                : SegmentedStream.ToResponse("data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n");
+            responses.Add(response);
+            return response;
+        });
+        var properties = new ModelProperties(DefaultMaxOutputTokens: 128, ReasoningLevels: ["high"],
+            ReasoningMapping: "{'reasoning':{'effort':reasoningLevel},'instructions':'mapped instructions'}",
+            MaxOutputTokensMapping: "{'max_output_tokens':maxOutputTokens*2,'max_tokens':maxOutputTokens*2,'store':true,'metadata':{'nested':true},'temperature':0.7}");
+        var model = new OpenAiResponsesChatModel(new HttpClient(handler), new("test", "static-key", "https://test/v1"), properties,
+            accessTokenSource: account ? _ => ValueTask.FromResult($"oauth-{++tokenResolutions}") : null);
+        using var schema = JsonDocument.Parse("""{"type":"object","properties":{"path":{"type":"string","description":"中文 <>&"}}}""");
+        using var arguments = JsonDocument.Parse("""{"path":"a.cs"}""");
+        var request = new ModelRequest([
+            new(MessageRole.System, [new InputTextBlock("rules 中文 <>&")]),
+            new(MessageRole.User, [new InputTextBlock("read it")]),
+            new(MessageRole.Assistant,
+            [
+                new InputReasoningBlock("checking", EncryptedContent: "encrypted", ProviderItemId: "reason-1"),
+                new InputToolCallBlock(new("call-1"), "Read", arguments.RootElement.Clone()),
+            ]),
+            new(MessageRole.User, [new InputToolResultBlock(new("call-1"), "don't use `x` — 中文")]),
+        ], [new("Read", "Read a file", schema.RootElement.Clone())], new("high", 256), new("sess_child", "sess_parent"));
+        var original = AlcolerJson.Serialize(request);
+        var events = new List<ModelStreamEvent>();
+        await foreach (var e in ModelStreamRunner.RunAsync(model, request,
+            new() { MaxAttempts = 2, BaseDelay = TimeSpan.Zero, MaxDelay = TimeSpan.Zero, JitterFactor = 0, IdleTimeout = Timeout.InfiniteTimeSpan }))
+            events.Add(e);
+
+        Assert.Equal(2, attempts);
+        Assert.Single(events.OfType<ModelStreamFinished>());
+        Assert.Empty(events.OfType<ModelStreamFailed>());
+        Assert.Equal(handler.RequestBodies[0], handler.RequestBodies[1]);
+        Assert.Equal(original, AlcolerJson.Serialize(request));
+        Assert.NotSame(handler.Requests[0].Content, handler.Requests[1].Content);
+        using var body = JsonDocument.Parse(handler.RequestBodies[0]!);
+        var root = body.RootElement;
+        Assert.True(root.GetProperty("stream").GetBoolean());
+        Assert.Equal("reasoning.encrypted_content", root.GetProperty("include")[0].GetString());
+        Assert.Equal("mapped instructions", root.GetProperty("instructions").GetString());
+        Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
+        Assert.Equal("object", root.GetProperty("tools")[0].GetProperty("parameters").GetProperty("type").GetString());
+        Assert.Equal(128, root.GetProperty("max_tokens").GetInt32());
+        Assert.Equal(!account, root.GetProperty("store").GetBoolean());
+        Assert.Equal(account ? "developer" : "system", root.GetProperty("input")[0].GetProperty("role").GetString());
+        Assert.Equal("encrypted", root.GetProperty("input")[2].GetProperty("encrypted_content").GetString());
+        Assert.Equal(account ? 2 : 0, tokenResolutions);
+        if (account)
+        {
+            Assert.False(root.TryGetProperty("max_output_tokens", out _));
+            Assert.False(root.TryGetProperty("metadata", out _));
+            Assert.False(root.TryGetProperty("temperature", out _));
+            Assert.Equal("subagent:parent", root.GetProperty("prompt_cache_key").GetString());
+            Assert.All(handler.Requests, r => Assert.Equal("subagent:parent", Assert.Single(r.Headers.GetValues("session-id"))));
+            Assert.All(handler.Requests, r => Assert.Equal("parent", Assert.Single(r.Headers.GetValues("thread-id"))));
+            Assert.Equal("oauth-1", handler.Requests[0].Headers.Authorization!.Parameter);
+            Assert.Equal("oauth-2", handler.Requests[1].Headers.Authorization!.Parameter);
+        }
+        else
+        {
+            Assert.Equal(128, root.GetProperty("max_output_tokens").GetInt32());
+            Assert.False(root.TryGetProperty("prompt_cache_key", out _));
+            Assert.All(handler.Requests, r => Assert.False(r.Headers.Contains("session-id")));
+            Assert.All(handler.Requests, r => Assert.Equal("static-key", r.Headers.Authorization!.Parameter));
+        }
+        foreach (var sent in handler.Requests)
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => sent.Content!.ReadAsByteArrayAsync());
+        foreach (var response in responses)
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Theory]
+    [InlineData("{'max_output_tokens':0}")]
+    [InlineData("{'max_output_tokens':'128'}")]
+    [InlineData("{'max_output_tokens':[]}")]
+    public async Task AccountRequest_InvalidOmittedOutputLimitStillFailsBeforeHttp(string mapping)
+    {
+        var handler = Handler("unused");
+        var model = new OpenAiResponsesChatModel(new HttpClient(handler), new("test", "", "https://test/v1"),
+            new ModelProperties(MaxOutputTokensMapping: mapping), accessTokenSource: _ => ValueTask.FromResult("oauth"));
+        var failure = Assert.IsType<ModelStreamFailed>(Assert.Single(await Collect(model))).Failure;
+        Assert.Equal(ModelFailureKind.InvalidRequest, failure.Kind);
+        Assert.Equal(ModelFailurePhase.RequestSetup, failure.Phase);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Request_CancellationDuringSendDisposesByteContent(bool account)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new RecordingHandler((_, token) =>
+        {
+            cancellation.Cancel();
+            token.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("The request must be canceled.");
+        });
+        var model = new OpenAiResponsesChatModel(new HttpClient(handler), new("test", "key", "https://test/v1"),
+            accessTokenSource: account ? _ => ValueTask.FromResult("oauth") : null);
+        var request = new ModelRequest([new(MessageRole.User, [new InputTextBlock("hi")])], [], new());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in model.StreamAsync(request, cancellation.Token)) { }
+        });
+        var content = Assert.IsType<ByteArrayContent>(Assert.Single(handler.Requests).Content);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => content.ReadAsByteArrayAsync());
     }
 
     private static RecordingHandler Handler(params string[] frames) => new((_, _) => SegmentedStream.ToResponse(string.Join("", frames.Select(f => "data: " + f + "\n\n")), 5));

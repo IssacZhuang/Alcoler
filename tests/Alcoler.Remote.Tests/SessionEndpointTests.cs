@@ -1,11 +1,14 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
+using Alcoler.Contracts.Tools;
 using Alcoler.Remote.Tests.Infrastructure;
 using Xunit;
 
@@ -446,6 +449,97 @@ public sealed class SessionEndpointTests
         var pendingActivity = pendingEntry.Value.GetProperty("activity");
         Assert.Equal(JsonValueKind.Object, pendingActivity.ValueKind);
         Assert.Equal("AwaitingPermission", pendingActivity.GetProperty("phase").GetString());
+    }
+
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(true, null)]
+    [InlineData(true, TurnOutcome.Completed)]
+    [InlineData(true, TurnOutcome.Failed)]
+    public void SessionList_PreservesContractBytesAndOwnsItsResponse(bool hasActivity, TurnOutcome? outcome)
+    {
+        var now = new DateTimeOffset(2026, 11, 4, 12, 34, 56, TimeSpan.FromHours(8));
+        SessionSummary[] sessions =
+        [
+            new(new SessionId("sess_wire"), "中文 <title> \\\"quoted\\\"", @"C:\workspace\中文", PermissionMode.Yolo,
+                new ModelSelection("provider", "model", new ModelCallOptions("high", 4096)), now, now.AddMinutes(1),
+                IsArchived: true, ParentSessionId: new SessionId("sess_parent"), PlanEnabled: true),
+            new(new SessionId("sess_nulls"), string.Empty, "/workspace", PermissionMode.Yolo, null, now, now),
+        ];
+        var activity = hasActivity ? new SessionListActivityRuntime(new SessionActivitySnapshot(TurnPhase.Idle, outcome)) : null;
+        var expected = LegacySessionList(sessions, activity);
+
+        var actual = GatewayEndpoints.WriteSessionList(sessions, activity);
+        GatewayEndpoints.WriteSessionList([], null);
+        GatewayEndpoints.WriteSessionList(sessions, null);
+
+        Assert.Equal(expected, actual.ToArray());
+        Assert.Equal("[]", Encoding.UTF8.GetString(GatewayEndpoints.WriteSessionList([], activity).Span));
+    }
+
+    [Fact]
+    public void SessionList_DoesNotAllocateSerializedCopiesPerSessionOrResponse()
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var title = new string('a', 4096);
+        var sessions = Enumerable.Range(0, 100).Select(index => new SessionSummary(
+            new SessionId($"sess_alloc_{index}"), title, "/workspace", PermissionMode.Yolo, null, now, now)).ToArray();
+        for (var index = 0; index < 3; index++)
+        {
+            LegacySessionList(sessions, null);
+            GatewayEndpoints.WriteSessionList(sessions, null);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 5; index++)
+            LegacySessionList(sessions, null);
+        var previous = GC.GetAllocatedBytesForCurrentThread() - before;
+        before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 5; index++)
+            GatewayEndpoints.WriteSessionList(sessions, null);
+        var current = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(current < previous * 0.8, $"Allocated {current:N0} bytes, previously {previous:N0} bytes.");
+    }
+
+    private static byte[] LegacySessionList(IReadOnlyList<SessionSummary> sessions, ISessionActivityRuntime? activityRuntime)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartArray();
+            foreach (var session in sessions)
+            {
+                using var document = JsonDocument.Parse(GatewayJson.Serialize(session));
+                writer.WriteStartObject();
+                foreach (var property in document.RootElement.EnumerateObject())
+                    property.WriteTo(writer);
+                writer.WritePropertyName("activity");
+                var activity = activityRuntime?.GetSessionActivity(session.Id);
+                if (activity is null)
+                    writer.WriteNullValue();
+                else
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("phase", activity.Phase.ToString());
+                    if (activity.LastOutcome is { } outcome)
+                        writer.WriteString("lastOutcome", outcome.ToString());
+                    else
+                        writer.WriteNull("lastOutcome");
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        return stream.ToArray();
+    }
+
+    private sealed class SessionListActivityRuntime(SessionActivitySnapshot activity) : ISessionActivityRuntime
+    {
+        public IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId) => [];
+        public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId) => false;
+        public SessionActivitySnapshot GetSessionActivity(SessionId sessionId) => activity;
     }
 
     [Fact]

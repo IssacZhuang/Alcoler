@@ -40,9 +40,8 @@ public sealed class ProjectionStore : IDisposable
     private ConversationState _state;
     private long _sequence;
     private long _revision;
-    private readonly PendingRowOps _pending = new();
-    private long _pendingFirstSequence;
-    private ConversationSnapshot? _pendingReset;
+    private readonly PendingUpdates _pending = new();
+    private readonly List<Reader> _readers = [];
     private ITimer? _flushTimer;
     private bool _deliveryScheduled;
     private bool _disposed;
@@ -67,15 +66,38 @@ public sealed class ProjectionStore : IDisposable
 
     public Task Initialized => _initialized.Task;
 
-    public ProjectionUpdate CaptureUpdate() => CaptureUpdate(out _);
-
-    internal ProjectionUpdate CaptureUpdate(out bool initialized)
+    public ProjectionUpdate CaptureUpdate()
     {
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            initialized = _initialized.Task.IsCompletedSuccessfully;
             return new ProjectionUpdate(_sequence, _state, [], Reset: true, ResetRows: MaterializeRows());
+        }
+    }
+
+    internal ProjectionUpdate Attach(Action<ProjectionUpdate> updated, out bool initialized)
+    {
+        lock (_sync)
+        {
+            var initial = CaptureUpdate();
+            initialized = _initialized.Task.IsCompletedSuccessfully;
+            // Append buffers start after the snapshot boundary, never inside a coalesced batch.
+            _readers.Add(new Reader(updated, _pending.IsEmpty ? _pending : new PendingUpdates()));
+            return initial;
+        }
+    }
+
+    internal void Detach(Action<ProjectionUpdate> updated)
+    {
+        lock (_sync)
+        {
+            for (var index = _readers.Count - 1; index >= 0; index--)
+            {
+                if (_readers[index].Updated != updated)
+                    continue;
+                _readers.RemoveAt(index);
+                break;
+            }
         }
     }
 
@@ -157,7 +179,7 @@ public sealed class ProjectionStore : IDisposable
             _flushTimer?.Dispose();
             _flushTimer = null;
             _pending.Clear();
-            _pendingReset = null;
+            _readers.Clear();
             _streamingRows.Clear();
             _projection?.Dispose();
             _projection = null;
@@ -252,8 +274,10 @@ public sealed class ProjectionStore : IDisposable
             _state = snapshot.State;
             _sequence = snapshot.Sequence;
             _revision = Math.Max(_revision, snapshot.Revision);
-            _pending.Clear();
-            _pendingReset = snapshot;
+            _pending.Reset(snapshot);
+            foreach (var reader in _readers)
+                if (reader.Pending != _pending)
+                    reader.Pending.Reset(snapshot);
             _initialized.TrySetResult();
         }
         RequestDelivery();
@@ -274,9 +298,10 @@ public sealed class ProjectionStore : IDisposable
                 }
                 if (!ApplyOps(delta.Ops))
                     return PumpOutcome.Gap;
-                if (_pending.IsEmpty)
-                    _pendingFirstSequence = delta.Sequence;
-                _pending.Add(delta.Ops);
+                _pending.Add(delta);
+                foreach (var reader in _readers)
+                    if (reader.Pending != _pending)
+                        reader.Pending.Add(delta);
 
                 if (_coalesceWindow is { } window)
                 {
@@ -368,8 +393,7 @@ public sealed class ProjectionStore : IDisposable
     {
         lock (_sync)
         {
-            if (_disposed || _deliveryScheduled ||
-                (_pendingReset is null && _pending.IsEmpty))
+            if (_disposed || _deliveryScheduled || !HasPendingUpdates())
             {
                 return;
             }
@@ -378,30 +402,105 @@ public sealed class ProjectionStore : IDisposable
         _scheduler.PostBackground(Deliver);
     }
 
+    private bool HasPendingUpdates()
+    {
+        if (!_pending.IsEmpty)
+            return true;
+        foreach (var reader in _readers)
+            if (!reader.Pending.IsEmpty)
+                return true;
+        return false;
+    }
+
     private void Deliver()
     {
-        ProjectionUpdate? update = null;
+        PendingDelivery[] deliveries;
+        var count = 0;
         lock (_sync)
         {
-            _deliveryScheduled = false;
             if (_disposed)
                 return;
-
-            if (_pendingReset is { } reset)
+            var updated = Updated;
+            var needsSharedUpdate = updated is not null;
+            foreach (var reader in _readers)
+                needsSharedUpdate |= reader.Pending == _pending;
+            ProjectionUpdate? update = null;
+            if (needsSharedUpdate)
+                update = _pending.Take(_sequence, _state);
+            else
+                _pending.Clear();
+            deliveries = new PendingDelivery[_readers.Count + (updated is null ? 0 : 1)];
+            if (update is not null && updated is not null)
+                deliveries[count++] = new PendingDelivery(update, updated);
+            foreach (var reader in _readers)
             {
-                _pendingReset = null;
-                update = new ProjectionUpdate(reset.Sequence, reset.State, [], Reset: true, ResetRows: reset.Rows);
-            }
-            else if (_pending.Take() is { } ops)
-            {
-                update = new ProjectionUpdate(_sequence, _state, ops, Reset: false, FromSequence: _pendingFirstSequence);
+                var next = reader.Pending == _pending ? update : reader.Pending.Take(_sequence, _state);
+                if (next is not null)
+                    deliveries[count++] = new PendingDelivery(next, reader.Updated);
+                // Empty buffers have consumed the same producer boundary and can coalesce together.
+                if (_pending.IsEmpty && reader.Pending.IsEmpty)
+                    reader.Pending = _pending;
             }
         }
-        if (update is not null)
+        try
         {
-            Updated?.Invoke(update);
+            for (var index = 0; index < count; index++)
+                deliveries[index].Updated(deliveries[index].Update);
         }
-        RequestDelivery();
+        finally
+        {
+            lock (_sync)
+                _deliveryScheduled = false;
+            RequestDelivery();
+        }
+    }
+
+    private readonly record struct PendingDelivery(ProjectionUpdate Update, Action<ProjectionUpdate> Updated);
+
+    private sealed class Reader(Action<ProjectionUpdate> updated, PendingUpdates pending)
+    {
+        public Action<ProjectionUpdate> Updated { get; } = updated;
+        public PendingUpdates Pending { get; set; } = pending;
+    }
+
+    private sealed class PendingUpdates
+    {
+        private readonly PendingRowOps _ops = new();
+        private ConversationSnapshot? _reset;
+        private long _firstSequence;
+
+        public bool IsEmpty => _reset is null && _ops.IsEmpty;
+
+        public void Reset(ConversationSnapshot snapshot)
+        {
+            Clear();
+            _reset = snapshot;
+        }
+
+        public void Add(ConversationDelta delta)
+        {
+            if (_ops.IsEmpty)
+                _firstSequence = delta.Sequence;
+            _ops.Add(delta.Ops);
+        }
+
+        public ProjectionUpdate? Take(long sequence, ConversationState state)
+        {
+            if (_reset is { } reset)
+            {
+                _reset = null;
+                return new ProjectionUpdate(reset.Sequence, reset.State, [], Reset: true, ResetRows: reset.Rows);
+            }
+            return _ops.Take() is { } ops
+                ? new ProjectionUpdate(sequence, state, ops, Reset: false, FromSequence: _firstSequence)
+                : null;
+        }
+
+        public void Clear()
+        {
+            _reset = null;
+            _ops.Clear();
+        }
     }
 
     private sealed class StreamingRow(AssistantMessageRow baseline, int partIndex, TextPart part)

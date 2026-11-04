@@ -409,8 +409,8 @@ public sealed class DocumentAdapterViewTests : IDisposable
         var childId = StrongId.NewSessionId();
         var startedAt = DateTimeOffset.UtcNow;
         runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1,
-            [AgentActivityRow(childId, "Waiting child", startedAt)], TestSnapshots.State()));
-        var childProjection = runtime.RegisterSession(childId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()));
+            [AgentActivityRow(childId, "Waiting child", startedAt)], TestSnapshots.State()), _root);
+        var childProjection = runtime.RegisterSession(childId, new ConversationSnapshot(0, 1, [], TestSnapshots.State()), _root);
         using var workbench = new WorkbenchViewModel(runtime, AvaloniaUiScheduler.Instance, new WorkbenchConfig([]));
         workbench.ShowNewTask(_root);
         await workbench.OpenSessionAsync(parentId);
@@ -419,7 +419,11 @@ public sealed class DocumentAdapterViewTests : IDisposable
         window.Show();
         try
         {
-            await WaitUntilAsync(window, () => parent.Status.Agents.Count == 1);
+            var git = Assert.IsType<GitPaneViewModel>(workbench.GitPane);
+            await WaitUntilAsync(window, () => parent.Status.Agents.Count == 1 && !git.IsLoading);
+            Assert.Equal(_root, parent.WorkspaceRoot);
+            Assert.False(git.IsRepo);
+            Assert.False(parent.Status.HasGit);
             var status = window.FindControl<ConversationStatusView>("SessionStatus")!;
             await ExpandAgentsAsync(window, status);
             var requests = 0;

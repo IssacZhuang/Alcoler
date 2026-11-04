@@ -83,8 +83,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         Status = new ConversationStatusViewModel(SessionId, runtime);
         lock (_applyGate)
         {
-            _store.Updated += OnStoreUpdated;
-            var initial = store.CaptureUpdate(out _hasStoreSnapshot);
+            var initial = store.Attach(OnStoreUpdated, out _hasStoreSnapshot);
             _storeSequence = initial.Sequence;
             ApplyUpdateCore(initial);
         }
@@ -233,9 +232,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         {
             if (_disposed || (_hasStoreSnapshot && update.Sequence <= _storeSequence))
                 return;
-            // A coalesced batch can straddle the snapshot used to attach this reader.
-            if (_hasStoreSnapshot && !update.Reset && update.FromSequence <= _storeSequence)
-                update = _store.CaptureUpdate();
             _storeSequence = update.Sequence;
             _hasStoreSnapshot = true;
             ApplyUpdateCore(update);
@@ -1281,7 +1277,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
             if (_disposed)
                 return;
             _disposed = true;
-            _store.Updated -= OnStoreUpdated;
+            _store.Detach(OnStoreUpdated);
             Status.Dispose();
         }
     }

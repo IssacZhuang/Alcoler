@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
+using System.Runtime.ExceptionServices;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Alcoler.Contracts.Models;
 
 namespace Alcoler.Adapters.Models;
@@ -38,7 +41,41 @@ internal static class ModelRequestOptions
             CapOutputLimits(ModelOptionMapping.Evaluate(output, options.ReasoningLevel, max), max);
     }
 
-    internal static string Encode(Dictionary<string, object?> payload, ModelProperties properties, ModelCallOptions options, string nativeMaxKey, int fallback)
+    internal static string Encode(Dictionary<string, object?> payload, ModelProperties properties, ModelCallOptions options, string nativeMaxKey, int fallback) =>
+        Prepare(payload, properties, options, nativeMaxKey, fallback).ToJsonString(RequestJsonOptions);
+
+    internal static HttpContent CreateContent(JsonObject body)
+    {
+        try
+        {
+            var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(body, RequestJsonContext.JsonObject));
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+            return content;
+        }
+        catch (JsonException ex) when (ex.InnerException is InvalidOperationException inner)
+        {
+            // JsonNode.ToJsonString exposed writer depth errors without the serializer wrapper.
+            ExceptionDispatchInfo.Capture(inner).Throw();
+            throw;
+        }
+    }
+
+    private static readonly ModelRequestJsonContext RequestJsonContext = new(new JsonSerializerOptions(RequestJsonOptions)
+    {
+        Converters = { new RequestBodyConverter() },
+    });
+
+    private sealed class RequestBodyConverter : JsonConverter<JsonObject>
+    {
+        public override JsonObject? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            throw new NotSupportedException();
+
+        // Customized JsonValues must retain the original options' resolver and error behavior.
+        public override void Write(Utf8JsonWriter writer, JsonObject value, JsonSerializerOptions options) =>
+            value.WriteTo(writer, RequestJsonOptions);
+    }
+
+    internal static JsonObject Prepare(Dictionary<string, object?> payload, ModelProperties properties, ModelCallOptions options, string nativeMaxKey, int fallback)
     {
         Validate(properties, options, fallback);
         var max = EffectiveMax(properties, options, fallback);
@@ -50,7 +87,7 @@ internal static class ModelRequestOptions
         if (properties.MaxOutputTokensMapping is { } output)
             ModelOptionMapping.MergePatch(body, ModelOptionMapping.Evaluate(output, options.ReasoningLevel, max));
         CapOutputLimits(body, max);
-        return body.ToJsonString(RequestJsonOptions);
+        return body;
     }
 
     private static JsonNode? ToNode(object? value) => value switch
@@ -178,3 +215,6 @@ internal static class ModelRequestOptions
         }
     }
 }
+
+[JsonSerializable(typeof(JsonObject))]
+internal sealed partial class ModelRequestJsonContext : JsonSerializerContext;

@@ -271,8 +271,8 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
 
         var message = new HttpRequestMessage(HttpMethod.Post, options.MessagesUrl)
         {
-            Content = new StringContent(
-                ModelRequestOptions.Encode(payload, _requestProperties, request.Options, "max_tokens", DefaultMaxTokens), Encoding.UTF8, "application/json"),
+            Content = ModelRequestOptions.CreateContent(
+                ModelRequestOptions.Prepare(payload, _requestProperties, request.Options, "max_tokens", DefaultMaxTokens)),
         };
         AnthropicEndpoint.AddAuthHeaders(message, options.ApiKey);
         message.Headers.Add("anthropic-version", AnthropicVersion);

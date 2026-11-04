@@ -58,10 +58,8 @@ internal static class OpenAiResponsesAccountShaping
         return (ClampCacheKey(SubagentAffinityPrefix + parent), parent);
     }
 
-    internal static string Shape(string body, string? sessionCacheKey = null)
+    internal static void Shape(JsonObject root, string? sessionCacheKey = null)
     {
-        var root = JsonNode.Parse(body) as JsonObject
-            ?? throw new ArgumentException("Responses request body must be a JSON object.");
         foreach (var field in OmittedFields)
             root.Remove(field);
         root["store"] = false;
@@ -75,7 +73,6 @@ internal static class OpenAiResponsesAccountShaping
                     message["role"] = "developer";
             }
         }
-        return root.ToJsonString(ModelRequestOptions.RequestJsonOptions);
     }
 
     private static string? NormalizeSessionId(string? sessionId)

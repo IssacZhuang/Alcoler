@@ -194,9 +194,9 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
 
         var message = new HttpRequestMessage(HttpMethod.Post, options.ChatCompletionsUrl)
         {
-            Content = new StringContent(
-                ModelRequestOptions.Encode(payload, _requestProperties, request.Options,
-                    options.UseLegacyMaxTokens ? "max_tokens" : "max_completion_tokens", DefaultMaxTokens), Encoding.UTF8, "application/json"),
+            Content = ModelRequestOptions.CreateContent(
+                ModelRequestOptions.Prepare(payload, _requestProperties, request.Options,
+                    options.UseLegacyMaxTokens ? "max_tokens" : "max_completion_tokens", DefaultMaxTokens)),
         };
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));

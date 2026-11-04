@@ -178,7 +178,7 @@ public static class TokenEstimator
 
     internal sealed class JsonLengthMeter : IDisposable
     {
-        private readonly ArrayBufferWriter<byte> _buffer = new();
+        private readonly PooledJsonBuffer _buffer = new();
         private readonly Utf8JsonWriter _writer;
 
         internal JsonLengthMeter() => _writer = new Utf8JsonWriter(_buffer, RelaxedWriterOptions);
@@ -197,7 +197,11 @@ public static class TokenEstimator
             return Complete();
         }
 
-        public void Dispose() => _writer.Dispose();
+        public void Dispose()
+        {
+            try { _writer.Dispose(); }
+            finally { _buffer.Dispose(); }
+        }
 
         private void Reset()
         {
@@ -210,6 +214,80 @@ public static class TokenEstimator
             _writer.Flush();
             return MeasureUtf8(_buffer.WrittenSpan);
         }
+    }
+
+    private sealed class PooledJsonBuffer : IBufferWriter<byte>, IDisposable
+    {
+        private const int MaxPooledLength = 4 << 20;
+        // Idle arrays total less than 8 MiB globally; larger outliers are never pooled.
+        private static readonly ArrayPool<byte> Pool = CreatePool();
+        private byte[] _buffer = [];
+        private int _written;
+        private bool _disposed;
+
+        public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _written);
+
+        public void Clear()
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _buffer.AsSpan(0, _written).Clear();
+            _written = 0;
+        }
+
+        public void Advance(int count)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentOutOfRangeException.ThrowIfNegative(count);
+            if (count > _buffer.Length - _written)
+                throw new ArgumentOutOfRangeException(nameof(count));
+            _written += count;
+        }
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer.AsMemory(_written);
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer.AsSpan(_written);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            var buffer = _buffer;
+            _buffer = [];
+            _written = 0;
+            Return(buffer);
+        }
+
+        private void EnsureCapacity(int sizeHint)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentOutOfRangeException.ThrowIfNegative(sizeHint);
+            sizeHint = Math.Max(1, sizeHint);
+            if (sizeHint <= _buffer.Length - _written)
+                return;
+            var required = checked(_written + sizeHint);
+            var capacity = (int)Math.Max(required, Math.Min(Array.MaxLength, (long)_buffer.Length * 2));
+            var next = capacity <= MaxPooledLength ? Pool.Rent(capacity) : new byte[capacity];
+            _buffer.AsSpan(0, _written).CopyTo(next);
+            Return(_buffer);
+            _buffer = next;
+        }
+
+        private static void Return(byte[] buffer)
+        {
+            if (buffer.Length is > 0 and <= MaxPooledLength)
+                Pool.Return(buffer, clearArray: true);
+        }
+
+        private static ArrayPool<byte> CreatePool() => ArrayPool<byte>.Create(MaxPooledLength, 1);
     }
 
     // Text and tool JSON must retain the provider request encoder's escaping.

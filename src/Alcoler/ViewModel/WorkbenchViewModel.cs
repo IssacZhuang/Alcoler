@@ -394,6 +394,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         Terminal?.Dispose();
         Documents.PropertyChanged -= OnDocumentsPropertyChanged;
         Documents.Dispose();
+        _gitService.Dispose();
         BrowserPane?.Dispose();
         if (Remote is { } remote)
         {

@@ -13,6 +13,7 @@ using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
+using Alcoler.Git;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tools;
 using Alcoler.Terminal;
@@ -243,7 +244,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
                         !row.IsStreaming && row.Parts.OfType<TextPart>().Any(part => part.Text == finalReply));
             });
             await WaitUntilAsync(() => runtime.GetSessionActivity(session.Id) is
-                { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
             firstMessageId = new MessageId(Assert.Single(projection.Snapshot().Rows.OfType<UserMessageRow>()).RowId);
 
             ack = await runtime.SubmitAsync(new CompactCommand(
@@ -965,6 +966,22 @@ public sealed class WorkbenchViewModelTests : IDisposable
         Assert.Equal(workbench.CurrentDocumentOwnerId, document.OwnerId);
         Assert.Contains("not available", Assert.IsType<string>(document.Content));
         Assert.True(workbench.IsSidePaneVisible);
+    }
+
+    [Fact]
+    public void Dispose_DisposesOwnedGitServiceAndIsIdempotent()
+    {
+        using var workbench = new WorkbenchViewModel(
+            new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        var gitService = Assert.IsAssignableFrom<IGitService>(typeof(WorkbenchViewModel)
+            .GetField("_gitService", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(workbench));
+        Assert.Null(gitService.FindRepositoryRoot(_root));
+
+        workbench.Dispose();
+        workbench.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => gitService.FindRepositoryRoot(_root));
     }
 
     [Fact]

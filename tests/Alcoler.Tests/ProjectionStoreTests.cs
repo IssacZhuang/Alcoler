@@ -4,6 +4,7 @@ using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Stores;
 using Alcoler.Ui;
+using Alcoler.ViewModel;
 using Xunit;
 
 namespace Alcoler.Tests;
@@ -474,30 +475,308 @@ public class ProjectionStoreTests(Xunit.Abstractions.ITestOutputHelper output)
     {
         var scheduler = new QueuedUiScheduler();
         var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
-        var (store, projection) = Create(Snapshot(1, TestSnapshots.State(), row), scheduler: scheduler);
+        var changed = UserRow("changed", "before");
+        var (store, projection) = Create(Snapshot(1, TestSnapshots.State(TurnPhase.Streaming),
+            row, changed, UserRow("removed-before", "remove"), UserRow("removed-after", "remove")), scheduler: scheduler);
         using (store)
         {
             store.Start();
             await WaitUntil(() => scheduler.Count == 1);
             scheduler.RunNext();
-            projection.Emit(new ConversationDelta(2, [new RowTextAppended("a1", " one", row.At)]));
-            await WaitUntil(() => Assert.IsType<TextPart>(Assert.Single(
-                Assert.IsType<AssistantMessageRow>(Assert.Single(store.Rows)).Parts)).Text == "initial one");
-            using var conversation = new Alcoler.ViewModel.ConversationViewModel(new FakeAgentRuntime(), store);
+            using var existing = new ConversationViewModel(new FakeAgentRuntime(), store);
+            using var otherExisting = new ConversationViewModel(new FakeAgentRuntime(), store);
+            projection.Emit(new ConversationDelta(2,
+            [
+                new RowTextAppended("a1", " one", row.At),
+                new RowRemoved("removed-before"),
+                new RowUpserted(changed with { Text = "first change" }),
+                new StatePatched(TestSnapshots.State(TurnPhase.Streaming, contextUsageTokens: 2)),
+            ]));
+            await WaitUntil(() => store.State.ContextUsageTokens == 2);
+            using var conversation = new ConversationViewModel(new FakeAgentRuntime(), store);
+            var appended = 0;
+            conversation.TimelineAppended += () => appended++;
             projection.Emit(new ConversationDelta(3,
             [
-                new RowTextAppended("a1", " two", row.At),
+                new RowTextAppended("a1", " two", row.At.AddSeconds(1)),
+                new RowRemoved("removed-after"),
+                new RowUpserted(changed with { Text = "second change" }),
                 new RowAppended(UserRow("u2", "new row")),
-                new StatePatched(TestSnapshots.State(TurnPhase.Streaming, contextUsageTokens: 42)),
+                new StatePatched(TestSnapshots.State(TurnPhase.ExecutingTools, contextUsageTokens: 42)),
             ]));
-            await WaitUntil(() => store.State.ContextUsageTokens == 42);
-            await WaitUntil(() => scheduler.Count == 1);
+            await WaitUntil(() => store.State.ContextUsageTokens == 42 && scheduler.Count == 1);
             scheduler.RunNext();
 
-            Assert.Equal("initial one two", Assert.IsType<Alcoler.ViewModel.AssistantMessageItemViewModel>(conversation.Items[0]).MarkdownText);
-            Assert.Equal("u2", conversation.Items[1].RowId);
-            Assert.Equal(TurnPhase.Streaming.ToString(), conversation.PhaseText);
+            foreach (var reader in new[] { existing, otherExisting, conversation })
+            {
+                Assert.Equal(new[] { "a1", "changed", "u2" }, reader.Items.Select(item => item.RowId));
+                var assistant = Assert.IsType<AssistantMessageItemViewModel>(reader.Items[0]);
+                Assert.Equal("initial one two", assistant.MarkdownText);
+                Assert.Equal(row.At.AddSeconds(1), assistant.At);
+                Assert.Equal("second change", Assert.IsType<UserMessageItemViewModel>(reader.Items[1]).Text);
+                Assert.Equal(TurnPhase.ExecutingTools.ToString(), reader.PhaseText);
+                Assert.Equal(42, reader.ContextUsage!.Usage.UsedTokens);
+            }
+            Assert.Equal(1, appended);
+            Assert.Equal(0, scheduler.Count);
             Assert.Equal(1, projection.SnapshotCount);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReaderAttachingDuringDelivery_DoesNotReplayExtractedResetOrAppendBatches(bool duringReset)
+    {
+        var scheduler = new QueuedUiScheduler();
+        var state = TestSnapshots.State(TurnPhase.Streaming);
+        var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
+        var (store, projection) = Create(Snapshot(1, state, row), scheduler: scheduler);
+        using (store)
+        using (var existing = new ConversationViewModel(new FakeAgentRuntime(), store))
+        {
+            ConversationViewModel? attached = null;
+            var armed = false;
+            var appended = 0;
+            store.Updated += update =>
+            {
+                if (!armed || update.Reset != duringReset)
+                    return;
+                armed = false;
+                Emit(3);
+                attached = new ConversationViewModel(new FakeAgentRuntime(), store);
+                attached.TimelineAppended += () => appended++;
+                Emit(4);
+                Assert.Equal(0, scheduler.Count);
+            };
+            try
+            {
+                store.Start();
+                await WaitUntil(() => scheduler.Count == 1);
+                if (!duringReset)
+                    scheduler.RunNext();
+                Emit(2);
+                armed = true;
+                scheduler.RunNext();
+                while (scheduler.Count > 0)
+                    scheduler.RunNext();
+
+                Assert.NotNull(attached);
+                foreach (var reader in new[] { existing, attached })
+                {
+                    Assert.Equal("initial 2 3 4", Assert.IsType<AssistantMessageItemViewModel>(Assert.Single(reader.Items)).MarkdownText);
+                    Assert.Equal(4, reader.ContextUsage!.Usage.UsedTokens);
+                }
+                Assert.Equal(0, appended);
+                Assert.Equal(1, projection.SnapshotCount);
+            }
+            finally
+            {
+                attached?.Dispose();
+            }
+        }
+
+        void Emit(int sequence) => EmitAndWaitForState(store, projection, new ConversationDelta(sequence,
+        [
+            new RowTextAppended(row.RowId, $" {sequence}", row.At.AddTicks(sequence)),
+            new StatePatched(state with { ContextUsageTokens = sequence }),
+        ]));
+    }
+
+    [Fact]
+    public async Task SynchronousDelivery_KeepsAllReaderCallbacksInSequenceWhenProducerAdvances()
+    {
+        var state = TestSnapshots.State(TurnPhase.Streaming);
+        var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
+        var projection = new FakeConversationProjection(Snapshot(1, state, row));
+        var time = new CapturedTimerProvider();
+        using var store = new ProjectionStore(() => projection, StrongId.NewSessionId(), InlineUiScheduler.Instance, state,
+            coalesceWindow: TimeSpan.FromHours(1), timeProvider: time);
+        var resets = 0;
+        var depth = 0;
+        var maximumDepth = 0;
+        var sequences = new List<long>();
+        store.Updated += update =>
+        {
+            if (update.Reset)
+            {
+                Interlocked.Increment(ref resets);
+                return;
+            }
+            depth++;
+            maximumDepth = Math.Max(maximumDepth, depth);
+            sequences.Add(update.Sequence);
+            if (update.Sequence == 2)
+            {
+                Emit(3);
+                time.Timers[1].Fire();
+            }
+            depth--;
+        };
+        store.Start();
+        await WaitUntil(() => Volatile.Read(ref resets) == 1);
+        using var reader = new ConversationViewModel(new FakeAgentRuntime(), store);
+        Emit(2);
+
+        time.Timers[0].Fire();
+
+        Assert.Equal(1, maximumDepth);
+        Assert.Equal(new long[] { 2, 3 }, sequences);
+        Assert.Equal("initial 2 3", Assert.IsType<AssistantMessageItemViewModel>(Assert.Single(reader.Items)).MarkdownText);
+        Assert.Equal(3, reader.ContextUsage!.Usage.UsedTokens);
+
+        void Emit(int sequence) => EmitAndWaitForState(store, projection, new ConversationDelta(sequence,
+        [
+            new RowTextAppended(row.RowId, $" {sequence}", row.At),
+            new StatePatched(state with { ContextUsageTokens = sequence }),
+        ]));
+    }
+
+    [Fact]
+    public async Task DetachedReaders_DiscardPendingUpdatesBeforeUiDelivery()
+    {
+        var scheduler = new QueuedUiScheduler();
+        var state = TestSnapshots.State(TurnPhase.Streaming);
+        var (store, projection) = Create(Snapshot(1, state), scheduler: scheduler);
+        using (store)
+        {
+            store.Start();
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+            var detachedCalls = 0;
+            Action<ProjectionUpdate> detached = _ => detachedCalls++;
+            var liveUpdates = new List<ProjectionUpdate>();
+            store.Attach(liveUpdates.Add, out _);
+            for (var sequence = 2; sequence <= 129; sequence++)
+            {
+                store.Attach(detached, out _);
+                EmitAndWaitForState(store, projection, new ConversationDelta(sequence,
+                    [new StatePatched(state with { ContextUsageTokens = sequence })]));
+                store.Detach(detached);
+            }
+
+            scheduler.RunNext();
+
+            Assert.Equal(0, detachedCalls);
+            Assert.Equal(129, Assert.Single(liveUpdates).Sequence);
+            Assert.Equal(0, scheduler.Count);
+            store.Detach(liveUpdates.Add);
+
+            var disposed = AttachAndDisposeReader(store, projection, new ConversationDelta(130,
+                [new StatePatched(state with { ContextUsageTokens = 130 })]));
+            Assert.Equal(1, scheduler.Count);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.False(disposed.IsAlive);
+            scheduler.RunNext();
+        }
+    }
+
+    [Fact]
+    public async Task ReaderRecovery_DiscardsEachReadersPendingOpsBeforeTheAuthoritativeReset()
+    {
+        var scheduler = new QueuedUiScheduler();
+        var state = TestSnapshots.State(TurnPhase.Streaming);
+        var row = AssistantRow("a1", StrongId.NewMessageId(), "initial", streaming: true);
+        var (store, projection) = Create(Snapshot(1, state, row, UserRow("removed", "obsolete")), scheduler: scheduler);
+        using (store)
+        using (var existing = new ConversationViewModel(new FakeAgentRuntime(), store))
+        {
+            store.Start();
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+            EmitAndWaitForState(store, projection, new ConversationDelta(2,
+            [
+                new RowTextAppended(row.RowId, " obsolete", row.At),
+                new RowRemoved("removed"),
+                new StatePatched(state with { ContextUsageTokens = 2 }),
+            ]));
+            using var attached = new ConversationViewModel(new FakeAgentRuntime(), store);
+            projection.SetSnapshot(Snapshot(4, state with { ContextUsageTokens = 4 },
+                row with { Parts = [new TextPart(StrongId.NewPartId(), "authoritative")] }, UserRow("restored", "snapshot")));
+            projection.Emit(new ConversationDelta(4, [new RowTextAppended(row.RowId, " discarded", row.At)]));
+            await WaitUntil(() => store.State.ContextUsageTokens == 4 && projection.SnapshotCount == 2);
+            EmitAndWaitForState(store, projection, new ConversationDelta(5,
+            [
+                new RowTextAppended(row.RowId, " suffix", row.At),
+                new RowRemoved("restored"),
+                new StatePatched(state with { ContextUsageTokens = 5 }),
+            ]));
+
+            scheduler.RunNext();
+            scheduler.RunNext();
+
+            foreach (var reader in new[] { existing, attached })
+            {
+                Assert.Equal("authoritative suffix", Assert.IsType<AssistantMessageItemViewModel>(Assert.Single(reader.Items)).MarkdownText);
+                Assert.Equal(5, reader.ContextUsage!.Usage.UsedTokens);
+            }
+            Assert.Equal(0, scheduler.Count);
+            Assert.Equal(2, projection.SnapshotCount);
+        }
+    }
+
+    [Theory]
+    [InlineData(1500)]
+    [InlineData(15000)]
+    public async Task ReaderAttachment_OverlappingProducerProgressDoesNotAllocateWithHistorySize(int rowCount)
+    {
+        const int batches = 100;
+        var scheduler = new QueuedUiScheduler();
+        var state = TestSnapshots.State(TurnPhase.Streaming);
+        var rows = Enumerable.Range(0, rowCount).Select(index => (ConversationRow)UserRow($"u{index}", "history")).ToArray();
+        var streaming = AssistantRow("streaming", StrongId.NewMessageId(), "initial", streaming: true);
+        rows[^1] = streaming;
+        var (store, projection) = Create(new ConversationSnapshot(0, 1, rows, state), scheduler: scheduler);
+        using (store)
+        {
+            store.Start();
+            await WaitUntil(() => scheduler.Count == 1);
+            scheduler.RunNext();
+            var sequence = 1;
+            var armed = false;
+            store.Updated += update =>
+            {
+                if (!update.Reset && armed)
+                    Emit();
+            };
+            Emit();
+            using var reader = new ConversationViewModel(new FakeAgentRuntime(), store);
+            Emit();
+            var appended = 0;
+            reader.TimelineAppended += () => appended++;
+            armed = true;
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var index = 0; index < batches; index++)
+            {
+                if (index > 0)
+                    Emit();
+                scheduler.RunNext();
+            }
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            armed = false;
+            while (scheduler.Count > 0)
+                scheduler.RunNext();
+
+            output.WriteLine($"100 attachment-overlap deliveries with {rowCount:N0} rows: {allocated:N0} bytes allocated.");
+            Assert.True(allocated < 1_000_000, $"Overlapping deliveries allocated {allocated:N0} bytes with {rowCount:N0} rows.");
+            Assert.Equal(0, appended);
+            Assert.Equal(sequence, reader.ContextUsage!.Usage.UsedTokens);
+            Assert.Equal(rowCount, reader.Items.Count);
+            Assert.Equal("initial" + new string('x', sequence - 1),
+                Assert.IsType<AssistantMessageItemViewModel>(reader.Items[^1]).MarkdownText);
+            Assert.Equal(1, projection.SnapshotCount);
+
+            void Emit()
+            {
+                var next = ++sequence;
+                EmitAndWaitForState(store, projection, new ConversationDelta(next,
+                [
+                    new RowTextAppended(streaming.RowId, "x", streaming.At),
+                    new StatePatched(state with { ContextUsageTokens = next }),
+                ]));
+            }
         }
     }
 
@@ -599,6 +878,21 @@ public class ProjectionStoreTests(Xunit.Abstractions.ITestOutputHelper output)
         store.SetRevision(3);
         Assert.Equal(5, store.Revision);
         store.Dispose();
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static WeakReference AttachAndDisposeReader(ProjectionStore store, FakeConversationProjection projection, ConversationDelta delta)
+    {
+        using var reader = new ConversationViewModel(new FakeAgentRuntime(), store);
+        EmitAndWaitForState(store, projection, delta);
+        return new WeakReference(reader);
+    }
+
+    private static void EmitAndWaitForState(ProjectionStore store, FakeConversationProjection projection, ConversationDelta delta)
+    {
+        projection.Emit(delta);
+        Assert.True(SpinWait.SpinUntil(() => store.State.ContextUsageTokens == delta.Sequence, TimeSpan.FromSeconds(10)),
+            $"Projection did not advance to sequence {delta.Sequence}.");
     }
 
     private sealed class AllocationProjection(ConversationSnapshot snapshot, IReadOnlyList<ConversationDelta> deltas)

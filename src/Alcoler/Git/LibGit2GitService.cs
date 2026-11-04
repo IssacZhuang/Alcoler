@@ -4,45 +4,49 @@ namespace Alcoler.Git;
 
 public sealed class LibGit2GitService : IGitService
 {
+    internal const int MaxCachedRepositories = 4;
+    internal static readonly TimeSpan RepositoryIdleTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan BusyRetryDelay = TimeSpan.FromMilliseconds(150);
 
     private readonly object _sync = new();
-    private readonly Dictionary<string, Repository> _repositories = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CachedRepository> _repositories = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    private readonly TimeProvider _timeProvider;
+    private ITimer? _evictionTimer;
     private bool _disposed;
+
+    public LibGit2GitService(TimeProvider? timeProvider = null)
+    {
+        _timeProvider = timeProvider ?? TimeProvider.System;
+    }
 
     public string? FindRepositoryRoot(string workspaceRoot)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(workspaceRoot) || !Directory.Exists(workspaceRoot))
+        lock (_sync)
         {
-            return null;
-        }
-        try
-        {
-            var discovered = Repository.Discover(workspaceRoot);
-            if (discovered is null)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (string.IsNullOrWhiteSpace(workspaceRoot) || !Directory.Exists(workspaceRoot))
             {
                 return null;
             }
-            var repository = Open(discovered);
-            return repository.Info.IsBare ? null : NormalizeKey(repository.Info.WorkingDirectory);
-        }
-        catch (LibGit2SharpException)
-        {
-            return null;
+            try
+            {
+                return WithRepository(workspaceRoot, repository =>
+                    repository.Info.IsBare ? null : NormalizeKey(repository.Info.WorkingDirectory));
+            }
+            catch (LibGit2SharpException)
+            {
+                return null;
+            }
         }
     }
 
-    public string? GetCurrentBranchName(string repositoryRoot)
-    {
-        var repository = Open(repositoryRoot);
-        return ExecuteWithBusyRetry(() => repository.Info.IsHeadDetached ? null : repository.Head.FriendlyName, BusyRetryDelay);
-    }
+    public string? GetCurrentBranchName(string repositoryRoot) =>
+        WithRepository(repositoryRoot, repository =>
+            repository.Info.IsHeadDetached ? null : repository.Head.FriendlyName);
 
-    public GitRepositoryStatus GetStatus(string repositoryRoot)
-    {
-        var repository = Open(repositoryRoot);
-        return ExecuteWithBusyRetry<GitRepositoryStatus>(() =>
+    public GitRepositoryStatus GetStatus(string repositoryRoot) =>
+        WithRepository(repositoryRoot, repository =>
         {
             var staged = new List<GitFileChange>();
             var unstaged = new List<GitFileChange>();
@@ -70,13 +74,10 @@ public sealed class LibGit2GitService : IGitService
                     FileStatus.RenamedInWorkdir, FileStatus.TypeChangeInWorkdir);
             }
             return new GitRepositoryStatus(staged, unstaged, untracked);
-        }, BusyRetryDelay);
-    }
+        });
 
-    public GitChangeSummary GetChangeSummary(string repositoryRoot)
-    {
-        var repository = Open(repositoryRoot);
-        return ExecuteWithBusyRetry(() =>
+    public GitChangeSummary GetChangeSummary(string repositoryRoot) =>
+        WithRepository(repositoryRoot, repository =>
         {
             // Diff uses the cached index; RetrieveStatus reloads it from disk without writing it.
             repository.RetrieveStatus(new StatusOptions
@@ -91,13 +92,10 @@ public sealed class LibGit2GitService : IGitService
             return new GitChangeSummary(
                 staged.LinesAdded + unstaged.LinesAdded,
                 staged.LinesDeleted + unstaged.LinesDeleted);
-        }, BusyRetryDelay);
-    }
+        });
 
-    public IReadOnlyList<GitBranch> GetBranches(string repositoryRoot)
-    {
-        var repository = Open(repositoryRoot);
-        return ExecuteWithBusyRetry(() => repository.Branches
+    public IReadOnlyList<GitBranch> GetBranches(string repositoryRoot) =>
+        WithRepository<IReadOnlyList<GitBranch>>(repositoryRoot, repository => repository.Branches
             .Where(b => !b.IsRemote)
             .Select(b => new GitBranch(
                 b.FriendlyName,
@@ -106,30 +104,23 @@ public sealed class LibGit2GitService : IGitService
                 b.IsTracking ? b.TrackingDetails.BehindBy : null))
             .OrderByDescending(b => b.IsCurrent)
             .ThenBy(b => b.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList(), BusyRetryDelay);
-    }
+            .ToList());
 
-    public IReadOnlyList<GitCommit> GetLog(string repositoryRoot, int limit)
-    {
-        var repository = Open(repositoryRoot);
-        return ExecuteWithBusyRetry(() => repository.Commits
+    public IReadOnlyList<GitCommit> GetLog(string repositoryRoot, int limit) =>
+        WithRepository<IReadOnlyList<GitCommit>>(repositoryRoot, repository => repository.Commits
             .Take(limit)
             .Select(c => new GitCommit(c.Sha, FirstLine(c.Message), c.Author.Name, c.Author.When))
-            .ToList(), BusyRetryDelay);
-    }
+            .ToList());
 
-    public void Checkout(string repositoryRoot, string branchName)
-    {
-        var repository = Open(repositoryRoot);
-        ExecuteWithBusyRetry<object?>(() =>
+    public void Checkout(string repositoryRoot, string branchName) =>
+        WithRepository<object?>(repositoryRoot, repository =>
         {
             var branch = repository.Branches.FirstOrDefault(b =>
                     !b.IsRemote && string.Equals(b.FriendlyName, branchName, StringComparison.Ordinal))
                 ?? throw new KeyNotFoundException($"Branch not found: {branchName}");
             Commands.Checkout(repository, branch);
             return null;
-        }, BusyRetryDelay);
-    }
+        });
 
     public void Dispose()
     {
@@ -140,29 +131,91 @@ public sealed class LibGit2GitService : IGitService
                 return;
             }
             _disposed = true;
-            foreach (var repository in _repositories.Values)
+            _evictionTimer?.Dispose();
+            _evictionTimer = null;
+            foreach (var entry in _repositories.Values)
             {
-                repository.Dispose();
+                entry.Repository.Dispose();
             }
             _repositories.Clear();
         }
     }
 
-    // Callers hand back whatever form of root they hold (work tree or .git path), so cache entries
-    // are keyed by the repository's own working directory.
-    private Repository Open(string repositoryRoot)
+    private T WithRepository<T>(string repositoryRoot, Func<Repository, T> operation)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
         lock (_sync)
         {
-            if (_repositories.TryGetValue(NormalizeKey(repositoryRoot), out var cached))
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var entry = Open(repositoryRoot);
+            try
             {
-                return cached;
+                return ExecuteWithBusyRetry(() => operation(entry.Repository), BusyRetryDelay);
             }
-            var repository = new Repository(repositoryRoot);
-            _repositories[NormalizeKey(repository.Info.WorkingDirectory ?? repositoryRoot)] = repository;
-            return repository;
+            finally
+            {
+                entry.LastUsed = _timeProvider.GetTimestamp();
+                ScheduleEviction();
+            }
         }
+    }
+
+    private CachedRepository Open(string repositoryRoot)
+    {
+        var key = NormalizeKey(Repository.Discover(repositoryRoot) ?? repositoryRoot);
+        if (_repositories.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+        if (_repositories.Count >= MaxCachedRepositories)
+        {
+            var oldest = _repositories.MinBy(pair => pair.Value.LastUsed);
+            oldest.Value.Repository.Dispose();
+            _repositories.Remove(oldest.Key);
+        }
+        var entry = new CachedRepository(new Repository(key), _timeProvider.GetTimestamp());
+        _repositories.Add(key, entry);
+        return entry;
+    }
+
+    private void EvictIdleRepositories()
+    {
+        lock (_sync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            var now = _timeProvider.GetTimestamp();
+            foreach (var (key, entry) in _repositories.ToArray())
+            {
+                if (_timeProvider.GetElapsedTime(entry.LastUsed, now) >= RepositoryIdleTimeout)
+                {
+                    entry.Repository.Dispose();
+                    _repositories.Remove(key);
+                }
+            }
+            ScheduleEviction();
+        }
+    }
+
+    private void ScheduleEviction()
+    {
+        if (_repositories.Count == 0)
+        {
+            _evictionTimer?.Dispose();
+            _evictionTimer = null;
+            return;
+        }
+        var oldest = _repositories.MinBy(pair => pair.Value.LastUsed).Value;
+        var dueTime = RepositoryIdleTimeout - _timeProvider.GetElapsedTime(oldest.LastUsed);
+        if (dueTime < TimeSpan.Zero)
+        {
+            dueTime = TimeSpan.Zero;
+        }
+        _evictionTimer ??= _timeProvider.CreateTimer(
+            static state => ((LibGit2GitService)state!).EvictIdleRepositories(),
+            this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _evictionTimer.Change(dueTime, Timeout.InfiniteTimeSpan);
     }
 
     private static void AddIndexedChange(
@@ -208,6 +261,11 @@ public sealed class LibGit2GitService : IGitService
     }
 
     private static string NormalizeKey(string? path) =>
-        Path.GetFullPath(path ?? string.Empty)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(path ?? string.Empty));
+
+    private sealed class CachedRepository(Repository repository, long lastUsed)
+    {
+        public Repository Repository { get; } = repository;
+        public long LastUsed { get; set; } = lastUsed;
+    }
 }

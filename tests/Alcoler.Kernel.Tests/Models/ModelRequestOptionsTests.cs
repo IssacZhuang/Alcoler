@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Alcoler.Adapters.Models;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Models;
@@ -149,6 +151,288 @@ public class ModelRequestOptionsTests
         Assert.DoesNotContain("\\u2014", encoded);
     }
 
+    [Theory]
+    [InlineData("chat", "max_completion_tokens")]
+    [InlineData("chat-legacy", "max_tokens")]
+    [InlineData("responses", "max_output_tokens")]
+    [InlineData("anthropic", "max_tokens")]
+    public async Task RequestContent_PreservesLegacyWireBodyAndHeaders(string format, string maxKey)
+    {
+        const string text = "don't use `x` — 中文 <>& \ud834\udd1e";
+        var payload = new Dictionary<string, object?> { ["model"] = "test" };
+        if (format != "responses") payload["stream"] = true;
+        var item = new Dictionary<string, object?> { ["role"] = "user" };
+        switch (format)
+        {
+            case "responses":
+                item["content"] = new object[] { new Dictionary<string, object?> { ["type"] = "input_text", ["text"] = text } };
+                payload["input"] = new object[] { item };
+                payload["stream"] = true;
+                payload["store"] = false;
+                payload["include"] = new[] { "reasoning.encrypted_content" };
+                break;
+            case "anthropic":
+                item["content"] = new object[] { new Dictionary<string, object?> { ["type"] = "text", ["text"] = text } };
+                payload["messages"] = new object[] { item };
+                break;
+            default:
+                item["content"] = text;
+                payload["messages"] = new object[] { item };
+                payload["stream_options"] = new Dictionary<string, object?> { ["include_usage"] = true };
+                break;
+        }
+        var properties = new ModelProperties();
+        var options = new ModelCallOptions(MaxOutputTokens: 512);
+        using var expected = new StringContent(ModelRequestOptions.Encode(payload, properties, options, maxKey, 32768), Encoding.UTF8, "application/json");
+        var handler = Handler(format);
+        IChatModel model = format == "chat-legacy"
+            ? new OpenAiCompatibleChatModel(new HttpClient(handler), new("test", "key", "https://test/v1", UseLegacyMaxTokens: true), properties)
+            : Model(format, handler, properties);
+        await Collect(model, new([new(MessageRole.User, [new InputTextBlock(text)])], [], options));
+        var content = Assert.IsType<ByteArrayContent>(Assert.Single(handler.Requests).Content);
+        Assert.Equal(await expected.ReadAsStringAsync(), Assert.Single(handler.RequestBodies));
+        Assert.Equal(expected.Headers.ContentLength, content.Headers.ContentLength);
+        Assert.Equal(expected.Headers.ContentType, content.Headers.ContentType);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateContent_MatchesLegacyEncodingWithRawValuesAndNestedOverrides(bool account)
+    {
+        var properties = new ModelProperties(DefaultMaxOutputTokens: 128, ReasoningLevels: ["high"],
+            ReasoningMapping: "{'custom':{'remove':null,'replace':2,'added':{'level':reasoningLevel}},'obsolete':null,'store':true,'max_tokens':999}",
+            MaxOutputTokensMapping: "{'custom':{'added':{'enabled':true}},'max_output_tokens':maxOutputTokens*2,'budget_tokens':maxOutputTokens*2}");
+        var options = new ModelCallOptions("high", 256);
+        var expected = ModelRequestOptions.Encode(RawPayload(), properties, options, "max_output_tokens", 32768);
+        if (account) expected = LegacyAccountShape(expected, "affinity-key");
+
+        var body = ModelRequestOptions.Prepare(RawPayload(), properties, options, "max_output_tokens", 32768);
+        if (account) OpenAiResponsesAccountShaping.Shape(body, "affinity-key");
+        using var content = ModelRequestOptions.CreateContent(body);
+        var bytes = await content.ReadAsByteArrayAsync();
+
+        Assert.Equal(Encoding.UTF8.GetBytes(expected), bytes);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(bytes)));
+        Assert.Equal("application/json; charset=utf-8", content.Headers.ContentType!.ToString());
+        Assert.Equal(bytes.Length, content.Headers.ContentLength);
+        using var document = JsonDocument.Parse(bytes);
+        var root = document.RootElement;
+        var custom = root.GetProperty("custom");
+        Assert.False(custom.TryGetProperty("remove", out _));
+        Assert.Equal("kept", custom.GetProperty("keep").GetString());
+        Assert.Equal(2, custom.GetProperty("replace").GetInt32());
+        Assert.Equal("high", custom.GetProperty("added").GetProperty("level").GetString());
+        Assert.True(custom.GetProperty("added").GetProperty("enabled").GetBoolean());
+        Assert.False(root.TryGetProperty("obsolete", out _));
+        Assert.Equal(128, root.GetProperty("max_tokens").GetInt32());
+        Assert.Equal(128, root.GetProperty("budget_tokens").GetInt32());
+        Assert.Equal(!account, root.GetProperty("store").GetBoolean());
+        Assert.Equal(account ? "developer" : "system", root.GetProperty("input")[0].GetProperty("role").GetString());
+        Assert.Equal("keep nested metadata", root.GetProperty("raw").GetProperty("metadata").GetString());
+        if (account)
+        {
+            Assert.Equal("affinity-key", root.GetProperty("prompt_cache_key").GetString());
+            Assert.False(root.TryGetProperty("max_output_tokens", out _));
+            Assert.False(root.TryGetProperty("temperature", out _));
+            Assert.Equal("rules", root.GetProperty("instructions").GetString());
+        }
+        else
+        {
+            Assert.Equal(128, root.GetProperty("max_output_tokens").GetInt32());
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("prompt_cache_key").ValueKind);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateContent_MalformedUtf16PreservesDecodedStringValues(bool account)
+    {
+        Dictionary<string, object?> Payload() => new() { ["text"] = "prefix \ud800 middle \udfff suffix" };
+        var expected = ModelRequestOptions.Encode(Payload(), new(), new(), "max_tokens", 128);
+        if (account) expected = LegacyAccountShape(expected, "affinity-key");
+        var body = ModelRequestOptions.Prepare(Payload(), new(), new(), "max_tokens", 128);
+        if (account) OpenAiResponsesAccountShaping.Shape(body, "affinity-key");
+        using var content = ModelRequestOptions.CreateContent(body);
+        var actual = await content.ReadAsByteArrayAsync();
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(actual)));
+        using var document = JsonDocument.Parse(actual);
+        Assert.Equal("prefix \ufffd middle \ufffd suffix", document.RootElement.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public void RawJsonValues_PreserveCustomizedNodeErrorsWithoutBindingSharedOptions()
+    {
+        var node = JsonValue.Create(new Dictionary<string, string> { ["PascalCase"] = "中文 <>&" })!;
+        var expected = Record.Exception(() => node.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
+        var actual = Record.Exception(() =>
+        {
+            var payload = new Dictionary<string, object?> { ["custom"] = node };
+            using var content = ModelRequestOptions.CreateContent(ModelRequestOptions.Prepare(payload, new(), new(), "max_tokens", 128));
+        });
+        Assert.IsType<InvalidOperationException>(expected);
+        Assert.NotNull(actual);
+        Assert.Equal(expected.GetType(), actual.GetType());
+        Assert.Equal(expected.Message, actual.Message);
+        Assert.Null(ModelRequestOptions.RequestJsonOptions.TypeInfoResolver);
+    }
+
+    [Theory]
+    [InlineData(null, "affinity-key")]
+    [InlineData("explicit-key", "explicit-key")]
+    [InlineData("", "")]
+    public async Task AccountShaping_PreservesExplicitCacheKeyAndAppliesMappingsBeforeShaping(string? explicitKey, string expectedKey)
+    {
+        var properties = new ModelProperties(ReasoningLevels: ["high"],
+            ReasoningMapping: "{'prompt_cache_key':'reasoning-key','store':true,'temperature':0.5}",
+            MaxOutputTokensMapping: explicitKey is null ? "{'prompt_cache_key':null}" : $"{{'prompt_cache_key':'{explicitKey}'}}");
+        var body = ModelRequestOptions.Prepare(RawPayload(), properties, new("high"), "max_output_tokens", 128);
+        OpenAiResponsesAccountShaping.Shape(body, "affinity-key");
+        using var content = ModelRequestOptions.CreateContent(body);
+        using var document = JsonDocument.Parse(await content.ReadAsByteArrayAsync());
+        Assert.Equal(expectedKey, document.RootElement.GetProperty("prompt_cache_key").GetString());
+        Assert.False(document.RootElement.GetProperty("store").GetBoolean());
+        Assert.False(document.RootElement.TryGetProperty("temperature", out _));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void CreateContent_PreservesPayloadErrors(int invalidKind)
+    {
+        Dictionary<string, object?> Payload() => new()
+        {
+            ["value"] = invalidKind switch
+            {
+                0 => (object)(short)1,
+                1 => new object(),
+                2 => new Dictionary<string, string> { ["key"] = "value" },
+                3 => double.NaN,
+                4 => JsonValue.Create(double.PositiveInfinity),
+                _ => NestedNode(64),
+            },
+        };
+        var expected = Record.Exception(() => ModelRequestOptions.Encode(Payload(), new(), new(), "max_tokens", 128));
+        var actual = Record.Exception(() =>
+        {
+            using var content = ModelRequestOptions.CreateContent(ModelRequestOptions.Prepare(Payload(), new(), new(), "max_tokens", 128));
+        });
+        Assert.NotNull(expected);
+        Assert.NotNull(actual);
+        Assert.Equal(expected.GetType(), actual.GetType());
+        Assert.Equal(expected.Message, actual.Message);
+    }
+
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    [InlineData(false, 5)]
+    [InlineData(true, 5)]
+    public void CreateContent_LargePayloadAllocatesOnlyOneOwnedUtf8Body(bool account, int inputMiB)
+    {
+        var text = new string('x', inputMiB * 1024 * 1024);
+        var payload = new Dictionary<string, object?>
+        {
+            ["input"] = new object[]
+            {
+                new Dictionary<string, object?> { ["role"] = "system", ["content"] = "rules" },
+                new Dictionary<string, object?> { ["type"] = "function_call_output", ["output"] = text },
+            },
+            ["stream"] = true,
+        };
+        var properties = new ModelProperties();
+        var options = new ModelCallOptions();
+        HttpContent EncodeContent()
+        {
+            var body = ModelRequestOptions.Prepare(payload, properties, options, "max_output_tokens", 32768);
+            if (account) OpenAiResponsesAccountShaping.Shape(body, "affinity-key");
+            return ModelRequestOptions.CreateContent(body);
+        }
+        for (var i = 0; i < 3; i++)
+        {
+            using var warmup = EncodeContent();
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        using var content = EncodeContent();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.InRange(content.Headers.ContentLength!.Value, text.Length, text.Length + 1024L);
+        Assert.InRange(allocated, 0, text.Length + 64 * 1024L);
+    }
+
+    [Fact]
+    public async Task CreateContent_IsReplayableAndHonorsCancellationAndDisposal()
+    {
+        var body = ModelRequestOptions.Prepare(RawPayload(), new(), new(), "max_tokens", 128);
+        var content = ModelRequestOptions.CreateContent(body);
+        using var first = new MemoryStream();
+        using var second = new MemoryStream();
+        await content.CopyToAsync(first);
+        await content.CopyToAsync(second);
+        Assert.Equal(first.ToArray(), second.ToArray());
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => content.CopyToAsync(second, cancellation.Token));
+        content.Dispose();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => content.ReadAsByteArrayAsync());
+    }
+
+    private static JsonNode NestedNode(int depth)
+    {
+        JsonNode node = JsonValue.Create(1)!;
+        for (var i = 0; i < depth; i++) node = new JsonArray(node);
+        return node;
+    }
+
+    private static Dictionary<string, object?> RawPayload()
+    {
+        using var document = JsonDocument.Parse("""{"number":1.2300e2,"metadata":"keep nested metadata","nested":[null,{"text":"\\u4e2d\\u6587"}]}""");
+        return new()
+        {
+            ["model"] = "test",
+            ["input"] = new object[] { new Dictionary<string, object?> { ["role"] = "system", ["content"] = "rules" } },
+            ["stream"] = true,
+            ["instructions"] = "rules",
+            ["raw"] = document.RootElement.Clone(),
+            ["node"] = JsonNode.Parse("""{"list":[true,null,"value"],"value":1.00}"""),
+            ["values"] = new object?[]
+            {
+                null, default(JsonElement), true, 7, long.MaxValue, 1.25, 12.30m,
+                JsonValue.Create((short)3), JsonValue.Create(1.25f), JsonValue.Create(ulong.MaxValue),
+                JsonValue.Create(new DateTime(2026, 11, 4, 12, 34, 56, DateTimeKind.Utc)),
+            },
+            ["text"] = "don't use `x` — 中文 <>& \\\"\n\r\t\0 \u2028\u2029 \ud834\udd1e",
+            ["custom"] = new Dictionary<string, object?> { ["remove"] = true, ["keep"] = "kept", ["replace"] = new object[] { 1, 2 } },
+            ["obsolete"] = true,
+            ["prompt_cache_key"] = null,
+            ["temperature"] = 0.75,
+        };
+    }
+
+    private static string LegacyAccountShape(string body, string sessionCacheKey)
+    {
+        var root = JsonNode.Parse(body)!.AsObject();
+        foreach (var field in new[]
+        {
+            "background", "conversation", "max_output_tokens", "max_tool_calls", "metadata", "moderation", "multi_agent",
+            "prompt", "prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs", "top_p", "truncation", "user", "previous_response_id",
+        })
+            root.Remove(field);
+        root["store"] = false;
+        if (root["prompt_cache_key"] is null) root["prompt_cache_key"] = sessionCacheKey;
+        if (root["input"] is JsonArray input)
+            foreach (var item in input)
+                if (item is JsonObject message && (string?)message["role"] == "system")
+                    message["role"] = "developer";
+        return root.ToJsonString(ModelRequestOptions.RequestJsonOptions);
+    }
+
     [Fact]
     public void MfjsSchemas_HoistNonDefsLocalReferencesWithoutChangingContract()
     {
@@ -164,7 +448,7 @@ public class ModelRequestOptionsTests
 
     private static RecordingHandler Handler(string format) => new((_, _) => SegmentedStream.ToResponse(format switch
     {
-        "chat" => "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        "chat" or "chat-legacy" => "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
         "responses" => "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
         _ => "data: {\"type\":\"message_stop\"}\n\n",
     }, 7));

@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Reflection;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
@@ -203,6 +205,188 @@ public class TokenEstimatorTests
                     [new InputToolResultBlock(new ToolCallId("image-call"), "image", false)])], [], new ModelCallOptions());
             Assert.True(large > TokenEstimator.EstimateRequestTokens(withoutImage));
         }
+    }
+
+    [Fact]
+    public void JsonLengthMeter_MatchesSerializedReferencesAcrossGrowthAndReset()
+    {
+        const string escaped = "中\u3400\u4DBF\u4E00\u9FFF\uFF21\U00020000\U0001F600\"\\\n\r\t\u0001<>`'&—\uD800x\uDC00";
+        var input = TestJson.Element(new { text = escaped, values = new object?[] { null, true, 1.5 } });
+        var callId = new ToolCallId("call\"中文");
+        using var meter = new TokenEstimator.JsonLengthMeter();
+        foreach (var length in new[] { 0, 1, 255, 4_096, 65_537, 1_100_000, 3 })
+        {
+            var text = new string('a', length) + escaped;
+            var message = new ModelInputMessage(MessageRole.Assistant,
+            [
+                new InputTextBlock(text),
+                new InputReasoningBlock(escaped),
+                new InputImageBlock("image/png", "not-counted"),
+                new InputToolCallBlock(callId, "Inspect中文", input),
+                new InputToolResultBlock(callId, escaped, true, [new InputImageBlock("image/jpeg", "not-counted")]),
+            ]);
+            var tool = new ToolContract("Inspect中文", text, input);
+            var messageJson = TokenEstimator.SerializeMessage(message);
+            var toolJson = TokenEstimator.SerializeTool(tool);
+
+            Assert.Equal((messageJson.Length, TokenEstimator.EstimateTokens(messageJson)), meter.MeasureMessage(message));
+            Assert.Equal((toolJson.Length, TokenEstimator.EstimateTokens(toolJson)), meter.MeasureTool(tool));
+        }
+        var undefinedSchema = new ToolContract("NoSchema", "", default);
+        var undefinedJson = TokenEstimator.SerializeTool(undefinedSchema);
+        Assert.Equal((undefinedJson.Length, TokenEstimator.EstimateTokens(undefinedJson)), meter.MeasureTool(undefinedSchema));
+    }
+
+    [Fact]
+    public void EstimateRequestTokens_PreservesPerMessageAndToolRounding()
+    {
+        var messages = Enumerable.Range(0, 3).Select(length =>
+            new ModelInputMessage(MessageRole.User, [new InputTextBlock(new string('x', length))])).ToArray();
+        var tools = Enumerable.Range(0, 3).Select(length => new ToolContract("Tool", new string('x', length), default)).ToArray();
+        var serialized = messages.Select(TokenEstimator.SerializeMessage).Concat(tools.Select(TokenEstimator.SerializeTool)).ToArray();
+        var expected = serialized.Sum(TokenEstimator.EstimateTokens);
+
+        Assert.NotEqual(expected, TokenEstimator.EstimateTokens(string.Concat(serialized)));
+        Assert.Equal(expected, TokenEstimator.EstimateRequestTokens(new ModelRequest(messages, tools, new ModelCallOptions())));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void JsonLengthMeter_DisposeReleasesLeaseAndIsIdempotent(bool measured)
+    {
+        using var meter = new TokenEstimator.JsonLengthMeter();
+        var message = new ModelInputMessage(MessageRole.User, [new InputTextBlock("a message")]);
+        if (measured)
+        {
+            meter.MeasureMessage(message);
+            Assert.NotEmpty(MeterBytes(meter));
+        }
+        meter.Dispose();
+        meter.Dispose();
+
+        Assert.Empty(MeterBytes(meter));
+        Assert.Throws<ObjectDisposedException>(() => meter.MeasureMessage(message));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void JsonLengthMeter_SerializationErrorsReleaseLeaseAndAllowReset(bool tool, bool recover)
+    {
+        using var document = JsonDocument.Parse("{}");
+        var disposedInput = document.RootElement;
+        document.Dispose();
+        using var meter = new TokenEstimator.JsonLengthMeter();
+        var text = new string('x', 16_384);
+        if (tool)
+        {
+            Assert.Throws<ObjectDisposedException>(() => meter.MeasureTool(new ToolContract("Tool", text, disposedInput)));
+        }
+        else
+        {
+            var invalid = new ModelInputMessage(MessageRole.Assistant,
+                [new InputTextBlock(text), new InputToolCallBlock(new ToolCallId("call"), "Tool", disposedInput)]);
+            Assert.Throws<ObjectDisposedException>(() => meter.MeasureMessage(invalid));
+        }
+        Assert.NotEmpty(MeterBytes(meter));
+        if (recover)
+        {
+            var message = new ModelInputMessage(MessageRole.User, [new InputTextBlock("中文\"\\\n")]);
+            var json = TokenEstimator.SerializeMessage(message);
+            Assert.Equal((json.Length, TokenEstimator.EstimateTokens(json)), meter.MeasureMessage(message));
+        }
+        meter.Dispose();
+
+        Assert.Empty(MeterBytes(meter));
+    }
+
+    [Fact]
+    public void JsonLengthMeter_ConcurrentMetersHaveIndependentLeases()
+    {
+        Parallel.For(0, 16, index =>
+        {
+            var message = new ModelInputMessage(MessageRole.User, [new InputTextBlock(new string('中', 4_096 + index))]);
+            var tool = new ToolContract("Tool", new string('x', 8_192 + index), default);
+            var messageJson = TokenEstimator.SerializeMessage(message);
+            var toolJson = TokenEstimator.SerializeTool(tool);
+            using var first = new TokenEstimator.JsonLengthMeter();
+            using var second = new TokenEstimator.JsonLengthMeter();
+            for (var iteration = 0; iteration < 16; iteration++)
+            {
+                Assert.Equal((messageJson.Length, TokenEstimator.EstimateTokens(messageJson)), first.MeasureMessage(message));
+                Assert.Equal((toolJson.Length, TokenEstimator.EstimateTokens(toolJson)), second.MeasureTool(tool));
+                Assert.NotSame(MeterBytes(first), MeterBytes(second));
+            }
+        });
+    }
+
+    [Fact]
+    public void JsonLengthMeter_LargeOutliersAreNotRetained()
+    {
+        const int maxPooledLength = 4 << 20;
+        var large = new ModelInputMessage(MessageRole.User, [new InputTextBlock(new string('x', maxPooledLength / 2))]);
+        byte[] firstOutlier;
+        using (var first = new TokenEstimator.JsonLengthMeter())
+        {
+            first.MeasureMessage(large);
+            firstOutlier = MeterBytes(first);
+            Assert.True(firstOutlier.Length > maxPooledLength);
+            first.Dispose();
+            Assert.Empty(MeterBytes(first));
+        }
+        using (var second = new TokenEstimator.JsonLengthMeter())
+        {
+            second.MeasureMessage(large);
+            Assert.NotSame(firstOutlier, MeterBytes(second));
+        }
+        using var small = new TokenEstimator.JsonLengthMeter();
+        small.MeasureMessage(new ModelInputMessage(MessageRole.User, [new InputTextBlock("small")]));
+        Assert.InRange(MeterBytes(small).Length, 1, maxPooledLength);
+    }
+
+    [Fact]
+    public void JsonLengthMeter_PoolRetainsOneArrayPerBucketUpToFourMiB()
+    {
+        const int maxPooledLength = 4 << 20;
+        var bufferType = typeof(TokenEstimator.JsonLengthMeter).GetField("_buffer", BindingFlags.Instance | BindingFlags.NonPublic)!.FieldType;
+        var pool = (ArrayPool<byte>)bufferType.GetMethod("CreatePool", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
+        Assert.NotSame(ArrayPool<byte>.Shared, pool);
+        var lengths = new List<int>();
+        for (var length = 16; length <= maxPooledLength; length *= 2)
+            lengths.Add(length);
+        // Every bucket must be leased before duplicate rents can bypass adjacent-bucket fallback.
+        var first = lengths.Select(pool.Rent).ToArray();
+        var second = lengths.Select(pool.Rent).ToArray();
+        foreach (var buffer in first.Concat(second))
+            pool.Return(buffer);
+        var reused = lengths.Select(pool.Rent).ToArray();
+        var replaced = lengths.Select(pool.Rent).ToArray();
+        long retainedBytes = 0;
+        for (var index = 0; index < lengths.Count; index++)
+        {
+            Assert.Equal(lengths[index], first[index].Length);
+            Assert.Equal(lengths[index], second[index].Length);
+            Assert.Same(first[index], reused[index]);
+            Assert.NotSame(second[index], replaced[index]);
+            retainedBytes += reused[index].Length;
+        }
+        foreach (var buffer in reused.Concat(replaced))
+            pool.Return(buffer);
+        Assert.Equal(8L * 1024 * 1024 - 16, retainedBytes);
+        var outlier = pool.Rent(maxPooledLength + 1);
+        pool.Return(outlier);
+        var nextOutlier = pool.Rent(maxPooledLength + 1);
+        Assert.NotSame(outlier, nextOutlier);
+        pool.Return(nextOutlier);
+    }
+
+    private static byte[] MeterBytes(TokenEstimator.JsonLengthMeter meter)
+    {
+        var buffer = typeof(TokenEstimator.JsonLengthMeter).GetField("_buffer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(meter)!;
+        return (byte[])buffer.GetType().GetField("_buffer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(buffer)!;
     }
 
     [Fact]

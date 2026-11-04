@@ -82,10 +82,7 @@ public class MediaHydrationTests
         Assert.Equal(1, Assert.Single(artifacts.Loads).Value);
         Assert.True(artifacts.ExistenceChecks.Values.Sum() > 0);
         var payload = Assert.IsType<WeakReference>(model.Payload);
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        Assert.False(payload.IsAlive);
+        await AssertPayloadCollectedAsync(payload);
         GC.KeepAlive(runtime);
         GC.KeepAlive(model);
     }
@@ -584,6 +581,27 @@ public class MediaHydrationTests
             yield return new ModelTextDelta("seen");
             yield return new ModelStreamFinished(ModelFinishReason.Stop);
         }
+    }
+
+    // Task completion can precede unwinding the producer's request-owning stack.
+    private static async Task AssertPayloadCollectedAsync(WeakReference payload)
+    {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        while (PayloadAliveAfterCollection(payload))
+        {
+            Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(5),
+                "The completed model request retained its image payload.");
+            await Task.Delay(10);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool PayloadAliveAfterCollection(WeakReference payload)
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        return payload.IsAlive;
     }
 
     private static Task AwaitCurrentTurnAsync(SessionRuntime session) =>

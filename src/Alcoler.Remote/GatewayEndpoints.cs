@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -115,7 +116,7 @@ internal static class GatewayEndpoints
             {
                 return GatewayJson.Error(501, "not_supported", "archived_sessions");
             }
-            return GatewayJson.Plain(WriteSessionList(sessions, runtime as ISessionActivityRuntime));
+            return GatewayJson.Raw(WriteSessionList(sessions, runtime as ISessionActivityRuntime), "application/json");
         });
 
         app.MapPost("/api/sessions", async (HttpRequest request, CancellationToken cancellationToken) =>
@@ -288,19 +289,19 @@ internal static class GatewayEndpoints
         });
     }
 
-    private static byte[] WriteSessionList(
+    internal static ReadOnlyMemory<byte> WriteSessionList(
         IReadOnlyList<SessionSummary> sessions,
         ISessionActivityRuntime? activityRuntime)
     {
-        using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream))
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartArray();
             foreach (var session in sessions)
             {
-                // Round-trip through GatewayJson so SessionSummary keeps the exact wire shape
-                // produced by the contract source generator; activity is appended after it.
-                using var document = JsonDocument.Parse(GatewayJson.Serialize(session));
+                // The source-generated SessionSummary contract defines the wire shape;
+                // appending activity must not duplicate that schema here.
+                using var document = JsonSerializer.SerializeToDocument(session, GatewayJson.Options);
                 writer.WriteStartObject();
                 foreach (var property in document.RootElement.EnumerateObject())
                     property.WriteTo(writer);
@@ -309,7 +310,7 @@ internal static class GatewayEndpoints
             }
             writer.WriteEndArray();
         }
-        return stream.ToArray();
+        return buffer.WrittenMemory;
     }
 
     private static void WriteActivity(Utf8JsonWriter writer, SessionActivitySnapshot? activity)
