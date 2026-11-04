@@ -12,12 +12,14 @@ public sealed class BackgroundJobService : IBackgroundJobService
 {
     private readonly TimeProvider _clock;
     private readonly Func<BackgroundJobInfo, ValueTask> _onCompleted;
+    private readonly Action? _onChanged;
     private readonly ConcurrentDictionary<BackgroundJobId, JobEntry> _jobs = new();
 
-    public BackgroundJobService(TimeProvider clock, Func<BackgroundJobInfo, ValueTask> onCompleted)
+    public BackgroundJobService(TimeProvider clock, Func<BackgroundJobInfo, ValueTask> onCompleted, Action? onChanged = null)
     {
         _clock = clock;
         _onCompleted = onCompleted;
+        _onChanged = onChanged;
     }
 
     public BackgroundJobInfo Start(
@@ -32,6 +34,7 @@ public sealed class BackgroundJobService : IBackgroundJobService
             OutputPath: outputPath, ToolUseId: toolUseId);
         var entry = new JobEntry(cts, info);
         _jobs[id] = entry;
+        NotifyChanged();
 
         _ = RunToCompletionAsync(entry, run);
         return info;
@@ -93,6 +96,7 @@ public sealed class BackgroundJobService : IBackgroundJobService
         };
         // Latest is terminal before the signal fires, so a woken waiter always observes it.
         entry.Completion.TrySetResult();
+        NotifyChanged();
         try
         {
             await _onCompleted(entry.Latest).ConfigureAwait(false);
@@ -100,6 +104,18 @@ public sealed class BackgroundJobService : IBackgroundJobService
         catch
         {
             // Completion notification is best-effort; the job outcome is already recorded.
+        }
+    }
+
+    private void NotifyChanged()
+    {
+        try
+        {
+            _onChanged?.Invoke();
+        }
+        catch
+        {
+            // Activity observers cannot prevent registered jobs from running or completing.
         }
     }
 

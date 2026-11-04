@@ -20,6 +20,7 @@ using Alcoler.Kernel.Models;
 using Alcoler.Kernel.Permissions;
 using Alcoler.Kernel.Prompts;
 using Alcoler.Kernel.Skills;
+using Alcoler.Kernel.Subagents;
 using Alcoler.Kernel.Tools;
 using Alcoler.Kernel.Workflows;
 using Microsoft.Extensions.Logging;
@@ -99,6 +100,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     private readonly ShellSessionState _shell;
     private readonly BackgroundJobService _backgroundJobs;
     private readonly ISubagentTasks? _subagentTasks;
+    private readonly Action<SessionId>? _subagentActivityChanged;
     private readonly SessionAuxModelClient _auxModel;
     private readonly SkillContentProvider _skills;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
@@ -149,8 +151,10 @@ public sealed class SessionRuntime : IAsyncDisposable
     private (int HistoryCount, string[] WorkflowIds, HistoryReminderCounts Counts)? _reminderCountsCache;
     private IReadOnlyList<SkillInfo>? _skillsListingSource;
     private string? _skillsListingRendered;
-    // -1 means no turn has finished yet in this session runtime.
-    private int _lastTurnOutcome = -1;
+    private TurnOutcome? _lastTurnOutcome;
+    private DateTimeOffset? _completedTurnStartedAt;
+    private DateTimeOffset? _completedTurnFinishedAt;
+    private TurnId? _completedTurnId;
     private bool _disposed;
 
     private SessionRuntime(SessionRecord record, SessionRuntimeDeps deps)
@@ -168,8 +172,13 @@ public sealed class SessionRuntime : IAsyncDisposable
         _sessionCommands = new RuntimeSessionCommands(this);
         _planFiles = deps.PlanFileStore ?? NullPlanFileStore.Instance;
         _shell = new ShellSessionState(record.WorkspaceRoot, record.Shell);
-        _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync);
+        _backgroundJobs = new BackgroundJobService(deps.Clock, NotifyBackgroundJobCompletedAsync, NotifyActivityChanged);
         _subagentTasks = deps.Tools.Tools.OfType<ISubagentTasks>().FirstOrDefault();
+        if ((_subagentTasks as SubagentTool)?.Tasks is SubagentTaskRegistry registry)
+        {
+            _subagentActivityChanged = ObserveSubagentActivity(this);
+            registry.Changed += _subagentActivityChanged;
+        }
         _auxModel = new SessionAuxModelClient(() => _record.ModelSelection ?? deps.Options.DefaultModel, deps.ResolveModel,
             new ModelCacheAffinity(record.Id.Value, record.ParentSessionId?.Value));
         _skills = new SkillContentProvider(
@@ -222,21 +231,6 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     public bool PlanEnabled => _permissions.PlanEnabled;
 
-    internal SessionActivitySnapshot ActivitySnapshot()
-    {
-        var outcome = Volatile.Read(ref _lastTurnOutcome);
-        TurnPhase phase;
-        lock (_pendingSync)
-        {
-            phase = _pendingPermissions.Count > 0
-                ? TurnPhase.AwaitingPermission
-                : _pendingInteractions.Count > 0
-                    ? TurnPhase.AwaitingInteraction
-                    : _turnMachine.Phase;
-        }
-        return new SessionActivitySnapshot(phase, outcome < 0 ? null : (TurnOutcome)outcome);
-    }
-
     internal DateTimeOffset LastActivityUtc => new(Interlocked.Read(ref _lastActivityUtcTicks), TimeSpan.Zero);
 
     internal SessionId? ParentSessionId => _record.ParentSessionId;
@@ -245,24 +239,34 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     internal bool HasPendingInputs => Volatile.Read(ref _pendingInputCount) > 0;
 
-    internal SessionTaskSnapshot? TaskSnapshot(HashSet<SubagentId> runningSubagents)
+    internal SessionActivitySnapshot? ActivitySnapshot(HashSet<SubagentId> runningSubagents)
     {
         if (IsDisposed)
             return null;
 
         var record = Volatile.Read(ref _record);
-        TurnPhase phase;
-        DateTimeOffset? startedAt;
+        SessionActivitySnapshot snapshot;
         lock (_pendingSync)
         {
-            phase = _pendingPermissions.Count > 0
+            var phase = _pendingPermissions.Count > 0
                 ? TurnPhase.AwaitingPermission
                 : _pendingInteractions.Count > 0
                     ? TurnPhase.AwaitingInteraction
                     : _turnMachine.Phase;
-            startedAt = _turnStartedAt;
+            snapshot = new SessionActivitySnapshot(phase, _lastTurnOutcome)
+            {
+                SessionId = record.Id,
+                Title = record.Title,
+                WorkspaceRoot = record.WorkspaceRoot,
+                StartedAt = _completedTurnStartedAt ?? _turnStartedAt,
+                FinishedAt = _completedTurnFinishedAt,
+                CompletedTurnId = _completedTurnId,
+                ActiveWorkStartedAt = _turnStartedAt,
+                IsAwaitingConfirmation = phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction,
+            };
         }
 
+        var startedAt = snapshot.ActiveWorkStartedAt;
         var jobs = 0;
         foreach (var job in _backgroundJobs.List())
         {
@@ -287,12 +291,30 @@ public sealed class SessionRuntime : IAsyncDisposable
             }
         }
 
-        var outcome = Volatile.Read(ref _lastTurnOutcome);
-        return IsDisposed ? null : new SessionTaskSnapshot(
-            record.Id, record.Title, record.WorkspaceRoot, phase, LastActivityUtc, jobs, subagents,
-            phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction, startedAt)
+        return IsDisposed ? null : snapshot with
         {
-            LastOutcome = outcome < 0 ? null : (TurnOutcome)outcome,
+            LastActivityUtc = LastActivityUtc,
+            HasActiveWork = snapshot.Phase is not (TurnPhase.Idle or TurnPhase.Error)
+                || HasPendingInputs || jobs > 0 || subagents > 0,
+            RunningJobCount = jobs,
+            RunningSubagentCount = subagents,
+            ActiveWorkStartedAt = startedAt,
+        };
+    }
+
+    private void NotifyActivityChanged()
+    {
+        if (!IsDisposed)
+            ActivityChanged?.Invoke(this);
+    }
+
+    private static Action<SessionId> ObserveSubagentActivity(SessionRuntime runtime)
+    {
+        var reference = new WeakReference<SessionRuntime>(runtime);
+        return sessionId =>
+        {
+            if (reference.TryGetTarget(out var session) && session.SessionId == sessionId)
+                session.NotifyActivityChanged();
         };
     }
 
@@ -357,6 +379,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 // Idle unloading measures from the last meaningful work.
                 Interlocked.Exchange(ref _lastActivityUtcTicks, _deps.Clock.GetUtcNow().UtcTicks);
+                NotifyActivityChanged();
             }
             // The store tail captured under the lock is a causality token: every event the
             // command caused is at or below it, so a projection can await exactly it.
@@ -832,6 +855,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             if (_turnMachine.IsBusy || _pendingInputs.Count > 0)
             {
                 EnqueueInput(new PendingTurnInput(null, prefixedBody));
+                NotifyActivityChanged();
                 // A blocking TaskOutput wait must end early so the model can yield the turn
                 // and let the queued input start the next one.
                 _turnInputSignal.Pulse();
@@ -1047,12 +1071,22 @@ public sealed class SessionRuntime : IAsyncDisposable
                 {
                     _deps.Logger.LogError(ex, "Clearing one-shot workflows failed.");
                 }
+                DateTimeOffset finishedAt;
+                lock (_pendingSync)
+                {
+                    finishedAt = _deps.Clock.GetUtcNow();
+                    _lastTurnOutcome = outcome;
+                    _completedTurnStartedAt = _turnStartedAt;
+                    _completedTurnFinishedAt = finishedAt;
+                    _completedTurnId = turnId;
+                }
                 try
                 {
-                    Volatile.Write(ref _lastTurnOutcome, (int)outcome);
                     if (outcome == TurnOutcome.Failed)
-                        await EmitAsync(new TurnFailedEvent(turnId, LastTurnError ?? "Model request failed."), persist: true).ConfigureAwait(false);
-                    await EmitAsync(new TurnCompletedEvent(turnId, outcome, _lastProviderUsage), persist: true).ConfigureAwait(false);
+                        await EmitAsync(new TurnFailedEvent(turnId, LastTurnError ?? "Model request failed."), persist: true,
+                            occurredAt: finishedAt).ConfigureAwait(false);
+                    await EmitAsync(new TurnCompletedEvent(turnId, outcome, _lastProviderUsage), persist: true,
+                        occurredAt: finishedAt).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -1178,6 +1212,8 @@ public sealed class SessionRuntime : IAsyncDisposable
                     EnqueueInput(pending);
                 }
             }
+            if (steer is not null || notificationBodies is { Count: > 0 })
+                NotifyActivityChanged();
         }
         finally
         {
@@ -2421,12 +2457,13 @@ public sealed class SessionRuntime : IAsyncDisposable
         await EmitAsync(new SessionModelChangedEvent(selection, window), persist: true).ConfigureAwait(false);
     }
 
-    private async ValueTask EmitAsync(SessionEvent sessionEvent, bool persist)
+    private async ValueTask EmitAsync(SessionEvent sessionEvent, bool persist, DateTimeOffset? occurredAt = null)
     {
-        var sequenced = _events.Append(sessionEvent);
-        if (TracksPendingRequests(sessionEvent))
+        var sequenced = _events.Append(sessionEvent, occurredAt);
+        if (TracksPendingRequests(sessionEvent)
+            || sessionEvent is SubagentStartedEvent or SubagentStatusChangedEvent)
         {
-            ActivityChanged?.Invoke(this);
+            NotifyActivityChanged();
         }
         if (persist && !SessionEventRetention.IsTransient(sessionEvent))
         {
@@ -2894,6 +2931,8 @@ public sealed class SessionRuntime : IAsyncDisposable
             return;
         }
         _disposed = true;
+        if ((_subagentTasks as SubagentTool)?.Tasks is SubagentTaskRegistry registry && _subagentActivityChanged is { } changed)
+            registry.Changed -= changed;
         _sessionCts.Cancel();
         _backgroundJobs.StopAll();
         try

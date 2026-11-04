@@ -2,7 +2,9 @@ using System.Reflection;
 using Alcoler.Controls;
 using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
+using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
+using Alcoler.Contracts.Sessions;
 using Alcoler.Localization;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
@@ -41,11 +43,10 @@ public sealed class TaskOverlayWindowTests
             var running = harness.RegisterTask("running");
             var waiting = harness.RegisterTask("waiting", TurnPhase.AwaitingPermission)
                 with { IsAwaitingConfirmation = true };
-            IReadOnlyList<SessionTaskSnapshot>[] snapshots = [[], [running, waiting], []];
+            IReadOnlyList<SessionActivitySnapshot>[] snapshots = [[], [running, waiting], []];
             foreach (var tasks in snapshots)
             {
                 harness.Runtime.Tasks = tasks;
-                harness.Workbench.TaskOverlay.Refresh();
                 await RenderAsync(harness.Overlay);
 
                 Assert.Equal(tasks.Count, harness.Workbench.TaskOverlay.Sessions.Count);
@@ -71,8 +72,8 @@ public sealed class TaskOverlayWindowTests
     {
         var task = TaskOverlayViewModelTests.TaskSnapshot("rendered", phase,
             DateTimeOffset.UtcNow.AddMinutes(-2), waiting) with { RunningJobCount = 2, RunningSubagentCount = 1 };
-        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
-        var model = new TaskOverlayViewModel(runtime);
+        var tracker = TaskOverlayViewModelTests.CreateTracker(task);
+        var model = new TaskOverlayViewModel(tracker);
         var window = new TaskOverlayWindow(model);
         window.Show();
         try
@@ -95,15 +96,13 @@ public sealed class TaskOverlayWindowTests
             AssertStatusIndicators(button, busy: true, completed: false, failed: false);
             Assert.Equal(task.WorkspaceRoot, ToolTip.GetTip(button));
 
-            runtime.Tasks = [task with { Title = "Updated task", RunningJobCount = 1 }];
-            model.Refresh();
+            tracker.ApplyActivity(task.SessionId, task with { Title = "Updated task", RunningJobCount = 1 });
             await RenderAsync(window);
             Assert.Same(row, Assert.Single(model.Sessions));
             Assert.Contains(SessionButton(window, task.SessionId).GetVisualDescendants().OfType<TextBlock>(),
                 text => text.Text == "Updated task");
 
-            runtime.Tasks = [];
-            model.Refresh();
+            tracker.Refresh([]);
             await RenderAsync(window);
             Assert.True(Named<TextBlock>(window, "EmptyState").IsEffectivelyVisible);
             Assert.Equal(Loc.Get("task_overlay_empty"), Named<TextBlock>(window, "EmptyState").Text);
@@ -128,7 +127,7 @@ public sealed class TaskOverlayWindowTests
         var waiting = phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction;
         var task = TaskOverlayViewModelTests.TaskSnapshot("animated", phase, DateTimeOffset.UtcNow, waiting)
             with { LastOutcome = TurnOutcome.Failed };
-        var model = new TaskOverlayViewModel(new TaskOverlayActivityRuntime { Tasks = [task] });
+        var model = new TaskOverlayViewModel(TaskOverlayViewModelTests.CreateTracker(task));
         var window = new TaskOverlayWindow(model);
         window.Show();
         try
@@ -169,9 +168,18 @@ public sealed class TaskOverlayWindowTests
     [AvaloniaFact]
     public async Task StatusIndicators_InjectedPresentationTransitionsReuseRowAndTrackLightAndDarkThemes()
     {
-        var task = TaskOverlayViewModelTests.TaskSnapshot("status-transition", startedAt: DateTimeOffset.UtcNow);
-        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
-        var model = new TaskOverlayViewModel(runtime);
+        var task = TaskOverlayViewModelTests.TaskSnapshot("status-transition", startedAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+        SessionActivitySnapshot Finished(TurnOutcome outcome, string turnId, TurnPhase phase = TurnPhase.Idle) => task with
+        {
+            Phase = phase,
+            LastOutcome = outcome,
+            HasActiveWork = false,
+            ActiveWorkStartedAt = null,
+            FinishedAt = task.StartedAt!.Value.AddSeconds(55),
+            CompletedTurnId = new TurnId(turnId),
+        };
+        var tracker = TaskOverlayViewModelTests.CreateTracker(task);
+        var model = new TaskOverlayViewModel(tracker);
         var window = new TaskOverlayWindow(model);
         window.Show();
         try
@@ -191,25 +199,22 @@ public sealed class TaskOverlayWindowTests
             }
             var rotation = Assert.IsType<RotateTransform>(spinner.RenderTransform);
             List<(Color Accent, Color Success, Color Error)> colors = [];
-            (SessionTaskSnapshot Snapshot, bool Busy, bool Completed, bool Failed)[] states =
+            (SessionActivitySnapshot Snapshot, bool Busy, bool Completed, bool Failed)[] states =
             [
                 (task with { LastOutcome = TurnOutcome.Completed }, true, false, false),
-                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed }, false, true, false),
+                (Finished(TurnOutcome.Completed, "first-completed"), false, true, false),
                 (task with { LastOutcome = TurnOutcome.Failed }, true, false, false),
-                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Failed }, false, false, true),
-                (task with { Phase = TurnPhase.Error, LastOutcome = TurnOutcome.Completed,
-                    HasActiveWork = true, RunningJobCount = 1 }, false, false, true),
-                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Cancelled }, false, false, false),
-                (task with { Phase = TurnPhase.Idle }, false, false, false),
+                (Finished(TurnOutcome.Failed, "first-failed"), false, false, true),
+                (Finished(TurnOutcome.Completed, "error-finish", TurnPhase.Error) with
+                    { HasActiveWork = true, RunningJobCount = 1 }, false, false, true),
                 (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed,
                     HasActiveWork = true }, true, false, false),
-                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed }, false, true, false),
+                (Finished(TurnOutcome.Completed, "second-completed"), false, true, false),
             ];
             foreach (var theme in new[] { ThemeVariant.Light, ThemeVariant.Dark })
             {
                 window.RequestedThemeVariant = theme;
-                runtime.Tasks = [task];
-                model.Refresh();
+                tracker.ApplyActivity(task.SessionId, task);
                 await RenderAsync(window);
                 colors.Add((AssertThemeColor(window, spinner.Stroke, "AlcolerAccent"),
                     AssertThemeColor(window, completed.Background, "AlcolerSuccess"),
@@ -217,8 +222,11 @@ public sealed class TaskOverlayWindowTests
                 Assert.Equal(theme, button.ActualThemeVariant);
                 foreach (var state in states)
                 {
-                    runtime.Tasks = [state.Snapshot];
-                    model.Refresh();
+                    tracker.ApplyActivity(task.SessionId, state.Snapshot with
+                    {
+                        CompletedTurnId = state.Snapshot.CompletedTurnId is { } turnId
+                            ? new TurnId($"{theme}-{turnId.Value}") : null,
+                    });
                     await RenderAsync(window);
 
                     Assert.Same(row, Assert.Single(model.Sessions));
@@ -246,12 +254,35 @@ public sealed class TaskOverlayWindowTests
             Assert.NotEqual(colors[0].Success, colors[1].Success);
             Assert.NotEqual(colors[0].Error, colors[1].Error);
 
-            runtime.Tasks = [];
-            model.Refresh();
+            tracker.Remove(task.SessionId);
             await RenderAsync(window);
             Assert.Empty(model.Sessions);
             Assert.True(Named<TextBlock>(window, "EmptyState").IsEffectivelyVisible);
             Assert.DoesNotContain(window.GetVisualDescendants().OfType<Button>(), control => control.Classes.Contains("session"));
+        }
+        finally
+        {
+            window.Shutdown();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(null)]
+    [InlineData(TurnOutcome.Cancelled)]
+    [InlineData(TurnOutcome.ForcedStop)]
+    public async Task SessionList_ExcludesIdleCancelledForcedAndEmptyResults(TurnOutcome? outcome)
+    {
+        var task = TaskOverlayViewModelTests.TerminalSnapshot("excluded", outcome);
+        var model = new TaskOverlayViewModel(TaskOverlayViewModelTests.CreateTracker(task));
+        var window = new TaskOverlayWindow(model);
+        window.Show();
+        try
+        {
+            await RenderAsync(window);
+
+            Assert.Empty(model.Sessions);
+            Assert.True(Named<TextBlock>(window, "EmptyState").IsEffectivelyVisible);
+            Assert.DoesNotContain(window.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("session"));
         }
         finally
         {
@@ -362,6 +393,7 @@ public sealed class TaskOverlayWindowTests
         harness.Overlay.ShowNear(harness.Main);
         List<SessionId> requested = [];
         harness.Overlay.SessionRequested += requested.Add;
+        await RenderAsync(harness.Overlay);
 
         await ClickAsync(SessionButton(harness.Overlay, target.SessionId));
         await ProjectionStoreTests.WaitUntil(() =>
@@ -383,6 +415,220 @@ public sealed class TaskOverlayWindowTests
         Assert.Equal(1, harness.Runtime.Inner.ProjectionFor(target.SessionId).SnapshotCount);
         Assert.Equal(0, harness.Runtime.Inner.ProjectionFor(other.SessionId).SnapshotCount);
         Assert.Empty(harness.Runtime.Inner.Submitted);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(TurnOutcome.Completed, false)]
+    [InlineData(TurnOutcome.Completed, true)]
+    [InlineData(TurnOutcome.Failed, false)]
+    [InlineData(TurnOutcome.Failed, true)]
+    public async Task SessionClick_SelectedHiddenOrMinimizedTerminalRemainsUnreadUntilHitTestedRestore(
+        TurnOutcome outcome, bool minimize)
+    {
+        using var harness = new AppHarness();
+        var task = harness.RegisterTask("selected-terminal");
+        harness.Runtime.Tasks = [task];
+        await harness.Workbench.OpenSessionAsync(task.SessionId);
+        await RenderAsync(harness.Main);
+        var active = Assert.IsType<ConversationViewModel>(harness.Workbench.Active);
+        var resumeCount = harness.Runtime.ResumeCount;
+        harness.Main.WindowState = WindowState.Maximized;
+        if (minimize)
+            harness.Main.WindowState = WindowState.Minimized;
+        else
+            harness.Main.Hide();
+        harness.Overlay.ShowNear(harness.Main);
+        await RenderAsync(harness.Overlay);
+        var wasActive = harness.Main.IsActive;
+        var wasVisible = harness.Main.IsVisible;
+        var previousState = harness.Main.WindowState;
+        var row = Assert.Single(harness.Workbench.TaskOverlay.Sessions);
+
+        harness.FinishTask(task, outcome, "selected-hidden-result");
+        await RenderAsync(harness.Overlay);
+
+        Assert.Same(active, harness.Workbench.Active);
+        Assert.Same(row, Assert.Single(harness.Workbench.TaskOverlay.Sessions));
+        Assert.True(harness.Workbench.SessionActivities.Get(task.SessionId)!.HasUnviewedResult);
+        Assert.Equal(outcome == TurnOutcome.Completed, row.IsCompleted);
+        Assert.Equal(outcome == TurnOutcome.Failed, row.IsFailed);
+        Assert.Equal(wasActive, harness.Main.IsActive);
+        Assert.Equal(wasVisible, harness.Main.IsVisible);
+        Assert.Equal(previousState, harness.Main.WindowState);
+        Assert.Equal(resumeCount, harness.Runtime.ResumeCount);
+        AssertStatusIndicators(SessionButton(harness.Overlay, task.SessionId), busy: false,
+            completed: outcome == TurnOutcome.Completed, failed: outcome == TurnOutcome.Failed);
+        List<SessionId> requested = [];
+        harness.Overlay.SessionRequested += requested.Add;
+
+        await ClickAsync(SessionButton(harness.Overlay, task.SessionId));
+        await RenderAsync(harness.Main);
+
+        Assert.Equal(task.SessionId, Assert.Single(requested));
+        Assert.Same(active, harness.Workbench.Active);
+        Assert.True(harness.Main.IsVisible);
+        Assert.True(harness.Main.IsActive);
+        Assert.Equal(WindowState.Maximized, harness.Main.WindowState);
+        Assert.False(harness.Main.Topmost);
+        Assert.False(harness.Workbench.SessionActivities.Get(task.SessionId)!.HasUnviewedResult);
+        Assert.Empty(harness.Workbench.TaskOverlay.Sessions);
+        Assert.Equal(resumeCount, harness.Runtime.ResumeCount);
+        var summary = Assert.IsType<SessionSummaryViewModel>(SidebarSessionButton(harness.Main, task.SessionId).DataContext);
+        Assert.False(summary.IsCompleted);
+        Assert.Equal(outcome == TurnOutcome.Failed, summary.IsFailed);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(TurnOutcome.Completed)]
+    [InlineData(TurnOutcome.Failed)]
+    public async Task SessionClick_UnselectedTerminalNavigatesAndAcknowledgesOnlyItsResult(TurnOutcome outcome)
+    {
+        using var harness = new AppHarness();
+        var current = harness.RegisterTask("current-running");
+        var target = harness.RegisterTask("unselected-terminal", TurnPhase.Idle, outcome);
+        harness.Runtime.Tasks = [current, target];
+        await harness.Workbench.OpenSessionAsync(current.SessionId);
+        harness.Main.Hide();
+        harness.Overlay.ShowNear(harness.Main);
+        await RenderAsync(harness.Overlay);
+        Assert.True(harness.Workbench.SessionActivities.Get(target.SessionId)!.HasUnviewedResult);
+        Assert.False(harness.Main.IsVisible);
+
+        await ClickAsync(SessionButton(harness.Overlay, target.SessionId));
+        await ProjectionStoreTests.WaitUntil(() =>
+        {
+            Dispatcher.UIThread.RunJobs();
+            return harness.Workbench.Active?.SessionId == target.SessionId
+                && harness.Workbench.GitPane is null or { IsLoading: false };
+        });
+        await RenderAsync(harness.Main);
+
+        Assert.True(harness.Main.IsVisible);
+        Assert.True(harness.Main.IsActive);
+        Assert.Equal(target.SessionId, harness.Workbench.Active!.SessionId);
+        Assert.False(harness.Workbench.SessionActivities.Get(target.SessionId)!.HasUnviewedResult);
+        Assert.Equal(current.SessionId, Assert.Single(harness.Workbench.TaskOverlay.Sessions).SessionId);
+        Assert.Equal(2, harness.Runtime.ResumeCount);
+        Assert.Equal(2, harness.Runtime.Inner.SubscribeCount);
+        Assert.False(harness.Main.Topmost);
+        Assert.Empty(harness.Runtime.Inner.Submitted);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(TurnOutcome.Completed)]
+    [InlineData(TurnOutcome.Failed)]
+    public async Task HeaderDoubleClick_SelectedHiddenTerminalAcknowledgesWithoutReopeningSession(TurnOutcome outcome)
+    {
+        using var harness = new AppHarness();
+        var task = harness.RegisterTask("header-terminal");
+        harness.Runtime.Tasks = [task];
+        await harness.Workbench.OpenSessionAsync(task.SessionId);
+        var active = harness.Workbench.Active;
+        var resumeCount = harness.Runtime.ResumeCount;
+        harness.Main.Hide();
+        harness.Overlay.ShowNear(harness.Main);
+        harness.FinishTask(task, outcome, "header-hidden-result");
+        await RenderAsync(harness.Overlay);
+        Assert.True(harness.Workbench.SessionActivities.Get(task.SessionId)!.HasUnviewedResult);
+        Assert.Single(harness.Workbench.TaskOverlay.Sessions);
+        Assert.False(harness.Main.IsVisible);
+        var requests = 0;
+        harness.Overlay.MainWindowRequested += () => requests++;
+
+        await ClickAsync(Named<Grid>(harness.Overlay, "OverlayHeader"), clicks: 2);
+        await RenderAsync(harness.Main);
+
+        Assert.Equal(1, requests);
+        Assert.Same(active, harness.Workbench.Active);
+        Assert.True(harness.Main.IsVisible);
+        Assert.True(harness.Main.IsActive);
+        Assert.False(harness.Workbench.SessionActivities.Get(task.SessionId)!.HasUnviewedResult);
+        Assert.Empty(harness.Workbench.TaskOverlay.Sessions);
+        Assert.Equal(resumeCount, harness.Runtime.ResumeCount);
+        Assert.False(harness.Main.Topmost);
+    }
+
+    [AvaloniaTheory]
+    [InlineData(TurnOutcome.Completed)]
+    [InlineData(TurnOutcome.Failed)]
+    public async Task SidebarClick_UnseenResultDisappearsFromOverlayButFailureStaysRed(TurnOutcome outcome)
+    {
+        using var harness = new AppHarness(taskOverlayVisible: true);
+        var current = harness.RegisterTask("sidebar-current");
+        var target = harness.RegisterTask("sidebar-unseen", TurnPhase.Idle, outcome);
+        harness.Runtime.Tasks = [current, target];
+        await harness.Workbench.OpenSessionAsync(current.SessionId);
+        harness.Main.Activate();
+        await RenderAsync(harness.Main);
+        await RenderAsync(harness.Overlay);
+        Assert.True(harness.Main.IsActive);
+        Assert.True(harness.Workbench.SessionActivities.Get(target.SessionId)!.HasUnviewedResult);
+        Assert.Contains(harness.Workbench.TaskOverlay.Sessions, row => row.SessionId == target.SessionId);
+        var button = SidebarSessionButton(harness.Main, target.SessionId);
+        var summary = Assert.IsType<SessionSummaryViewModel>(button.DataContext);
+        Assert.Equal(outcome == TurnOutcome.Completed, summary.IsCompleted);
+        Assert.Equal(outcome == TurnOutcome.Failed, summary.IsFailed);
+
+        await ClickAsync(button);
+        await ProjectionStoreTests.WaitUntil(() =>
+        {
+            Dispatcher.UIThread.RunJobs();
+            return harness.Workbench.Active?.SessionId == target.SessionId
+                && harness.Workbench.GitPane is null or { IsLoading: false };
+        });
+        await RenderAsync(harness.Main);
+        await RenderAsync(harness.Overlay);
+
+        Assert.False(harness.Workbench.SessionActivities.Get(target.SessionId)!.HasUnviewedResult);
+        Assert.DoesNotContain(harness.Workbench.TaskOverlay.Sessions, row => row.SessionId == target.SessionId);
+        Assert.Equal(current.SessionId, Assert.Single(harness.Workbench.TaskOverlay.Sessions).SessionId);
+        button = SidebarSessionButton(harness.Main, target.SessionId);
+        summary = Assert.IsType<SessionSummaryViewModel>(button.DataContext);
+        Assert.True(summary.IsActive);
+        Assert.False(summary.IsCompleted);
+        Assert.Equal(outcome == TurnOutcome.Failed, summary.IsFailed);
+        Assert.False(Named<Border>(button, "PART_CompletedIndicator").IsEffectivelyVisible);
+        var failed = Named<Border>(button, "PART_FailedIndicator");
+        Assert.Equal(outcome == TurnOutcome.Failed, failed.IsEffectivelyVisible);
+        if (outcome == TurnOutcome.Failed)
+            AssertThemeColor(harness.Main, failed.Background, "AlcolerError");
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BackgroundActivity_UpdatesHiddenOverlayWithoutRestoringOrActivatingMain(bool minimize)
+    {
+        using var harness = new AppHarness();
+        var task = harness.RegisterTask("background-hidden");
+        if (minimize)
+            harness.Main.WindowState = WindowState.Minimized;
+        else
+            harness.Main.Hide();
+        Dispatcher.UIThread.RunJobs();
+        var wasVisible = harness.Main.IsVisible;
+        var wasActive = harness.Main.IsActive;
+        var previousState = harness.Main.WindowState;
+        var queries = harness.Runtime.TaskQueryCount;
+        Assert.False(harness.Overlay.IsVisible);
+        Assert.False(RefreshTimer(harness.Overlay).IsEnabled);
+
+        harness.Runtime.Tasks = [task];
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(task.SessionId, Assert.Single(harness.Workbench.TaskOverlay.Sessions).SessionId);
+        Assert.True(harness.Runtime.TaskQueryCount > queries);
+        harness.FinishTask(task, TurnOutcome.Completed, "background-hidden-finish");
+        Dispatcher.UIThread.RunJobs();
+        Assert.True(Assert.Single(harness.Workbench.TaskOverlay.Sessions).IsCompleted);
+        Assert.True(harness.Workbench.SessionActivities.Get(task.SessionId)!.HasUnviewedResult);
+        Assert.False(harness.Overlay.IsVisible);
+        Assert.False(RefreshTimer(harness.Overlay).IsEnabled);
+        Assert.Equal(wasVisible, harness.Main.IsVisible);
+        Assert.Equal(wasActive, harness.Main.IsActive);
+        Assert.Equal(previousState, harness.Main.WindowState);
+        Assert.Null(harness.Workbench.Active);
+        Assert.Equal(0, harness.Runtime.ResumeCount);
     }
 
     [AvaloniaFact]
@@ -424,53 +670,69 @@ public sealed class TaskOverlayWindowTests
     }
 
     [AvaloniaFact]
-    public async Task RefreshTimer_RunsOnlyWhileVisibleAndStopsWhenShutdownClosesWindow()
+    public async Task RefreshTimer_TicksDurationOnlyWhileVisibleWithoutQueryingRuntimeAndHiddenStateStillUpdates()
     {
-        var runtime = new TaskOverlayActivityRuntime();
-        var model = new TaskOverlayViewModel(runtime);
+        var task = TaskOverlayViewModelTests.TaskSnapshot("visible", startedAt: DateTimeOffset.UtcNow.AddSeconds(-5));
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
+        var tracker = TaskOverlayViewModelTests.CreateTracker(runtime.GetSessionActivities().ToArray());
+        var model = new TaskOverlayViewModel(tracker);
         var window = new TaskOverlayWindow(model);
         var timer = RefreshTimer(window);
         var closed = 0;
+        var queries = runtime.TaskQueryCount;
         window.Closed += (_, _) => closed++;
         try
         {
             Assert.Equal(TimeSpan.FromSeconds(1), timer.Interval);
             Assert.False(timer.IsEnabled);
-            Assert.Equal(0, runtime.TaskQueryCount);
-            runtime.Tasks = [TaskOverlayViewModelTests.TaskSnapshot("visible", startedAt: DateTimeOffset.UtcNow.AddSeconds(-5))];
             window.Show();
             await RenderAsync(window);
             Assert.True(timer.IsEnabled);
-            Assert.Single(model.Sessions);
-            var queries = runtime.TaskQueryCount;
-            var duration = model.Sessions[0].DurationText;
-            runtime.Tasks = [runtime.Tasks[0] with { Title = "Timer update" }];
+            var row = Assert.Single(model.Sessions);
+            tracker.ApplyTitle(task.SessionId, "Shared state update");
+            Assert.Equal("Shared state update", row.Title);
+            var duration = row.DurationText;
             await ProjectionStoreTests.WaitUntil(() =>
             {
                 Dispatcher.UIThread.RunJobs();
-                return runtime.TaskQueryCount > queries && model.Sessions[0].DurationText != duration;
+                return row.DurationText != duration;
             });
-            Assert.Equal("Timer update", model.Sessions[0].Title);
-            Assert.NotEqual(duration, model.Sessions[0].DurationText);
+            Assert.Equal(queries, runtime.TaskQueryCount);
 
             window.Hide();
             Assert.False(timer.IsEnabled);
-            queries = runtime.TaskQueryCount;
-            runtime.Tasks = [];
+            duration = row.DurationText;
             await Task.Delay(TimeSpan.FromMilliseconds(1200));
             Dispatcher.UIThread.RunJobs();
+            Assert.Equal(duration, row.DurationText);
             Assert.Equal(queries, runtime.TaskQueryCount);
-            Assert.Single(model.Sessions);
 
+            tracker.ApplyActivity(task.SessionId, task with
+            {
+                Phase = TurnPhase.Idle,
+                LastOutcome = TurnOutcome.Completed,
+                HasActiveWork = false,
+                ActiveWorkStartedAt = null,
+                CompletedTurnId = new TurnId("hidden-timer-finish"),
+                FinishedAt = task.StartedAt!.Value.AddSeconds(3),
+            });
+
+            Assert.False(window.IsVisible);
+            Assert.Same(row, Assert.Single(model.Sessions));
+            Assert.True(row.IsCompleted);
+            Assert.False(row.IsBusy);
+            Assert.Equal(Loc.Get("duration_seconds", 3), row.DurationText);
+            Assert.Equal(queries, runtime.TaskQueryCount);
+            tracker.SetViewingSession(task.SessionId);
+            Assert.Empty(model.Sessions);
             window.Show();
             Assert.True(timer.IsEnabled);
             Assert.Empty(model.Sessions);
-            Assert.True(runtime.TaskQueryCount > queries);
+            Assert.Equal(queries, runtime.TaskQueryCount);
             window.Shutdown();
             Assert.Equal(1, closed);
             Assert.False(window.IsVisible);
             Assert.False(timer.IsEnabled);
-            queries = runtime.TaskQueryCount;
             await Task.Delay(TimeSpan.FromMilliseconds(1200));
             Dispatcher.UIThread.RunJobs();
             Assert.Equal(queries, runtime.TaskQueryCount);
@@ -487,7 +749,7 @@ public sealed class TaskOverlayWindowTests
     [AvaloniaFact]
     public async Task Surface_UsesLightAndDarkTranslucentThemeBrushWithTransparentWindow()
     {
-        var window = new TaskOverlayWindow(new TaskOverlayViewModel(new FakeAgentRuntime()));
+        var window = new TaskOverlayWindow(new TaskOverlayViewModel(new SessionActivityTracker()));
         window.Show();
         try
         {
@@ -607,7 +869,7 @@ public sealed class TaskOverlayWindowTests
 
         var reopened = await OpenAppearanceSettingsAsync(harness);
         AssertOverlayVisibility(harness, false, Named<ToggleSwitch>(reopened, "TaskOverlayToggle"));
-        Assert.False(new TaskOverlayViewModel(harness.Runtime).IsVisible);
+        Assert.False(new TaskOverlayViewModel(harness.Workbench.SessionActivities).IsVisible);
         Assert.Equal(0, harness.Runtime.ResumeCount);
         Assert.Empty(harness.Runtime.Inner.Submitted);
     }
@@ -786,6 +1048,10 @@ public sealed class TaskOverlayWindowTests
         Assert.Single(window.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("session")
             && button.DataContext is TaskOverlaySessionViewModel row && row.SessionId == sessionId);
 
+    private static Button SidebarSessionButton(MainWindow window, SessionId sessionId) =>
+        Assert.Single(window.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("sessionItem")
+            && button.DataContext is SessionSummaryViewModel row && row.Id == sessionId);
+
     private static DispatcherTimer RefreshTimer(TaskOverlayWindow window) =>
         Assert.IsType<DispatcherTimer>(Assert.Single(typeof(TaskOverlayWindow)
             .GetFields(BindingFlags.Instance | BindingFlags.NonPublic), field => field.FieldType == typeof(DispatcherTimer)).GetValue(window));
@@ -857,6 +1123,8 @@ public sealed class TaskOverlayWindowTests
             Overlay = PrivateField<TaskOverlayWindow>(App, "_taskOverlayWindow");
             Assert.Same(Workbench.TaskOverlay, Overlay.DataContext);
             Main.Show();
+            Main.Activate();
+            Dispatcher.UIThread.RunJobs();
         }
 
         public string Root { get; } = Directory.CreateTempSubdirectory("alcoler-task-overlay-").FullName;
@@ -867,13 +1135,47 @@ public sealed class TaskOverlayWindowTests
         public MainWindow Main { get; }
         public TaskOverlayWindow Overlay { get; }
 
-        public SessionTaskSnapshot RegisterTask(string id, TurnPhase phase = TurnPhase.Streaming)
+        public SessionActivitySnapshot RegisterTask(string id, TurnPhase phase = TurnPhase.Streaming,
+            TurnOutcome? outcome = null)
         {
-            var task = TaskOverlayViewModelTests.TaskSnapshot(id, phase, DateTimeOffset.UtcNow.AddMinutes(-1))
-                with { WorkspaceRoot = Root };
+            var startedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var task = TaskOverlayViewModelTests.TaskSnapshot(id, phase, startedAt) with
+            {
+                WorkspaceRoot = Root,
+                LastOutcome = outcome,
+                LastActivityUtc = startedAt.AddSeconds(55),
+                CompletedTurnId = outcome is null ? null : new TurnId($"{id}-initial-finish"),
+                FinishedAt = outcome is null ? null : startedAt.AddSeconds(55),
+                ActiveWorkStartedAt = phase is TurnPhase.Idle or TurnPhase.Error ? null : startedAt,
+            };
             Runtime.Inner.RegisterSession(task.SessionId,
                 new ConversationSnapshot(0, 1, [], TestSnapshots.State(phase) with { Title = task.Title }), Root);
+            Runtime.SessionSummaries = [.. Runtime.SessionSummaries,
+                new SessionSummary(task.SessionId, task.Title, Root, PermissionMode.Build, null, startedAt, task.LastActivityUtc)];
             return task;
+        }
+
+        public SessionActivitySnapshot FinishTask(SessionActivitySnapshot task, TurnOutcome outcome, string turnId)
+        {
+            var finished = task with
+            {
+                Phase = TurnPhase.Idle,
+                LastOutcome = outcome,
+                HasActiveWork = false,
+                IsAwaitingConfirmation = false,
+                RunningJobCount = 0,
+                RunningSubagentCount = 0,
+                ActiveWorkStartedAt = null,
+                CompletedTurnId = new TurnId(turnId),
+                FinishedAt = DateTimeOffset.UtcNow,
+                LastActivityUtc = DateTimeOffset.UtcNow,
+            };
+            var state = TestSnapshots.State(TurnPhase.Idle) with { Title = task.Title };
+            var projection = Runtime.Inner.ProjectionFor(task.SessionId);
+            projection.SetSnapshot(new ConversationSnapshot(0, 2, [], state));
+            projection.Emit(new ConversationDelta(2, [new StatePatched(state)]));
+            Runtime.Tasks = Runtime.Tasks.Select(existing => existing.SessionId == task.SessionId ? finished : existing).ToArray();
+            return finished;
         }
 
         public void Dispose()

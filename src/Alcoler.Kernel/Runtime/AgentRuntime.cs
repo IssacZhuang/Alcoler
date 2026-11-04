@@ -83,7 +83,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     private readonly ConcurrentDictionary<SessionId, SessionRuntime> _sessions = new();
     private readonly object _resumeSync = new();
     private readonly Dictionary<SessionId, ResumeGate> _resumeGates = [];
-    private readonly ConcurrentDictionary<(SessionId Parent, SessionId Child), WeakReference<AgentRuntime>> _subagentRuntimes = new();
+    private readonly ConcurrentDictionary<(SessionId Parent, SessionId Child), SubagentActivitySubscription> _subagentRuntimes = new();
     private readonly ConcurrentDictionary<SubagentMessenger, byte> _subagentMessengers = new();
     private readonly ToolRegistry _tools;
     private readonly ConcurrentDictionary<(long Generation, string ProviderId, string ModelId), IChatModel> _modelCache = new();
@@ -413,6 +413,12 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         await removed.DisposeAsync().ConfigureAwait(false);
         foreach (var child in children)
             await child.DisposeAsync().ConfigureAwait(false);
+        if (!Volatile.Read(ref _disposed))
+        {
+            SessionActivityChanged?.Invoke(sessionId);
+            if (removed.ParentSessionId is { } parent)
+                NotifySessionActivityChanged(parent);
+        }
         return true;
     }
 
@@ -445,7 +451,10 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             children.UnionWith(lease.DetachRuntimes(forget));
         foreach (var (key, reference) in _subagentRuntimes.ToArray())
         {
-            if (key.Parent == parent && _subagentRuntimes.TryRemove(key, out _) && reference.TryGetTarget(out var child))
+            if (key.Parent != parent || !_subagentRuntimes.TryRemove(key, out var removed))
+                continue;
+            removed.Dispose();
+            if (removed.TryGetTarget(out var child))
                 children.Add(child);
         }
         return children;
@@ -495,6 +504,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         var deletion = await _options.Store.DeleteArchivedSessionsAsync(cancellationToken).ConfigureAwait(false);
         foreach (var sessionId in deletion.DeletedSessionIds)
         {
+            SessionDeleted?.Invoke(sessionId);
             try
             {
                 await _options.Artifacts
@@ -572,43 +582,37 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 
     public SessionActivitySnapshot? GetSessionActivity(SessionId sessionId) =>
         !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime)
-            ? runtime.ActivitySnapshot()
+            ? GetActivitySnapshot(runtime, [], [])
             : null;
 
-    public IReadOnlyList<SessionTaskSnapshot> GetActiveSessionTasks()
+    public IReadOnlyList<SessionActivitySnapshot> GetSessionActivities()
     {
         if (Volatile.Read(ref _disposed))
             return [];
 
-        var tasks = new List<SessionTaskSnapshot>();
+        var activities = new List<SessionActivitySnapshot>();
         foreach (var (_, session) in _sessions)
         {
-            if (session.ParentSessionId is not null)
-                continue;
-            var snapshot = GetTaskSnapshot(session, [], [], out var hasWork);
-            if (snapshot is not null && hasWork)
-                tasks.Add(snapshot);
+            if (session.ParentSessionId is null && GetActivitySnapshot(session, [], []) is { } snapshot)
+                activities.Add(snapshot);
         }
-        return Volatile.Read(ref _disposed) ? [] : tasks;
+        return Volatile.Read(ref _disposed) ? [] : activities;
     }
 
-    private SessionTaskSnapshot? GetTaskSnapshot(
+    private SessionActivitySnapshot? GetActivitySnapshot(
         SessionRuntime session,
         HashSet<SessionId> visited,
-        HashSet<SubagentId> runningSubagents,
-        out bool hasWork)
+        HashSet<SubagentId> runningSubagents)
     {
-        hasWork = false;
         if (Volatile.Read(ref _disposed) || !visited.Add(session.SessionId)
-            || session.TaskSnapshot(runningSubagents) is not { } snapshot)
+            || session.ActivitySnapshot(runningSubagents) is not { } snapshot)
             return null;
 
-        var active = snapshot.Phase is not (TurnPhase.Idle or TurnPhase.Error) || session.HasPendingInputs
-            || snapshot.RunningJobCount > 0 || snapshot.RunningSubagentCount > 0;
+        var active = snapshot.HasActiveWork;
         var jobs = snapshot.RunningJobCount;
         var subagents = snapshot.RunningSubagentCount;
         var awaitingConfirmation = snapshot.IsAwaitingConfirmation;
-        var startedAt = snapshot.StartedAt;
+        var startedAt = snapshot.ActiveWorkStartedAt;
         var lastActivity = snapshot.LastActivityUtc;
 
         foreach (var (_, child) in _sessions)
@@ -626,26 +630,25 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
 
         if (Volatile.Read(ref _disposed) || session.IsDisposed)
             return null;
-        hasWork = active;
         return snapshot with
         {
             LastActivityUtc = lastActivity,
             RunningJobCount = jobs,
             RunningSubagentCount = subagents,
             IsAwaitingConfirmation = awaitingConfirmation,
-            StartedAt = startedAt,
+            ActiveWorkStartedAt = startedAt,
             HasActiveWork = active,
         };
 
         void IncludeChild(AgentRuntime owner, SessionRuntime child)
         {
-            if (owner.GetTaskSnapshot(child, visited, runningSubagents, out var childHasWork) is not { } childSnapshot)
+            if (owner.GetActivitySnapshot(child, visited, runningSubagents) is not { } childSnapshot)
                 return;
-            active |= childHasWork;
+            active |= childSnapshot.HasActiveWork;
             jobs += childSnapshot.RunningJobCount;
             subagents += childSnapshot.RunningSubagentCount;
             awaitingConfirmation |= childSnapshot.IsAwaitingConfirmation;
-            if (childSnapshot.StartedAt is { } childStart && (startedAt is null || childStart < startedAt))
+            if (childSnapshot.ActiveWorkStartedAt is { } childStart && (startedAt is null || childStart < startedAt))
                 startedAt = childStart;
             if (childSnapshot.LastActivityUtc > lastActivity)
                 lastActivity = childSnapshot.LastActivityUtc;
@@ -657,6 +660,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
     public event Action<SessionId, string>? SessionTitleChanged;
 
     public event Action? SessionListChanged;
+
+    public event Action<SessionId>? SessionDeleted;
 
     public bool StopBackgroundJob(SessionId sessionId, BackgroundJobId jobId) =>
         !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime) && runtime.StopBackgroundJob(jobId);
@@ -728,22 +733,39 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         _sessions[runtime.SessionId] = runtime;
         foreach (var messenger in _subagentMessengers.Keys)
             messenger.ActivateParent(runtime.SessionId);
+        NotifySessionActivityChanged(runtime.SessionId);
         return runtime;
     }
 
-    private void OnSessionTitleChanged(SessionRuntime runtime, string title) =>
+    private void OnSessionTitleChanged(SessionRuntime runtime, string title)
+    {
         SessionTitleChanged?.Invoke(runtime.SessionId, title);
+        NotifySessionActivityChanged(runtime.SessionId);
+    }
 
     private void OnSessionTurnStarted(SessionRuntime runtime) =>
-        SessionActivityChanged?.Invoke(runtime.SessionId);
+        NotifySessionActivityChanged(runtime.SessionId);
 
     private void OnSessionActivityChanged(SessionRuntime runtime) =>
-        SessionActivityChanged?.Invoke(runtime.SessionId);
+        NotifySessionActivityChanged(runtime.SessionId);
 
     private ValueTask OnSessionTurnFinished(SessionRuntime runtime, TurnOutcome outcome)
     {
-        SessionActivityChanged?.Invoke(runtime.SessionId);
+        NotifySessionActivityChanged(runtime.SessionId);
         return ValueTask.CompletedTask;
+    }
+
+    private void NotifySessionActivityChanged(SessionId sessionId)
+    {
+        HashSet<SessionId> visited = [];
+        while (!Volatile.Read(ref _disposed) && visited.Add(sessionId)
+            && _sessions.TryGetValue(sessionId, out var session))
+        {
+            SessionActivityChanged?.Invoke(sessionId);
+            if (session.ParentSessionId is not { } parent)
+                break;
+            sessionId = parent;
+        }
     }
 
     // A host-provided AgentInstructions value is treated as the workspace source verbatim;
@@ -766,9 +788,49 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             return;
 
         var key = (parentSessionId, childSessionId);
-        _subagentRuntimes[key] = new WeakReference<AgentRuntime>(runtime);
+        var subscription = new SubagentActivitySubscription(this, key, runtime);
+        _subagentRuntimes.AddOrUpdate(key, subscription, (_, previous) =>
+        {
+            previous.Dispose();
+            return subscription;
+        });
         if (Volatile.Read(ref _disposed))
-            _subagentRuntimes.TryRemove(key, out _);
+        {
+            if (_subagentRuntimes.TryRemove(key, out var removed))
+                removed.Dispose();
+            return;
+        }
+        NotifySessionActivityChanged(parentSessionId);
+    }
+
+    private sealed class SubagentActivitySubscription : IDisposable
+    {
+        private readonly WeakReference<AgentRuntime> _owner;
+        private readonly WeakReference<AgentRuntime> _runtime;
+        private readonly (SessionId Parent, SessionId Child) _key;
+
+        public SubagentActivitySubscription(AgentRuntime owner, (SessionId Parent, SessionId Child) key, AgentRuntime runtime)
+        {
+            _owner = new(owner);
+            _runtime = new(runtime);
+            _key = key;
+            runtime.SessionActivityChanged += OnActivityChanged;
+        }
+
+        public bool TryGetTarget(out AgentRuntime runtime) => _runtime.TryGetTarget(out runtime!);
+
+        private void OnActivityChanged(SessionId sessionId)
+        {
+            if (sessionId == _key.Child && _owner.TryGetTarget(out var owner)
+                && owner._subagentRuntimes.TryGetValue(_key, out var current) && ReferenceEquals(current, this))
+                owner.NotifySessionActivityChanged(_key.Parent);
+        }
+
+        public void Dispose()
+        {
+            if (_runtime.TryGetTarget(out var runtime))
+                runtime.SessionActivityChanged -= OnActivityChanged;
+        }
     }
 
     internal SessionRuntime? GetSession(SessionId sessionId) =>
@@ -814,6 +876,8 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
                 CancellationToken.None).ConfigureAwait(false);
         foreach (var parent in _subagentMessengers.Keys.SelectMany(messenger => messenger.ParentIds).Distinct())
             await DetachSubagentsAsync(parent, forget: true, CancellationToken.None).ConfigureAwait(false);
+        foreach (var subscription in _subagentRuntimes.Values)
+            subscription.Dispose();
         _subagentRuntimes.Clear();
         _subagentMessengers.Clear();
     }

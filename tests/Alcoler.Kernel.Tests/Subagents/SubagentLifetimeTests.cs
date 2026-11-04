@@ -63,6 +63,31 @@ public class SubagentLifetimeTests
     }
 
     [Fact]
+    public async Task ActivitySubscriptions_DoNotRetainUnownedChildRuntimesOrRegistryObservers()
+    {
+        await using var fixture = new Fixture(new ControlledModel());
+        var parent = await fixture.CreateParentAsync();
+        var references = await RegisterUnownedChildAsync(fixture, parent);
+        await AssertCollectedAsync(references.Runtime);
+        await AssertCollectedAsync(references.Session);
+        Assert.NotNull(fixture.Runtime.GetSession(parent));
+        Assert.Single(fixture.Runtime.GetSessionActivities());
+        GC.KeepAlive(fixture);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<(WeakReference<AgentRuntime> Runtime, WeakReference<SessionRuntime> Session)> RegisterUnownedChildAsync(
+        Fixture fixture, SessionId parent)
+    {
+        var runtime = new AgentRuntime(fixture.Runtime.Options);
+        var child = await runtime.CreateSessionAsync(
+            new SessionOptions(fixture.Runtime.GetSession(parent)!.WorkspaceRoot, ParentSessionId: parent), CancellationToken.None);
+        fixture.Runtime.RegisterSubagentRuntime(parent, child.Id, runtime);
+        Assert.NotNull(fixture.Runtime.GetSessionActivity(parent));
+        return (new WeakReference<AgentRuntime>(runtime), new WeakReference<SessionRuntime>(runtime.GetSession(child.Id)!));
+    }
+
+    [Fact]
     public async Task ParentUnload_ReleasesHeavyGraphs_ColdResumesSameChild_AndStopStillWorks()
     {
         await using var fixture = new Fixture(new ControlledModel { HoldResumedRuns = true });

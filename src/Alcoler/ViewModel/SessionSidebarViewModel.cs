@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Localization;
@@ -210,10 +209,15 @@ public static class RelativeTime
 public sealed partial class SessionSidebarViewModel : ObservableObject
 {
     private readonly Func<Task> _refreshSource;
-    private readonly Dictionary<SessionId, SessionActivityIndicator> _indicators = [];
+    private readonly SessionActivityTracker _activities;
     private readonly Dictionary<SessionId, SessionSummaryViewModel> _sessionsById = [];
 
-    public SessionSidebarViewModel(Func<Task> refreshSource) => _refreshSource = refreshSource;
+    public SessionSidebarViewModel(Func<Task> refreshSource, SessionActivityTracker? activities = null)
+    {
+        _refreshSource = refreshSource;
+        _activities = activities ?? new SessionActivityTracker();
+        _activities.Changed += OnActivityChanged;
+    }
 
     public ObservableCollection<SessionGroupViewModel> Groups { get; } = [];
 
@@ -252,19 +256,6 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
 
     public void ApplySummaries(IReadOnlyList<SessionSummaryViewModel> summaries)
     {
-        if (_indicators.Count > 0)
-        {
-            // Active entries may belong to sessions created after this listing was taken.
-            var listed = summaries.Select(summary => summary.Id).ToHashSet();
-            foreach (var stale in _indicators
-                         .Where(pair => !listed.Contains(pair.Key)
-                             && pair.Value is not (SessionActivityIndicator.Running or SessionActivityIndicator.AwaitingConfirmation))
-                         .ToArray())
-            {
-                _indicators.Remove(stale.Key);
-            }
-        }
-
         // Same grouping, key order and per-group ordering a full rebuild produces.
         var desired = summaries
             .GroupBy(s => s.WorkspaceRoot, StringComparer.OrdinalIgnoreCase)
@@ -305,9 +296,7 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
                 resolvedById[incoming.Id] = vm;
                 resolved[index] = vm;
                 var isActive = incoming.Id == ActiveSessionId;
-                if (isActive && _indicators.GetValueOrDefault(incoming.Id) == SessionActivityIndicator.Completed)
-                    _indicators.Remove(incoming.Id);
-                var indicator = _indicators.GetValueOrDefault(incoming.Id);
+                var indicator = _activities.Get(incoming.Id)?.Indicator ?? SessionActivityIndicator.None;
                 vm.IsActive = isActive;
                 vm.Indicator = indicator;
                 // Callers keep handing freshly built instances; keep their state in
@@ -361,64 +350,15 @@ public sealed partial class SessionSidebarViewModel : ObservableObject
     {
         ActiveSessionId = sessionId;
         foreach (var session in _sessionsById.Values)
-        {
             session.IsActive = session.Id == sessionId;
-            if (session.IsActive && session.Indicator == SessionActivityIndicator.Completed)
-            {
-                RecordIndicator(session.Id, SessionActivityIndicator.None);
-            }
-        }
     }
 
-    public void ApplyActivity(SessionId sessionId, SessionActivitySnapshot? activity)
-    {
-        var indicator = activity switch
-        {
-            null => SessionActivityIndicator.None,
-            { Phase: TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction }
-                => SessionActivityIndicator.AwaitingConfirmation,
-            { Phase: not TurnPhase.Idle } => SessionActivityIndicator.Running,
-            { LastOutcome: TurnOutcome.Failed } => SessionActivityIndicator.Failed,
-            // Completion is acknowledged when the task is opened, matching the unread dot.
-            { LastOutcome: TurnOutcome.Completed } when ActiveSessionId != sessionId
-                => SessionActivityIndicator.Completed,
-            _ => SessionActivityIndicator.None,
-        };
-        RecordIndicator(sessionId, indicator);
-    }
+    public void ApplyActivity(SessionId sessionId, SessionActivitySnapshot? activity) =>
+        _activities.ApplyActivity(sessionId, activity);
 
-    /// <summary>Restores only non-terminal state; opening a completed task must not resurrect its indicator.</summary>
-    public void SyncActiveState(SessionId sessionId, SessionActivitySnapshot? activity)
+    private void OnActivityChanged()
     {
-        var indicator = activity switch
-        {
-            { Phase: TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction }
-                => SessionActivityIndicator.AwaitingConfirmation,
-            { Phase: not TurnPhase.Idle } => SessionActivityIndicator.Running,
-            _ => SessionActivityIndicator.None,
-        };
-        if (indicator != SessionActivityIndicator.None)
-        {
-            RecordIndicator(sessionId, indicator);
-        }
-        else if (_indicators.GetValueOrDefault(sessionId) is
-                 SessionActivityIndicator.Running or SessionActivityIndicator.AwaitingConfirmation)
-        {
-            RecordIndicator(sessionId, SessionActivityIndicator.None);
-        }
-    }
-
-    private void RecordIndicator(SessionId sessionId, SessionActivityIndicator indicator)
-    {
-        if (indicator == SessionActivityIndicator.None)
-        {
-            _indicators.Remove(sessionId);
-        }
-        else
-        {
-            _indicators[sessionId] = indicator;
-        }
-        if (_sessionsById.TryGetValue(sessionId, out var session))
-            session.Indicator = indicator;
+        foreach (var session in _sessionsById.Values)
+            session.Indicator = _activities.Get(session.Id)?.Indicator ?? SessionActivityIndicator.None;
     }
 }

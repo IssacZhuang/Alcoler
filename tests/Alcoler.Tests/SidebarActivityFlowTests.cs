@@ -26,6 +26,122 @@ public sealed class SidebarActivityFlowTests : IDisposable
 
     private string DatabasePath => Path.Combine(_root, "sessions.sqlite");
 
+    [Theory]
+    [InlineData(TurnOutcome.Completed)]
+    [InlineData(TurnOutcome.Failed)]
+    public async Task SelectedSessionFinishedWhileUnviewedRetainsResultUntilActuallyViewed(TurnOutcome outcome)
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        ScriptStep terminal = outcome == TurnOutcome.Completed
+            ? Reply("finished")
+            : new ScriptStep.Fail(new ModelFailure(ModelFailureKind.AuthenticationFailed, "bad key"));
+        await using var runtime = CreateRuntime(store, [], terminal, terminal);
+        var watched = await runtime.CreateSessionAsync(new SessionOptions(_root, "Watched"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.OpenSessionAsync(watched.Id);
+        scheduler.RunPending();
+        Assert.False(workbench.TaskOverlay.IsVisible);
+        Assert.Equal(watched.Id, workbench.Sidebar.ActiveSessionId);
+
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "finish"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => workbench.SessionActivities.Get(watched.Id) is
+            { HasUnviewedResult: true, Activity.Phase: TurnPhase.Idle }, scheduler);
+        var first = workbench.SessionActivities.Get(watched.Id)!.Activity;
+        Assert.NotNull(first.CompletedTurnId);
+        Assert.NotNull(first.StartedAt);
+        Assert.NotNull(first.FinishedAt);
+        var row = Assert.Single(workbench.TaskOverlay.Sessions);
+        Assert.Equal(outcome == TurnOutcome.Completed, row.IsCompleted);
+        Assert.Equal(outcome == TurnOutcome.Failed, row.IsFailed);
+        var duration = row.DurationText;
+        workbench.TaskOverlay.Refresh(DateTimeOffset.UtcNow.AddDays(1));
+        Assert.Equal(duration, row.DurationText);
+        Assert.False(row.IsBusy);
+
+        await workbench.Sidebar.RefreshAsync();
+        Assert.True(workbench.SessionActivities.Get(watched.Id)!.HasUnviewedResult);
+        workbench.SetConversationViewActive(true);
+        Assert.Empty(workbench.TaskOverlay.Sessions);
+        await workbench.Sidebar.RefreshAsync();
+        Assert.Empty(workbench.TaskOverlay.Sessions);
+        Assert.Equal(outcome == TurnOutcome.Failed, FindSession(workbench, watched.Id).IsFailed);
+
+        workbench.SetConversationViewActive(false);
+        ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "finish again"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => workbench.SessionActivities.Get(watched.Id) is
+            { HasUnviewedResult: true, Activity.Phase: TurnPhase.Idle } latest
+            && latest.Activity.CompletedTurnId != first.CompletedTurnId, scheduler);
+        Assert.Single(workbench.TaskOverlay.Sessions);
+        await workbench.OpenSessionAsync(watched.Id);
+        Assert.Single(workbench.TaskOverlay.Sessions);
+        workbench.SetConversationViewActive(true);
+        await workbench.OpenSessionAsync(watched.Id);
+        Assert.Empty(workbench.TaskOverlay.Sessions);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
+    [Theory]
+    [InlineData(TurnOutcome.Completed)]
+    [InlineData(TurnOutcome.Failed)]
+    public async Task SidebarArchiveAndRemovedWorkspaceFiltersDoNotDiscardUnviewedResults(TurnOutcome outcome)
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        ScriptStep terminal = outcome == TurnOutcome.Completed
+            ? Reply("finished")
+            : new ScriptStep.Fail(new ModelFailure(ModelFailureKind.AuthenticationFailed, "bad key"));
+        await using var runtime = CreateRuntime(store, [], terminal);
+        var watched = await runtime.CreateSessionAsync(new SessionOptions(_root, "Watched"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        await workbench.Sidebar.RefreshAsync();
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "finish"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => workbench.SessionActivities.Get(watched.Id) is
+            { HasUnviewedResult: true, Activity.Phase: TurnPhase.Idle }, scheduler);
+        var row = Assert.Single(workbench.TaskOverlay.Sessions);
+
+        await workbench.ToggleArchivedViewAsync();
+        Assert.Empty(workbench.Sidebar.Groups);
+        Assert.Same(row, Assert.Single(workbench.TaskOverlay.Sessions));
+        await workbench.ToggleArchivedViewAsync();
+        await workbench.RemoveWorkspaceAsync(_root);
+        Assert.Empty(workbench.Sidebar.Groups);
+        Assert.Same(row, Assert.Single(workbench.TaskOverlay.Sessions));
+        Assert.True(workbench.SessionActivities.Get(watched.Id)!.HasUnviewedResult);
+    }
+
+    [Fact]
+    public async Task ArchivedSessionDeletedOutsideWorkbenchDiscardsItsRetainedResult()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, [], Reply("finished"));
+        var watched = await runtime.CreateSessionAsync(new SessionOptions(_root, "Watched"), CancellationToken.None);
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        var ack = await runtime.SubmitAsync(
+            new SendTextCommand(StrongId.NewCommandId(), watched.Id, 0, "finish"), CancellationToken.None);
+        Assert.True(ack.Accepted, ack.RejectionReason);
+        await WaitUntilAsync(() => workbench.SessionActivities.Get(watched.Id) is
+            { HasUnviewedResult: true, Activity.Phase: TurnPhase.Idle }, scheduler);
+        Assert.Single(workbench.TaskOverlay.Sessions);
+        await runtime.SetSessionArchivedAsync(watched.Id, true, CancellationToken.None);
+
+        Assert.Equal(1, await runtime.DeleteArchivedSessionsAsync(CancellationToken.None));
+        await WaitUntilAsync(() => workbench.SessionActivities.Get(watched.Id) is null, scheduler);
+
+        Assert.Empty(workbench.TaskOverlay.Sessions);
+        Assert.Null(await store.GetSessionAsync(watched.Id, CancellationToken.None));
+    }
+
     [Fact]
     public async Task RunningCompletionAndFailure_ReachTheSidebarOfNonActiveSessions()
     {

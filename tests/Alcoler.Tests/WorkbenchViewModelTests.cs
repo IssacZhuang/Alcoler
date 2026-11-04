@@ -32,6 +32,104 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
     private string DatabasePath => Path.Combine(_root, "sessions.sqlite");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OpenSession_FailedResumeOrProjectionDoesNotAcknowledgeResult(bool projectionFailure)
+    {
+        var runtime = new FakeAgentRuntime();
+        var id = StrongId.NewSessionId();
+        var projection = runtime.RegisterSession(id, new ConversationSnapshot(0, 1, [], TestSnapshots.State()), _root);
+        using var workbench = new WorkbenchViewModel(runtime, new QueuedUiScheduler(), new WorkbenchConfig([]));
+        workbench.SessionActivities.ApplyActivity(id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed)
+        {
+            SessionId = id,
+            CompletedTurnId = StrongId.NewTurnId(),
+        });
+        workbench.SetConversationViewActive(true);
+        if (projectionFailure)
+            projection.BeforeSnapshot = () => throw new IOException("Snapshot unavailable");
+        else
+            runtime.ResumeHandler = (_, _) => throw new IOException("Resume unavailable");
+
+        await Assert.ThrowsAsync<IOException>(() => workbench.OpenSessionAsync(id));
+
+        Assert.Null(workbench.Active);
+        Assert.True(workbench.SessionActivities.Get(id)!.HasUnviewedResult);
+        Assert.Equal(id, Assert.Single(workbench.TaskOverlay.Sessions).SessionId);
+    }
+
+    [Fact]
+    public async Task OpenSession_CancelledNavigationDoesNotAcknowledgeResult()
+    {
+        var runtime = new FakeAgentRuntime();
+        var id = StrongId.NewSessionId();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<SessionHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
+        runtime.ResumeHandler = (_, token) =>
+        {
+            entered.TrySetResult();
+            return new ValueTask<SessionHandle>(pending.Task.WaitAsync(token));
+        };
+        using var workbench = new WorkbenchViewModel(runtime, new QueuedUiScheduler(), new WorkbenchConfig([]));
+        workbench.SessionActivities.ApplyActivity(id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Failed)
+        {
+            SessionId = id,
+            CompletedTurnId = StrongId.NewTurnId(),
+        });
+        workbench.SetConversationViewActive(true);
+        using var cancellation = new CancellationTokenSource();
+        var opening = workbench.OpenSessionAsync(id, cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => opening);
+
+        Assert.Null(workbench.Active);
+        Assert.True(workbench.SessionActivities.Get(id)!.HasUnviewedResult);
+        Assert.True(Assert.Single(workbench.TaskOverlay.Sessions).IsFailed);
+    }
+
+    [Fact]
+    public async Task OpenSession_SupersededNavigationAcknowledgesOnlyTheAdoptedConversation()
+    {
+        var runtime = new FakeAgentRuntime();
+        var first = StrongId.NewSessionId();
+        var second = StrongId.NewSessionId();
+        runtime.RegisterSession(first, new ConversationSnapshot(0, 1, [], TestSnapshots.State()), _root);
+        runtime.RegisterSession(second, new ConversationSnapshot(0, 1, [], TestSnapshots.State()), _root);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<SessionHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
+        runtime.ResumeHandler = (id, _) =>
+        {
+            if (id == second)
+                return ValueTask.FromResult(new SessionHandle(id, _root, "Second"));
+            entered.TrySetResult();
+            return new ValueTask<SessionHandle>(pending.Task);
+        };
+        var scheduler = new QueuedUiScheduler();
+        using var workbench = new WorkbenchViewModel(runtime, scheduler, new WorkbenchConfig([]));
+        foreach (var id in new[] { first, second })
+            workbench.SessionActivities.ApplyActivity(id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed)
+            {
+                SessionId = id,
+                CompletedTurnId = StrongId.NewTurnId(),
+            });
+        workbench.SetConversationViewActive(true);
+        var opening = workbench.OpenSessionAsync(first);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await workbench.OpenSessionAsync(second);
+        pending.TrySetResult(new SessionHandle(first, _root, "First"));
+        await opening;
+
+        Assert.Equal(second, workbench.Active!.SessionId);
+        Assert.True(workbench.SessionActivities.Get(first)!.HasUnviewedResult);
+        Assert.False(workbench.SessionActivities.Get(second)!.HasUnviewedResult);
+        Assert.Equal(first, Assert.Single(workbench.TaskOverlay.Sessions).SessionId);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
+    }
+
     [Fact]
     public async Task Draft_FirstSubmitPersistsAndOpensOneConversation()
     {

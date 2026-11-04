@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Alcoler.Adapters.Models;
+using Alcoler.Adapters.Storage;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Events;
@@ -23,14 +24,14 @@ namespace Alcoler.Kernel.Tests.Runtime;
 public class SessionActivityRuntimeTests
 {
     [Fact]
-    public void ActiveTasks_DefaultImplementationRemainsEmpty()
+    public void SessionActivities_DefaultImplementationRemainsEmpty()
     {
         ISessionActivityRuntime activity = new LegacyActivityRuntime();
-        Assert.Empty(activity.GetActiveSessionTasks());
+        Assert.Empty(activity.GetSessionActivities());
     }
 
     [Fact]
-    public async Task ActiveTasks_OnlyReadResidentWorkAndKeepTheActualTurnStart()
+    public async Task SessionActivities_OnlyReadResidentWorkAndKeepTheActualTurnStart()
     {
         var clock = new ManualTimeProvider();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -55,7 +56,18 @@ public class SessionActivityRuntimeTests
         await runtime.CreateSessionAsync(new SessionOptions(harness.Root, "idle"), CancellationToken.None);
         var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root, "working"), CancellationToken.None);
         var activity = Assert.IsAssignableFrom<ISessionActivityRuntime>(runtime);
-        Assert.Empty(activity.GetActiveSessionTasks());
+        var initial = activity.GetSessionActivities();
+        Assert.Equal(2, initial.Count);
+        Assert.All(initial, snapshot =>
+        {
+            Assert.False(snapshot.HasActiveWork);
+            Assert.Null(snapshot.LastOutcome);
+            Assert.Null(snapshot.StartedAt);
+            Assert.Null(snapshot.FinishedAt);
+            Assert.Null(snapshot.CompletedTurnId);
+            Assert.Null(snapshot.ActiveWorkStartedAt);
+        });
+        Assert.Null(activity.GetSessionActivity(cold.Id));
         using var projection = runtime.Subscribe(session.Id);
         var startedAt = clock.GetUtcNow();
         var ack = await runtime.SubmitAsync(
@@ -74,7 +86,7 @@ public class SessionActivityRuntimeTests
             var reads = store.ReadCount;
             for (var poll = 0; poll < 3; poll++)
             {
-                var task = Assert.Single(activity.GetActiveSessionTasks());
+                var task = Assert.Single(activity.GetSessionActivities(), snapshot => snapshot.HasActiveWork);
                 Assert.Equal(session.Id, task.SessionId);
                 Assert.Equal("renamed", task.Title);
                 Assert.Equal(harness.Root, task.WorkspaceRoot);
@@ -96,18 +108,128 @@ public class SessionActivityRuntimeTests
             release.TrySetResult();
             await WaitForRepliesAsync(projection, 1);
             await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.Idle);
-            Assert.Empty(activity.GetActiveSessionTasks());
+            Assert.Equal(2, activity.GetSessionActivities().Count);
+            Assert.All(activity.GetSessionActivities(), snapshot => Assert.False(snapshot.HasActiveWork));
+            var completed = Assert.Single(activity.GetSessionActivities(), snapshot => snapshot.SessionId == session.Id);
+            Assert.Equal(TurnOutcome.Completed, completed.LastOutcome);
+            Assert.Equal(startedAt, completed.StartedAt);
+            Assert.NotNull(completed.FinishedAt);
+            Assert.NotNull(completed.CompletedTurnId);
+            Assert.Null(completed.ActiveWorkStartedAt);
         }
         finally
         {
             release.TrySetResult();
         }
         await runtime.DisposeAsync();
-        Assert.Empty(activity.GetActiveSessionTasks());
+        Assert.Empty(activity.GetSessionActivities());
+    }
+
+    [Theory]
+    [InlineData(TurnOutcome.Completed)]
+    [InlineData(TurnOutcome.Failed)]
+    public async Task SessionActivities_RetainExactCompletedTimingAndDistinctRepeatedTurnIdentity(TurnOutcome outcome)
+    {
+        var clock = new ManualTimeProvider();
+        var entered = new[]
+        {
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        var release = new[]
+        {
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        var run = -1;
+        var gate = new FakeTool("RepeatedGate", execute: async (_, ct) =>
+        {
+            var index = Interlocked.Increment(ref run);
+            entered[index].TrySetResult();
+            await release[index].Task.WaitAsync(ct);
+            return ToolExecutionResult.Text("released");
+        });
+        var terminal = outcome == TurnOutcome.Completed
+            ? Reply()
+            : new ScriptStep.Fail(new ModelFailure(ModelFailureKind.AuthenticationFailed, "same failure"));
+        await using var harness = TestHarness.Create(CallTool("RepeatedGate", new { }), terminal,
+            CallTool("RepeatedGate", new { }), terminal);
+        await using var runtime = harness.BuildRuntime(options => options with { Clock = clock }, gate);
+        var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        var changes = new ConcurrentQueue<SessionActivitySnapshot>();
+        runtime.SessionActivityChanged += id =>
+        {
+            if (id == session.Id && runtime.GetSessionActivity(id) is { } snapshot)
+                changes.Enqueue(snapshot);
+        };
+        var firstStart = clock.GetUtcNow();
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, 0, "first"), CancellationToken.None)).Accepted);
+        await entered[0].Task.WaitAsync(TimeSpan.FromSeconds(10));
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var firstFinish = clock.GetUtcNow();
+        release[0].TrySetResult();
+        await WaitUntilAsync(() => runtime.GetSessionActivity(session.Id) is { HasActiveWork: false, CompletedTurnId: not null });
+        var first = Assert.IsType<SessionActivitySnapshot>(runtime.GetSessionActivity(session.Id));
+        Assert.Equal(outcome, first.LastOutcome);
+        Assert.Equal(firstStart, first.StartedAt);
+        Assert.Equal(firstFinish, first.FinishedAt);
+        Assert.Null(first.ActiveWorkStartedAt);
+        await WaitUntilAsync(() => changes.Any(snapshot => snapshot.CompletedTurnId == first.CompletedTurnId && !snapshot.HasActiveWork));
+
+        clock.Advance(TimeSpan.FromHours(1));
+        Assert.True((await runtime.SubmitAsync(new RenameSessionCommand(
+            StrongId.NewCommandId(), session.Id, 0, "renamed"), CancellationToken.None)).Accepted);
+        var renamed = Assert.Single(runtime.GetSessionActivities());
+        Assert.Equal(clock.GetUtcNow(), renamed.LastActivityUtc);
+        Assert.Equal(first.StartedAt, renamed.StartedAt);
+        Assert.Equal(first.FinishedAt, renamed.FinishedAt);
+        Assert.Equal(first.CompletedTurnId, renamed.CompletedTurnId);
+
+        if (outcome == TurnOutcome.Failed)
+        {
+            // Failed sequence steps stay on the same cursor for retries.
+            runtime.ApplyProviderConfiguration([new ScriptedModelProvider(new SequencedChatModel(
+                [CallTool("RepeatedGate", new { }), terminal], harness.ScriptedModel.Descriptor))], runtime.Options.DefaultModel);
+        }
+        var secondStart = clock.GetUtcNow();
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, 0, "second"), CancellationToken.None)).Accepted);
+        await entered[1].Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var active = Assert.Single(runtime.GetSessionActivities());
+        Assert.True(active.HasActiveWork);
+        Assert.Equal(outcome, active.LastOutcome);
+        Assert.Equal(first.StartedAt, active.StartedAt);
+        Assert.Equal(first.FinishedAt, active.FinishedAt);
+        Assert.Equal(first.CompletedTurnId, active.CompletedTurnId);
+        Assert.Equal(secondStart, active.ActiveWorkStartedAt);
+        clock.Advance(TimeSpan.FromMinutes(5));
+        var secondFinish = clock.GetUtcNow();
+        release[1].TrySetResult();
+        await WaitUntilAsync(() => runtime.GetSessionActivity(session.Id) is { HasActiveWork: false } snapshot
+            && snapshot.CompletedTurnId != first.CompletedTurnId);
+        var second = Assert.Single(runtime.GetSessionActivities());
+        Assert.Equal(outcome, second.LastOutcome);
+        Assert.NotNull(second.CompletedTurnId);
+        Assert.NotEqual(first.CompletedTurnId, second.CompletedTurnId);
+        Assert.Equal(secondStart, second.StartedAt);
+        Assert.Equal(secondFinish, second.FinishedAt);
+        Assert.Null(second.ActiveWorkStartedAt);
+        await WaitUntilAsync(() => changes.Any(snapshot => snapshot.CompletedTurnId == second.CompletedTurnId && !snapshot.HasActiveWork));
+
+        await using var store = new SqliteSessionStore(harness.DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        var completed = (await store.LoadDurableEventsAsync(session.Id, CancellationToken.None))
+            .Where(entry => entry.Event is TurnCompletedEvent).ToArray();
+        Assert.Equal(2, completed.Length);
+        Assert.Equal(first.CompletedTurnId, Assert.IsType<TurnCompletedEvent>(completed[0].Event).TurnId);
+        Assert.Equal(firstFinish, completed[0].OccurredAt);
+        Assert.Equal(second.CompletedTurnId, Assert.IsType<TurnCompletedEvent>(completed[1].Event).TurnId);
+        Assert.Equal(secondFinish, completed[1].OccurredAt);
     }
 
     [Fact]
-    public async Task ActiveTasks_IdleHeldInputRemainsVisibleWithoutAStaleTurnStart()
+    public async Task SessionActivities_IdleHeldInputRemainsVisibleWithoutAStaleTurnStart()
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var gate = new FakeTool("WaitForStop", execute: async (_, ct) =>
@@ -124,27 +246,44 @@ public class SessionActivityRuntimeTests
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var queued = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "later", Delivery: SendTextDelivery.Queue);
         Assert.True((await runtime.SubmitAsync(queued, CancellationToken.None)).Accepted);
+        var later = new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "last", Delivery: SendTextDelivery.Queue);
+        Assert.True((await runtime.SubmitAsync(later, CancellationToken.None)).Accepted);
         Assert.True((await runtime.SubmitAsync(
             new StopCommand(StrongId.NewCommandId(), session.Id, 0), CancellationToken.None)).Accepted);
         await WaitUntilAsync(() => runtime.GetSessionActivity(session.Id) is
             { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Cancelled });
 
-        var task = Assert.Single(runtime.GetActiveSessionTasks());
+        var task = Assert.Single(runtime.GetSessionActivities());
         Assert.Equal(session.Id, task.SessionId);
         Assert.Equal(TurnPhase.Idle, task.Phase);
         Assert.True(task.HasActiveWork);
         Assert.Equal(TurnOutcome.Cancelled, task.LastOutcome);
-        Assert.Null(task.StartedAt);
+        Assert.NotNull(task.StartedAt);
+        Assert.NotNull(task.FinishedAt);
+        Assert.NotNull(task.CompletedTurnId);
+        Assert.Null(task.ActiveWorkStartedAt);
         Assert.Equal(0, task.RunningJobCount);
         Assert.Equal(0, task.RunningSubagentCount);
         Assert.False(task.IsAwaitingConfirmation);
+        var changes = new ConcurrentQueue<SessionActivitySnapshot>();
+        runtime.SessionActivityChanged += id =>
+        {
+            if (id == session.Id && runtime.GetSessionActivity(id) is { } snapshot)
+                changes.Enqueue(snapshot);
+        };
         Assert.True((await runtime.SubmitAsync(new RemoveQueuedInputCommand(
             StrongId.NewCommandId(), session.Id, 0, queued.CommandId), CancellationToken.None)).Accepted);
-        Assert.Empty(runtime.GetActiveSessionTasks());
+        Assert.NotEmpty(changes);
+        Assert.All(changes, snapshot => Assert.True(snapshot.HasActiveWork));
+        changes.Clear();
+        Assert.True((await runtime.SubmitAsync(new RemoveQueuedInputCommand(
+            StrongId.NewCommandId(), session.Id, 0, later.CommandId), CancellationToken.None)).Accepted);
+        Assert.Contains(changes, snapshot => !snapshot.HasActiveWork);
+        Assert.False(Assert.Single(runtime.GetSessionActivities()).HasActiveWork);
     }
 
     [Fact]
-    public async Task ActiveTasks_KeepFailedOutcomeWhileBackgroundWorkRemains()
+    public async Task SessionActivities_KeepFailedOutcomeWhileBackgroundWorkRemains()
     {
         var jobs = new ConcurrentDictionary<SessionId, SyntheticJob>();
         await using var harness = TestHarness.Create(StartJob(), new ScriptStep.Fail(
@@ -158,7 +297,7 @@ public class SessionActivityRuntimeTests
         await WaitUntilAsync(() => runtime.GetSessionActivity(session.Id) is
             { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Failed });
 
-        var task = Assert.Single(runtime.GetActiveSessionTasks());
+        var task = Assert.Single(runtime.GetSessionActivities());
         Assert.Equal(TurnPhase.Idle, task.Phase);
         Assert.True(task.HasActiveWork);
         Assert.Equal(TurnOutcome.Failed, task.LastOutcome);
@@ -167,11 +306,11 @@ public class SessionActivityRuntimeTests
 
         jobs[session.Id].Complete.TrySetResult();
         await WaitForJobStatusAsync(runtime, session.Id, BackgroundJobStatus.Completed);
-        await WaitUntilAsync(() => runtime.GetActiveSessionTasks().Count == 0);
+        await WaitUntilAsync(() => runtime.GetSessionActivities().All(snapshot => !snapshot.HasActiveWork));
     }
 
     [Fact]
-    public async Task ActiveTasks_CompletedChildStillContributesItsRunningJob()
+    public async Task SessionActivities_CompletedChildStillContributesItsRunningJob()
     {
         var clock = new ManualTimeProvider();
         var jobs = new ConcurrentDictionary<SessionId, SyntheticJob>();
@@ -183,6 +322,12 @@ public class SessionActivityRuntimeTests
         var parent = await runtime.CreateSessionAsync(
             new SessionOptions(harness.Root, PermissionMode: Contracts.Permissions.PermissionMode.Yolo), CancellationToken.None);
         await runtime.CreateSessionAsync(new SessionOptions(harness.Root, "unrelated"), CancellationToken.None);
+        var changes = new ConcurrentQueue<SessionActivitySnapshot>();
+        runtime.SessionActivityChanged += id =>
+        {
+            if (id == parent.Id && runtime.GetSessionActivity(id) is { } snapshot)
+                changes.Enqueue(snapshot);
+        };
         using var parentProjection = runtime.Subscribe(parent.Id);
         await StartAndWaitAsync(runtime, parent.Id, parentProjection);
         var state = Assert.Single(parentProjection.Snapshot().Rows.OfType<SystemNoticeRow>(),
@@ -194,7 +339,7 @@ public class SessionActivityRuntimeTests
         await WaitForRepliesAsync(childProjection, 1);
         var job = jobs[state.ChildSessionId];
 
-        var task = Assert.Single(runtime.GetActiveSessionTasks());
+        var task = Assert.Single(runtime.GetSessionActivities(), snapshot => snapshot.HasActiveWork);
         Assert.Equal(parent.Id, task.SessionId);
         Assert.Equal(TurnPhase.Idle, task.Phase);
         Assert.True(task.HasActiveWork);
@@ -202,19 +347,27 @@ public class SessionActivityRuntimeTests
         Assert.Equal(1, task.RunningJobCount);
         Assert.Equal(0, task.RunningSubagentCount);
         Assert.False(task.IsAwaitingConfirmation);
-        Assert.Equal(job.Info.StartedAt, task.StartedAt);
-        Assert.True(task.StartedAt > state.StartedAt);
+        Assert.Equal(job.Info.StartedAt, task.ActiveWorkStartedAt);
+        Assert.True(task.ActiveWorkStartedAt > state.StartedAt);
+        Assert.NotNull(task.StartedAt);
+        Assert.NotNull(task.FinishedAt);
+        Assert.NotNull(task.CompletedTurnId);
+        Assert.Equal(task, runtime.GetSessionActivity(parent.Id));
         Assert.Empty(runtime.GetBackgroundJobs(parent.Id));
         Assert.Null(runtime.GetSession(state.ChildSessionId));
+        Assert.Contains(changes, snapshot => snapshot.RunningJobCount == 1);
+        changes.Clear();
 
         job.Complete.TrySetResult();
+        await WaitUntilAsync(() => changes.Any(snapshot => snapshot.RunningJobCount == 0 && !snapshot.HasActiveWork
+            && snapshot.CompletedTurnId == task.CompletedTurnId));
         await WaitForRepliesAsync(childProjection, 2);
         await WaitForRepliesAsync(parentProjection, 2);
-        Assert.Empty(runtime.GetActiveSessionTasks());
+        Assert.All(runtime.GetSessionActivities(), snapshot => Assert.False(snapshot.HasActiveWork));
     }
 
     [Fact]
-    public async Task ActiveTasks_RecursivelyAggregateDescendantWaitsAndDeduplicateAgentTasks()
+    public async Task SessionActivities_RecursivelyAggregateDescendantWaitsAndDeduplicateAgentTasks()
     {
         await using var harness = TestHarness.Create(CallTool("AskUserQuestion", new
         {
@@ -243,8 +396,15 @@ public class SessionActivityRuntimeTests
         runtime.RegisterSubagentRuntime(parent.Id, child.Id, childRuntime);
         childRuntime.RegisterSubagentRuntime(child.Id, grandchild.Id, grandchildRuntime);
         var startedAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var changes = new ConcurrentQueue<SessionActivitySnapshot>();
+        runtime.SessionActivityChanged += sessionId =>
+        {
+            if (sessionId == parent.Id && runtime.GetSessionActivity(sessionId) is { } snapshot)
+                changes.Enqueue(snapshot);
+        };
         var id = new SubagentId("shared-task");
         RegisterTask(runtime, parent.Id, child.Id, id, startedAt);
+        Assert.Contains(changes, snapshot => snapshot.RunningSubagentCount == 1 && snapshot.HasActiveWork);
         RegisterTask(childRuntime, child.Id, grandchild.Id, id, startedAt);
         var unrelatedId = new SubagentId("unrelated-task");
         RegisterTask(runtime, unrelated.Id, StrongId.NewSessionId(), unrelatedId, startedAt.AddMinutes(-10));
@@ -253,7 +413,7 @@ public class SessionActivityRuntimeTests
             StrongId.NewCommandId(), grandchild.Id, 0, "ask"), CancellationToken.None)).Accepted);
         await WaitUntilAsync(() => grandchildRuntime.GetSessionActivity(grandchild.Id)?.Phase == TurnPhase.AwaitingInteraction);
 
-        var tasks = runtime.GetActiveSessionTasks();
+        var tasks = runtime.GetSessionActivities();
         Assert.Equal(2, tasks.Count);
         var task = Assert.Single(tasks, task => task.SessionId == parent.Id);
         Assert.Equal(TurnPhase.Idle, task.Phase);
@@ -261,9 +421,15 @@ public class SessionActivityRuntimeTests
         Assert.True(task.IsAwaitingConfirmation);
         Assert.Equal(0, task.RunningJobCount);
         Assert.Equal(1, task.RunningSubagentCount);
-        Assert.Equal(startedAt, task.StartedAt);
+        Assert.Equal(startedAt, task.ActiveWorkStartedAt);
+        Assert.Null(task.StartedAt);
+        Assert.Null(task.FinishedAt);
+        Assert.Null(task.CompletedTurnId);
+        Assert.Equal(task, runtime.GetSessionActivity(parent.Id));
         Assert.DoesNotContain(tasks, task => task.SessionId == child.Id || task.SessionId == grandchild.Id);
         Assert.Equal(1, Assert.Single(tasks, task => task.SessionId == unrelated.Id).RunningSubagentCount);
+        Assert.Contains(changes, snapshot => snapshot.IsAwaitingConfirmation);
+        changes.Clear();
         var interaction = projection.Snapshot().State.PendingInteraction;
         Assert.NotNull(interaction);
         Assert.True((await grandchildRuntime.SubmitAsync(new ResolveInteractionCommand(
@@ -274,7 +440,9 @@ public class SessionActivityRuntimeTests
         CompleteTask(runtime, id);
         CompleteTask(childRuntime, id);
         CompleteTask(runtime, unrelatedId);
-        Assert.Empty(runtime.GetActiveSessionTasks());
+        Assert.Contains(changes, snapshot => !snapshot.IsAwaitingConfirmation);
+        Assert.Contains(changes, snapshot => !snapshot.HasActiveWork && snapshot.RunningSubagentCount == 0);
+        Assert.All(runtime.GetSessionActivities(), snapshot => Assert.False(snapshot.HasActiveWork));
     }
 
     [Fact]
@@ -302,7 +470,7 @@ public class SessionActivityRuntimeTests
         Assert.Equal(secondJob.Info, Assert.Single(activity.GetBackgroundJobs(second.Id)));
         Assert.Equal(BackgroundJobStatus.Running, firstJob.Info.Status);
         Assert.NotEqual(firstJob.Info.Id, secondJob.Info.Id);
-        var tasks = activity.GetActiveSessionTasks();
+        var tasks = activity.GetSessionActivities();
         Assert.Equal(2, tasks.Count);
         foreach (var task in tasks)
         {
@@ -310,7 +478,7 @@ public class SessionActivityRuntimeTests
             Assert.Equal(1, task.RunningJobCount);
             Assert.Equal(0, task.RunningSubagentCount);
             Assert.False(task.IsAwaitingConfirmation);
-            Assert.Equal(jobs[task.SessionId].Info.StartedAt, task.StartedAt);
+            Assert.Equal(jobs[task.SessionId].Info.StartedAt, task.ActiveWorkStartedAt);
         }
 
         Assert.False(activity.StopBackgroundJob(first.Id, secondJob.Info.Id));
@@ -339,7 +507,7 @@ public class SessionActivityRuntimeTests
         Assert.Equal(BackgroundJobStatus.Running, Assert.Single(firstSnapshot).Status);
         Assert.Equal(secondJob.Info, Assert.Single(activity.GetBackgroundJobs(second.Id)));
         Assert.False(secondJob.Cancelled.Task.IsCompleted);
-        Assert.Equal(second.Id, Assert.Single(activity.GetActiveSessionTasks()).SessionId);
+        Assert.Equal(second.Id, Assert.Single(activity.GetSessionActivities(), snapshot => snapshot.HasActiveWork).SessionId);
         Assert.Equal(2, tasks.Count);
     }
 
@@ -359,7 +527,7 @@ public class SessionActivityRuntimeTests
         await runtime.DisposeAsync();
         await job.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Empty(activity.GetBackgroundJobs(session.Id));
-        Assert.Empty(activity.GetActiveSessionTasks());
+        Assert.Empty(activity.GetSessionActivities());
         Assert.False(activity.StopBackgroundJob(session.Id, job.Info.Id));
 
         await using var reopened = harness.BuildRuntime();
@@ -410,7 +578,7 @@ public class SessionActivityRuntimeTests
             var state = Assert.Single(currentParent.Snapshot().Rows.OfType<SystemNoticeRow>(), row => row.Kind == "subagent").Subagent;
             Assert.NotNull(state);
             Assert.Equal(Contracts.Subagents.SubagentStatus.Running, state.Status);
-            var task = Assert.Single(activity.GetActiveSessionTasks());
+            var task = Assert.Single(activity.GetSessionActivities(), snapshot => snapshot.HasActiveWork);
             Assert.Equal(parent.Id, task.SessionId);
             Assert.Equal(TurnPhase.ExecutingTools, task.Phase);
             Assert.Equal(1, task.RunningSubagentCount);

@@ -111,14 +111,17 @@ public sealed class SidebarActivityIndicatorTests
     }
 
     [Fact]
-    public void SetActive_AcknowledgesCompletionButKeepsFailureAndRunning()
+    public void ViewingAcknowledgesCompletionButSelectionAloneDoesNot()
     {
-        var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask);
+        var activities = new SessionActivityTracker();
+        var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask, activities);
         var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         sidebar.ApplySummaries([session]);
 
         sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed));
         sidebar.SetActive(session.Id);
+        Assert.Equal(SessionActivityIndicator.Completed, session.Indicator);
+        activities.SetViewingSession(session.Id);
         Assert.Equal(SessionActivityIndicator.None, session.Indicator);
 
         sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Failed));
@@ -132,28 +135,36 @@ public sealed class SidebarActivityIndicatorTests
     }
 
     [Fact]
-    public void ActiveState_SurvivesRefreshButDoesNotReportCompletion()
+    public void ActivitySurvivesRefreshAndAcknowledgedCompletionDoesNotResurrect()
     {
-        var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask);
+        var activities = new SessionActivityTracker();
+        var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask, activities);
         var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         sidebar.ApplySummaries([session]);
 
-        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.ExecutingTools, null));
+        sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.ExecutingTools, null));
         Assert.Equal(SessionActivityIndicator.Running, session.Indicator);
 
         var refreshed = new SessionSummaryViewModel(session.Id, "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         sidebar.ApplySummaries([refreshed]);
         Assert.Equal(SessionActivityIndicator.Running, refreshed.Indicator);
 
-        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.AwaitingPermission, null));
+        sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.AwaitingPermission, null));
         refreshed = new SessionSummaryViewModel(session.Id, "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
         sidebar.ApplySummaries([refreshed]);
         Assert.Equal(SessionActivityIndicator.AwaitingConfirmation, refreshed.Indicator);
 
-        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, null));
+        sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, null));
         Assert.Equal(SessionActivityIndicator.None, sidebar.Groups[0].Sessions[0].Indicator);
 
-        sidebar.SyncActiveState(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed));
+        var completed = new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed)
+        {
+            CompletedTurnId = StrongId.NewTurnId(),
+        };
+        sidebar.ApplyActivity(session.Id, completed);
+        activities.SetViewingSession(session.Id);
+        activities.SetViewingSession(null);
+        sidebar.ApplyActivity(session.Id, completed);
         Assert.Equal(SessionActivityIndicator.None, sidebar.Groups[0].Sessions[0].Indicator);
     }
 

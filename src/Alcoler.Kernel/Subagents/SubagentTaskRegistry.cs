@@ -9,8 +9,13 @@ public sealed class SubagentTaskRegistry : ISubagentTasks
 {
     private readonly ConcurrentDictionary<SubagentId, Entry> _entries = new();
 
-    public void Register(SubagentTaskInfo info, Func<CancellationToken, ValueTask> stopAsync) =>
+    internal event Action<SessionId>? Changed;
+
+    public void Register(SubagentTaskInfo info, Func<CancellationToken, ValueTask> stopAsync)
+    {
         _entries[info.Id] = new Entry(info, stopAsync);
+        NotifyChanged(info);
+    }
 
     public void Update(SubagentId id, Func<SubagentTaskInfo, SubagentTaskInfo> update) =>
         Update(id, update, resetNotified: false);
@@ -18,13 +23,25 @@ public sealed class SubagentTaskRegistry : ISubagentTasks
     internal void Update(SubagentId id, Func<SubagentTaskInfo, SubagentTaskInfo> update, bool resetNotified)
     {
         if (_entries.TryGetValue(id, out var entry))
+        {
             entry.Update(update, resetNotified);
+            NotifyChanged(entry.Snapshot());
+        }
     }
 
     public void Restore(SubagentId id, SubagentTaskInfo info)
     {
         if (_entries.TryGetValue(id, out var entry))
+        {
             entry.Restore(info);
+            NotifyChanged(info);
+        }
+    }
+
+    private void NotifyChanged(SubagentTaskInfo info)
+    {
+        if (info.ParentSessionId is { } parent)
+            Changed?.Invoke(parent);
     }
 
     public IReadOnlyList<SubagentTaskInfo> List() =>

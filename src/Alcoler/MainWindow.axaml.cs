@@ -84,7 +84,12 @@ public partial class MainWindow : Window
         base.OnPropertyChanged(change);
         if (change.Property == WindowStateProperty && WindowState != WindowState.Minimized)
             _restoreWindowState = WindowState;
+        if (change.Property == WindowStateProperty || change.Property == IsVisibleProperty || change.Property == IsActiveProperty)
+            UpdateConversationViewing();
     }
+
+    private void UpdateConversationViewing() =>
+        _viewModel?.SetConversationViewActive(IsVisible && IsActive && WindowState != WindowState.Minimized);
 
     protected override void OnDataContextChanged(EventArgs e)
     {
@@ -92,6 +97,7 @@ public partial class MainWindow : Window
         if (_viewModel is not null)
         {
             _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+            _viewModel.SetConversationViewActive(false);
         }
         _viewModel = DataContext as WorkbenchViewModel;
         if (_viewModel is not null)
@@ -99,6 +105,7 @@ public partial class MainWindow : Window
             _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         }
         ObserveConversation();
+        UpdateConversationViewing();
         ApplyPaneVisibility();
         ApplyConversationLayout();
         RestartWorkbenchBannerTimer();
@@ -112,6 +119,7 @@ public partial class MainWindow : Window
         if (_viewModel is not null)
         {
             _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+            _viewModel.SetConversationViewActive(false);
         }
         if (_conversation is not null)
         {

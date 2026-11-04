@@ -84,6 +84,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         LongBusySessionThreshold, CompactionCooldown);
     private readonly TaskAlertTracker _taskAlerts = new();
     private readonly ITaskAlertSounds _taskAlertSounds;
+    private bool _conversationViewActive;
 
     public WorkbenchViewModel(
         IAgentRuntime runtime,
@@ -117,14 +118,16 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         BrowserPane = browserPane;
         Remote = remoteAccess;
         _hub = new SessionProjectionHub(runtime, scheduler, coalesceWindow: TimeSpan.FromMilliseconds(30));
-        Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync);
-        TaskOverlay = new TaskOverlayViewModel(runtime);
+        Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync, SessionActivities);
+        TaskOverlay = new TaskOverlayViewModel(SessionActivities);
         runtime.SessionTitleChanged += OnSessionTitleChanged;
         runtime.SessionListChanged += OnSessionListChanged;
+        runtime.SessionDeleted += OnSessionDeleted;
         if (runtime is ISessionActivityRuntime activities)
         {
             _activities = activities;
             activities.SessionActivityChanged += OnSessionActivityChanged;
+            RefreshSessionActivities();
         }
         ModelChoices = BuildModelChoices(config);
         Draft = GetOrCreateDraft(Environment.CurrentDirectory);
@@ -142,6 +145,22 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     public SessionSidebarViewModel Sidebar { get; }
 
     public TaskOverlayViewModel TaskOverlay { get; }
+
+    public SessionActivityTracker SessionActivities { get; } = new();
+
+    internal void SetConversationViewActive(bool active)
+    {
+        if (_disposed)
+            return;
+        _conversationViewActive = active;
+        SessionActivities.SetViewingSession(active ? Active?.SessionId : null);
+    }
+
+    private void RefreshSessionActivities()
+    {
+        if (_activities is not null)
+            SessionActivities.Refresh(_activities.GetSessionActivities());
+    }
 
     public ChatGptAccountService? ChatGptAccount { get; }
 
@@ -190,7 +209,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
 
     public bool IsDraft => Active is null;
 
-    partial void OnActiveChanged(ConversationViewModel? value) => value?.Status.BindGit(GitPane);
+    partial void OnActiveChanged(ConversationViewModel? value)
+    {
+        value?.Status.BindGit(GitPane);
+        SessionActivities.SetViewingSession(_conversationViewActive ? value?.SessionId : null);
+    }
 
     partial void OnGitPaneChanged(GitPaneViewModel? value) => Active?.Status.BindGit(value);
 
@@ -377,6 +400,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _autoOpenedBrowserSessions.Clear();
         _runtime.SessionTitleChanged -= OnSessionTitleChanged;
         _runtime.SessionListChanged -= OnSessionListChanged;
+        _runtime.SessionDeleted -= OnSessionDeleted;
         _refreshTitleOverrides.Clear();
         if (_activities is not null)
         {
@@ -421,9 +445,14 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     {
         if (_disposed)
             return;
+        cancellationToken.ThrowIfCancellationRequested();
         var navigation = BeginNavigation();
         if (Active?.SessionId == sessionId)
+        {
+            RefreshSessionActivities();
+            SessionActivities.SetViewingSession(_conversationViewActive ? sessionId : null);
             return;
+        }
         using var opening = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _openSessionCts = opening;
         ProjectionStore? acquired = null;
@@ -477,10 +506,10 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             conversation.ForkRequested = boundaryId => ForkSessionAsync(sessionId, boundaryId);
             conversation.NextSubmissionSequence = () => ++_submissionSequence;
             conversation.ModelSelectionSubmitted += (selection, sequence) => RecordAcceptedSelection(workspaceRoot, sessionId, selection, sequence);
+            RefreshSessionActivities();
             adopted = true;
             Active = conversation;
             Sidebar.SetActive(sessionId);
-            Sidebar.SyncActiveState(sessionId, _activities?.GetSessionActivity(sessionId));
             BrowserPane?.Bind(sessionId);
             EnsureDocumentContext();
             TryShowActiveBrowserDocument();
@@ -952,6 +981,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             displayed = hiddenRoots is { Count: > 0 }
                 ? displayed.Where(s => !IsWorkspaceRemoved(hiddenRoots, s.WorkspaceRoot)).ToArray()
                 : displayed;
+            RefreshSessionActivities();
             Sidebar.ApplySummaries(
             [
                 .. displayed.Select(s => new SessionSummaryViewModel(
@@ -960,7 +990,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             foreach (var summary in displayed)
             {
                 _sessionRoots.TryAdd(summary.Id, summary.WorkspaceRoot);
-                Sidebar.SyncActiveState(summary.Id, _activities?.GetSessionActivity(summary.Id));
             }
             if (_openSessionCts is null && _focusedWorkspaceRoot is null && Active is null && Draft is { } initial
                 && string.IsNullOrEmpty(initial.Composer.Draft) && !initial.Composer.IsSending
@@ -1178,11 +1207,23 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             {
                 titles[sessionId] = title;
             }
+            SessionActivities.ApplyTitle(sessionId, title);
             Sidebar.ApplyTitle(sessionId, title);
             if (Active is { } active && active.SessionId == sessionId)
             {
                 active.Title = title;
             }
+        });
+    }
+
+    private void OnSessionDeleted(SessionId sessionId)
+    {
+        if (_disposed)
+            return;
+        _scheduler.Post(() =>
+        {
+            if (!_disposed)
+                SessionActivities.Remove(sessionId);
         });
     }
 
@@ -1243,7 +1284,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                 return;
             }
             var activity = _activities?.GetSessionActivity(sessionId);
-            Sidebar.ApplyActivity(sessionId, activity);
+            RefreshSessionActivities();
+            if (activity is not null && string.IsNullOrEmpty(activity.SessionId.Value))
+                SessionActivities.ApplyActivity(sessionId, activity);
             if (_busyPeriods.OnActivity(sessionId, activity?.Phase))
             {
                 _ = Task.Run(GcMaintenance.CompactLargeObjectHeap);

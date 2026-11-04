@@ -21,21 +21,20 @@ public interface IConversationProjection : IDisposable
     Task WaitUntilSequenceAsync(long sequence, CancellationToken cancellationToken = default);
 }
 
-public sealed record SessionActivitySnapshot(TurnPhase Phase, TurnOutcome? LastOutcome);
-
-public sealed record SessionTaskSnapshot(
-    SessionId SessionId,
-    string Title,
-    string WorkspaceRoot,
-    TurnPhase Phase,
-    DateTimeOffset LastActivityUtc,
-    int RunningJobCount,
-    int RunningSubagentCount,
-    bool IsAwaitingConfirmation,
-    DateTimeOffset? StartedAt)
+public sealed record SessionActivitySnapshot(TurnPhase Phase, TurnOutcome? LastOutcome)
 {
+    public SessionId SessionId { get; init; }
+    public string Title { get; init; } = string.Empty;
+    public string WorkspaceRoot { get; init; } = string.Empty;
+    public DateTimeOffset LastActivityUtc { get; init; }
     public bool HasActiveWork { get; init; }
-    public TurnOutcome? LastOutcome { get; init; }
+    public bool IsAwaitingConfirmation { get; init; }
+    public int RunningJobCount { get; init; }
+    public int RunningSubagentCount { get; init; }
+    public DateTimeOffset? StartedAt { get; init; }
+    public DateTimeOffset? FinishedAt { get; init; }
+    public TurnId? CompletedTurnId { get; init; }
+    public DateTimeOffset? ActiveWorkStartedAt { get; init; }
 }
 
 public interface ISessionActivityRuntime
@@ -48,7 +47,7 @@ public interface ISessionActivityRuntime
 
     SessionActivitySnapshot? GetSessionActivity(SessionId sessionId) => null;
 
-    IReadOnlyList<SessionTaskSnapshot> GetActiveSessionTasks() => [];
+    IReadOnlyList<SessionActivitySnapshot> GetSessionActivities() => [];
 
     event Action<SessionId>? SessionActivityChanged
     {
@@ -114,6 +113,12 @@ public interface IAgentRuntime : IAsyncDisposable
 
     /// <summary>Raised after the persisted session set changes; listeners re-query ListSessionsAsync.</summary>
     event Action? SessionListChanged
+    {
+        add { }
+        remove { }
+    }
+
+    event Action<SessionId>? SessionDeleted
     {
         add { }
         remove { }

@@ -1,84 +1,96 @@
 using System.Collections.ObjectModel;
-using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
-using Alcoler.Contracts.Projections;
 using Alcoler.Localization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Alcoler.ViewModel;
 
-public sealed partial class TaskOverlayViewModel(IAgentRuntime runtime) : ObservableObject
+public sealed partial class TaskOverlayViewModel : ObservableObject
 {
-    private readonly ISessionActivityRuntime? _activities = runtime as ISessionActivityRuntime;
+    private readonly SessionActivityTracker _activities;
+
+    public TaskOverlayViewModel(SessionActivityTracker activities)
+    {
+        _activities = activities;
+        activities.Changed += () => Refresh();
+    }
 
     [ObservableProperty]
     private bool _isVisible;
 
     public ObservableCollection<TaskOverlaySessionViewModel> Sessions { get; } = [];
+
     public bool HasSessions => Sessions.Count > 0;
 
     public void Refresh(DateTimeOffset? now = null)
     {
-        var tasks = (_activities?.GetActiveSessionTasks() ?? [])
-            .OrderByDescending(task => task.IsAwaitingConfirmation)
-            .ThenBy(task => task.StartedAt ?? task.LastActivityUtc)
-            .ThenBy(task => task.SessionId.Value, StringComparer.Ordinal)
+        var time = now ?? DateTimeOffset.UtcNow;
+        var desired = _activities.Sessions
+            .Where(state => state.HasActiveWork || state.HasUnviewedResult)
+            .OrderByDescending(state => state.IsAwaitingConfirmation)
+            .ThenBy(state => state.Activity.ActiveWorkStartedAt ?? state.Activity.StartedAt ?? state.Activity.LastActivityUtc)
+            .ThenBy(state => state.Activity.SessionId.Value, StringComparer.Ordinal)
             .ToArray();
-        var existing = Sessions.ToDictionary(session => session.SessionId);
-        var activeIds = tasks.Select(task => task.SessionId).ToHashSet();
-        var previousCount = Sessions.Count;
+        var previousHasSessions = HasSessions;
+        var wanted = desired.Select(state => state.Activity.SessionId).ToHashSet();
         for (var index = Sessions.Count - 1; index >= 0; index--)
-        {
-            if (!activeIds.Contains(Sessions[index].SessionId))
+            if (!wanted.Contains(Sessions[index].SessionId))
                 Sessions.RemoveAt(index);
-        }
-        var currentTime = now ?? DateTimeOffset.UtcNow;
-        for (var index = 0; index < tasks.Length; index++)
+        var existing = Sessions.ToDictionary(row => row.SessionId);
+        for (var index = 0; index < desired.Length; index++)
         {
-            var task = tasks[index];
-            if (!existing.TryGetValue(task.SessionId, out var session))
+            var state = desired[index];
+            if (!existing.TryGetValue(state.Activity.SessionId, out var row))
             {
-                session = new TaskOverlaySessionViewModel(task);
-                Sessions.Insert(index, session);
+                row = new TaskOverlaySessionViewModel(state);
+                row.Update(state, time);
+                Sessions.Insert(index, row);
             }
-            else if (Sessions.IndexOf(session) != index)
+            else
             {
-                Sessions.Move(Sessions.IndexOf(session), index);
+                row.Update(state, time);
+                var current = Sessions.IndexOf(row);
+                if (current != index)
+                    Sessions.Move(current, index);
             }
-            session.Update(task, currentTime);
         }
-        if (previousCount != Sessions.Count)
+        if (previousHasSessions != HasSessions)
             OnPropertyChanged(nameof(HasSessions));
     }
 }
 
 public sealed class TaskOverlaySessionViewModel : ObservableObject
 {
-    private SessionTaskSnapshot _task;
+    private SessionActivityState _state;
     private string _durationText = string.Empty;
 
-    internal TaskOverlaySessionViewModel(SessionTaskSnapshot task) => _task = task;
+    internal TaskOverlaySessionViewModel(SessionActivityState state) => _state = state;
 
-    public SessionId SessionId => _task.SessionId;
-    public string Title => string.IsNullOrWhiteSpace(_task.Title) ? Loc.Get("sidebar_untitled_session") : _task.Title;
-    public string WorkspaceRoot => _task.WorkspaceRoot;
-    public string WorkspaceName => Path.GetFileName(Path.TrimEndingDirectorySeparator(WorkspaceRoot)) is { Length: > 0 } name
-        ? name : WorkspaceRoot;
-    public bool IsFailed => _task.Phase == TurnPhase.Error
-        || _task.Phase == TurnPhase.Idle && _task.LastOutcome == TurnOutcome.Failed;
-    public bool IsBusy => !IsFailed && (_task.HasActiveWork
-        || _task.Phase is not (TurnPhase.Idle or TurnPhase.Error)
-        || _task.RunningJobCount > 0 || _task.RunningSubagentCount > 0 || _task.IsAwaitingConfirmation);
-    public bool IsCompleted => !IsBusy && !IsFailed && _task.LastOutcome == TurnOutcome.Completed;
+    public SessionId SessionId => _state.Activity.SessionId;
+    public string Title => string.IsNullOrWhiteSpace(_state.Activity.Title)
+        ? Loc.Get("sidebar_untitled_session") : _state.Activity.Title;
+    public string WorkspaceRoot => _state.Activity.WorkspaceRoot;
+    public string WorkspaceName => Path.GetFileName(Path.TrimEndingDirectorySeparator(WorkspaceRoot))
+        is { Length: > 0 } name ? name : WorkspaceRoot;
+    public bool IsFailed => _state.IsFailed;
+    public bool IsBusy => _state.IsBusy;
+    public bool IsCompleted => _state.IsCompleted;
     public string DurationText => _durationText;
 
-    internal void Update(SessionTaskSnapshot task, DateTimeOffset now)
+    internal void Update(SessionActivityState state, DateTimeOffset now)
     {
-        var duration = task.StartedAt is { } startedAt ? SessionActivityText.Duration(now - startedAt) : string.Empty;
-        if (_task == task && _durationText == duration)
+        var activity = state.Activity;
+        var start = state.IsBusy
+            ? activity.ActiveWorkStartedAt ?? (activity.FinishedAt is null ? activity.StartedAt : null)
+            : activity.StartedAt;
+        var end = state.IsBusy ? now : activity.FinishedAt;
+        var duration = start is { } startedAt && end is { } endedAt
+            ? SessionActivityText.Duration(endedAt - startedAt)
+            : string.Empty;
+        if (_state == state && _durationText == duration)
             return;
         var previous = (Title, WorkspaceRoot, IsBusy, IsCompleted, IsFailed, DurationText);
-        _task = task;
+        _state = state;
         _durationText = duration;
         if (previous != (Title, WorkspaceRoot, IsBusy, IsCompleted, IsFailed, DurationText))
             OnPropertyChanged(string.Empty);
