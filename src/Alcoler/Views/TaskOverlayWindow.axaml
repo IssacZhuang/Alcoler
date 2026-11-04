@@ -1,0 +1,61 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Alcoler.ViewModel"
+        xmlns:controls="using:Alcoler.Controls"
+        xmlns:loc="using:Alcoler.Localization"
+        x:Class="Alcoler.Views.TaskOverlayWindow"
+        x:DataType="vm:TaskOverlayViewModel"
+        Title="{loc:Loc task_overlay_title}"
+        Width="344" SizeToContent="Height" CanResize="False"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False"
+        SystemDecorations="None" WindowStartupLocation="Manual"
+        TransparencyLevelHint="Transparent" Background="Transparent"
+        TransparencyBackgroundFallback="{DynamicResource AlcolerPopover}">
+  <Window.Styles>
+    <Style Selector="Button.session">
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Padding" Value="12,10" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+  </Window.Styles>
+  <Border x:Name="OverlaySurface" Background="{DynamicResource AlcolerTaskOverlay}" CornerRadius="12" Padding="8">
+    <Grid RowDefinitions="Auto,*">
+      <Grid x:Name="OverlayHeader" ColumnDefinitions="*,Auto" Background="Transparent" Focusable="True"
+            PointerPressed="OnHeaderPointerPressed" KeyDown="OnHeaderKeyDown"
+            ToolTip.Tip="{loc:Loc task_overlay_header_hint}" AutomationProperties.Name="{loc:Loc tray_open}">
+        <TextBlock Text="{loc:Loc task_overlay_title}" FontWeight="SemiBold" Margin="12,6,8,10" VerticalAlignment="Center" />
+        <Button x:Name="HideOverlayButton" Grid.Column="1" Classes="icon" VerticalAlignment="Top" Margin="0,2,2,0"
+                Click="OnHideClick" ToolTip.Tip="{loc:Loc task_overlay_hide}" AutomationProperties.Name="{loc:Loc task_overlay_hide}">
+          <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
+        </Button>
+      </Grid>
+      <Grid Grid.Row="1">
+        <TextBlock x:Name="EmptyState" Text="{loc:Loc task_overlay_empty}" IsVisible="{Binding !HasSessions}"
+                   Margin="12,20,12,24" HorizontalAlignment="Center" Foreground="{DynamicResource AlcolerTextSecondary}" />
+        <ScrollViewer MaxHeight="408" HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding HasSessions}">
+          <ItemsControl x:Name="SessionList" ItemsSource="{Binding Sessions}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:TaskOverlaySessionViewModel">
+                <Button Classes="session" Click="OnSessionClick" ToolTip.Tip="{Binding WorkspaceRoot}" AutomationProperties.Name="{Binding Title}">
+                  <Grid ColumnDefinitions="6,*,Auto" ColumnSpacing="10" RowDefinitions="Auto,Auto,Auto" RowSpacing="4">
+                    <Border Width="6" Height="6" CornerRadius="3" VerticalAlignment="Center"
+                            Background="{Binding NeedsAttention, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerWarning|AlcolerSuccess}" />
+                    <TextBlock Grid.Column="1" Text="{Binding Title}" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="2" Text="{Binding DurationText}" FontSize="{DynamicResource AlcolerFontSmall}"
+                               Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding DetailText}"
+                               FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap"
+                               Foreground="{Binding NeedsAttention, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerWarning|AlcolerTextSecondary}" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding WorkspaceName}"
+                               FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" TextTrimming="CharacterEllipsis" />
+                  </Grid>
+                </Button>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

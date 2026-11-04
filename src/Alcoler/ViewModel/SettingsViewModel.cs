@@ -203,18 +203,20 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     }
 
     internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount,
-        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null)
+        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null,
+        TaskOverlayViewModel? taskOverlay = null)
         : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount, skillsCatalog,
-            archivedSessions)
+            archivedSessions, taskOverlay)
     {
     }
 
     internal SettingsViewModel(WorkbenchConfig config, IReadOnlyList<ShellEnvironment> shells, bool isWindows,
         Auth.ChatGptAccountService? chatGptAccount = null, SkillsCatalog? skillsCatalog = null,
-        IArchivedSessionMaintenance? archivedSessions = null)
+        IArchivedSessionMaintenance? archivedSessions = null, TaskOverlayViewModel? taskOverlay = null)
     {
         _config = config;
         _archivedSessions = archivedSessions;
+        TaskOverlay = taskOverlay;
         SupportsShellSelection = isWindows;
         SupportsEmbeddedBrowserView = isWindows;
         EmbeddedBrowserView = config.Browser?.EmbeddedView ?? isWindows;
@@ -287,6 +289,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         : Loc.Get("settings_skill_count_many", UserSkills.Count);
 
     public ChatGptAccountViewModel? ChatGpt { get; }
+
+    public TaskOverlayViewModel? TaskOverlay { get; }
+
+    public bool CanToggleTaskOverlay => TaskOverlay is not null;
 
     public IReadOnlyList<string> ThemeChoices { get; } = [Dark, Light];
 

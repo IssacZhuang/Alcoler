@@ -154,6 +154,8 @@
   "settings_skills_description": "启用或禁用智能体与输入框斜杠菜单可用的用户技能。",
   "settings_terminal_shell": "集成终端 Shell",
   "settings_terminal_shell_description": "仅适用于新会话。在 Windows 上，Bash 使用此 Shell。自动模式优先使用 Git Bash，不可用时回退到 cmd.exe。",
+  "settings_task_overlay": "任务悬浮窗",
+  "settings_task_overlay_description": "立即生效，重启后默认关闭。",
   "settings_theme": "主题",
   "settings_theme_description": "选择工作台配色方案。",
   "settings_title": "设置",
@@ -215,6 +217,14 @@
 
   "tray_exit": "退出",
   "tray_open": "打开 Alcoler",
+  "tray_task_overlay": "任务悬浮窗",
+
+  "task_overlay_title": "Alcoler",
+  "task_overlay_header_hint": "拖动以移动，双击或按 Enter 打开 Alcoler",
+  "task_overlay_hide": "隐藏任务悬浮窗",
+  "task_overlay_empty": "没有正在运行的任务",
+  "task_overlay_background_jobs": "后台命令：{0}",
+  "task_overlay_worker_waiting": "子代理等待确认",
 
   "main_choose_workspace": "选择工作区",
   "main_close": "关闭",

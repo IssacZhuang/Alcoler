@@ -8,6 +8,7 @@ using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
+using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
 using Alcoler.Contracts.Workspace;
 using Alcoler.Kernel.Prompts;
@@ -573,6 +574,82 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         !Volatile.Read(ref _disposed) && _sessions.TryGetValue(sessionId, out var runtime)
             ? runtime.ActivitySnapshot()
             : null;
+
+    public IReadOnlyList<SessionTaskSnapshot> GetActiveSessionTasks()
+    {
+        if (Volatile.Read(ref _disposed))
+            return [];
+
+        var tasks = new List<SessionTaskSnapshot>();
+        foreach (var (_, session) in _sessions)
+        {
+            if (session.ParentSessionId is not null)
+                continue;
+            var snapshot = GetTaskSnapshot(session, [], [], out var hasWork);
+            if (snapshot is not null && hasWork)
+                tasks.Add(snapshot);
+        }
+        return Volatile.Read(ref _disposed) ? [] : tasks;
+    }
+
+    private SessionTaskSnapshot? GetTaskSnapshot(
+        SessionRuntime session,
+        HashSet<SessionId> visited,
+        HashSet<SubagentId> runningSubagents,
+        out bool hasWork)
+    {
+        hasWork = false;
+        if (Volatile.Read(ref _disposed) || !visited.Add(session.SessionId)
+            || session.TaskSnapshot(runningSubagents) is not { } snapshot)
+            return null;
+
+        var active = snapshot.Phase is not (TurnPhase.Idle or TurnPhase.Error) || session.HasPendingInputs
+            || snapshot.RunningJobCount > 0 || snapshot.RunningSubagentCount > 0;
+        var jobs = snapshot.RunningJobCount;
+        var subagents = snapshot.RunningSubagentCount;
+        var awaitingConfirmation = snapshot.IsAwaitingConfirmation;
+        var startedAt = snapshot.StartedAt;
+        var lastActivity = snapshot.LastActivityUtc;
+
+        foreach (var (_, child) in _sessions)
+        {
+            if (child.ParentSessionId == session.SessionId)
+                IncludeChild(this, child);
+        }
+        foreach (var (key, reference) in _subagentRuntimes)
+        {
+            if (key.Parent == session.SessionId && reference.TryGetTarget(out var childRuntime)
+                && childRuntime._sessions.TryGetValue(key.Child, out var child)
+                && child.ParentSessionId == session.SessionId)
+                IncludeChild(childRuntime, child);
+        }
+
+        if (Volatile.Read(ref _disposed) || session.IsDisposed)
+            return null;
+        hasWork = active;
+        return snapshot with
+        {
+            LastActivityUtc = lastActivity,
+            RunningJobCount = jobs,
+            RunningSubagentCount = subagents,
+            IsAwaitingConfirmation = awaitingConfirmation,
+            StartedAt = startedAt,
+        };
+
+        void IncludeChild(AgentRuntime owner, SessionRuntime child)
+        {
+            if (owner.GetTaskSnapshot(child, visited, runningSubagents, out var childHasWork) is not { } childSnapshot)
+                return;
+            active |= childHasWork;
+            jobs += childSnapshot.RunningJobCount;
+            subagents += childSnapshot.RunningSubagentCount;
+            awaitingConfirmation |= childSnapshot.IsAwaitingConfirmation;
+            if (childSnapshot.StartedAt is { } childStart && (startedAt is null || childStart < startedAt))
+                startedAt = childStart;
+            if (childSnapshot.LastActivityUtc > lastActivity)
+                lastActivity = childSnapshot.LastActivityUtc;
+        }
+    }
 
     public event Action<SessionId>? SessionActivityChanged;
 

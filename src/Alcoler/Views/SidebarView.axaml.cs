@@ -133,7 +133,7 @@ public partial class SidebarView : UserControl
             return;
         }
         var current = WorkbenchConfig.LoadOrDefault();
-        if (await SettingsDialog.ShowAsync(owner, current, viewModel.ChatGptAccount, viewModel) is not { } saved)
+        if (await SettingsDialog.ShowAsync(owner, current, viewModel.ChatGptAccount, viewModel, viewModel.TaskOverlay) is not { } saved)
         {
             return;
         }

@@ -20,11 +20,12 @@ public partial class SettingsDialog : Window
     }
 
     internal SettingsDialog(WorkbenchConfig current, Auth.ChatGptAccountService? chatGptAccount = null,
-        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null)
+        SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null,
+        TaskOverlayViewModel? taskOverlay = null)
     {
         InitializeComponent();
         _viewModel = new SettingsViewModel(current, chatGptAccount: chatGptAccount, skillsCatalog: skillsCatalog,
-            archivedSessions: archivedSessions);
+            archivedSessions: archivedSessions, taskOverlay: taskOverlay);
         DataContext = _viewModel;
         if (_viewModel.ChatGpt is { } chatGpt)
             chatGpt.OpenAuthorizeUrl = uri => Launcher.LaunchUriAsync(uri);
@@ -36,9 +37,10 @@ public partial class SettingsDialog : Window
     }
 
     public static async Task<WorkbenchConfig?> ShowAsync(Window owner, WorkbenchConfig current,
-        Auth.ChatGptAccountService? chatGptAccount = null, IArchivedSessionMaintenance? archivedSessions = null)
+        Auth.ChatGptAccountService? chatGptAccount = null, IArchivedSessionMaintenance? archivedSessions = null,
+        TaskOverlayViewModel? taskOverlay = null)
     {
-        var dialog = new SettingsDialog(current, chatGptAccount, archivedSessions: archivedSessions);
+        var dialog = new SettingsDialog(current, chatGptAccount, archivedSessions: archivedSessions, taskOverlay: taskOverlay);
         return await dialog.ShowDialog<WorkbenchConfig?>(owner);
     }
 

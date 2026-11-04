@@ -154,6 +154,8 @@
   "settings_skills_description": "Enable or disable the user skills available to the agent and the composer slash menu.",
   "settings_terminal_shell": "Integrated terminal shell",
   "settings_terminal_shell_description": "Applies to new sessions only. On Windows, Bash uses this shell. Auto prefers Git Bash and falls back to cmd.exe.",
+  "settings_task_overlay": "Task overlay",
+  "settings_task_overlay_description": "Applies immediately; starts hidden after a restart.",
   "settings_theme": "Theme",
   "settings_theme_description": "Choose the workbench color scheme.",
   "settings_title": "Settings",
@@ -215,6 +217,14 @@
 
   "tray_exit": "Exit",
   "tray_open": "Open Alcoler",
+  "tray_task_overlay": "Task overlay",
+
+  "task_overlay_title": "Alcoler",
+  "task_overlay_header_hint": "Drag to move; double-click or press Enter to open Alcoler",
+  "task_overlay_hide": "Hide task overlay",
+  "task_overlay_empty": "No running tasks",
+  "task_overlay_background_jobs": "Background commands: {0}",
+  "task_overlay_worker_waiting": "Subagent waiting for confirmation",
 
   "main_choose_workspace": "Choose workspace",
   "main_close": "Close",

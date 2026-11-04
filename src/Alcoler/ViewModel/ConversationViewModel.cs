@@ -590,17 +590,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         Composer.SessionPlanEnabled = state.PlanEnabled;
         Composer.SessionWorkflows = state.ActiveWorkflows ?? [];
         PhaseText = state.Phase.ToString();
-        ActivityText = state.Phase switch
-        {
-            TurnPhase.ProcessingInput => Loc.Get("status_phase_preparing"),
-            TurnPhase.AwaitingModel => Loc.Get("status_phase_awaiting_model"),
-            TurnPhase.Streaming => Loc.Get("status_phase_streaming"),
-            TurnPhase.ExecutingTools => Loc.Get("status_phase_running_tools"),
-            TurnPhase.AwaitingPermission => Loc.Get("status_phase_awaiting_permission"),
-            TurnPhase.AwaitingInteraction => Loc.Get("status_phase_awaiting_interaction"),
-            TurnPhase.Completing => Loc.Get("status_phase_completing"),
-            _ => string.Empty,
-        };
+        ActivityText = SessionActivityText.Phase(state.Phase);
         IsWorking = state.Phase is TurnPhase.ProcessingInput or TurnPhase.AwaitingModel
             or TurnPhase.Streaming or TurnPhase.ExecutingTools or TurnPhase.Completing;
         Composer.IsTurnActive = BusyPhases.Contains(state.Phase);
@@ -696,7 +686,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
         if (finalIndex <= start + 1)
             return;
         var duration = ResolveTurnDuration(anchor, start, end);
-        anchor.TurnSummaryText = Loc.Get("timeline_turn_worked", FormatTurnDuration(duration));
+        anchor.TurnSummaryText = Loc.Get("timeline_turn_worked", SessionActivityText.Duration(duration));
         var expanded = _turnExpansion.GetValueOrDefault(anchor.RowId);
         anchor.IsTurnExpanded = expanded;
         if (expanded)
@@ -734,17 +724,6 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
                 finish = candidate;
         }
         return finish > anchor.At ? finish - anchor.At : TimeSpan.Zero;
-    }
-
-    private static string FormatTurnDuration(TimeSpan elapsed)
-    {
-        if (elapsed < TimeSpan.Zero)
-            elapsed = TimeSpan.Zero;
-        if (elapsed.TotalHours >= 1)
-            return Loc.Get("duration_hours_minutes", (int)elapsed.TotalHours, elapsed.Minutes);
-        if (elapsed.TotalMinutes >= 1)
-            return Loc.Get("duration_minutes_seconds", (int)elapsed.TotalMinutes, elapsed.Seconds);
-        return Loc.Get("duration_seconds", (int)elapsed.TotalSeconds);
     }
 
     public async Task SendAsync()

@@ -36,6 +36,7 @@ public partial class MainWindow : Window
     private WorkbenchViewModel? _viewModel;
     private ConversationViewModel? _conversation;
     private string? _errorLogDirectory;
+    private WindowState _restoreWindowState = WindowState.Normal;
 
     private ColumnDefinition SidePaneColumn => ShellGrid.ColumnDefinitions[^1];
     private RowDefinition TerminalSplitterRow => MainCard.RowDefinitions[^2];
@@ -67,6 +68,23 @@ public partial class MainWindow : Window
     }
 
     public MainWindow(WorkbenchViewModel viewModel) : this() => DataContext = viewModel;
+
+    internal void ShowAndActivate()
+    {
+        var restoreState = _restoreWindowState;
+        if (!IsVisible)
+            Show();
+        if (WindowState == WindowState.Minimized)
+            WindowState = restoreState;
+        Activate();
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == WindowStateProperty && WindowState != WindowState.Minimized)
+            _restoreWindowState = WindowState;
+    }
 
     protected override void OnDataContextChanged(EventArgs e)
     {

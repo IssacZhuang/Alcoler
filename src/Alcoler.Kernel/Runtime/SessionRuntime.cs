@@ -119,11 +119,13 @@ public sealed class SessionRuntime : IAsyncDisposable
     private CommandId? _promotedCommandId;
     private ITimer? _transientSweepTimer;
     private readonly Queue<PendingTurnInput> _pendingInputs = new();
+    private int _pendingInputCount;
+    private DateTimeOffset? _turnStartedAt;
     private TokenUsage? _lastProviderUsage;
     private int _usageAnchorIndex = -1;
     private ContextUsageState? _contextUsage;
     private string? _contextModelId;
-    private DateTimeOffset _lastActivityUtc;
+    private long _lastActivityUtcTicks;
     private string? _lastSeenLocalDate;
     private readonly bool _isGitRepository;
     private readonly string? _gitSnapshotSection;
@@ -172,7 +174,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             new ModelCacheAffinity(record.Id.Value, record.ParentSessionId?.Value));
         _skills = new SkillContentProvider(
             record.WorkspaceRoot, deps.Options.UserSkillsBase, deps.Options.DisabledSkillPathsProvider);
-        _lastActivityUtc = deps.Clock.GetUtcNow();
+        _lastActivityUtcTicks = deps.Clock.GetUtcNow().UtcTicks;
         _isGitRepository = RuntimeEnvironmentFacts.IsGitRepository(record.WorkspaceRoot);
         _gitSnapshotSection = deps.Options.GitSnapshot is { } snapshot && _isGitRepository
             ? GitSnapshotSection.Render(snapshot, RuntimeEnvironmentFacts.Platform)
@@ -235,9 +237,60 @@ public sealed class SessionRuntime : IAsyncDisposable
         return new SessionActivitySnapshot(phase, outcome < 0 ? null : (TurnOutcome)outcome);
     }
 
-    internal DateTimeOffset LastActivityUtc => _lastActivityUtc;
+    internal DateTimeOffset LastActivityUtc => new(Interlocked.Read(ref _lastActivityUtcTicks), TimeSpan.Zero);
 
     internal SessionId? ParentSessionId => _record.ParentSessionId;
+
+    internal bool IsDisposed => Volatile.Read(ref _disposed);
+
+    internal bool HasPendingInputs => Volatile.Read(ref _pendingInputCount) > 0;
+
+    internal SessionTaskSnapshot? TaskSnapshot(HashSet<SubagentId> runningSubagents)
+    {
+        if (IsDisposed)
+            return null;
+
+        var record = Volatile.Read(ref _record);
+        TurnPhase phase;
+        DateTimeOffset? startedAt;
+        lock (_pendingSync)
+        {
+            phase = _pendingPermissions.Count > 0
+                ? TurnPhase.AwaitingPermission
+                : _pendingInteractions.Count > 0
+                    ? TurnPhase.AwaitingInteraction
+                    : _turnMachine.Phase;
+            startedAt = _turnStartedAt;
+        }
+
+        var jobs = 0;
+        foreach (var job in _backgroundJobs.List())
+        {
+            if (job.Status != BackgroundJobStatus.Running)
+                continue;
+            jobs++;
+            if (startedAt is null || job.StartedAt < startedAt)
+                startedAt = job.StartedAt;
+        }
+
+        var subagents = 0;
+        if (_subagentTasks is not null)
+        {
+            foreach (var task in _subagentTasks.List())
+            {
+                if (task.ParentSessionId != record.Id || task.Status != SubagentStatus.Running
+                    || !runningSubagents.Add(task.Id))
+                    continue;
+                subagents++;
+                if (startedAt is null || task.StartedAt < startedAt)
+                    startedAt = task.StartedAt;
+            }
+        }
+
+        return IsDisposed ? null : new SessionTaskSnapshot(
+            record.Id, record.Title, record.WorkspaceRoot, phase, LastActivityUtc, jobs, subagents,
+            phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction, startedAt);
+    }
 
     // Queued inputs and pending interactions exist only in memory, so dropping them would
     // lose user work; durable state reloads on resume.
@@ -299,7 +352,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             if (ack.Accepted)
             {
                 // Idle unloading measures from the last meaningful work.
-                _lastActivityUtc = _deps.Clock.GetUtcNow();
+                Interlocked.Exchange(ref _lastActivityUtcTicks, _deps.Clock.GetUtcNow().UtcTicks);
             }
             // The store tail captured under the lock is a causality token: every event the
             // command caused is at or below it, so a projection can await exactly it.
@@ -685,7 +738,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 persist: true).ConfigureAwait(false);
             BumpRevision();
         }
-        _pendingInputs.Enqueue(input);
+        EnqueueInput(input);
     }
 
     private async Task<CommandAck> HandleRemoveQueuedInputAsync(RemoveQueuedInputCommand remove)
@@ -706,6 +759,19 @@ public sealed class SessionRuntime : IAsyncDisposable
         return CommandAck.AcceptedAt(remove.CommandId, Revision);
     }
 
+    private void EnqueueInput(PendingTurnInput input)
+    {
+        _pendingInputs.Enqueue(input);
+        Volatile.Write(ref _pendingInputCount, _pendingInputs.Count);
+    }
+
+    private PendingTurnInput DequeueInput()
+    {
+        var input = _pendingInputs.Dequeue();
+        Volatile.Write(ref _pendingInputCount, _pendingInputs.Count);
+        return input;
+    }
+
     private bool TryRemovePendingInput(CommandId commandId) => TryTakePendingInput(commandId, out _);
 
     private bool TryTakePendingInput(CommandId commandId, out PendingTurnInput? taken)
@@ -714,13 +780,13 @@ public sealed class SessionRuntime : IAsyncDisposable
         var count = _pendingInputs.Count;
         for (var index = 0; index < count; index++)
         {
-            var input = _pendingInputs.Dequeue();
+            var input = DequeueInput();
             if (taken is null && input.Command?.CommandId == commandId)
             {
                 taken = input;
                 continue;
             }
-            _pendingInputs.Enqueue(input);
+            EnqueueInput(input);
         }
         return taken is not null;
     }
@@ -729,7 +795,7 @@ public sealed class SessionRuntime : IAsyncDisposable
     {
         if (_pendingInputs.Count == 0)
             return null;
-        var next = _pendingInputs.Dequeue();
+        var next = DequeueInput();
         if (next.Command is { } command)
         {
             _ = EmitAsync(new InputDequeuedEvent(command.CommandId), persist: true);
@@ -761,7 +827,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             if (_turnMachine.IsBusy || _pendingInputs.Count > 0)
             {
-                _pendingInputs.Enqueue(new PendingTurnInput(null, prefixedBody));
+                EnqueueInput(new PendingTurnInput(null, prefixedBody));
                 // A blocking TaskOutput wait must end early so the model can yield the turn
                 // and let the queued input start the next one.
                 _turnInputSignal.Pulse();
@@ -810,10 +876,14 @@ public sealed class SessionRuntime : IAsyncDisposable
 
     private void StartTurnFor(PendingTurnInput input)
     {
-        if (!_turnMachine.TryTransition(TurnPhase.ProcessingInput))
+        lock (_pendingSync)
         {
-            _pendingInputs.Enqueue(input);
-            return;
+            if (!_turnMachine.TryTransition(TurnPhase.ProcessingInput))
+            {
+                EnqueueInput(input);
+                return;
+            }
+            _turnStartedAt = _deps.Clock.GetUtcNow();
         }
 
         _transientSweepTimer?.Dispose();
@@ -992,7 +1062,7 @@ public sealed class SessionRuntime : IAsyncDisposable
                 _turnCts = null;
                 // Idle unloading measures from the last meaningful work, so the clock restarts
                 // at turn end rather than at the final model step.
-                _lastActivityUtc = _deps.Clock.GetUtcNow();
+                Interlocked.Exchange(ref _lastActivityUtcTicks, _deps.Clock.GetUtcNow().UtcTicks);
                 _events.EvictTransientOlderThan(
                     _deps.Clock.GetUtcNow().AddSeconds(-SessionEventRetention.SealedTurnTransientGraceMs / 1000.0),
                     _events.LastSequence);
@@ -1035,8 +1105,12 @@ public sealed class SessionRuntime : IAsyncDisposable
     // the machine in a busy phase.
     private void ReleaseTurnMachine()
     {
-        _turnMachine.TryTransition(TurnPhase.Completing);
-        _turnMachine.Transition(TurnPhase.Idle);
+        lock (_pendingSync)
+        {
+            _turnMachine.TryTransition(TurnPhase.Completing);
+            _turnMachine.Transition(TurnPhase.Idle);
+            _turnStartedAt = null;
+        }
     }
 
     // The sealed-turn grace keeps the streaming tail for late consumers; once the grace elapses
@@ -1069,7 +1143,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             List<PendingTurnInput>? held = null;
             while (_pendingInputs.Count > 0)
             {
-                var next = _pendingInputs.Dequeue();
+                var next = DequeueInput();
                 if (next.Command is { } command)
                 {
                     if (steer is null && command.Delivery == SendTextDelivery.Guide
@@ -1097,7 +1171,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 foreach (var pending in held)
                 {
-                    _pendingInputs.Enqueue(pending);
+                    EnqueueInput(pending);
                 }
             }
         }
@@ -1176,7 +1250,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             {
                 if (_promotedCommandId is null && _pendingInputs.Count > 0 && !_turnMachine.IsBusy)
                 {
-                    next = _pendingInputs.Dequeue();
+                    next = DequeueInput();
                     if (next.Command is { } command)
                     {
                         _ = EmitAsync(new InputDequeuedEvent(command.CommandId), persist: true);
@@ -1248,7 +1322,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         var (effectiveTokens, _) = EstimateContextTokens(initialRequest, history);
 
         var now = _deps.Clock.GetUtcNow();
-        var micro = MicroCompactor.Apply(history, _lastActivityUtc, now, threshold, EstimateHistoryTokensCached(history));
+        var micro = MicroCompactor.Apply(history, LastActivityUtc, now, threshold, EstimateHistoryTokensCached(history));
         if (micro.ClearedParts.Count > 0)
         {
             _history.ReplaceAll(micro.Messages);
@@ -1313,7 +1387,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             notification => HandleToolNotificationAsync(turnId, notification), turnCt);
         var (accumulator, generationElapsed) = await StreamModelStepAsync(turnId, model, request, streamingTools, turnCt).ConfigureAwait(false);
 
-        _lastActivityUtc = _deps.Clock.GetUtcNow();
+        Interlocked.Exchange(ref _lastActivityUtcTicks, _deps.Clock.GetUtcNow().UtcTicks);
 
         if (accumulator.Failure is { } failure)
         {
@@ -2486,7 +2560,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             var command = new SendTextCommand(queued.CommandId, _record.Id, 0, queued.Text,
                 queued.Mode, queued.ModelSelection, queued.Delivery, Workflows: queued.Workflows,
                 PlanEnabled: queued.PlanEnabled);
-            _pendingInputs.Enqueue(new PendingTurnInput(command, null, queued.Images));
+            EnqueueInput(new PendingTurnInput(command, null, queued.Images));
             EmitForReplay(new InputQueuedEvent(queued));
         }
         _history.AppendRange(activeMessages.Select(m => m.Message).ToList());

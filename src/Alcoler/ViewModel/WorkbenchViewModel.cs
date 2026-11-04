@@ -113,6 +113,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         Remote = remoteAccess;
         _hub = new SessionProjectionHub(runtime, scheduler, coalesceWindow: TimeSpan.FromMilliseconds(30));
         Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync);
+        TaskOverlay = new TaskOverlayViewModel(runtime);
         runtime.SessionTitleChanged += OnSessionTitleChanged;
         runtime.SessionListChanged += OnSessionListChanged;
         if (runtime is ISessionActivityRuntime activities)
@@ -134,6 +135,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     }
 
     public SessionSidebarViewModel Sidebar { get; }
+
+    public TaskOverlayViewModel TaskOverlay { get; }
 
     public ChatGptAccountService? ChatGptAccount { get; }
 

@@ -23,6 +23,17 @@ public interface IConversationProjection : IDisposable
 
 public sealed record SessionActivitySnapshot(TurnPhase Phase, TurnOutcome? LastOutcome);
 
+public sealed record SessionTaskSnapshot(
+    SessionId SessionId,
+    string Title,
+    string WorkspaceRoot,
+    TurnPhase Phase,
+    DateTimeOffset LastActivityUtc,
+    int RunningJobCount,
+    int RunningSubagentCount,
+    bool IsAwaitingConfirmation,
+    DateTimeOffset? StartedAt);
+
 public interface ISessionActivityRuntime
 {
     IReadOnlyList<BackgroundJobInfo> GetBackgroundJobs(SessionId sessionId);
@@ -32,6 +43,8 @@ public interface ISessionActivityRuntime
     ValueTask<bool> TryStopSubagentAsync(SessionId sessionId, string taskId) => ValueTask.FromResult(false);
 
     SessionActivitySnapshot? GetSessionActivity(SessionId sessionId) => null;
+
+    IReadOnlyList<SessionTaskSnapshot> GetActiveSessionTasks() => [];
 
     event Action<SessionId>? SessionActivityChanged
     {

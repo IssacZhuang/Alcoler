@@ -64,6 +64,7 @@ public class SessionActivitySignalTests
         Assert.True(ack.Accepted, ack.RejectionReason);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
         { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Failed });
+        Assert.Empty(activity.GetActiveSessionTasks());
         await WaitUntilAsync(() => notifications.Count >= 4);
         Assert.All(notifications, id => Assert.Equal(session.Id, id));
     }
@@ -88,6 +89,11 @@ public class SessionActivitySignalTests
 
         var permission = await WaitForPermissionAsync(projection);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingPermission);
+        var task = Assert.Single(activity.GetActiveSessionTasks());
+        Assert.Equal(session.Id, task.SessionId);
+        Assert.Equal(TurnPhase.AwaitingPermission, task.Phase);
+        Assert.True(task.IsAwaitingConfirmation);
+        Assert.NotNull(task.StartedAt);
         Assert.Contains(session.Id, notifications);
 
         var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
@@ -99,6 +105,7 @@ public class SessionActivitySignalTests
             is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
         { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+        Assert.Empty(activity.GetActiveSessionTasks());
     }
 
     [Fact]
@@ -135,6 +142,11 @@ public class SessionActivitySignalTests
         var interaction = await WaitForInteractionAsync(projection);
         Assert.Null(projection.Snapshot().State.PendingPermission);
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.AwaitingInteraction);
+        var task = Assert.Single(activity.GetActiveSessionTasks());
+        Assert.Equal(session.Id, task.SessionId);
+        Assert.Equal(TurnPhase.AwaitingInteraction, task.Phase);
+        Assert.True(task.IsAwaitingConfirmation);
+        Assert.NotNull(task.StartedAt);
 
         var resolve = await runtime.SubmitAsync(new ResolveInteractionCommand(
             StrongId.NewCommandId(), session.Id, projection.Snapshot().Revision, interaction.InteractionId,
@@ -146,6 +158,7 @@ public class SessionActivitySignalTests
             is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction));
         await WaitUntilAsync(() => activity.GetSessionActivity(session.Id) is
         { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Completed });
+        Assert.Empty(activity.GetActiveSessionTasks());
     }
 
     [Fact]

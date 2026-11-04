@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Alcoler.Localization;
 using Alcoler.Logging;
 using Alcoler.Views;
@@ -14,6 +15,7 @@ public partial class App : Application
 {
     private TrayIcon? _trayIcon;
     private MainWindow? _mainWindow;
+    private TaskOverlayWindow? _taskOverlayWindow;
     private bool _isExiting;
 
     public override void Initialize()
@@ -40,36 +42,84 @@ public partial class App : Application
             Themes.ThemeSelector.Apply(config.Theme);
             Loc.SetLanguage(Loc.ResolveLanguage(config.Language));
             var viewModel = await Composition.BuildWorkbenchAsync(config, CancellationToken.None);
-            var window = new MainWindow(viewModel);
-            window.Closing += OnMainWindowClosing;
-            _mainWindow = window;
-            desktop.MainWindow = window;
-            _trayIcon = CreateTrayIcon(desktop);
-            desktop.Exit += (_, _) =>
-            {
-                // An exception in this handler would abort the dispatcher exit sequence
-                // and leave a headless process behind, so disposal is guarded.
-                try
-                {
-                    _trayIcon?.Dispose();
-                    _trayIcon = null;
-                    viewModel.Dispose();
-                }
-                catch (Exception exception)
-                {
-                    AppLog.LogUnhandled("Shutdown", exception);
-                }
-                finally
-                {
-                    Dispatcher.UIThread.UnhandledException -= OnDispatcherUnhandledException;
-                }
-            };
+            InitializeWorkbench(desktop, viewModel);
         }
         catch (Exception exception)
         {
             AppLog.LogUnhandled("Startup", exception);
             ShowStartupFailure(desktop, exception);
         }
+    }
+
+    internal void InitializeWorkbench(IClassicDesktopStyleApplicationLifetime desktop, ViewModel.WorkbenchViewModel viewModel)
+    {
+        var window = new MainWindow(viewModel);
+        window.Closing += OnMainWindowClosing;
+        _mainWindow = window;
+        desktop.MainWindow = window;
+        var overlay = new TaskOverlayWindow(viewModel.TaskOverlay);
+        _taskOverlayWindow = overlay;
+        overlay.MainWindowRequested += ShowMainWindow;
+        overlay.SessionRequested += async sessionId =>
+        {
+            if (_isExiting)
+                return;
+            ShowMainWindow();
+            try
+            {
+                await viewModel.OpenSessionAsync(sessionId);
+            }
+            catch (Exception exception)
+            {
+                if (!_isExiting)
+                {
+                    AppLog.LogUnhandled("TaskOverlayNavigation", exception);
+                    window.ShowErrorTip(Describe(exception), AppLog.DirectoryPath);
+                }
+            }
+        };
+        void OnTaskOverlayVisibilityChanged(object? sender, PropertyChangedEventArgs change)
+        {
+            if (change.PropertyName != nameof(ViewModel.TaskOverlayViewModel.IsVisible)
+                || _isExiting || overlay.IsVisible == viewModel.TaskOverlay.IsVisible)
+                return;
+            if (viewModel.TaskOverlay.IsVisible)
+                overlay.ShowNear(window);
+            else
+                overlay.Hide();
+        }
+        viewModel.TaskOverlay.PropertyChanged += OnTaskOverlayVisibilityChanged;
+        overlay.PropertyChanged += (_, change) =>
+        {
+            if (change.Property == Window.IsVisibleProperty)
+                viewModel.TaskOverlay.IsVisible = overlay.IsVisible;
+        };
+        _trayIcon = CreateTrayIcon(desktop, viewModel.TaskOverlay);
+        if (viewModel.TaskOverlay.IsVisible)
+            overlay.ShowNear(window);
+        desktop.Exit += (_, _) =>
+        {
+            _isExiting = true;
+            viewModel.TaskOverlay.PropertyChanged -= OnTaskOverlayVisibilityChanged;
+            // An exception in this handler would abort the dispatcher exit sequence
+            // and leave a headless process behind, so disposal is guarded.
+            try
+            {
+                _taskOverlayWindow?.Shutdown();
+                _taskOverlayWindow = null;
+                _trayIcon?.Dispose();
+                _trayIcon = null;
+                viewModel.Dispose();
+            }
+            catch (Exception exception)
+            {
+                AppLog.LogUnhandled("Shutdown", exception);
+            }
+            finally
+            {
+                Dispatcher.UIThread.UnhandledException -= OnDispatcherUnhandledException;
+            }
+        };
     }
 
     private void OnDispatcherUnhandledException(object? sender, DispatcherUnhandledExceptionEventArgs e)
@@ -124,14 +174,33 @@ public partial class App : Application
         return message.Length == 0 ? exception.GetType().Name : $"{exception.GetType().Name}: {message}";
     }
 
-    private TrayIcon CreateTrayIcon(IClassicDesktopStyleApplicationLifetime desktop)
+    private TrayIcon CreateTrayIcon(IClassicDesktopStyleApplicationLifetime desktop, ViewModel.TaskOverlayViewModel taskOverlay)
     {
         var openItem = new NativeMenuItem(Loc.Get("tray_open"));
         openItem.Click += (_, _) => ShowMainWindow();
+        var overlayItem = new NativeMenuItem(Loc.Get("tray_task_overlay"))
+        {
+            ToggleType = NativeMenuItemToggleType.CheckBox,
+            IsChecked = taskOverlay.IsVisible,
+        };
+        overlayItem.Click += (_, _) =>
+        {
+            if (!_isExiting)
+                taskOverlay.IsVisible = !taskOverlay.IsVisible;
+        };
+        if (_taskOverlayWindow is { } overlay)
+        {
+            overlay.PropertyChanged += (_, change) =>
+            {
+                if (change.Property == Window.IsVisibleProperty)
+                    overlayItem.IsChecked = overlay.IsVisible;
+            };
+        }
         var exitItem = new NativeMenuItem(Loc.Get("tray_exit"));
         exitItem.Click += (_, _) => Exit(desktop);
         var menu = new NativeMenu();
         menu.Items.Add(openItem);
+        menu.Items.Add(overlayItem);
         menu.Items.Add(new NativeMenuItemSeparator());
         menu.Items.Add(exitItem);
         var trayIcon = new TrayIcon
@@ -161,12 +230,7 @@ public partial class App : Application
         {
             return;
         }
-        if (!window.IsVisible)
-        {
-            window.Show();
-        }
-        window.WindowState = WindowState.Normal;
-        window.Activate();
+        window.ShowAndActivate();
     }
 
     private void Exit(IClassicDesktopStyleApplicationLifetime desktop)
@@ -190,6 +254,8 @@ public partial class App : Application
             await Task.Delay(TimeSpan.FromSeconds(15));
             Environment.Exit(Environment.ExitCode);
         });
+        _taskOverlayWindow?.Shutdown();
+        _taskOverlayWindow = null;
         desktop.Shutdown();
     }
 }
