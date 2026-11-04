@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Runtime.ExceptionServices;
 using System.Text.Encodings.Web;
@@ -12,6 +13,9 @@ namespace Alcoler.Adapters.Models;
 internal static class ModelRequestOptions
 {
     private const int MaxCachedToolSchemas = 1024;
+    // Below this size the transfer saving is noise, so the CPU and byte identity
+    // of a plain body are kept for the many small requests in a tool loop.
+    private const int GzipRequestThreshold = 4096;
     private static readonly string[] OutputLimitKeys = ["max_tokens", "max_completion_tokens", "max_output_tokens", "budget_tokens"];
     private static readonly ConcurrentDictionary<JsonElement, JsonElement> RewrittenToolSchemas = new();
 
@@ -44,12 +48,16 @@ internal static class ModelRequestOptions
     internal static string Encode(Dictionary<string, object?> payload, ModelProperties properties, ModelCallOptions options, string nativeMaxKey, int fallback) =>
         Prepare(payload, properties, options, nativeMaxKey, fallback).ToJsonString(RequestJsonOptions);
 
-    internal static HttpContent CreateContent(JsonObject body)
+    internal static HttpContent CreateContent(JsonObject body, bool gzipRequests = false)
     {
         try
         {
-            var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(body, RequestJsonContext.JsonObject));
+            var plain = JsonSerializer.SerializeToUtf8Bytes(body, RequestJsonContext.JsonObject);
+            var payload = gzipRequests && plain.Length >= GzipRequestThreshold ? Gzip(plain) : plain;
+            var content = new ByteArrayContent(payload);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+            if (!ReferenceEquals(payload, plain))
+                content.Headers.TryAddWithoutValidation("Content-Encoding", "gzip");
             return content;
         }
         catch (JsonException ex) when (ex.InnerException is InvalidOperationException inner)
@@ -58,6 +66,14 @@ internal static class ModelRequestOptions
             ExceptionDispatchInfo.Capture(inner).Throw();
             throw;
         }
+    }
+
+    private static byte[] Gzip(byte[] plain)
+    {
+        using var output = new MemoryStream(plain.Length / 2);
+        using (var compressor = new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true))
+            compressor.Write(plain, 0, plain.Length);
+        return output.ToArray();
     }
 
     private static readonly ModelRequestJsonContext RequestJsonContext = new(new JsonSerializerOptions(RequestJsonOptions)

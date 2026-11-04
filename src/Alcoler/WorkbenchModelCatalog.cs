@@ -78,6 +78,7 @@ public static class WorkbenchModelCatalog
             SupportsMidConversationSystem: Flag(properties, "supportsMidConversationSystem"),
             SupportsToolCall: Flag(properties, "supportsToolCall"),
             RequiresMfjsToolSchema: Flag(properties, "requiresMfjsToolSchema"),
+            SupportsGzipRequests: Flag(properties, "supportsGzipRequests"),
             ReasoningLevels: options["reasoningLevel"]!["values"]!.AsArray().Select(x => x!.GetValue<string>()).ToArray(),
             ReasoningMapping: options["reasoningLevel"]!["map"]?.GetValue<string>(),
             MaxOutputTokensMapping: options["maxOutputTokens"]!["map"]?.GetValue<string>());

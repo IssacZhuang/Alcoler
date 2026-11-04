@@ -14,6 +14,7 @@ public sealed record ModelProperties(
     bool SupportsMidConversationSystem = false,
     bool SupportsToolCall = true,
     bool RequiresMfjsToolSchema = false,
+    bool SupportsGzipRequests = false,
     IReadOnlyList<string>? ReasoningLevels = null,
     string? ReasoningMapping = null,
     string? MaxOutputTokensMapping = null)

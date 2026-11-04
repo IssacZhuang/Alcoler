@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -381,6 +382,48 @@ public class ModelRequestOptionsTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => content.CopyToAsync(second, cancellation.Token));
         content.Dispose();
         await Assert.ThrowsAsync<ObjectDisposedException>(() => content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task CreateContent_CompressesLargeBodiesOnlyWhenSupported()
+    {
+        var text = string.Concat(Enumerable.Repeat("gzip round-trip probe ", 512));
+        Dictionary<string, object?> Payload() => new() { ["input"] = new object[] { text }, ["stream"] = true };
+
+        using var plain = ModelRequestOptions.CreateContent(ModelRequestOptions.Prepare(Payload(), new(), new(), "max_tokens", 128));
+        using var compressed = ModelRequestOptions.CreateContent(ModelRequestOptions.Prepare(Payload(), new(), new(), "max_tokens", 128), gzipRequests: true);
+        var plainBytes = await plain.ReadAsByteArrayAsync();
+        var compressedBytes = await compressed.ReadAsByteArrayAsync();
+
+        Assert.Null(plain.Headers.ContentEncoding.FirstOrDefault());
+        Assert.Equal("gzip", Assert.Single(compressed.Headers.ContentEncoding));
+        Assert.True(compressedBytes.Length < plainBytes.Length / 2);
+        Assert.Equal(plainBytes, Gunzip(compressedBytes));
+        Assert.Equal(plain.Headers.ContentType, compressed.Headers.ContentType);
+
+        using var small = ModelRequestOptions.CreateContent(
+            ModelRequestOptions.Prepare(new Dictionary<string, object?> { ["input"] = new object[] { "tiny" } }, new(), new(), "max_tokens", 128),
+            gzipRequests: true);
+        Assert.Empty(small.Headers.ContentEncoding);
+        Assert.Equal("application/json; charset=utf-8", small.Headers.ContentType!.ToString());
+    }
+
+    [Fact]
+    public async Task GzipRequests_FlowFromPropertiesToHttpRequest()
+    {
+        var handler = Handler("responses");
+        var model = Model("responses", handler, new ModelProperties(SupportsGzipRequests: true));
+        await Collect(model, new([new(MessageRole.User, [new InputTextBlock(new string('a', 8192))])], [], new ModelCallOptions()));
+        Assert.Equal("gzip", Assert.Single(Assert.Single(handler.Requests).Content!.Headers.ContentEncoding));
+    }
+
+    private static byte[] Gunzip(byte[] compressed)
+    {
+        using var input = new MemoryStream(compressed);
+        using var gzip = new GZipStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 
     private static JsonNode NestedNode(int depth)

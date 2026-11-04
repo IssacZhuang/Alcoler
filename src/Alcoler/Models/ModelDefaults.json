@@ -3737,6 +3737,15 @@
             "supportsJsonSchemaOutput": true
           }
         }
+      },
+      {
+        "apiTypeMatch": "openai-responses",
+        "baseUrlMatch": "https://api\\.openai\\.com(?:/v1)?/?",
+        "config": {
+          "properties": {
+            "supportsGzipRequests": true
+          }
+        }
       }
     ],
     "templateModelRules": [

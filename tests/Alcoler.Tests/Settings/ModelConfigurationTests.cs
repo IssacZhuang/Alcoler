@@ -52,6 +52,18 @@ public class ModelConfigurationTests
     }
 
     [Fact]
+    public void Catalog_EnablesGzipRequestsOnlyForOpenAiSites()
+    {
+        var openai = new WorkbenchProviderConfig("openai-responses", "https://api.openai.com/v1", null,
+            [new WorkbenchModelConfig("gpt-6-astra")], "chatgpt", "ChatGPT", AccessType: "chatgpt-account");
+        Assert.True(WorkbenchModelCatalog.Defaults(openai, "gpt-6-astra").SupportsGzipRequests);
+        Assert.True(WorkbenchModelCatalog.Defaults(openai with { BaseUrl = "https://api.openai.com", TemplateId = "openai" }, "gpt-5.4").SupportsGzipRequests);
+
+        var other = new WorkbenchProviderConfig("openai-compatible", "https://example.invalid/v1", "secret", [new WorkbenchModelConfig("custom-model")]);
+        Assert.False(WorkbenchModelCatalog.Defaults(other, "custom-model").SupportsGzipRequests);
+    }
+
+    [Fact]
     public void LegacyDefaults_StaySparseAndKeepIdentityWhenProtocolChanges()
     {
         var path = TempPath();

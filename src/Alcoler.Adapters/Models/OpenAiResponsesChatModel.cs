@@ -272,7 +272,7 @@ public sealed class OpenAiResponsesChatModel(
         }
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, options.ResponsesUrl)
         {
-            Content = ModelRequestOptions.CreateContent(body),
+            Content = ModelRequestOptions.CreateContent(body, _requestProperties.SupportsGzipRequests),
         };
         httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey ?? options.ApiKey);
         httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
