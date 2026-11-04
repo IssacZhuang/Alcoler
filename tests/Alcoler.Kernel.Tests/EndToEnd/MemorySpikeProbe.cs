@@ -16,6 +16,11 @@ using Xunit.Abstractions;
 
 namespace Alcoler.Kernel.Tests.EndToEnd;
 
+// Memory deltas are only meaningful when no other collection allocates concurrently.
+[CollectionDefinition("MemoryProbe", DisableParallelization = true)]
+public class MemoryProbeCollection { }
+
+[Collection("MemoryProbe")]
 public class MemorySpikeProbe
 {
     private readonly ITestOutputHelper _output;
@@ -27,11 +32,12 @@ public class MemorySpikeProbe
         new Alcoler.Contracts.Models.ModelTextEnded(),
         new Alcoler.Contracts.Models.ModelStreamFinished(Alcoler.Contracts.Models.ModelFinishReason.Stop));
 
-    private static string Measure(string label)
+    private (double ManagedMb, double WorkingSetMb) Measure(string label)
     {
         var managed = GC.GetTotalMemory(forceFullCollection: true) / (1024.0 * 1024.0);
         var workingSet = Process.GetCurrentProcess().WorkingSet64 / (1024.0 * 1024.0);
-        return $"{label}: managed={managed:F1} MB, workingSet={workingSet:F1} MB";
+        _output.WriteLine($"{label}: managed={managed:F1} MB, workingSet={workingSet:F1} MB");
+        return (managed, workingSet);
     }
 
     [Fact]
@@ -68,7 +74,7 @@ public class MemorySpikeProbe
                 DefaultModel = new ModelSelection("scripted", "test-model"),
             });
 
-            _output.WriteLine(Measure("baseline (runtime only)"));
+            var baseline = Measure("baseline (runtime only)");
 
             var session = await runtime.CreateSessionAsync(
                 new Contracts.Sessions.SessionOptions(root, PermissionMode: PermissionMode.Edit), CancellationToken.None);
@@ -88,7 +94,7 @@ public class MemorySpikeProbe
                 await WaitForIdleAsync(projection);
             }
 
-            _output.WriteLine(Measure("after 400-turn session (events resident + projection live)"));
+            Measure("after 400-turn session (events resident + projection live)");
 
             var rows = projection.Snapshot().Rows.Count;
             _output.WriteLine($"timeline rows: {rows}");
@@ -108,9 +114,15 @@ public class MemorySpikeProbe
                 }
             }
 
-            _output.WriteLine(Measure("after 10 resident sessions (400 + 9x50 turns)"));
+            var loaded = Measure("after 10 resident sessions (400 + 9x50 turns)");
+            // Bounds guard the bounded-retention budget documented in AGENTS.md (~7 MB managed /
+            // ~21 MB working set at this point); they must fail only on runaway growth, not GC noise.
+            Assert.True(loaded.ManagedMb - baseline.ManagedMb < 64,
+                $"managed heap grew {loaded.ManagedMb - baseline.ManagedMb:F1} MB across 850 scripted turns");
+            Assert.True(loaded.WorkingSetMb - baseline.WorkingSetMb < 256,
+                $"working set grew {loaded.WorkingSetMb - baseline.WorkingSetMb:F1} MB across 850 scripted turns");
             await runtime.DisposeAsync();
-            _output.WriteLine(Measure("after runtime dispose"));
+            Measure("after runtime dispose");
         }
         finally
         {

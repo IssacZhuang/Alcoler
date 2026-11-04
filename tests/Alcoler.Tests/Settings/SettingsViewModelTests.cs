@@ -182,6 +182,47 @@ public class SettingsViewModelTests
     }
 
     [Fact]
+    public async Task SaveAsync_PreservesTaskOverlaySectionWithoutLiveModel()
+    {
+        var path = TempConfigPath();
+        try
+        {
+            using var settings = new SettingsViewModel(SampleConfig() with
+            {
+                TaskOverlay = new WorkbenchTaskOverlayConfig(Visible: true),
+            });
+            settings.Theme = "light";
+
+            Assert.NotNull(await settings.SaveAsync(path));
+
+            Assert.True(WorkbenchConfig.LoadOrDefault(path).TaskOverlay?.Visible);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task SaveAsync_WritesLiveTaskOverlayVisibilityAndCollapsesTheDefault()
+    {
+        var path = TempConfigPath();
+        try
+        {
+            using var overlayOn = new SettingsViewModel(SampleConfig(),
+                taskOverlay: new TaskOverlayViewModel(new SessionActivityTracker()) { IsVisible = true });
+            Assert.True((await overlayOn.SaveAsync(path))!.TaskOverlay?.Visible);
+
+            using var overlayOff = new SettingsViewModel(WorkbenchConfig.LoadOrDefault(path),
+                taskOverlay: new TaskOverlayViewModel(new SessionActivityTracker()));
+            Assert.False((await overlayOff.SaveAsync(path))!.TaskOverlay?.Visible);
+
+            using var untouched = new SettingsViewModel(new WorkbenchConfig([]),
+                taskOverlay: new TaskOverlayViewModel(new SessionActivityTracker()));
+            Assert.Null((await untouched.SaveAsync(path))!.TaskOverlay);
+            Assert.Null(WorkbenchConfig.LoadOrDefault(path).TaskOverlay);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public async Task SaveAsync_RejectsUnknownProviderKind()
     {
         var path = TempConfigPath();

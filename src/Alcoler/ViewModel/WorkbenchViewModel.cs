@@ -45,6 +45,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     private readonly IExternalEditorLauncher _externalEditorLauncher;
     private WorkbenchConfig _config;
     private readonly Action<WorkbenchComposerConfig>? _saveComposer;
+    private readonly Action<WorkbenchTaskOverlayConfig>? _saveTaskOverlay;
     private readonly Action<WorkbenchConfig>? _applySettings;
     private ShellEnvironment? _shellPreference;
     private WorkbenchComposerConfig _composerConfig;
@@ -93,6 +94,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         IAsyncDisposable? ownedResource = null,
         BrowserPaneViewModel? browserPane = null,
         Action<WorkbenchComposerConfig>? saveComposer = null,
+        Action<WorkbenchTaskOverlayConfig>? saveTaskOverlay = null,
         Action<WorkbenchConfig>? applySettings = null,
         ChatGptAccountService? chatGptAccount = null,
         IExternalEditorLauncher? externalEditorLauncher = null,
@@ -103,6 +105,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _config = config;
         _externalEditorLauncher = externalEditorLauncher ?? new ExternalEditorLauncher();
         _saveComposer = saveComposer;
+        _saveTaskOverlay = saveTaskOverlay;
         _applySettings = applySettings;
         _shellPreference = config.IntegratedTerminalShell;
         var composerConfig = config.Composer ?? new WorkbenchComposerConfig();
@@ -119,7 +122,11 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         Remote = remoteAccess;
         _hub = new SessionProjectionHub(runtime, scheduler, coalesceWindow: TimeSpan.FromMilliseconds(30));
         Sidebar = new SessionSidebarViewModel(RefreshFromRuntimeAsync, SessionActivities);
-        TaskOverlay = new TaskOverlayViewModel(SessionActivities);
+        TaskOverlay = new TaskOverlayViewModel(SessionActivities)
+        {
+            IsVisible = config.TaskOverlay?.Visible ?? false,
+        };
+        TaskOverlay.PropertyChanged += OnTaskOverlayPropertyChanged;
         runtime.SessionTitleChanged += OnSessionTitleChanged;
         runtime.SessionListChanged += OnSessionListChanged;
         runtime.SessionDeleted += OnSessionDeleted;
@@ -424,6 +431,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         _hub.Dispose();
         _readingStates.Clear();
         Terminal?.Dispose();
+        TaskOverlay.PropertyChanged -= OnTaskOverlayPropertyChanged;
         Documents.PropertyChanged -= OnDocumentsPropertyChanged;
         Documents.Dispose();
         _gitService.Dispose();
@@ -747,6 +755,22 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes);
         pending.Remove(sessionId.Value);
         SaveComposerConfig(_composerConfig with { PendingSessionModes = pending });
+    }
+
+    // Overlay visibility applies the moment it changes, so it persists immediately
+    // rather than waiting for the settings dialog to save.
+    private void OnTaskOverlayPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(TaskOverlayViewModel.IsVisible))
+            return;
+        try
+        {
+            _saveTaskOverlay?.Invoke(new WorkbenchTaskOverlayConfig(TaskOverlay.IsVisible));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            Banner = Loc.Get("workbench_task_overlay_save_error", exception.Message);
+        }
     }
 
     private void SaveComposerConfig(WorkbenchComposerConfig config)

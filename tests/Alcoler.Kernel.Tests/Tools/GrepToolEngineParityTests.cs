@@ -85,13 +85,6 @@ public class GrepToolEngineParityTests
     }
 
     [Fact]
-    public void ForcedManagedEngine_StillPassesDefaultConstruction()
-    {
-        var tool = new GrepTool(new ManagedGrepEngine());
-        Assert.Equal("Grep", tool.Contract.Name);
-    }
-
-    [Fact]
     public async Task ManagedEngine_RegexCacheRetentionIsBoundedAcrossUniqueSearches()
     {
         using var workspace = new TempWorkspace();

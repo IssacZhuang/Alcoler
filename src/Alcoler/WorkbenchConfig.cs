@@ -90,6 +90,9 @@ public sealed record WorkbenchAlertsConfig(
     bool? TaskCompleted = null,
     bool? AwaitingConfirmation = null);
 
+// TaskOverlay gates the floating task window; a null or unset entry keeps it hidden.
+public sealed record WorkbenchTaskOverlayConfig(bool? Visible = null);
+
 public sealed record WorkbenchConfig(
     IReadOnlyList<WorkbenchProviderConfig> Providers,
     WorkbenchDefaultModelConfig? DefaultModel = null,
@@ -104,7 +107,8 @@ public sealed record WorkbenchConfig(
     int AutoArchiveOlderThanDays = 7,
     WorkbenchBrowserConfig? Browser = null,
     WorkbenchRemoteConfig? Remote = null,
-    WorkbenchAlertsConfig? Alerts = null)
+    WorkbenchAlertsConfig? Alerts = null,
+    WorkbenchTaskOverlayConfig? TaskOverlay = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

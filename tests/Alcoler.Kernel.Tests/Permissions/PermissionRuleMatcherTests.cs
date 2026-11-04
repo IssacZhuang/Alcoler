@@ -63,18 +63,13 @@ public class PermissionRuleMatcherTests
         Assert.False(Matches("Bash", "git", "Bash", new { command = "git status" }));
     }
 
-    [Fact]
-    public void NullContent_MatchesAnyInvocation()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("*")]
+    public void NullOrWildcardContent_MatchesAnyInvocation(string? ruleContent)
     {
-        Assert.True(Matches("Bash", null, "Bash", new { command = "anything" }));
-        Assert.True(Matches("Bash", null, "Bash", new { }));
-    }
-
-    [Fact]
-    public void WildcardContent_MatchesAnyInvocation()
-    {
-        Assert.True(Matches("Bash", "*", "Bash", new { command = "anything" }));
-        Assert.True(Matches("Bash", "*", "Bash", new { }));
+        Assert.True(Matches("Bash", ruleContent, "Bash", new { command = "anything" }));
+        Assert.True(Matches("Bash", ruleContent, "Bash", new { }));
     }
 
     [Fact]

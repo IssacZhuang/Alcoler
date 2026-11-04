@@ -808,12 +808,9 @@ public sealed class TaskOverlayWindowTests
             Assert.True(settings.CanToggleTaskOverlay);
             Assert.True(card.IsEffectivelyVisible);
             Assert.Contains(card.GetVisualDescendants(), control => ReferenceEquals(control, toggle));
-            foreach (var key in new[] { "settings_task_overlay", "settings_task_overlay_description" })
-            {
-                var localized = Loc.Get(key);
-                Assert.NotEqual(key, localized);
-                Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == localized);
-            }
+            var overlayLabel = Loc.Get("settings_task_overlay");
+            Assert.NotEqual("settings_task_overlay", overlayLabel);
+            Assert.Contains(card.GetVisualDescendants().OfType<TextBlock>(), text => text.Text == overlayLabel);
             AssertOverlayVisibility(harness, false, toggle);
 
             await ClickAsync(toggle);

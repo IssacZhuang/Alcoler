@@ -211,7 +211,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     {
     }
 
-    internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount,
+    internal SettingsViewModel(WorkbenchConfig config, Auth.ChatGptAccountService? chatGptAccount = null,
         SkillsCatalog? skillsCatalog = null, IArchivedSessionMaintenance? archivedSessions = null,
         TaskOverlayViewModel? taskOverlay = null)
         : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows(), chatGptAccount, skillsCatalog,
@@ -525,6 +525,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         AutoArchiveOlderThanDays = Math.Clamp(AutoArchiveOlderThanDays, 1, 365),
         Browser = BuildBrowserConfig(),
         Alerts = BuildAlertsConfig(),
+        TaskOverlay = BuildTaskOverlayConfig(),
     };
 
     // The switch exists only where WebView2 can; elsewhere the file keeps whatever it says.
@@ -546,6 +547,17 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             && _config.Alerts is null)
             return null;
         return new WorkbenchAlertsConfig(AlertTaskCompleted, AlertAwaitingConfirmation);
+    }
+
+    // Like the alerts section, saving persists only the delta from the construction
+    // snapshot: the live toggle already persisted on change, so saving rewrites the
+    // section only to keep the file from reverting to the stale snapshot.
+    private WorkbenchTaskOverlayConfig? BuildTaskOverlayConfig()
+    {
+        if (TaskOverlay is null) return _config.TaskOverlay;
+        var initial = _config.TaskOverlay?.Visible ?? false;
+        if (TaskOverlay.IsVisible == initial && _config.TaskOverlay is null) return null;
+        return new WorkbenchTaskOverlayConfig(TaskOverlay.IsVisible);
     }
 
     private void LoadUserSkills(SkillsCatalog catalog)

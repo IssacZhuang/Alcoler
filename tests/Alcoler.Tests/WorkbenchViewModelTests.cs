@@ -602,6 +602,32 @@ public sealed class WorkbenchViewModelTests : IDisposable
         await WaitUntilAsync(() => restarted.GitPane is { IsLoading: false }, reopenedScheduler);
     }
 
+    [Fact]
+    public void TaskOverlayVisibility_PersistsOnToggleAndRestartsFromConfig()
+    {
+        var configPath = Path.Combine(_root, "config.json");
+        new WorkbenchConfig([]).Save(configPath);
+        using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance,
+            WorkbenchConfig.LoadOrDefault(configPath),
+            saveTaskOverlay: taskOverlay =>
+                (WorkbenchConfig.LoadOrDefault(configPath) with { TaskOverlay = taskOverlay }).Save(configPath));
+
+        Assert.False(workbench.TaskOverlay.IsVisible);
+        Assert.Null(WorkbenchConfig.LoadOrDefault(configPath).TaskOverlay);
+
+        workbench.TaskOverlay.IsVisible = true;
+
+        Assert.True(WorkbenchConfig.LoadOrDefault(configPath).TaskOverlay?.Visible);
+        using var restarted = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance,
+            WorkbenchConfig.LoadOrDefault(configPath));
+        Assert.True(restarted.TaskOverlay.IsVisible);
+
+        restarted.TaskOverlay.IsVisible = false;
+
+        // Without a persistence hook the toggle stays in memory only, leaving the file untouched.
+        Assert.True(WorkbenchConfig.LoadOrDefault(configPath).TaskOverlay?.Visible);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

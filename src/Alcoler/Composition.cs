@@ -135,6 +135,8 @@ public static class Composition
             browserPane: new BrowserPaneViewModel(browser, AvaloniaUiScheduler.Instance,
                 pagePresenterFactory: browserHost is WebViewBrowserHost webViewHost ? webViewHost.CreatePagePresenter : null),
             saveComposer: composer => (WorkbenchConfig.LoadOrDefault() with { Composer = composer }).Save(),
+            saveTaskOverlay: taskOverlay =>
+                (WorkbenchConfig.LoadOrDefault() with { TaskOverlay = taskOverlay }).Save(),
             applySettings: saved =>
             {
                 Volatile.Write(ref currentConfig, saved);
