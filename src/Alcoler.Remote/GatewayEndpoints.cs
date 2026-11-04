@@ -282,7 +282,13 @@ internal static class GatewayEndpoints
                 await GatewayJson.Error(400, "bad_request", "around").ExecuteAsync(context);
                 return;
             }
-            var socket = await context.WebSockets.AcceptWebSocketAsync();
+            // permessage-deflate engages only when the client offers it, and the stream carries
+            // no attacker-controlled plaintext alongside secrets, so the CRIME/BREACH risk the
+            // property name warns about does not apply.
+            var socket = await context.WebSockets.AcceptWebSocketAsync(new WebSocketAcceptContext
+            {
+                DangerousEnableCompression = true,
+            });
             await SessionStream.RunAsync(state, new SessionId(sessionId), socket, context.RequestAborted,
                 appendText: context.Request.Query["appendText"] == "1", compact: compact, history: history,
                 around: string.IsNullOrEmpty(around.ToString()) ? null : around.ToString());

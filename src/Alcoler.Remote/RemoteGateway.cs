@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.DependencyInjection;
@@ -187,6 +188,14 @@ public sealed class RemoteGateway : IAsyncDisposable
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
+        builder.Services.AddResponseCompression(options =>
+            options.MimeTypes =
+            [
+                .. ResponseCompressionDefaults.MimeTypes,
+                "font/ttf",
+                "image/svg+xml",
+                "application/manifest+json",
+            ]);
         builder.Services.AddSingleton(_ => new ArtifactThumbnailService(
             state.Options.ArtifactLoader, state.Options.ArtifactThumbnailGenerator));
         // Idle WebSocket streams never complete on their own, and without a bound
@@ -200,6 +209,7 @@ public sealed class RemoteGateway : IAsyncDisposable
         WebHostConfiguration?.Invoke(builder.WebHost);
         var app = builder.Build();
 
+        app.UseResponseCompression();
         app.Use(async (context, next) =>
         {
             ApplyCacheHeaders(context);
@@ -245,6 +255,7 @@ public sealed class RemoteGateway : IAsyncDisposable
         var shell = new EmbeddedFileProvider(assembly, "Alcoler.Remote");
         var contentTypes = new FileExtensionContentTypeProvider();
         contentTypes.Mappings[".webmanifest"] = "application/manifest+json";
+        contentTypes.Mappings[".ttf"] = "font/ttf";
         // Resources are named Alcoler.Remote.wwwroot.<file>, so the static branch needs
         // a provider rooted one namespace deeper. Mounted twice: at /wwwroot and at the
         // root, because the shell references its assets with root-relative URLs.
