@@ -9,10 +9,14 @@ using Xunit;
 
 namespace Alcoler.Tests.Localization;
 
+[CollectionDefinition("Global localization", DisableParallelization = true)]
+public sealed class GlobalLocalizationCollection
+{
+}
+
+[Collection("Global localization")]
 public sealed class LocTests
 {
-    // Loc holds process-wide state; every test that switches restores the fallback
-    // language so other suites keep asserting the English default.
     [Fact]
     public void DefaultLanguage_IsFallbackLanguage()
     {

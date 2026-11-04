@@ -3,6 +3,7 @@ using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Subagents;
+using Alcoler.Localization;
 using Alcoler.Stores;
 using Alcoler.Ui;
 using Alcoler.ViewModel;
@@ -103,7 +104,7 @@ public sealed class AgentCallItemViewModelTests
         var failure = notice with { Subagent = notice.Subagent! with { Status = SubagentStatus.Failed, ResultSummary = "Child failure" } };
         Apply(model, false, failure);
         Assert.Same(item, Assert.Single(model.Items));
-        Assert.Equal("Failed", item.StatusText);
+        Assert.Equal(Loc.Get("status_failed"), item.StatusText);
         Assert.Equal("Child failure", item.ToolTipText);
 
         model.ApplyUpdate(new ProjectionUpdate(3, TestSnapshots.State(), [new RowRemoved(tool.RowId)], false));

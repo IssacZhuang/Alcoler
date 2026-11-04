@@ -13,6 +13,7 @@ using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Contracts.Storage;
 using Alcoler.Contracts.Tools;
+using Alcoler.Audio;
 using Alcoler.Git;
 using Alcoler.Kernel.Runtime;
 using Alcoler.Kernel.Tools;
@@ -426,6 +427,37 @@ public sealed class WorkbenchViewModelTests : IDisposable
         await WaitUntilAsync(() => workbench.Sidebar.Groups
             .SelectMany(group => group.Sessions)
             .Any(summary => summary.Id == handle.Id), scheduler);
+    }
+
+    [Fact]
+    public async Task TaskAlerts_PlayCompletionSoundAndConfigGateSuppressesIt()
+    {
+        await using var store = new SqliteSessionStore(DatabasePath);
+        await store.InitializeAsync(CancellationToken.None);
+        await using var runtime = CreateRuntime(store, Reply("first reply"), Reply("second reply"));
+        var scheduler = new QueuedUiScheduler();
+        var sounds = new RecordingTaskAlertSounds();
+        using var workbench = new WorkbenchViewModel(
+            runtime, scheduler, new WorkbenchConfig([]), taskAlertSounds: sounds);
+        workbench.ShowNewTask(_root);
+        var draft = Assert.IsType<DraftConversationViewModel>(workbench.Draft);
+        draft.Composer.Draft = "first prompt";
+        await draft.SendAsync();
+
+        await WaitUntilAsync(() => sounds.Played.Contains(TaskAlert.TaskCompleted), scheduler);
+
+        workbench.ApplySettings(new WorkbenchConfig([], Alerts: new WorkbenchAlertsConfig(TaskCompleted: false)));
+
+        var conversation = Assert.IsType<ConversationViewModel>(workbench.Active);
+        conversation.Composer.Draft = "second prompt";
+        await conversation.SendAsync();
+        await WaitUntilAsync(() => conversation.PhaseText == nameof(TurnPhase.Idle)
+            && conversation.Items.OfType<AssistantMessageItemViewModel>()
+                .Any(item => item.MarkdownText == "second reply"), scheduler);
+        scheduler.RunPending();
+
+        Assert.Single(sounds.Played, alert => alert == TaskAlert.TaskCompleted);
+        await WaitUntilAsync(() => workbench.GitPane is { IsLoading: false }, scheduler);
     }
 
     [Fact]
@@ -1054,6 +1086,15 @@ public sealed class WorkbenchViewModelTests : IDisposable
                 action();
             }
         }
+    }
+
+    private sealed class RecordingTaskAlertSounds : ITaskAlertSounds
+    {
+        private readonly List<TaskAlert> _played = [];
+
+        public IReadOnlyList<TaskAlert> Played => _played;
+
+        public void Play(TaskAlert alert) => _played.Add(alert);
     }
 
     private sealed class DelayedSubscriptionRuntime(

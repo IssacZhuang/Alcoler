@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Localization;
@@ -63,31 +64,23 @@ public sealed class TaskOverlaySessionViewModel : ObservableObject
     public string WorkspaceRoot => _task.WorkspaceRoot;
     public string WorkspaceName => Path.GetFileName(Path.TrimEndingDirectorySeparator(WorkspaceRoot)) is { Length: > 0 } name
         ? name : WorkspaceRoot;
-    public bool NeedsAttention => _task.IsAwaitingConfirmation;
+    public bool IsFailed => _task.Phase == TurnPhase.Error
+        || _task.Phase == TurnPhase.Idle && _task.LastOutcome == TurnOutcome.Failed;
+    public bool IsBusy => !IsFailed && (_task.HasActiveWork
+        || _task.Phase is not (TurnPhase.Idle or TurnPhase.Error)
+        || _task.RunningJobCount > 0 || _task.RunningSubagentCount > 0 || _task.IsAwaitingConfirmation);
+    public bool IsCompleted => !IsBusy && !IsFailed && _task.LastOutcome == TurnOutcome.Completed;
     public string DurationText => _durationText;
-    public string DetailText
-    {
-        get
-        {
-            var phase = NeedsAttention && _task.Phase is not (TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction)
-                ? Loc.Get("task_overlay_worker_waiting")
-                : SessionActivityText.Phase(_task.Phase);
-            List<string> parts = [string.IsNullOrEmpty(phase) ? Loc.Get("status_running") : phase];
-            if (_task.RunningJobCount > 0)
-                parts.Add(Loc.Get("task_overlay_background_jobs", _task.RunningJobCount));
-            if (_task.RunningSubagentCount > 0)
-                parts.Add(Loc.Get(_task.RunningSubagentCount == 1 ? "status_agent_one" : "status_agent_many", _task.RunningSubagentCount));
-            return string.Join(" · ", parts);
-        }
-    }
 
     internal void Update(SessionTaskSnapshot task, DateTimeOffset now)
     {
         var duration = task.StartedAt is { } startedAt ? SessionActivityText.Duration(now - startedAt) : string.Empty;
         if (_task == task && _durationText == duration)
             return;
+        var previous = (Title, WorkspaceRoot, IsBusy, IsCompleted, IsFailed, DurationText);
         _task = task;
         _durationText = duration;
-        OnPropertyChanged(string.Empty);
+        if (previous != (Title, WorkspaceRoot, IsBusy, IsCompleted, IsFailed, DurationText))
+            OnPropertyChanged(string.Empty);
     }
 }

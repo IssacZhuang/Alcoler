@@ -51,16 +51,36 @@ public static partial class ModelFailureClassifier
         {
             return cancellationToken.IsCancellationRequested
                 ? new ModelFailure(ModelFailureKind.Cancelled, exception.Message)
-                : new ModelFailure(ModelFailureKind.Timeout, exception.Message);
+                : new ModelFailure(ModelFailureKind.Timeout, Describe(exception));
         }
         if (exception is HttpRequestException)
-            return new ModelFailure(ModelFailureKind.NetworkError, exception.Message);
+            return new ModelFailure(ModelFailureKind.NetworkError, Describe(exception));
         if (exception is TimeoutException)
-            return new ModelFailure(ModelFailureKind.Timeout, exception.Message);
+            return new ModelFailure(ModelFailureKind.Timeout, Describe(exception));
         if (exception is JsonException)
-            return new ModelFailure(ModelFailureKind.StreamProtocolError, exception.Message);
+            return new ModelFailure(ModelFailureKind.StreamProtocolError, Describe(exception));
 
-        return new ModelFailure(ModelFailureKind.ProviderError, exception.Message);
+        return new ModelFailure(ModelFailureKind.ProviderError, Describe(exception));
+    }
+
+    // Wrapper messages such as "The SSL connection could not be established, see inner exception."
+    // name their cause only in the nested chain, so inner messages are surfaced; an inner message
+    // already contained in a collected one (SocketException pairs differ only by an endpoint
+    // suffix) is skipped.
+    private static string Describe(Exception exception)
+    {
+        if (exception.InnerException is null)
+            return exception.Message;
+
+        var messages = new List<string> { exception.Message };
+        for (var inner = exception.InnerException; inner is not null; inner = inner.InnerException)
+        {
+            var message = inner.Message;
+            if (message.Length > 0 && messages.Any(collected => collected.Contains(message)))
+                continue;
+            messages.Add(message);
+        }
+        return string.Join(" -> ", messages);
     }
 
     public static TimeSpan? ParseRetryAfter(string? value)

@@ -1,5 +1,6 @@
 using System.Collections.Specialized;
 using Alcoler.Contracts.Commands;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Sessions;
@@ -55,10 +56,10 @@ public sealed class TaskOverlayViewModelTests
         Assert.Equal("Needs review", secondRow.Title);
         Assert.Equal(updated.WorkspaceRoot, secondRow.WorkspaceRoot);
         Assert.Equal("overlay-updated", secondRow.WorkspaceName);
-        Assert.True(secondRow.NeedsAttention);
+        Assert.True(secondRow.IsBusy);
+        Assert.False(secondRow.IsCompleted);
+        Assert.False(secondRow.IsFailed);
         Assert.Equal(Loc.Get("duration_minutes_seconds", 2, 1), secondRow.DurationText);
-        Assert.Equal(string.Join(" · ", Loc.Get("status_phase_awaiting_permission"),
-            Loc.Get("task_overlay_background_jobs", 2), Loc.Get("status_agent_one", 1)), secondRow.DetailText);
         Assert.NotEmpty(rowProperties);
         Assert.Equal(new[] { NotifyCollectionChangedAction.Move }, changes);
         Assert.DoesNotContain(nameof(TaskOverlayViewModel.HasSessions), properties);
@@ -85,32 +86,83 @@ public sealed class TaskOverlayViewModelTests
     }
 
     [Fact]
-    public void Refresh_UnchangedSnapshotDoesNotResetCollectionOrNotifyRows()
+    public void Refresh_UnchangedVisibleStateDoesNotResetCollectionOrNotifyRows()
     {
-        var runtime = new TaskOverlayActivityRuntime { Tasks = [TaskSnapshot("running", startedAt: Now.AddSeconds(-10))] };
+        var task = TaskSnapshot("running", startedAt: Now.AddSeconds(-10));
+        var other = TaskSnapshot("other", startedAt: Now.AddSeconds(-5));
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [other, task] };
         var model = new TaskOverlayViewModel(runtime);
         model.Refresh(Now);
-        var row = Assert.Single(model.Sessions);
+        var row = model.Sessions[0];
+        var otherRow = model.Sessions[1];
         var collectionChanges = 0;
         var rowChanges = 0;
         var modelChanges = 0;
         model.Sessions.CollectionChanged += (_, _) => collectionChanges++;
-        row.PropertyChanged += (_, _) => rowChanges++;
+        foreach (var session in model.Sessions)
+            session.PropertyChanged += (_, _) => rowChanges++;
         model.PropertyChanged += (_, _) => modelChanges++;
+        SessionTaskSnapshot[] snapshots =
+        [
+            task,
+            task with { Phase = TurnPhase.AwaitingModel },
+            task with { Phase = TurnPhase.ExecutingTools, RunningJobCount = 2, RunningSubagentCount = 3 },
+            task with { LastActivityUtc = Now },
+            task with { StartedAt = Now.AddSeconds(-10).AddMilliseconds(-100) },
+            task with { IsAwaitingConfirmation = true },
+            task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed, RunningJobCount = 1 },
+            task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed, RunningSubagentCount = 1 },
+            task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed, IsAwaitingConfirmation = true },
+        ];
+        foreach (var snapshot in snapshots)
+        {
+            runtime.Tasks = [other, snapshot];
+            model.Refresh(Now);
+
+            Assert.Equal(new[] { row, otherRow }, model.Sessions);
+            Assert.True(row.IsBusy);
+            Assert.False(row.IsCompleted);
+            Assert.False(row.IsFailed);
+            Assert.Equal(Loc.Get("duration_seconds", 10), row.DurationText);
+            Assert.Equal(0, collectionChanges);
+            Assert.Equal(0, rowChanges);
+            Assert.Equal(0, modelChanges);
+        }
+
+        model.Refresh(Now.AddSeconds(1));
+
+        Assert.Equal(new[] { row, otherRow }, model.Sessions);
+        Assert.Equal(Loc.Get("duration_seconds", 11), row.DurationText);
+        Assert.True(rowChanges > 0);
+        Assert.Equal(0, collectionChanges);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Refresh_TitleOrWorkspaceChangeNotifiesRowWithoutChangingCollection(bool changeTitle)
+    {
+        var task = TaskSnapshot("visible", startedAt: Now.AddSeconds(-10));
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
+        var model = new TaskOverlayViewModel(runtime);
+        model.Refresh(Now);
+        var row = Assert.Single(model.Sessions);
+        List<NotifyCollectionChangedAction> collectionChanges = [];
+        List<string?> rowProperties = [];
+        model.Sessions.CollectionChanged += (_, e) => collectionChanges.Add(e.Action);
+        row.PropertyChanged += (_, e) => rowProperties.Add(e.PropertyName);
+        var updated = changeTitle
+            ? task with { Title = "Renamed task" }
+            : task with { WorkspaceRoot = Path.Combine(Path.GetTempPath(), "overlay-renamed-workspace") };
+        runtime.Tasks = [updated];
 
         model.Refresh(Now);
 
         Assert.Same(row, Assert.Single(model.Sessions));
-        Assert.Equal(0, collectionChanges);
-        Assert.Equal(0, rowChanges);
-        Assert.Equal(0, modelChanges);
-
-        model.Refresh(Now.AddSeconds(1));
-
-        Assert.Same(row, Assert.Single(model.Sessions));
-        Assert.Equal(Loc.Get("duration_seconds", 11), row.DurationText);
-        Assert.True(rowChanges > 0);
-        Assert.Equal(0, collectionChanges);
+        Assert.Equal(updated.Title, row.Title);
+        Assert.Equal(updated.WorkspaceRoot, row.WorkspaceRoot);
+        Assert.NotEmpty(rowProperties);
+        Assert.Empty(collectionChanges);
     }
 
     [Fact]
@@ -132,24 +184,26 @@ public sealed class TaskOverlayViewModelTests
     }
 
     [Theory]
-    [InlineData(TurnPhase.ProcessingInput, "status_phase_preparing")]
-    [InlineData(TurnPhase.AwaitingModel, "status_phase_awaiting_model")]
-    [InlineData(TurnPhase.Streaming, "status_phase_streaming")]
-    [InlineData(TurnPhase.ExecutingTools, "status_phase_running_tools")]
-    [InlineData(TurnPhase.AwaitingPermission, "status_phase_awaiting_permission")]
-    [InlineData(TurnPhase.AwaitingInteraction, "status_phase_awaiting_interaction")]
-    [InlineData(TurnPhase.Completing, "status_phase_completing")]
-    public void Refresh_UsesLocalizedPhaseText(TurnPhase phase, string textKey)
+    [InlineData(TurnPhase.ProcessingInput)]
+    [InlineData(TurnPhase.AwaitingModel)]
+    [InlineData(TurnPhase.Streaming)]
+    [InlineData(TurnPhase.ExecutingTools)]
+    [InlineData(TurnPhase.AwaitingPermission)]
+    [InlineData(TurnPhase.AwaitingInteraction)]
+    [InlineData(TurnPhase.Completing)]
+    public void Refresh_ActivePhasesStayBusyAfterPreviousFailure(TurnPhase phase)
     {
         var waiting = phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction;
-        var runtime = new TaskOverlayActivityRuntime { Tasks = [TaskSnapshot("task", phase, Now.AddSeconds(-5), waiting)] };
+        var task = TaskSnapshot("task", phase, Now.AddSeconds(-5), waiting) with { LastOutcome = TurnOutcome.Failed };
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
         var model = new TaskOverlayViewModel(runtime);
 
         model.Refresh(Now);
 
         var row = Assert.Single(model.Sessions);
-        Assert.Equal(Loc.Get(textKey), row.DetailText);
-        Assert.Equal(waiting, row.NeedsAttention);
+        Assert.True(row.IsBusy);
+        Assert.False(row.IsCompleted);
+        Assert.False(row.IsFailed);
     }
 
     [Theory]
@@ -161,6 +215,7 @@ public sealed class TaskOverlayViewModelTests
         {
             RunningJobCount = 3,
             RunningSubagentCount = 2,
+            LastOutcome = TurnOutcome.Completed,
         };
         var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
         var model = new TaskOverlayViewModel(runtime);
@@ -169,9 +224,127 @@ public sealed class TaskOverlayViewModelTests
 
         var row = Assert.Single(model.Sessions);
         Assert.True(model.HasSessions);
-        Assert.Equal(waiting, row.NeedsAttention);
-        Assert.Equal(string.Join(" · ", Loc.Get(waiting ? "task_overlay_worker_waiting" : "status_running"),
-            Loc.Get("task_overlay_background_jobs", 3), Loc.Get("status_agent_many", 2)), row.DetailText);
+        Assert.True(row.IsBusy);
+        Assert.False(row.IsCompleted);
+        Assert.False(row.IsFailed);
+    }
+
+    [Theory]
+    [InlineData(1, 0, false, false)]
+    [InlineData(0, 1, false, false)]
+    [InlineData(0, 0, true, false)]
+    [InlineData(0, 0, false, true)]
+    public void Refresh_IdleWorkSignalsTakePrecedenceOverPreviousCompletion(
+        int jobs, int subagents, bool hasActiveWork, bool waiting)
+    {
+        var task = TaskSnapshot("idle-work", TurnPhase.Idle, Now.AddMinutes(-1), waiting) with
+        {
+            RunningJobCount = jobs,
+            RunningSubagentCount = subagents,
+            HasActiveWork = hasActiveWork,
+            LastOutcome = TurnOutcome.Completed,
+        };
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
+        var model = new TaskOverlayViewModel(runtime);
+
+        model.Refresh(Now);
+
+        var row = Assert.Single(model.Sessions);
+        Assert.True(row.IsBusy);
+        Assert.False(row.IsCompleted);
+        Assert.False(row.IsFailed);
+    }
+
+    [Theory]
+    [InlineData(TurnPhase.Idle, TurnOutcome.Completed, true, false)]
+    [InlineData(TurnPhase.Idle, TurnOutcome.Failed, false, true)]
+    [InlineData(TurnPhase.Error, null, false, true)]
+    [InlineData(TurnPhase.Error, TurnOutcome.Completed, false, true)]
+    [InlineData(TurnPhase.Idle, null, false, false)]
+    [InlineData(TurnPhase.Idle, TurnOutcome.Cancelled, false, false)]
+    [InlineData(TurnPhase.Idle, TurnOutcome.ForcedStop, false, false)]
+    public void Refresh_InjectedTerminalOrUnknownSnapshotHasExclusivePresentation(
+        TurnPhase phase, TurnOutcome? outcome, bool completed, bool failed)
+    {
+        var task = TaskSnapshot("presentation", phase) with { LastOutcome = outcome };
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
+        var model = new TaskOverlayViewModel(runtime);
+
+        model.Refresh(Now);
+
+        var row = Assert.Single(model.Sessions);
+        Assert.False(row.IsBusy);
+        Assert.Equal(completed, row.IsCompleted);
+        Assert.Equal(failed, row.IsFailed);
+    }
+
+    [Theory]
+    [InlineData(TurnPhase.Idle)]
+    [InlineData(TurnPhase.Error)]
+    public void Refresh_InjectedFailureOverridesLingeringWorkAndWorkerConfirmation(TurnPhase phase)
+    {
+        var task = TaskSnapshot("failed-workers", phase, Now.AddMinutes(-1), waiting: true) with
+        {
+            HasActiveWork = true,
+            LastOutcome = TurnOutcome.Failed,
+            RunningJobCount = 2,
+            RunningSubagentCount = 1,
+        };
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
+        var model = new TaskOverlayViewModel(runtime);
+
+        model.Refresh(Now);
+
+        var row = Assert.Single(model.Sessions);
+        Assert.True(row.IsFailed);
+        Assert.False(row.IsBusy);
+        Assert.False(row.IsCompleted);
+    }
+
+    [Fact]
+    public void Refresh_InjectedPresentationTransitionsNotifyOnlyVisibleChangesAndRemoveAbsentRow()
+    {
+        var task = TaskSnapshot("transitions", startedAt: Now.AddMinutes(-1));
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
+        var model = new TaskOverlayViewModel(runtime);
+        model.Refresh(Now);
+        var row = Assert.Single(model.Sessions);
+        List<NotifyCollectionChangedAction> changes = [];
+        List<string?> rowProperties = [];
+        model.Sessions.CollectionChanged += (_, e) => changes.Add(e.Action);
+        row.PropertyChanged += (_, e) => rowProperties.Add(e.PropertyName);
+        (TurnPhase Phase, TurnOutcome? Outcome, bool Active, bool Busy, bool Completed, bool Failed)[] states =
+        [
+            (TurnPhase.Idle, TurnOutcome.Completed, false, false, true, false),
+            (TurnPhase.Idle, TurnOutcome.Failed, false, false, false, true),
+            (TurnPhase.Streaming, TurnOutcome.Failed, false, true, false, false),
+            (TurnPhase.Idle, TurnOutcome.Completed, true, true, false, false),
+            (TurnPhase.Error, TurnOutcome.Completed, false, false, false, true),
+            (TurnPhase.Idle, TurnOutcome.Cancelled, false, false, false, false),
+            (TurnPhase.Idle, null, false, false, false, false),
+            (TurnPhase.Idle, TurnOutcome.Completed, false, false, true, false),
+        ];
+        foreach (var state in states)
+        {
+            var previous = (row.IsBusy, row.IsCompleted, row.IsFailed);
+            runtime.Tasks = [task with { Phase = state.Phase, LastOutcome = state.Outcome, HasActiveWork = state.Active }];
+            model.Refresh(Now);
+
+            Assert.Same(row, Assert.Single(model.Sessions));
+            Assert.Equal(state.Busy, row.IsBusy);
+            Assert.Equal(state.Completed, row.IsCompleted);
+            Assert.Equal(state.Failed, row.IsFailed);
+            Assert.Equal(previous != (state.Busy, state.Completed, state.Failed), rowProperties.Count > 0);
+            Assert.Empty(changes);
+            rowProperties.Clear();
+        }
+
+        runtime.Tasks = [];
+        model.Refresh(Now);
+
+        Assert.Empty(model.Sessions);
+        Assert.False(model.HasSessions);
+        Assert.Equal(NotifyCollectionChangedAction.Remove, Assert.Single(changes));
     }
 
     [Theory]

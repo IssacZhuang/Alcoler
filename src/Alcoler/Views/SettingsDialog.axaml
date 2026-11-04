@@ -649,6 +649,27 @@
                                   VerticalAlignment="Center" AutomationProperties.Name="{loc:Loc settings_task_overlay}" />
                   </Grid>
                 </Border>
+                <Border Background="{DynamicResource AlcolerCard}" BorderThickness="0"
+                        CornerRadius="{DynamicResource AlcolerRadiusXLarge}" Padding="16">
+                  <StackPanel Spacing="20">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                      <StackPanel Spacing="4" VerticalAlignment="Center">
+                        <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_alert_completed}" />
+                        <TextBlock Classes="description" Text="{loc:Loc settings_alert_completed_description}" />
+                      </StackPanel>
+                      <ToggleSwitch x:Name="AlertCompletedToggle" Grid.Column="1" IsChecked="{Binding AlertTaskCompleted, Mode=TwoWay}"
+                                    VerticalAlignment="Center" AutomationProperties.Name="{loc:Loc settings_alert_completed}" />
+                    </Grid>
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                      <StackPanel Spacing="4" VerticalAlignment="Center">
+                        <TextBlock Classes="fieldLabel" Text="{loc:Loc settings_alert_awaiting}" />
+                        <TextBlock Classes="description" Text="{loc:Loc settings_alert_awaiting_description}" />
+                      </StackPanel>
+                      <ToggleSwitch x:Name="AlertAwaitingToggle" Grid.Column="1" IsChecked="{Binding AlertAwaitingConfirmation, Mode=TwoWay}"
+                                    VerticalAlignment="Center" AutomationProperties.Name="{loc:Loc settings_alert_awaiting}" />
+                    </Grid>
+                  </StackPanel>
+                </Border>
               </StackPanel>
             </StackPanel>
           </ScrollViewer>

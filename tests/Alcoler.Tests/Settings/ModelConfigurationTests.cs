@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Alcoler.Controls;
+using Alcoler.Localization;
 using Alcoler.ViewModel;
 using Alcoler.Views;
 using Avalonia;
@@ -205,7 +206,7 @@ public class ModelConfigurationTests
         editor.Draft.SmartConfiguration = false;
         editor.Draft.MaxOutputTokens = string.Empty;
         Assert.False(editor.TrySave());
-        Assert.Contains("required in manual mode", editor.Error);
+        Assert.Contains(Loc.Get("models_validation_max_output_required"), editor.Error);
     }
 
     [Fact]
@@ -247,7 +248,8 @@ public class ModelConfigurationTests
         editor.Draft.ContextWindowTokens = context;
         editor.Draft.MaxOutputTokens = output;
         Assert.False(editor.TrySave());
-        Assert.Contains("positive integer", editor.Error);
+        var label = Loc.Get(string.IsNullOrEmpty(context) ? "models_max_output_tokens" : "models_context_window");
+        Assert.Equal(Loc.Get("models_validation_positive_integer", label), editor.Error);
     }
 
     [Fact]
@@ -271,7 +273,7 @@ public class ModelConfigurationTests
             var draft = settings.Providers[0].CreateModelEditor(settings.Providers[0].Models[^1]);
             draft.Draft.ReasoningMapping = invalid;
             Assert.False(draft.TrySave());
-            Assert.Contains("Reasoning mapping", draft.Error);
+            Assert.Contains(Loc.Get("models_reasoning_mapping_label"), draft.Error);
         }
     }
 
@@ -285,7 +287,7 @@ public class ModelConfigurationTests
         editor.Draft.ModelId = "new";
         editor.Draft.ReasoningLevels = ["same", second];
         Assert.False(editor.TrySave());
-        Assert.Contains("unique, nonempty", editor.Error);
+        Assert.Equal(Loc.Get("models_validation_reasoning_levels"), editor.Error);
     }
 
     [Fact]
@@ -317,14 +319,14 @@ public class ModelConfigurationTests
             added.Kind = "openai-responses";
             added.Id = settings.Providers[0].Id;
             Assert.Null(await settings.SaveAsync(path));
-            Assert.Contains("duplicate provider ID", settings.Error);
+            Assert.Contains(Loc.Get("settings_validation_duplicate_provider", 2, added.EffectiveId), settings.Error);
             added.Id = "other";
             var provider = settings.Providers[0];
             provider.AddModelCommand.Execute(null);
             provider.Models[1].ModelId = provider.Models[0].ModelId;
             provider.Models[1].Enabled = false;
             Assert.Null(await settings.SaveAsync(path));
-            Assert.Contains("duplicate model ID", settings.Error);
+            Assert.Contains(Loc.Get("settings_validation_duplicate_model", 1, provider.Models[1].ModelId.Trim()), settings.Error);
             Assert.False(File.Exists(path));
         }
         finally { File.Delete(path); }
@@ -356,7 +358,8 @@ public class ModelConfigurationTests
             var controls = dialog.GetVisualDescendants().ToArray();
             var apiFormat = controls.OfType<ComboBox>().Single(box => box.ItemsSource == provider.ApiFormats);
             Assert.Equal(3, apiFormat.Items.Count);
-            Assert.Contains(SettingsViewModel.ApiFormats, choice => choice.Label == "OpenAI Responses (/responses)");
+            var responses = Assert.Single(SettingsViewModel.ApiFormats, choice => choice.Kind == "openai-responses");
+            Assert.Contains("/responses", responses.Label);
             apiFormat.SelectedItem = SettingsViewModel.ApiFormats[2];
             Assert.Equal("openai-responses", provider.Kind);
             var eye = controls.OfType<Button>().Single(button => button.Command == provider.ToggleApiKeyVisibilityCommand);
@@ -397,7 +400,7 @@ public class ModelConfigurationTests
         {
             var provider = Assert.IsType<SettingsViewModel>(settingsDialog.DataContext).Providers[0];
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-            var addButton = settingsDialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, "Add model"));
+            var addButton = settingsDialog.GetVisualDescendants().OfType<Button>().Single(button => Equals(button.Content, Loc.Get("settings_add_model")));
             addButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var editor = Assert.IsType<ModelConfigurationDialog>(Assert.Single(settingsDialog.OwnedWindows));
             editor.FindControl<TextBox>("ModelIdBox")!.Text = "canceled-model";
@@ -468,7 +471,7 @@ public class ModelConfigurationTests
         try
         {
             dialog.Show();
-            Assert.Equal("Edit model configuration", dialog.Title);
+            Assert.Equal(Loc.Get("settings_edit_model"), dialog.Title);
             Assert.NotNull(dialog.FindControl<ScrollViewer>("EditorScroll"));
             Assert.False(dialog.FindControl<Expander>("AdvancedExpander")!.IsExpanded);
             foreach (var name in new[] { "ImageToggle", "VideoToggle", "PdfToggle", "StructuredOutputToggle", "NativeWebSearchToggle", "MidConversationSystemToggle" })

@@ -634,6 +634,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
             RunningSubagentCount = subagents,
             IsAwaitingConfirmation = awaitingConfirmation,
             StartedAt = startedAt,
+            HasActiveWork = active,
         };
 
         void IncludeChild(AgentRuntime owner, SessionRuntime child)

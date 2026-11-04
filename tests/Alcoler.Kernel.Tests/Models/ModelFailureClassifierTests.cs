@@ -188,6 +188,19 @@ public class ModelFailureClassifierTests
     }
 
     [Fact]
+    public void HttpRequestException_InnerChainIsSurfaced()
+    {
+        var inner = new System.Security.Authentication.AuthenticationException(
+            "The remote certificate is invalid according to the validation procedure.");
+        var failure = ModelFailureClassifier.FromException(
+            new HttpRequestException("The SSL connection could not be established, see inner exception.", inner));
+
+        Assert.Equal(ModelFailureKind.NetworkError, failure.Kind);
+        Assert.StartsWith("The SSL connection could not be established", failure.Message);
+        Assert.Contains("The remote certificate is invalid according to the validation procedure.", failure.Message);
+    }
+
+    [Fact]
     public void TaskCanceledWithoutToken_MapsToTimeout()
     {
         using var unFiredCts = new CancellationTokenSource();

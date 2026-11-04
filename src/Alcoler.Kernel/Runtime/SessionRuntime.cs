@@ -287,9 +287,13 @@ public sealed class SessionRuntime : IAsyncDisposable
             }
         }
 
+        var outcome = Volatile.Read(ref _lastTurnOutcome);
         return IsDisposed ? null : new SessionTaskSnapshot(
             record.Id, record.Title, record.WorkspaceRoot, phase, LastActivityUtc, jobs, subagents,
-            phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction, startedAt);
+            phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction, startedAt)
+        {
+            LastOutcome = outcome < 0 ? null : (TurnOutcome)outcome,
+        };
     }
 
     // Queued inputs and pending interactions exist only in memory, so dropping them would

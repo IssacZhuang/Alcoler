@@ -197,6 +197,15 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private bool _initialEmbeddedBrowserView;
 
+    [ObservableProperty]
+    private bool _alertTaskCompleted = true;
+
+    [ObservableProperty]
+    private bool _alertAwaitingConfirmation = true;
+
+    private readonly bool _initialAlertTaskCompleted;
+    private readonly bool _initialAlertAwaitingConfirmation;
+
     public SettingsViewModel(WorkbenchConfig config)
         : this(config, ShellResolver.AvailableShells(), OperatingSystem.IsWindows())
     {
@@ -221,6 +230,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SupportsEmbeddedBrowserView = isWindows;
         EmbeddedBrowserView = config.Browser?.EmbeddedView ?? isWindows;
         _initialEmbeddedBrowserView = EmbeddedBrowserView;
+        AlertTaskCompleted = config.Alerts?.TaskCompleted ?? true;
+        AlertAwaitingConfirmation = config.Alerts?.AwaitingConfirmation ?? true;
+        _initialAlertTaskCompleted = AlertTaskCompleted;
+        _initialAlertAwaitingConfirmation = AlertAwaitingConfirmation;
         ChatGpt = chatGptAccount is null ? null : new ChatGptAccountViewModel(chatGptAccount, ApplyChatGptModels);
         var choices = new List<ShellChoice> { new(Loc.Get("settings_shell_auto")) };
         choices.AddRange(shells.Select(shell => new ShellChoice(
@@ -511,6 +524,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         AutoArchiveSessions = AutoArchiveSessions,
         AutoArchiveOlderThanDays = Math.Clamp(AutoArchiveOlderThanDays, 1, 365),
         Browser = BuildBrowserConfig(),
+        Alerts = BuildAlertsConfig(),
     };
 
     // The switch exists only where WebView2 can; elsewhere the file keeps whatever it says.
@@ -521,6 +535,17 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         if (!SupportsEmbeddedBrowserView) return _config.Browser;
         if (EmbeddedBrowserView == _initialEmbeddedBrowserView && _config.Browser is null) return null;
         return (_config.Browser ?? new WorkbenchBrowserConfig()) with { EmbeddedView = EmbeddedBrowserView };
+    }
+
+    // Like the browser section, saving persists only the delta from the construction
+    // snapshot: leaving both sounds on keeps the section absent, which means the defaults.
+    private WorkbenchAlertsConfig? BuildAlertsConfig()
+    {
+        if (AlertTaskCompleted == _initialAlertTaskCompleted
+            && AlertAwaitingConfirmation == _initialAlertAwaitingConfirmation
+            && _config.Alerts is null)
+            return null;
+        return new WorkbenchAlertsConfig(AlertTaskCompleted, AlertAwaitingConfirmation);
     }
 
     private void LoadUserSkills(SkillsCatalog catalog)

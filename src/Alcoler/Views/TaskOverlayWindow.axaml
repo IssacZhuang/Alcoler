@@ -18,6 +18,15 @@
       <Setter Property="Padding" Value="12,10" />
       <Setter Property="CornerRadius" Value="8" />
     </Style>
+    <Style Selector="controls|Icon.sessionSpinner.running">
+      <Setter Property="Stroke" Value="{DynamicResource AlcolerAccent}" />
+      <Style.Animations>
+        <Animation Duration="0:0:0.9" IterationCount="INFINITE">
+          <KeyFrame Cue="0%"><Setter Property="RotateTransform.Angle" Value="0" /></KeyFrame>
+          <KeyFrame Cue="100%"><Setter Property="RotateTransform.Angle" Value="360" /></KeyFrame>
+        </Animation>
+      </Style.Animations>
+    </Style>
   </Window.Styles>
   <Border x:Name="OverlaySurface" Background="{DynamicResource AlcolerTaskOverlay}" CornerRadius="12" Padding="8">
     <Grid RowDefinitions="Auto,*">
@@ -38,16 +47,30 @@
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="vm:TaskOverlaySessionViewModel">
                 <Button Classes="session" Click="OnSessionClick" ToolTip.Tip="{Binding WorkspaceRoot}" AutomationProperties.Name="{Binding Title}">
-                  <Grid ColumnDefinitions="6,*,Auto" ColumnSpacing="10" RowDefinitions="Auto,Auto,Auto" RowSpacing="4">
-                    <Border Width="6" Height="6" CornerRadius="3" VerticalAlignment="Center"
-                            Background="{Binding NeedsAttention, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerWarning|AlcolerSuccess}" />
+                  <Grid ColumnDefinitions="16,*,Auto" ColumnSpacing="10" RowDefinitions="Auto,Auto" RowSpacing="4">
+                    <Grid Width="16" Height="16" VerticalAlignment="Center">
+                      <Border x:Name="PART_CompletedIndicator" Width="6" Height="6" CornerRadius="3"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Background="{DynamicResource AlcolerSuccess}" IsVisible="{Binding IsCompleted}"
+                              ToolTip.Tip="{loc:Loc sidebar_completed}" AutomationProperties.Name="{loc:Loc sidebar_completed}" />
+                      <Border x:Name="PART_FailedIndicator" Width="6" Height="6" CornerRadius="3"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Background="{DynamicResource AlcolerError}" IsVisible="{Binding IsFailed}"
+                              ToolTip.Tip="{loc:Loc sidebar_failed}" AutomationProperties.Name="{loc:Loc sidebar_failed}" />
+                      <controls:Icon x:Name="PART_RunningIndicator" Classes="icon small sessionSpinner"
+                                     Classes.running="{Binding IsBusy}" IsVisible="{Binding IsBusy}"
+                                     RenderTransformOrigin="50%,50%" Stroke="{DynamicResource AlcolerAccent}"
+                                     Data="M12 3a9 9 0 1 0 9 9" ToolTip.Tip="{loc:Loc sidebar_running}"
+                                     AutomationProperties.Name="{loc:Loc sidebar_running}">
+                        <controls:Icon.RenderTransform>
+                          <RotateTransform />
+                        </controls:Icon.RenderTransform>
+                      </controls:Icon>
+                    </Grid>
                     <TextBlock Grid.Column="1" Text="{Binding Title}" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
                     <TextBlock Grid.Column="2" Text="{Binding DurationText}" FontSize="{DynamicResource AlcolerFontSmall}"
                                Foreground="{DynamicResource AlcolerTextTertiary}" VerticalAlignment="Center" />
-                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding DetailText}"
-                               FontSize="{DynamicResource AlcolerFontSmall}" TextWrapping="Wrap"
-                               Foreground="{Binding NeedsAttention, Converter={StaticResource AlcolerBoolBrush}, ConverterParameter=AlcolerWarning|AlcolerTextSecondary}" />
-                    <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding WorkspaceName}"
+                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding WorkspaceName}"
                                FontSize="{DynamicResource AlcolerFontSmall}" Foreground="{DynamicResource AlcolerTextTertiary}" TextTrimming="CharacterEllipsis" />
                   </Grid>
                 </Button>

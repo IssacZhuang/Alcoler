@@ -33,6 +33,8 @@
     <AvaloniaResource Include="Assets\Fonts\*.ttf" />
     <AvaloniaResource Include="Assets\Icons\Alcoler-mark.png" />
     <AvaloniaResource Include="Assets\Icons\Alcoler.ico" />
+    <EmbeddedResource Include="Assets\Sounds\TaskCompleted.wav" />
+    <EmbeddedResource Include="Assets\Sounds\AwaitingConfirmation.wav" />
     <None Update="Assets\Fonts\OFL.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>

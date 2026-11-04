@@ -85,6 +85,11 @@ public sealed record WorkbenchRemoteConfig(
         : this;
 }
 
+// Alerts gates the task notification sounds; a null or unset entry keeps the sound on.
+public sealed record WorkbenchAlertsConfig(
+    bool? TaskCompleted = null,
+    bool? AwaitingConfirmation = null);
+
 public sealed record WorkbenchConfig(
     IReadOnlyList<WorkbenchProviderConfig> Providers,
     WorkbenchDefaultModelConfig? DefaultModel = null,
@@ -98,7 +103,8 @@ public sealed record WorkbenchConfig(
     bool AutoArchiveSessions = false,
     int AutoArchiveOlderThanDays = 7,
     WorkbenchBrowserConfig? Browser = null,
-    WorkbenchRemoteConfig? Remote = null)
+    WorkbenchRemoteConfig? Remote = null,
+    WorkbenchAlertsConfig? Alerts = null)
 {
     public static string DefaultConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

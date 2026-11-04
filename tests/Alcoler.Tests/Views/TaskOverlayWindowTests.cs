@@ -1,4 +1,6 @@
 using System.Reflection;
+using Alcoler.Controls;
+using Alcoler.Contracts.Events;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Projections;
 using Alcoler.Localization;
@@ -6,6 +8,7 @@ using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Alcoler.Views;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
@@ -21,12 +24,13 @@ using Assert = Xunit.Assert;
 
 namespace Alcoler.Tests.Views;
 
+[Collection("Global localization")]
 public sealed class TaskOverlayWindowTests
 {
     [AvaloniaTheory]
     [InlineData("en")]
     [InlineData("zh")]
-    public async Task Header_ContainsOnlyLowercaseBrandWithoutTaskCounts(string language)
+    public async Task Header_ContainsOnlyBrandWithoutTaskCounts(string language)
     {
         var previousLanguage = Loc.Language;
         Loc.SetLanguage(language);
@@ -45,9 +49,9 @@ public sealed class TaskOverlayWindowTests
                 await RenderAsync(harness.Overlay);
 
                 Assert.Equal(tasks.Count, harness.Workbench.TaskOverlay.Sessions.Count);
-                Assert.Equal("alcoler", harness.Overlay.Title);
+                Assert.Equal(Loc.Get("task_overlay_title"), harness.Overlay.Title);
                 var header = Named<Grid>(harness.Overlay, "OverlayHeader");
-                Assert.Equal("alcoler", Assert.Single(header.GetVisualDescendants().OfType<TextBlock>()).Text);
+                Assert.Equal(Loc.Get("task_overlay_title"), Assert.Single(header.GetVisualDescendants().OfType<TextBlock>()).Text);
             }
         }
         finally
@@ -56,11 +60,17 @@ public sealed class TaskOverlayWindowTests
         }
     }
 
-    [AvaloniaFact]
-    public async Task SessionList_RendersLiveDetailsAndReturnsToEmptyState()
+    [AvaloniaTheory]
+    [InlineData(TurnPhase.AwaitingModel, false)]
+    [InlineData(TurnPhase.ExecutingTools, false)]
+    [InlineData(TurnPhase.AwaitingPermission, true)]
+    [InlineData(TurnPhase.AwaitingInteraction, true)]
+    [InlineData(TurnPhase.Idle, false)]
+    [InlineData(TurnPhase.Idle, true)]
+    public async Task SessionList_RendersOnlyTwoRowSessionSummaryAndReturnsToEmptyState(TurnPhase phase, bool waiting)
     {
-        var task = TaskOverlayViewModelTests.TaskSnapshot("rendered", TurnPhase.AwaitingPermission,
-            DateTimeOffset.UtcNow.AddMinutes(-2), waiting: true) with { RunningJobCount = 2, RunningSubagentCount = 1 };
+        var task = TaskOverlayViewModelTests.TaskSnapshot("rendered", phase,
+            DateTimeOffset.UtcNow.AddMinutes(-2), waiting) with { RunningJobCount = 2, RunningSubagentCount = 1 };
         var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
         var model = new TaskOverlayViewModel(runtime);
         var window = new TaskOverlayWindow(model);
@@ -71,8 +81,18 @@ public sealed class TaskOverlayWindowTests
             var row = Assert.Single(model.Sessions);
             var button = SessionButton(window, task.SessionId);
             Assert.False(Named<TextBlock>(window, "EmptyState").IsVisible);
-            foreach (var text in new[] { row.Title, row.DetailText, row.WorkspaceName, row.DurationText })
-                Assert.Contains(button.GetVisualDescendants().OfType<TextBlock>(), block => block.Text == text);
+            var grid = Assert.IsType<Grid>(button.Content);
+            Assert.Equal(2, grid.RowDefinitions.Count);
+            var blocks = button.GetVisualDescendants().OfType<TextBlock>().ToArray();
+            Assert.Equal(new[] { row.Title, row.DurationText, row.WorkspaceName }, blocks.Select(block => block.Text));
+            Assert.Equal(new[] { 0, 0, 1 }, blocks.Select(block => Grid.GetRow(block)));
+            Assert.Equal(new[] { 1, 2, 1 }, blocks.Select(block => Grid.GetColumn(block)));
+            Assert.All(blocks, block => Assert.Same(grid, block.GetVisualParent()));
+            var status = Assert.IsType<Grid>(Named<Icon>(button, "PART_RunningIndicator").GetVisualParent());
+            Assert.Same(grid, status.GetVisualParent());
+            Assert.Equal(0, Grid.GetRow(status));
+            Assert.Equal(0, Grid.GetColumn(status));
+            AssertStatusIndicators(button, busy: true, completed: false, failed: false);
             Assert.Equal(task.WorkspaceRoot, ToolTip.GetTip(button));
 
             runtime.Tasks = [task with { Title = "Updated task", RunningJobCount = 1 }];
@@ -88,6 +108,150 @@ public sealed class TaskOverlayWindowTests
             Assert.True(Named<TextBlock>(window, "EmptyState").IsEffectivelyVisible);
             Assert.Equal(Loc.Get("task_overlay_empty"), Named<TextBlock>(window, "EmptyState").Text);
             Assert.DoesNotContain(window.GetVisualDescendants().OfType<Button>(), button => button.Classes.Contains("session"));
+        }
+        finally
+        {
+            window.Shutdown();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(TurnPhase.ProcessingInput)]
+    [InlineData(TurnPhase.AwaitingModel)]
+    [InlineData(TurnPhase.Streaming)]
+    [InlineData(TurnPhase.ExecutingTools)]
+    [InlineData(TurnPhase.AwaitingPermission)]
+    [InlineData(TurnPhase.AwaitingInteraction)]
+    [InlineData(TurnPhase.Completing)]
+    public async Task StatusIndicators_ActiveAndWaitingPhasesAnimateTheSidebarAccentRing(TurnPhase phase)
+    {
+        var waiting = phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction;
+        var task = TaskOverlayViewModelTests.TaskSnapshot("animated", phase, DateTimeOffset.UtcNow, waiting)
+            with { LastOutcome = TurnOutcome.Failed };
+        var model = new TaskOverlayViewModel(new TaskOverlayActivityRuntime { Tasks = [task] });
+        var window = new TaskOverlayWindow(model);
+        window.Show();
+        try
+        {
+            await RenderAsync(window);
+            var button = SessionButton(window, task.SessionId);
+            AssertStatusIndicators(button, busy: true, completed: false, failed: false);
+            var spinner = Named<Icon>(button, "PART_RunningIndicator");
+            foreach (var name in new[] { "icon", "small", "sessionSpinner", "running" })
+                Assert.Contains(name, spinner.Classes);
+            Assert.Equal(new Size(16, 16), Assert.IsType<Grid>(spinner.GetVisualParent()).Bounds.Size);
+            Assert.Equal(new RelativePoint(0.5, 0.5, RelativeUnit.Relative), spinner.RenderTransformOrigin);
+            Assert.NotNull(spinner.Data);
+            Assert.Equal(Geometry.Parse("M12 3a9 9 0 1 0 9 9").ToString(), spinner.Data.ToString());
+            AssertThemeColor(window, spinner.Stroke, "AlcolerAccent");
+            var rotation = Assert.IsType<RotateTransform>(spinner.RenderTransform);
+            var angle = rotation.Angle;
+            await Task.Delay(80);
+            await RenderAsync(window);
+            Assert.NotEqual(angle, rotation.Angle);
+
+            if (phase == TurnPhase.Streaming)
+            {
+                await Task.Delay(950);
+                await RenderAsync(window);
+                angle = rotation.Angle;
+                await Task.Delay(80);
+                await RenderAsync(window);
+                Assert.NotEqual(angle, rotation.Angle);
+            }
+        }
+        finally
+        {
+            window.Shutdown();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task StatusIndicators_InjectedPresentationTransitionsReuseRowAndTrackLightAndDarkThemes()
+    {
+        var task = TaskOverlayViewModelTests.TaskSnapshot("status-transition", startedAt: DateTimeOffset.UtcNow);
+        var runtime = new TaskOverlayActivityRuntime { Tasks = [task] };
+        var model = new TaskOverlayViewModel(runtime);
+        var window = new TaskOverlayWindow(model);
+        window.Show();
+        try
+        {
+            await RenderAsync(window);
+            var row = Assert.Single(model.Sessions);
+            var button = SessionButton(window, task.SessionId);
+            var spinner = Named<Icon>(button, "PART_RunningIndicator");
+            var completed = Named<Border>(button, "PART_CompletedIndicator");
+            var failed = Named<Border>(button, "PART_FailedIndicator");
+            foreach (var dot in new[] { completed, failed })
+            {
+                Assert.Equal(6d, dot.Width);
+                Assert.Equal(6d, dot.Height);
+                Assert.Equal(new CornerRadius(3), dot.CornerRadius);
+                Assert.Same(spinner.GetVisualParent(), dot.GetVisualParent());
+            }
+            var rotation = Assert.IsType<RotateTransform>(spinner.RenderTransform);
+            List<(Color Accent, Color Success, Color Error)> colors = [];
+            (SessionTaskSnapshot Snapshot, bool Busy, bool Completed, bool Failed)[] states =
+            [
+                (task with { LastOutcome = TurnOutcome.Completed }, true, false, false),
+                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed }, false, true, false),
+                (task with { LastOutcome = TurnOutcome.Failed }, true, false, false),
+                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Failed }, false, false, true),
+                (task with { Phase = TurnPhase.Error, LastOutcome = TurnOutcome.Completed,
+                    HasActiveWork = true, RunningJobCount = 1 }, false, false, true),
+                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Cancelled }, false, false, false),
+                (task with { Phase = TurnPhase.Idle }, false, false, false),
+                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed,
+                    HasActiveWork = true }, true, false, false),
+                (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed }, false, true, false),
+            ];
+            foreach (var theme in new[] { ThemeVariant.Light, ThemeVariant.Dark })
+            {
+                window.RequestedThemeVariant = theme;
+                runtime.Tasks = [task];
+                model.Refresh();
+                await RenderAsync(window);
+                colors.Add((AssertThemeColor(window, spinner.Stroke, "AlcolerAccent"),
+                    AssertThemeColor(window, completed.Background, "AlcolerSuccess"),
+                    AssertThemeColor(window, failed.Background, "AlcolerError")));
+                Assert.Equal(theme, button.ActualThemeVariant);
+                foreach (var state in states)
+                {
+                    runtime.Tasks = [state.Snapshot];
+                    model.Refresh();
+                    await RenderAsync(window);
+
+                    Assert.Same(row, Assert.Single(model.Sessions));
+                    Assert.Same(button, SessionButton(window, task.SessionId));
+                    Assert.Same(spinner, Named<Icon>(button, "PART_RunningIndicator"));
+                    Assert.Same(completed, Named<Border>(button, "PART_CompletedIndicator"));
+                    Assert.Same(failed, Named<Border>(button, "PART_FailedIndicator"));
+                    AssertStatusIndicators(button, state.Busy, state.Completed, state.Failed);
+                    if (state.Busy)
+                        AssertThemeColor(window, spinner.Stroke, "AlcolerAccent");
+                    if (state.Completed)
+                        AssertThemeColor(window, completed.Background, "AlcolerSuccess");
+                    if (state.Failed)
+                        AssertThemeColor(window, failed.Background, "AlcolerError");
+                    var angle = rotation.Angle;
+                    await Task.Delay(80);
+                    await RenderAsync(window);
+                    if (state.Busy)
+                        Assert.NotEqual(angle, rotation.Angle);
+                    else
+                        Assert.Equal(angle, rotation.Angle);
+                }
+            }
+            Assert.NotEqual(colors[0].Accent, colors[1].Accent);
+            Assert.NotEqual(colors[0].Success, colors[1].Success);
+            Assert.NotEqual(colors[0].Error, colors[1].Error);
+
+            runtime.Tasks = [];
+            model.Refresh();
+            await RenderAsync(window);
+            Assert.Empty(model.Sessions);
+            Assert.True(Named<TextBlock>(window, "EmptyState").IsEffectivelyVisible);
+            Assert.DoesNotContain(window.GetVisualDescendants().OfType<Button>(), control => control.Classes.Contains("session"));
         }
         finally
         {
@@ -586,6 +750,34 @@ public sealed class TaskOverlayWindowTests
     private static NativeMenuItem TrayOverlayToggle(App app) =>
         Assert.Single(Assert.IsType<NativeMenu>(PrivateField<TrayIcon>(app, "_trayIcon").Menu)
             .Items.OfType<NativeMenuItem>(), item => Equals(item.Header, Loc.Get("tray_task_overlay")));
+
+    private static void AssertStatusIndicators(Button button, bool busy, bool completed, bool failed)
+    {
+        var spinner = Named<Icon>(button, "PART_RunningIndicator");
+        var completedDot = Named<Border>(button, "PART_CompletedIndicator");
+        var failedDot = Named<Border>(button, "PART_FailedIndicator");
+        Assert.Equal(busy, spinner.IsVisible);
+        Assert.Equal(busy, spinner.IsEffectivelyVisible);
+        Assert.Equal(busy, spinner.Classes.Contains("running"));
+        Assert.Equal(completed, completedDot.IsVisible);
+        Assert.Equal(completed, completedDot.IsEffectivelyVisible);
+        Assert.Equal(failed, failedDot.IsVisible);
+        Assert.Equal(failed, failedDot.IsEffectivelyVisible);
+        Assert.Equal(Loc.Get("sidebar_running"), ToolTip.GetTip(spinner));
+        Assert.Equal(Loc.Get("sidebar_running"), AutomationProperties.GetName(spinner));
+        Assert.Equal(Loc.Get("sidebar_completed"), ToolTip.GetTip(completedDot));
+        Assert.Equal(Loc.Get("sidebar_completed"), AutomationProperties.GetName(completedDot));
+        Assert.Equal(Loc.Get("sidebar_failed"), ToolTip.GetTip(failedDot));
+        Assert.Equal(Loc.Get("sidebar_failed"), AutomationProperties.GetName(failedDot));
+    }
+
+    private static Color AssertThemeColor(TopLevel root, IBrush? brush, string key)
+    {
+        Assert.True(root.TryFindResource(key, root.ActualThemeVariant, out var resource));
+        var color = Assert.IsAssignableFrom<ISolidColorBrush>(brush).Color;
+        Assert.Equal(Assert.IsAssignableFrom<ISolidColorBrush>(resource).Color, color);
+        return color;
+    }
 
     private static T Named<T>(Control root, string name) where T : Control =>
         Assert.Single(root.GetVisualDescendants().OfType<T>(), control => control.Name == name);

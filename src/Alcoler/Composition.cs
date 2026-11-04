@@ -1,6 +1,7 @@
 using Alcoler.Adapters.Models;
 using Alcoler.Adapters.Storage;
 using Alcoler.Adapters.Tools;
+using Alcoler.Audio;
 using Alcoler.Browser;
 using Alcoler.Browser.Chromium;
 using Alcoler.Contracts.Models;
@@ -143,7 +144,8 @@ public static class Composition
                 mcpTools.Update(saved.McpServers);
                 _ = remoteAccess.ApplyConfigAsync(saved.Remote);
             },
-            remoteAccess: remoteAccess);
+            remoteAccess: remoteAccess,
+            taskAlertSounds: TaskAlertSounds.Instance);
         await workbench.RefreshFromRuntimeAsync();
         return workbench;
     }

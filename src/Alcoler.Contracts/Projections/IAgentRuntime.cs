@@ -32,7 +32,11 @@ public sealed record SessionTaskSnapshot(
     int RunningJobCount,
     int RunningSubagentCount,
     bool IsAwaitingConfirmation,
-    DateTimeOffset? StartedAt);
+    DateTimeOffset? StartedAt)
+{
+    public bool HasActiveWork { get; init; }
+    public TurnOutcome? LastOutcome { get; init; }
+}
 
 public interface ISessionActivityRuntime
 {

@@ -79,6 +79,8 @@ public class SessionActivityRuntimeTests
                 Assert.Equal("renamed", task.Title);
                 Assert.Equal(harness.Root, task.WorkspaceRoot);
                 Assert.Equal(TurnPhase.ExecutingTools, task.Phase);
+                Assert.True(task.HasActiveWork);
+                Assert.Null(task.LastOutcome);
                 Assert.Equal(clock.GetUtcNow(), task.LastActivityUtc);
                 Assert.Equal(startedAt, task.StartedAt);
                 Assert.Equal(0, task.RunningJobCount);
@@ -93,6 +95,7 @@ public class SessionActivityRuntimeTests
             Assert.Null(runtime.GetSession(cold.Id));
             release.TrySetResult();
             await WaitForRepliesAsync(projection, 1);
+            await WaitUntilAsync(() => activity.GetSessionActivity(session.Id)?.Phase == TurnPhase.Idle);
             Assert.Empty(activity.GetActiveSessionTasks());
         }
         finally
@@ -129,6 +132,8 @@ public class SessionActivityRuntimeTests
         var task = Assert.Single(runtime.GetActiveSessionTasks());
         Assert.Equal(session.Id, task.SessionId);
         Assert.Equal(TurnPhase.Idle, task.Phase);
+        Assert.True(task.HasActiveWork);
+        Assert.Equal(TurnOutcome.Cancelled, task.LastOutcome);
         Assert.Null(task.StartedAt);
         Assert.Equal(0, task.RunningJobCount);
         Assert.Equal(0, task.RunningSubagentCount);
@@ -136,6 +141,33 @@ public class SessionActivityRuntimeTests
         Assert.True((await runtime.SubmitAsync(new RemoveQueuedInputCommand(
             StrongId.NewCommandId(), session.Id, 0, queued.CommandId), CancellationToken.None)).Accepted);
         Assert.Empty(runtime.GetActiveSessionTasks());
+    }
+
+    [Fact]
+    public async Task ActiveTasks_KeepFailedOutcomeWhileBackgroundWorkRemains()
+    {
+        var jobs = new ConcurrentDictionary<SessionId, SyntheticJob>();
+        await using var harness = TestHarness.Create(StartJob(), new ScriptStep.Fail(
+            new ModelFailure(ModelFailureKind.AuthenticationFailed, "bad key")));
+        await using var runtime = harness.BuildRuntime(CreateJobTool(jobs));
+        var session = await runtime.CreateSessionAsync(
+            new SessionOptions(harness.Root, PermissionMode: Contracts.Permissions.PermissionMode.Yolo), CancellationToken.None);
+
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(
+            StrongId.NewCommandId(), session.Id, 0, "start"), CancellationToken.None)).Accepted);
+        await WaitUntilAsync(() => runtime.GetSessionActivity(session.Id) is
+            { Phase: TurnPhase.Idle, LastOutcome: TurnOutcome.Failed });
+
+        var task = Assert.Single(runtime.GetActiveSessionTasks());
+        Assert.Equal(TurnPhase.Idle, task.Phase);
+        Assert.True(task.HasActiveWork);
+        Assert.Equal(TurnOutcome.Failed, task.LastOutcome);
+        Assert.Equal(1, task.RunningJobCount);
+        Assert.Equal(BackgroundJobStatus.Running, Assert.Single(runtime.GetBackgroundJobs(session.Id)).Status);
+
+        jobs[session.Id].Complete.TrySetResult();
+        await WaitForJobStatusAsync(runtime, session.Id, BackgroundJobStatus.Completed);
+        await WaitUntilAsync(() => runtime.GetActiveSessionTasks().Count == 0);
     }
 
     [Fact]
@@ -165,6 +197,8 @@ public class SessionActivityRuntimeTests
         var task = Assert.Single(runtime.GetActiveSessionTasks());
         Assert.Equal(parent.Id, task.SessionId);
         Assert.Equal(TurnPhase.Idle, task.Phase);
+        Assert.True(task.HasActiveWork);
+        Assert.Equal(TurnOutcome.Completed, task.LastOutcome);
         Assert.Equal(1, task.RunningJobCount);
         Assert.Equal(0, task.RunningSubagentCount);
         Assert.False(task.IsAwaitingConfirmation);
@@ -223,6 +257,7 @@ public class SessionActivityRuntimeTests
         Assert.Equal(2, tasks.Count);
         var task = Assert.Single(tasks, task => task.SessionId == parent.Id);
         Assert.Equal(TurnPhase.Idle, task.Phase);
+        Assert.True(task.HasActiveWork);
         Assert.True(task.IsAwaitingConfirmation);
         Assert.Equal(0, task.RunningJobCount);
         Assert.Equal(1, task.RunningSubagentCount);

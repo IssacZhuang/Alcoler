@@ -2,6 +2,7 @@ using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Sessions;
 using Alcoler.Auth;
+using Alcoler.Audio;
 using Alcoler.Git;
 using Alcoler.Localization;
 using Alcoler.Stores;
@@ -81,6 +82,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     private CancellationTokenSource? _maintenanceCts = new();
     private readonly BusyPeriodTracker _busyPeriods = new(() => DateTimeOffset.UtcNow,
         LongBusySessionThreshold, CompactionCooldown);
+    private readonly TaskAlertTracker _taskAlerts = new();
+    private readonly ITaskAlertSounds _taskAlertSounds;
 
     public WorkbenchViewModel(
         IAgentRuntime runtime,
@@ -92,7 +95,8 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         Action<WorkbenchConfig>? applySettings = null,
         ChatGptAccountService? chatGptAccount = null,
         IExternalEditorLauncher? externalEditorLauncher = null,
-        RemoteAccessViewModel? remoteAccess = null)
+        RemoteAccessViewModel? remoteAccess = null,
+        ITaskAlertSounds? taskAlertSounds = null)
     {
         _runtime = runtime;
         _config = config;
@@ -108,6 +112,7 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         };
         _ownedResource = ownedResource;
         _scheduler = scheduler;
+        _taskAlertSounds = taskAlertSounds ?? NoopTaskAlertSounds.Instance;
         ChatGptAccount = chatGptAccount;
         BrowserPane = browserPane;
         Remote = remoteAccess;
@@ -1228,6 +1233,9 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         {
             return;
         }
+        // Alert edge detection needs the snapshot as of the event; a posted read can land
+        // after further transitions already completed and would merge them away.
+        var activityAtEvent = _activities?.GetSessionActivity(sessionId);
         _scheduler.Post(() =>
         {
             if (_disposed)
@@ -1239,6 +1247,13 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             if (_busyPeriods.OnActivity(sessionId, activity?.Phase))
             {
                 _ = Task.Run(GcMaintenance.CompactLargeObjectHeap);
+            }
+            if (_taskAlerts.OnActivity(sessionId, activityAtEvent) is { } alert
+                && (alert is TaskAlert.TaskCompleted
+                    ? _config.Alerts?.TaskCompleted ?? true
+                    : _config.Alerts?.AwaitingConfirmation ?? true))
+            {
+                _taskAlertSounds.Play(alert);
             }
         });
     }
