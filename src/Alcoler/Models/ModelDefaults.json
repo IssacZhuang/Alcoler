@@ -3746,6 +3746,15 @@
             "supportsGzipRequests": true
           }
         }
+      },
+      {
+        "apiTypeMatch": "anthropic-messages",
+        "baseUrlMatch": "https://api\\.anthropic\\.com/?",
+        "config": {
+          "properties": {
+            "supportsGzipRequests": true
+          }
+        }
       }
     ],
     "templateModelRules": [

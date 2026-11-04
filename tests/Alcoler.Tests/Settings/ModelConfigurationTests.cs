@@ -52,15 +52,21 @@ public class ModelConfigurationTests
     }
 
     [Fact]
-    public void Catalog_EnablesGzipRequestsOnlyForOpenAiSites()
+    public void Catalog_EnablesGzipRequestsOnlyForVerifiedSites()
     {
         var openai = new WorkbenchProviderConfig("openai-responses", "https://api.openai.com/v1", null,
             [new WorkbenchModelConfig("gpt-6-astra")], "chatgpt", "ChatGPT", AccessType: "chatgpt-account");
         Assert.True(WorkbenchModelCatalog.Defaults(openai, "gpt-6-astra").SupportsGzipRequests);
         Assert.True(WorkbenchModelCatalog.Defaults(openai with { BaseUrl = "https://api.openai.com", TemplateId = "openai" }, "gpt-5.4").SupportsGzipRequests);
 
-        var other = new WorkbenchProviderConfig("openai-compatible", "https://example.invalid/v1", "secret", [new WorkbenchModelConfig("custom-model")]);
-        Assert.False(WorkbenchModelCatalog.Defaults(other, "custom-model").SupportsGzipRequests);
+        var anthropic = new WorkbenchProviderConfig("anthropic", "https://api.anthropic.com", "secret", [new WorkbenchModelConfig("claude-test")]);
+        Assert.True(WorkbenchModelCatalog.Defaults(anthropic, "claude-test").SupportsGzipRequests);
+
+        // Same wire protocol on a different site is no proof of gzip support.
+        var zai = new WorkbenchProviderConfig("anthropic", "https://api.z.ai/api/anthropic", "secret", [new WorkbenchModelConfig("GLM-5.3")]);
+        Assert.False(WorkbenchModelCatalog.Defaults(zai, "GLM-5.3").SupportsGzipRequests);
+        var deepseek = new WorkbenchProviderConfig("openai-compatible", "https://api.deepseek.com", "secret", [new WorkbenchModelConfig("deepseek-flash")]);
+        Assert.False(WorkbenchModelCatalog.Defaults(deepseek, "deepseek-flash").SupportsGzipRequests);
     }
 
     [Fact]
