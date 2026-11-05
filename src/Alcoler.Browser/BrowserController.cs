@@ -89,16 +89,6 @@ public sealed class BrowserController : IBrowserController
         }
     }
 
-    public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_sync)
-        {
-            if (_sessions.TryGetValue(sessionId, out var session)) session.Inflight?.Cancel();
-        }
-        return Task.CompletedTask;
-    }
-
     public async Task<BrowserActionResult> OpenPopupAsync(
         SessionId sessionId, string openerTabId, string url, CancellationToken cancellationToken,
         string? adoptTargetId = null)

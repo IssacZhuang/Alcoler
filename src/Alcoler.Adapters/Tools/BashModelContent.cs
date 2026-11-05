@@ -53,10 +53,6 @@ public static partial class BashModelContent
         return withoutTrailingNewlines + "\n" + suffix;
     }
 
-    public static string FormatProviderError(int exitCode, string stdout, string stderr) =>
-        new[] { $"Exit code {exitCode}", stdout, stderr }.Where(static part => part.Length > 0)
-            .Aggregate(static (a, b) => a + "\n" + b);
-
     public static string FormatBackgroundStart(string taskId, string outputPath) =>
         $"Command running in background with ID: {taskId}. Output is being written to: {outputPath}. "
         + "You will be notified when it completes. To check interim output, use Read on that file path.";

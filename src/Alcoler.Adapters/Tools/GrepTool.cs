@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Adapters.Tools;
@@ -77,12 +76,6 @@ public sealed class GrepTool : ITool
         NeedsApproval: false,
         AllowedInPlanMode: true,
         DefaultTimeoutMs: DefaultTimeoutMs);
-
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
-
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
 
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {

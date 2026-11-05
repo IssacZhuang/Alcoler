@@ -1,3 +1,5 @@
+using Alcoler.Kernel.Tools;
+
 namespace Alcoler.Kernel.Subagents;
 
 /// <summary>
@@ -22,7 +24,7 @@ public static class SubagentPrompts
     // Matches the reference Explore profile; read-only behavior is enforced by the prompt,
     // not by scope exclusion.
     public static readonly IReadOnlyList<string> ExploreToolScope =
-        ["Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", "TodoWrite"];
+        ["Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch", ToolNames.TodoWrite];
 
     public static bool IsKnownAgentType(string? agentType) =>
         agentType is not null && AgentTypes.Contains(agentType, StringComparer.Ordinal);

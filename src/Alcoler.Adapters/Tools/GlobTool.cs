@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Tools;
 
@@ -36,12 +35,6 @@ public sealed class GlobTool : ITool
         NeedsApproval: false,
         AllowedInPlanMode: true,
         DefaultTimeoutMs: DefaultTimeoutMs);
-
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
-
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
 
     public ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {

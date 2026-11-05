@@ -69,9 +69,6 @@ public sealed class WebSearchTool : ITool, IModelGatedTool, IDisposable
         return ValueTask.FromResult<ToolInputIssue?>(null);
     }
 
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
-
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
         var query = ToolInput.String(context.Input, "query");

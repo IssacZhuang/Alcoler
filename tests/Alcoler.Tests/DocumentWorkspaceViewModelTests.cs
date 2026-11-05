@@ -52,31 +52,6 @@ public sealed class DocumentWorkspaceViewModelTests
     }
 
     [Fact]
-    public void ActivateMoveAndSelectNext_KeepStableTabOrderAndWrapAround()
-    {
-        using var workspace = Create();
-        var first = workspace.Open(Document("first"));
-        var second = workspace.Open(Document("second"));
-        var third = workspace.Open(Document("third"));
-        workspace.ActivateCommand.Execute(first);
-        Assert.Equal([first, second, third], workspace.VisibleItems);
-        Assert.True(first.IsActive);
-        Assert.False(third.IsActive);
-
-        workspace.MoveCommand.Execute(new DocumentMoveRequest(third, 0));
-        Assert.Equal([third, first, second], workspace.VisibleItems);
-        Assert.Same(first, workspace.ActiveDocument);
-        workspace.SelectNextCommand.Execute(1);
-        Assert.Same(second, workspace.ActiveDocument);
-        workspace.SelectNext(1);
-        Assert.Same(third, workspace.ActiveDocument);
-        workspace.SelectNext(-1);
-        Assert.Same(second, workspace.ActiveDocument);
-        workspace.Move(second, int.MaxValue);
-        Assert.Equal([third, first, second], workspace.VisibleItems);
-    }
-
-    [Fact]
     public void CloseActive_SelectsRightNeighborThenLeft_AndClosingLastCollapses()
     {
         using var workspace = Create();

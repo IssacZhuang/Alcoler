@@ -294,16 +294,6 @@ public class CompactionSelectorTests
         Assert.Equal(0, CompactionSelector.CountContextPrefixMessages([legacy with { Source = MessageSource.TodoReminder }]));
     }
 
-    [Theory]
-    [InlineData(0, 3)]
-    [InlineData(1, 2)]
-    [InlineData(3, 0)]
-    [InlineData(5, 0)]
-    public void AttemptsRemaining_TracksPromptTooLongBudget(int attemptsMade, int expected)
-    {
-        Assert.Equal(expected, CompactionSelector.AttemptsRemaining(attemptsMade));
-    }
-
     internal static List<ConversationMessage> BuildHistory()
     {
         var history = new List<ConversationMessage>

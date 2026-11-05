@@ -5,8 +5,6 @@ using CommunityToolkit.Mvvm.Input;
 
 namespace Alcoler.ViewModel;
 
-public sealed record DocumentMoveRequest(DocumentViewModel Document, int TargetIndex);
-
 public sealed partial class DocumentWorkspaceViewModel : ObservableObject, IDisposable
 {
     private readonly ObservableCollection<DocumentViewModel> _items = [];
@@ -96,17 +94,6 @@ public sealed partial class DocumentWorkspaceViewModel : ObservableObject, IDisp
         Activate(document);
         return document;
     }
-
-    public IRelayCommand<DocumentViewModel> OpenCommand => _openCommand ??= new RelayCommand<DocumentViewModel>(
-        document =>
-        {
-            if (document is not null)
-            {
-                Open(document);
-            }
-        });
-
-    private IRelayCommand<DocumentViewModel>? _openCommand;
 
     [RelayCommand]
     public void Activate(DocumentViewModel? document)
@@ -208,17 +195,6 @@ public sealed partial class DocumentWorkspaceViewModel : ObservableObject, IDisp
         _scope!.Order.RemoveAt(index);
         _scope.Order.Insert(targetIndex, document);
     }
-
-    public IRelayCommand<DocumentMoveRequest> MoveCommand => _moveCommand ??= new RelayCommand<DocumentMoveRequest>(
-        request =>
-        {
-            if (request is not null)
-            {
-                Move(request.Document, request.TargetIndex);
-            }
-        });
-
-    private IRelayCommand<DocumentMoveRequest>? _moveCommand;
 
     [RelayCommand]
     public void SelectNext(int delta)

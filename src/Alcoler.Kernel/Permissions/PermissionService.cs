@@ -1,6 +1,7 @@
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tools;
 using Microsoft.Extensions.Logging;
 
 namespace Alcoler.Kernel.Permissions;
@@ -9,7 +10,6 @@ public sealed class PermissionService : IPermissionGate
 {
     public const string PlanModeDenyReason = "Plan mode only allows read-only, non-destructive tools";
     public const string BrokerTimeoutReason = "permission request timed out";
-    private const string ExitPlanModeToolName = "ExitPlanMode";
     public static readonly TimeSpan DefaultBrokerTimeout = TimeSpan.FromMinutes(10);
 
     private readonly IPermissionBroker _broker;
@@ -56,10 +56,6 @@ public sealed class PermissionService : IPermissionGate
         _planEnabled = planEnabled;
     }
 
-    public void SetMode(PermissionMode mode) => _mode = mode;
-
-    public void SetPlanEnabled(bool planEnabled) => _planEnabled = planEnabled;
-
     public void GrantSessionPermission(PermissionRule rule)
     {
         lock (_sync)
@@ -81,7 +77,7 @@ public sealed class PermissionService : IPermissionGate
         var planEnabled = request.PlanEnabled || _planEnabled;
 
         // ExitPlanMode must never reach the broker outside plan mode.
-        if (string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(request.ToolName, ToolNames.ExitPlanMode, StringComparison.OrdinalIgnoreCase)
             && !planEnabled)
             return PermissionDecision.Deny;
 
@@ -211,7 +207,7 @@ public sealed class PermissionService : IPermissionGate
             request.Input,
             request.Tool.RiskLevel,
             reason,
-            AllowsFeedback: string.Equals(request.ToolName, ExitPlanModeToolName, StringComparison.OrdinalIgnoreCase),
+            AllowsFeedback: string.Equals(request.ToolName, ToolNames.ExitPlanMode, StringComparison.OrdinalIgnoreCase),
             ToolCallId: request.ToolCallId);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

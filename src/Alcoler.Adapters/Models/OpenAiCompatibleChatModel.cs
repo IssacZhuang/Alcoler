@@ -48,79 +48,18 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        HttpRequestMessage? built = null;
-        ModelFailure? validationFailure = null;
-        try { built = BuildRequest(request); }
-        catch (ArgumentException ex) { validationFailure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message, Phase: ModelFailurePhase.RequestSetup); }
-        if (validationFailure is not null)
+        await foreach (var streamEvent in SsePump.RunAsync(
+            httpClient,
+            () => BuildRequest(request),
+            new OpenAiStreamState(),
+            static (state, root, _, events) => state.Dispatch(root, events),
+            static (ex, statusCode) => new ModelFailure(
+                ModelFailureKind.StreamProtocolError, ex.Message,
+                Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: statusCode),
+            complete: static (state, events) => state.Complete(events),
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            yield return new ModelStreamFailed(validationFailure);
-            yield break;
-        }
-        using var httpRequest = built!;
-        HttpResponseMessage? response = null;
-        ModelFailure? sendFailure = null;
-        try
-        {
-            response = await httpClient.SendAsync(
-                httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            sendFailure = ModelFailureClassifier.FromException(ex, cancellationToken) with { Phase = ModelFailurePhase.RequestSetup };
-        }
-        if (sendFailure is not null)
-        {
-            yield return new ModelStreamFailed(sendFailure);
-            yield break;
-        }
-
-        using (response!)
-        {
-            var state = new OpenAiStreamState();
-            var events = new List<ModelStreamEvent>();
-            await foreach (var frame in SseHttp.ReadFramesAsync(response!, cancellationToken).ConfigureAwait(false))
-            {
-                if (frame.Event == SseHttp.FailureEventName)
-                {
-                    yield return new ModelStreamFailed(SseHttp.DeserializeFailure(frame.Data));
-                    yield break;
-                }
-                if (frame.Data.Length == 0)
-                    continue;
-                if (frame.Data is "[DONE]")
-                {
-                    events.Clear();
-                    state.Complete(events);
-                    foreach (var e in events)
-                        yield return e;
-                    yield break;
-                }
-
-                ModelFailure? dispatchFailure = null;
-                try
-                {
-                    using var document = JsonDocument.Parse(frame.Data);
-                    events.Clear();
-                    state.Dispatch(document.RootElement, events);
-                }
-                catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
-                {
-                    dispatchFailure = new ModelFailure(ModelFailureKind.StreamProtocolError, ex.Message,
-                        Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response!.StatusCode);
-                }
-                if (dispatchFailure is not null)
-                {
-                    yield return new ModelStreamFailed(dispatchFailure);
-                    yield break;
-                }
-                foreach (var e in events)
-                    yield return e;
-            }
-            events.Clear();
-            state.Complete(events);
-            foreach (var e in events)
-                yield return e;
+            yield return streamEvent;
         }
     }
 

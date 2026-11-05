@@ -33,12 +33,6 @@ public sealed class McpTool : ITool
 
     public ToolMetadata Metadata { get; }
 
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
-
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
-
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
         if (context.Input.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)

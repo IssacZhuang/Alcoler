@@ -18,28 +18,6 @@ public static class ModelRequestSystemBlocks
     public static ModelInputMessage ToMessage(IReadOnlyList<string> blocks) =>
         new(MessageRole.User, blocks.Select(b => (ModelContentBlock)new InputTextBlock(BlockPrefix + b)).ToArray());
 
-    public static (IReadOnlyList<ModelInputMessage> Conversation, IReadOnlyList<string> SystemBlocks) Extract(
-        IReadOnlyList<ModelInputMessage> messages)
-    {
-        List<string>? systemBlocks = null;
-        List<ModelInputMessage>? conversation = null;
-        foreach (var message in messages)
-        {
-            if (message.Role == MessageRole.System)
-            {
-                (systemBlocks ??= []).AddRange(message.Content.OfType<InputTextBlock>().Select(b => b.Text));
-                continue;
-            }
-            if (IsSystemBlockMessage(message, out var blocks))
-            {
-                (systemBlocks ??= []).AddRange(blocks);
-                continue;
-            }
-            (conversation ??= []).Add(message);
-        }
-        return (conversation ?? (IReadOnlyList<ModelInputMessage>)[], systemBlocks ?? (IReadOnlyList<string>)[]);
-    }
-
     internal static IReadOnlyList<ModelInputMessage> Normalize(IReadOnlyList<ModelInputMessage> messages, bool preserveMidSystem)
     {
         var result = new List<ModelInputMessage>(messages.Count);

@@ -38,7 +38,7 @@ public sealed class SkillTool : ITool
         - Do not invoke a skill that is already running
         - If you see a <command-name> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again
         """,
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -51,7 +51,7 @@ public sealed class SkillTool : ITool
         }
         """));
 
-    public JsonElement RuntimeInputSchema { get; } = ParseSchema("""
+    public JsonElement RuntimeInputSchema { get; } = ToolJson.ParseSchema("""
         {
           "type": "object",
           "properties": {
@@ -161,7 +161,4 @@ public sealed class SkillTool : ITool
         builder.Append('\n').Append("</skill_content>");
         return builder.ToString();
     }
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

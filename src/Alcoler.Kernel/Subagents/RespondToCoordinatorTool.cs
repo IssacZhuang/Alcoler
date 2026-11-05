@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tools;
 
 namespace Alcoler.Kernel.Subagents;
 
@@ -24,7 +25,7 @@ public sealed class RespondToCoordinatorTool(
         - Continue the current task unless the coordinator explicitly changed or ended it.
         - Do not use this tool as a substitute for the final task result.
         """,
-        JsonDocument.Parse("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -35,7 +36,7 @@ public sealed class RespondToCoordinatorTool(
           "required": ["summary", "message"],
           "additionalProperties": false
         }
-        """).RootElement.Clone());
+        """));
 
     public ToolMetadata Metadata { get; } = new(
         ReadOnly: false,
@@ -61,10 +62,10 @@ public sealed class RespondToCoordinatorTool(
         var responseId = $"response_{Guid.NewGuid()}";
         var body = string.Join("\n",
             "<subagent-message>",
-            $"<agent-id>{Escape(agentId.Value)}</agent-id>",
-            $"<agent-type>{Escape(agentType)}</agent-type>",
-            $"<summary>{Escape(summary)}</summary>",
-            $"<message>{Escape(message)}</message>",
+            $"<agent-id>{TaskText.Escape(agentId.Value)}</agent-id>",
+            $"<agent-type>{TaskText.Escape(agentType)}</agent-type>",
+            $"<summary>{TaskText.Escape(summary)}</summary>",
+            $"<message>{TaskText.Escape(message)}</message>",
             "</subagent-message>");
         cancellationToken.ThrowIfCancellationRequested();
         try
@@ -84,11 +85,4 @@ public sealed class RespondToCoordinatorTool(
                 isError: true, displaySummary: summary);
         }
     }
-
-    private static string Escape(string value) =>
-        value.Replace("&", "&amp;", StringComparison.Ordinal)
-            .Replace("<", "&lt;", StringComparison.Ordinal)
-            .Replace(">", "&gt;", StringComparison.Ordinal)
-            .Replace("'", "&apos;", StringComparison.Ordinal)
-            .Replace("\"", "&quot;", StringComparison.Ordinal);
 }

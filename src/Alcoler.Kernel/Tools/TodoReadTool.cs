@@ -16,7 +16,7 @@ public sealed class TodoReadTool : ITool
     public ToolContract Contract { get; } = new(
         "TodoRead",
         "Read the current session todo list",
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -44,7 +44,4 @@ public sealed class TodoReadTool : ITool
     public ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken) =>
         ValueTask.FromResult(ToolExecutionResult.Text(
             TodoWriteTool.SerializeReadResult(_store.Get(context.SessionId))));
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

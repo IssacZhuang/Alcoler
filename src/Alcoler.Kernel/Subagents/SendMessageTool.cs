@@ -2,6 +2,7 @@ using System.Text.Json;
 using Alcoler.Contracts.Commands;
 using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tools;
 
 namespace Alcoler.Kernel.Subagents;
 
@@ -25,7 +26,7 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
 
         Your plain text output is NOT visible to subagents — to communicate with one, you MUST call this tool. A running subagent is steered with your message inside its current turn; a completed subagent resumes in the background and you'll be notified when it finishes. Refer to subagents by the agentId returned when the Agent tool started them.
         """,
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -57,8 +58,8 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
 
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
-        var to = StringOrNull(context.Input, "to");
-        var message = StringOrNull(context.Input, "message");
+        var to = ToolJson.StringOrNull(context.Input, "to");
+        var message = ToolJson.StringOrNull(context.Input, "message");
         if (string.IsNullOrWhiteSpace(to) || string.IsNullOrWhiteSpace(message))
             return ToolExecutionResult.Text("to and message are required", isError: true);
 
@@ -77,7 +78,7 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
             await channel.EnsureLoadedAsync(cancellationToken).ConfigureAwait(false);
             var busy = channel.IsBusy;
             var previousStatus = SubagentTool.BackgroundStatus(channel.Status);
-            var summary = StringOrNull(context.Input, "summary");
+            var summary = ToolJson.StringOrNull(context.Input, "summary");
             var commandId = StrongId.NewCommandId();
             if (!busy && channel.ResumeAsync is { } resume)
             {
@@ -108,12 +109,4 @@ public sealed class SendMessageTool(SubagentMessenger messenger) : ITool
             messenger.Maintain(context.SessionId);
         }
     }
-
-    private static string? StringOrNull(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

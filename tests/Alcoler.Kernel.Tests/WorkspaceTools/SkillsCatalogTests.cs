@@ -335,39 +335,4 @@ public class SkillsCatalogTests : IDisposable
         Assert.Equal("user-brand", skill.Name);
         Assert.Equal(SkillSource.User, skill.Source);
     }
-
-    [Fact]
-    public void RenderListing_ListsSkillsWithSource()
-    {
-        WriteSkill(
-            WorkspaceSkills,
-            "report",
-            """
-            ---
-            name: report
-            description: Research a topic.
-            ---
-            """);
-        WriteSkill(
-            UserSkills,
-            "deploy",
-            """
-            ---
-            name: deploy
-            description: Ship the build.
-            ---
-            """);
-
-        var listing = SkillsCatalog.RenderListing(Catalog().Load(_workspaceRoot.Root));
-
-        Assert.StartsWith("Available skills:", listing);
-        Assert.Contains("- report: Research a topic. (workspace)", listing);
-        Assert.Contains("- deploy: Ship the build. (user)", listing);
-    }
-
-    [Fact]
-    public void RenderListing_EmptyCatalog_ReturnsEmptyString()
-    {
-        Assert.Equal(string.Empty, SkillsCatalog.RenderListing([]));
-    }
 }

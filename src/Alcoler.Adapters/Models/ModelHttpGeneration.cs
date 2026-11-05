@@ -23,7 +23,7 @@ internal static class ModelHttpGeneration
             {
                 var error = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 return [new ModelStreamFailed(ModelFailureClassifier.FromHttpResponse(statusCode.Value,
-                    Header(response, "retry-after"), error, Header(response, "retry-after-ms"), Header(response, "x-should-retry")) with
+                    SseHttp.Header(response, "retry-after"), error, SseHttp.Header(response, "retry-after-ms"), SseHttp.Header(response, "x-should-retry")) with
                 {
                     Phase = phase,
                     HttpStatusCode = statusCode,
@@ -48,7 +48,4 @@ internal static class ModelHttpGeneration
             return [new ModelStreamFailed(failure with { Phase = phase, HttpStatusCode = statusCode })];
         }
     }
-
-    private static string? Header(HttpResponseMessage response, string name) =>
-        response.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : null;
 }

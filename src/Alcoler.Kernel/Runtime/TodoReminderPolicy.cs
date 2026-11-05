@@ -11,7 +11,7 @@ namespace Alcoler.Kernel.Runtime;
 // request, including the current todo list when non-empty.
 public static class TodoReminderPolicy
 {
-    public const string TodoWriteToolName = "TodoWrite";
+    public const string TodoWriteToolName = ToolNames.TodoWrite;
     public const int StepsSinceWriteThreshold = 10;
     public const int StepsBetweenReminders = 10;
 

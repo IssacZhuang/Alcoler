@@ -624,139 +624,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         return draft;
     }
 
-    private ModelSelection? ValidateSelection(ModelSelection? selection) => FindModel(selection) is { } choice
-        ? choice.NormalizeSelection(selection!) : WorkbenchModelCatalog.DefaultSelection(_config);
-
-    private ModelSelection? GetSavedSelection(string root, string sessionKey)
-    {
-        var workspace = _composerConfig.ModelSelections?.FirstOrDefault(pair =>
-            string.Equals(pair.Key, DocumentViewModel.NormalizeWorkspaceRoot(root), StringComparison.OrdinalIgnoreCase)).Value;
-        return workspace?.TryGetValue(sessionKey, out var selection) == true ? ValidateSelection(selection) : null;
-    }
-
-    private ModelSelection? GetNewDraftSelection(string root)
-    {
-        var recent = _composerConfig.RecentModelSelections?.FirstOrDefault(pair =>
-            string.Equals(pair.Key, DocumentViewModel.NormalizeWorkspaceRoot(root), StringComparison.OrdinalIgnoreCase)).Value;
-        return ValidateSelection(recent);
-    }
-
-    private void ObserveSelection(IComposerHost host, Func<string> sessionKey)
-    {
-        Action<ModelSelection> observer = selection => SaveModelSelection(host.WorkspaceRoot, sessionKey(), selection);
-        _selectionObservers[host] = observer;
-        host.ModelSelectionChanged += observer;
-    }
-
-    private void UnobserveSelection(IComposerHost host)
-    {
-        if (_selectionObservers.Remove(host, out var observer))
-            host.ModelSelectionChanged -= observer;
-    }
-
-    private void UnobserveMode(ComposerViewModel composer)
-    {
-        if (_modeObservers.Remove(composer, out var observers))
-        {
-            composer.ModeSelected -= observers.Mode;
-            composer.PlanModeSelected -= observers.Plan;
-        }
-    }
-
-    private Dictionary<string, IReadOnlyDictionary<string, ModelSelection>> CopyModelSelections() =>
-        new(_composerConfig.ModelSelections ?? new Dictionary<string, IReadOnlyDictionary<string, ModelSelection>>(),
-            StringComparer.OrdinalIgnoreCase);
-
-    private void SaveModelSelection(string root, string sessionKey, ModelSelection selection)
-    {
-        if (ValidateSelection(selection) is not { } validated)
-            return;
-        root = DocumentViewModel.NormalizeWorkspaceRoot(root);
-        var workspaces = CopyModelSelections();
-        var sessions = new Dictionary<string, ModelSelection>(workspaces.GetValueOrDefault(root) ?? new Dictionary<string, ModelSelection>())
-        {
-            [sessionKey] = validated,
-        };
-        workspaces[root] = sessions;
-        SaveComposerConfig(_composerConfig with { ModelSelections = workspaces });
-    }
-
-    private void TransferDraftSelection(DraftConversationViewModel draft, SessionId sessionId)
-    {
-        var root = draft.WorkspaceRoot;
-        var workspaces = CopyModelSelections();
-        var sessions = new Dictionary<string, ModelSelection>(workspaces.GetValueOrDefault(root) ?? new Dictionary<string, ModelSelection>());
-        sessions.Remove(WorkbenchComposerConfig.DraftSessionKey);
-        if (ValidateSelection(draft.CurrentSelection) is { } selection)
-            sessions[sessionId.Value] = selection;
-        workspaces[root] = sessions;
-        SaveComposerConfig(_composerConfig with { ModelSelections = workspaces });
-    }
-
-    private void RecordAcceptedSelection(string root, SessionId sessionId, ModelSelection selection, long sequence)
-    {
-        if (ValidateSelection(selection) is not { } validated)
-            return;
-        root = DocumentViewModel.NormalizeWorkspaceRoot(root);
-        var recent = new Dictionary<string, ModelSelection>(
-            _composerConfig.RecentModelSelections ?? new Dictionary<string, ModelSelection>(), StringComparer.OrdinalIgnoreCase);
-        if (!_recentSubmissionSequences.TryGetValue(root, out var acceptedSequence) || sequence >= acceptedSequence)
-        {
-            _recentSubmissionSequences[root] = sequence;
-            recent[root] = validated;
-        }
-        var workspaces = CopyModelSelections();
-        var sessions = new Dictionary<string, ModelSelection>(workspaces.GetValueOrDefault(root) ?? new Dictionary<string, ModelSelection>());
-        sessions.TryAdd(sessionId.Value, validated);
-        workspaces[root] = sessions;
-        SaveComposerConfig(_composerConfig with { ModelSelections = workspaces, RecentModelSelections = recent });
-    }
-
-    private void ObserveMode(ComposerViewModel composer, Func<SessionId?> sessionId)
-    {
-        if (_modeObservers.ContainsKey(composer))
-            return;
-        Action<PermissionMode> modeObserver = mode =>
-        {
-            if (!Enum.IsDefined(mode))
-                return;
-            var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes ?? new Dictionary<string, PermissionMode>());
-            if (sessionId() is { } id)
-                pending[id.Value] = mode;
-            SaveComposerConfig(_composerConfig with { DefaultMode = mode, PendingSessionModes = pending });
-        };
-        Action<bool> planObserver = planEnabled =>
-        {
-            // Only unsent drafts carry the default plan flag; a session's plan state
-            // belongs to the kernel and must not leak into future drafts.
-            if (sessionId() is null)
-                SaveComposerConfig(_composerConfig with { DefaultPlanEnabled = planEnabled });
-        };
-        _modeObservers[composer] = (modeObserver, planObserver);
-        composer.ModeSelected += modeObserver;
-        composer.PlanModeSelected += planObserver;
-    }
-
-    private void SavePendingMode(SessionId sessionId, PermissionMode mode)
-    {
-        if (!Enum.IsDefined(mode))
-            return;
-        var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes ?? new Dictionary<string, PermissionMode>())
-        {
-            [sessionId.Value] = mode,
-        };
-        SaveComposerConfig(_composerConfig with { PendingSessionModes = pending });
-    }
-
-    private void ClearSubmittedMode(SessionId sessionId, PermissionMode mode)
-    {
-        if (_composerConfig.PendingSessionModes?.TryGetValue(sessionId.Value, out var pendingMode) != true || pendingMode != mode)
-            return;
-        var pending = new Dictionary<string, PermissionMode>(_composerConfig.PendingSessionModes);
-        pending.Remove(sessionId.Value);
-        SaveComposerConfig(_composerConfig with { PendingSessionModes = pending });
-    }
-
     // Overlay visibility applies the moment it changes, so it persists immediately
     // rather than waiting for the settings dialog to save.
     private void OnTaskOverlayPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -773,22 +640,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
     }
 
-    private void SaveComposerConfig(WorkbenchComposerConfig config)
-    {
-        _composerConfig = config;
-        try
-        {
-            _saveComposer?.Invoke(config);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-        {
-            Banner = Loc.Get("workbench_composer_save_error", exception.Message);
-        }
-    }
-
-    private ModelChoice? FindModel(ModelSelection? selection) => selection is null ? null : ModelChoices.FirstOrDefault(choice =>
-        choice.ProviderId == selection.ProviderId && choice.ModelId == selection.ModelId);
-
     private async Task SendDraftAsync(DraftConversationViewModel draft)
     {
         if (!draft.Composer.CanSend)
@@ -800,14 +651,16 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
             await OpenSessionAsync(existing);
             return;
         }
-        if (ComposerCommands.TryParse(draft.Composer.Draft, out var command))
+        SessionHandle? createdHandle = null;
+        var submitting = false;
+        ProjectionStore? submissionStore = null;
+        await ComposerSubmission.SubmitAsync(new ComposerSubmission.Request<DraftSendState>
         {
-            switch (command.Kind)
+            Composer = draft.Composer,
+            ApplyCommandAsync = command =>
             {
-                case ComposerCommandKind.Plan:
-                    draft.Composer.PlanEnabled = true;
-                    break;
-                case ComposerCommandKind.Orchestrator:
+                if (command.Kind == ComposerCommandKind.Orchestrator)
+                {
                     if (command.Prompt.Length == 0)
                     {
                         draft.Composer.ToggleArmedWorkflow(OrchestratorWorkflow.Id);
@@ -816,105 +669,90 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
                     {
                         draft.Composer.ArmWorkflow(OrchestratorWorkflow.Id);
                     }
-                    break;
-            }
-            if (command.Prompt.Length == 0)
+                }
+                return Task.FromResult(false);
+            },
+            CaptureState = () => new DraftSendState(draft.Composer.Mode, draft.Composer.PlanEnabled,
+                draft.Selection, ++_submissionSequence, _navigationVersion),
+            BeginSending = () =>
             {
-                draft.Composer.InputError = null;
-                draft.Composer.Draft = string.Empty;
-                return;
-            }
-            draft.Composer.InputError = null;
-            draft.Composer.Draft = command.Prompt;
-        }
-        var text = draft.Composer.Draft;
-        var mode = draft.Composer.Mode;
-        var planEnabled = draft.Composer.PlanEnabled;
-        var selection = draft.Selection;
-        var submissionSequence = ++_submissionSequence;
-        var navigation = _navigationVersion;
-        draft.Composer.IsSending = true;
-        draft.Banner = null;
-        draft.UnsentText = null;
-        SessionId? createdId = null;
-        var submitting = false;
-        ProjectionStore? submissionStore = null;
-        try
-        {
-            var images = draft.Composer.SnapshotImages();
-            var options = new SessionOptions(draft.WorkspaceRoot, PermissionMode: mode, ModelSelection: selection,
-                ActiveWorkflows: draft.Composer.ArmedWorkflows is { Count: > 0 } armed ? armed : null,
-                PlanEnabled: planEnabled);
-            var handle = await Task.Run(() => _runtime.CreateSessionAsync(options, CancellationToken.None).AsTask());
-            createdId = handle.Id;
-            draft.CreatedSessionId = handle.Id;
-            TransferDraftSelection(draft, handle.Id);
-            SavePendingMode(handle.Id, draft.Composer.Mode);
-            _sessionRoots[handle.Id] = handle.WorkspaceRoot;
-            RevealWorkspace(draft.WorkspaceRoot);
-            var draftOwnerId = GetDraftDocumentOwnerId(draft);
-            var browserDocuments = Documents.Items.Where(document => document.OwnerId == draftOwnerId
-                && string.Equals(document.WorkspaceRoot,
-                    DocumentViewModel.NormalizeWorkspaceRoot(draft.WorkspaceRoot), StringComparison.OrdinalIgnoreCase)
-                && document.Content is BrowserPaneViewModel).ToArray();
-            Documents.TransferOwner(draft.WorkspaceRoot, draftOwnerId, handle.Id.Value);
-            foreach (var document in browserDocuments.Where(document => Documents.Items.Contains(document)))
+                draft.Banner = null;
+                draft.UnsentText = null;
+            },
+            BuildCommandAsync = async (state, text, images) =>
             {
-                ((BrowserPaneViewModel)document.Content).Bind(handle.Id);
-            }
-            _sessionDrafts[handle.Id] = new SessionDraft(draft.Composer, draft.Selection, null);
-            // Workflows now live on the session record; a stale armed copy would outlive the
-            // one-shot workflow and keep the badge visible after the turn clears it.
-            draft.Composer.ClearArmedWorkflows();
-            // The plan flag the draft carried now lives on the session.
-            if (_composerConfig.DefaultPlanEnabled)
-                SaveComposerConfig(_composerConfig with { DefaultPlanEnabled = false });
-            if (_drafts.GetValueOrDefault(draft.WorkspaceRoot) == draft)
+                var options = new SessionOptions(draft.WorkspaceRoot, PermissionMode: state.Mode,
+                    ModelSelection: state.Selection,
+                    ActiveWorkflows: draft.Composer.ArmedWorkflows is { Count: > 0 } armed ? armed : null,
+                    PlanEnabled: state.PlanEnabled);
+                var handle = await Task.Run(() => _runtime.CreateSessionAsync(options, CancellationToken.None).AsTask());
+                createdHandle = handle;
+                draft.CreatedSessionId = handle.Id;
+                TransferDraftSelection(draft, handle.Id);
+                SavePendingMode(handle.Id, draft.Composer.Mode);
+                _sessionRoots[handle.Id] = handle.WorkspaceRoot;
+                RevealWorkspace(draft.WorkspaceRoot);
+                var draftOwnerId = GetDraftDocumentOwnerId(draft);
+                var browserDocuments = Documents.Items.Where(document => document.OwnerId == draftOwnerId
+                    && string.Equals(document.WorkspaceRoot,
+                        DocumentViewModel.NormalizeWorkspaceRoot(draft.WorkspaceRoot), StringComparison.OrdinalIgnoreCase)
+                    && document.Content is BrowserPaneViewModel).ToArray();
+                Documents.TransferOwner(draft.WorkspaceRoot, draftOwnerId, handle.Id.Value);
+                foreach (var document in browserDocuments.Where(document => Documents.Items.Contains(document)))
+                {
+                    ((BrowserPaneViewModel)document.Content).Bind(handle.Id);
+                }
+                _sessionDrafts[handle.Id] = new SessionDraft(draft.Composer, draft.Selection, null);
+                // Workflows now live on the session record; a stale armed copy would outlive the
+                // one-shot workflow and keep the badge visible after the turn clears it.
+                draft.Composer.ClearArmedWorkflows();
+                // The plan flag the draft carried now lives on the session.
+                if (_composerConfig.DefaultPlanEnabled)
+                    SaveComposerConfig(_composerConfig with { DefaultPlanEnabled = false });
+                if (_drafts.GetValueOrDefault(draft.WorkspaceRoot) == draft)
+                {
+                    _drafts.Remove(draft.WorkspaceRoot);
+                }
+                UnobserveSelection(draft);
+                if (state.Navigation == _navigationVersion && ReferenceEquals(Draft, draft))
+                {
+                    await OpenSessionAsync(handle.Id);
+                }
+                submitting = true;
+                var store = _hub.Acquire(handle.Id);
+                submissionStore = store;
+                await store.Initialized;
+                return new SendTextCommand(
+                    StrongId.NewCommandId(), handle.Id, store.Revision, text, state.Mode, state.Selection,
+                    Images: images, PlanEnabled: state.PlanEnabled);
+            },
+            SubmitCommandAsync = async send =>
             {
-                _drafts.Remove(draft.WorkspaceRoot);
-            }
-            UnobserveSelection(draft);
-            if (navigation == _navigationVersion && ReferenceEquals(Draft, draft))
+                var ack = await Task.Run(() => _runtime.SubmitAsync(send, CancellationToken.None).AsTask());
+                submissionStore!.SetRevision(ack.Revision);
+                return ack;
+            },
+            OnAccepted = state =>
             {
-                await OpenSessionAsync(handle.Id);
-            }
-            submitting = true;
-            submissionStore = _hub.Acquire(handle.Id);
-            await submissionStore.Initialized;
-            var send = new SendTextCommand(
-                StrongId.NewCommandId(), handle.Id, submissionStore.Revision, text, mode, selection, Images: images,
-                PlanEnabled: planEnabled);
-            var ack = await Task.Run(() => _runtime.SubmitAsync(send, CancellationToken.None).AsTask());
-            submissionStore.SetRevision(ack.Revision);
-            if (ack.Accepted)
-            {
-                ClearSubmittedMode(handle.Id, mode);
-                if (selection is not null)
-                    RecordAcceptedSelection(draft.WorkspaceRoot, handle.Id, selection, submissionSequence);
-                draft.Composer.RecordSent(text);
-                draft.Composer.ClearIfSendable(text, images);
-            }
-            else
-            {
-                SetSendFailure(draft, handle.Id, text, ack.RejectionReason ?? Loc.Get("workbench_input_rejected"));
-            }
-            await Sidebar.RefreshAsync();
-        }
-        catch (Exception exception)
-        {
-            var message = submitting
+                ClearSubmittedMode(createdHandle!.Id, state.Mode);
+                if (state.Selection is not null)
+                    RecordAcceptedSelection(draft.WorkspaceRoot, createdHandle!.Id, state.Selection, state.Sequence);
+            },
+            OnRejected = (text, ack) => SetSendFailure(draft, createdHandle!.Id, text,
+                ack.RejectionReason ?? Loc.Get("workbench_input_rejected")),
+            DescribeFailure = exception => submitting
                 ? Loc.Get("workbench_delivery_unconfirmed", exception.Message)
-                : createdId is not null
+                : createdHandle is not null
                     ? Loc.Get("workbench_message_not_sent", exception.Message)
-                    : Loc.Get("workbench_create_conversation_error", exception.Message);
-            SetSendFailure(draft, createdId, text, message);
-        }
-        finally
-        {
-            if (submissionStore is not null)
-                _hub.Release(submissionStore.SessionId);
-            draft.Composer.IsSending = false;
-        }
+                    : Loc.Get("workbench_create_conversation_error", exception.Message),
+            ReportFailure = (text, message) => SetSendFailure(draft, createdHandle?.Id, text, message),
+            AfterOutcomeAsync = Sidebar.RefreshAsync,
+            Release = () =>
+            {
+                if (submissionStore is not null)
+                    _hub.Release(submissionStore.SessionId);
+            },
+        });
     }
 
     private void SetSendFailure(DraftConversationViewModel draft, SessionId? sessionId, string text, string message)
@@ -1143,78 +981,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         return deleted;
     }
 
-    private async Task TryAutoArchiveAsync()
-    {
-        if (!_config.AutoArchiveSessions || _autoArchiveRunning || _disposed)
-        {
-            return;
-        }
-        var now = DateTimeOffset.UtcNow;
-        if (_lastAutoArchiveAt is { } last && now - last < AutoArchiveInterval)
-        {
-            return;
-        }
-
-        _autoArchiveRunning = true;
-        try
-        {
-            var days = Math.Clamp(_config.AutoArchiveOlderThanDays, 1, 365);
-            await _runtime.ArchiveStaleSessionsAsync(
-                TimeSpan.FromDays(days), Active?.SessionId, CancellationToken.None);
-            _lastAutoArchiveAt = now;
-        }
-        catch (Exception)
-        {
-            // Automatic cleanup must not prevent the session list from loading.
-        }
-        finally
-        {
-            _autoArchiveRunning = false;
-        }
-    }
-
-    // RefreshFromRuntimeAsync only runs on user-driven refreshes; idle unloading must still
-    // progress while the app sits unused, so the tick loop drives it on its own timer.
-    private async Task RunMaintenanceTicksAsync(CancellationToken cancellationToken)
-    {
-        using var timer = new PeriodicTimer(MaintenanceTickInterval);
-        while (true)
-        {
-            try
-            {
-                if (!await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    return;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-
-            if (_disposed)
-            {
-                return;
-            }
-            try
-            {
-                await TryAutoArchiveAsync().ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-            }
-            try
-            {
-                await _runtime.UnloadIdleSessionsAsync(IdleSessionUnloadThreshold, Active?.SessionId, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // A failed maintenance action must not kill the loop.
-            }
-        }
-    }
-
     private void OnSessionTitleChanged(SessionId sessionId, string title)
     {
         if (_disposed)
@@ -1292,39 +1058,6 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
         }
     }
 
-    private void OnSessionActivityChanged(SessionId sessionId)
-    {
-        if (_disposed)
-        {
-            return;
-        }
-        // Alert edge detection needs the snapshot as of the event; a posted read can land
-        // after further transitions already completed and would merge them away.
-        var activityAtEvent = _activities?.GetSessionActivity(sessionId);
-        _scheduler.Post(() =>
-        {
-            if (_disposed)
-            {
-                return;
-            }
-            var activity = _activities?.GetSessionActivity(sessionId);
-            RefreshSessionActivities();
-            if (activity is not null && string.IsNullOrEmpty(activity.SessionId.Value))
-                SessionActivities.ApplyActivity(sessionId, activity);
-            if (_busyPeriods.OnActivity(sessionId, activity?.Phase))
-            {
-                _ = Task.Run(GcMaintenance.CompactLargeObjectHeap);
-            }
-            if (_taskAlerts.OnActivity(sessionId, activityAtEvent) is { } alert
-                && (alert is TaskAlert.TaskCompleted
-                    ? _config.Alerts?.TaskCompleted ?? true
-                    : _config.Alerts?.AwaitingConfirmation ?? true))
-            {
-                _taskAlertSounds.Play(alert);
-            }
-        });
-    }
-
     private void EnsurePanes(string root)
     {
         var shell = ShellResolver.ResolveEnvironment(_shellPreference,
@@ -1388,6 +1121,13 @@ public sealed partial class WorkbenchViewModel : ObservableObject, IDisposable, 
     }
 
     private sealed record DraftDocumentOwner(string Id);
+
+    private sealed record DraftSendState(
+        PermissionMode Mode,
+        bool PlanEnabled,
+        ModelSelection? Selection,
+        long Sequence,
+        long Navigation);
 
     private sealed record SessionDraft(ComposerViewModel Composer, ModelSelection? Selection, string? Banner, string? UnsentText = null);
 }

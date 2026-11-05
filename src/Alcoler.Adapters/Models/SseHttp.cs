@@ -30,6 +30,9 @@ internal static class SseHttp
             ? element.GetString()
             : null;
 
+    internal static string? Header(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : null;
+
     internal static bool IsNullOrWhiteSpace(ReadOnlySpan<byte> utf8)
     {
         if (utf8.IsEmpty)
@@ -148,8 +151,5 @@ internal static class SseHttp
 
         static SseFrame FailureFrame(ModelFailure failure) =>
             new(FailureEventName, Alcoler.Contracts.Serialization.AlcolerJson.Serialize(failure));
-
-        static string? Header(HttpResponseMessage response, string name) =>
-            response.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : null;
     }
 }

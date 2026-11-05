@@ -50,20 +50,6 @@ public sealed class ComposerCommandTests
         Assert.False(ComposerCommands.TryParse(text, out _));
     }
 
-    [Theory]
-    [InlineData("/", true)]
-    [InlineData("/p", true)]
-    [InlineData("/PL", true)]
-    [InlineData("/plan", true)]
-    [InlineData("/planx", false)]
-    [InlineData("/o", true)]
-    [InlineData("/ORCHESTRATOR", true)]
-    [InlineData("/orchestratorx", false)]
-    [InlineData("plan", false)]
-    [InlineData("", false)]
-    public void MatchesSuggestion_ShowsBuiltInsForTheirPrefixes(string token, bool expected) =>
-        Assert.Equal(expected, ComposerCommands.MatchesSuggestion(token));
-
     [Fact]
     public void SuggestionsFor_ReturnsMatchingBuiltIns()
     {

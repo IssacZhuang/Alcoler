@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace Alcoler.Kernel.Skills;
 
 public enum SkillSource
@@ -25,7 +23,6 @@ public sealed record SkillInfo(
 public sealed class SkillsCatalog
 {
     private const string SkillFileName = "SKILL.md";
-    private const string ListingHeader = "Available skills:";
     private const string BrandDirectoryName = ".alcoler";
     private const string AgentsDirectoryName = ".agents";
 
@@ -118,20 +115,6 @@ public sealed class SkillsCatalog
     private static IEnumerable<SkillInfo> LoadLevel(string baseDirectory, SkillSource source) =>
         new[] { BrandDirectoryName, AgentsDirectoryName }
             .SelectMany(directoryName => LoadFrom(Path.Combine(baseDirectory, directoryName, "skills"), source));
-
-    public static string RenderListing(IReadOnlyList<SkillInfo> skills)
-    {
-        if (skills.Count == 0)
-            return string.Empty;
-        var builder = new StringBuilder(ListingHeader);
-        foreach (var skill in skills)
-        {
-            builder.Append('\n').Append("- ").Append(skill.Name).Append(": ")
-                .Append(skill.Description)
-                .Append(" (").Append(skill.Source is SkillSource.Workspace ? "workspace" : "user").Append(')');
-        }
-        return builder.ToString();
-    }
 
     public static string StripFrontMatterForTool(string text) =>
         StripFrontMatter(text, out _);

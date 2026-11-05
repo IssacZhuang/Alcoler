@@ -47,23 +47,6 @@ internal sealed class SseParser : IDisposable
         return _frames;
     }
 
-    public IReadOnlyList<SseFrame> FeedText(ReadOnlySpan<char> text)
-    {
-        var count = Encoding.UTF8.GetByteCount(text);
-        if (count == 0)
-            return Feed(ReadOnlySpan<byte>.Empty);
-        var rented = ArrayPool<byte>.Shared.Rent(count);
-        try
-        {
-            var written = Encoding.UTF8.GetBytes(text, rented);
-            return Feed(rented.AsSpan(0, written));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
-    }
-
     public IReadOnlyList<SseFrame> FeedLine(string line)
     {
         _frames.Clear();

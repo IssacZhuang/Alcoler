@@ -1,4 +1,5 @@
 using Alcoler.Kernel.Subagents;
+using Alcoler.Kernel.Tools;
 
 namespace Alcoler.Kernel.Runtime;
 
@@ -14,7 +15,6 @@ public static class RuntimeReminders
 
     private const int PlanResearchAgentCount = 3;
     private const string AskUserQuestionToolName = "AskUserQuestion";
-    private const string ExitPlanModeToolName = "ExitPlanMode";
 
     private static readonly string PlanWorkflow = $"""
         ## Plan Workflow
@@ -48,11 +48,11 @@ public static class RuntimeReminders
         2. Ensure that the plans align with the user's original request
         3. Use {AskUserQuestionToolName} to clarify any remaining questions with the user
 
-        ### Phase 4: Call {ExitPlanModeToolName}
-        At the very end of your turn, once you have asked the user questions and are happy with your final plan - you should always call {ExitPlanModeToolName} to indicate to the user that you are done planning.
-        This is critical - your turn should only end with either using the {AskUserQuestionToolName} tool OR calling {ExitPlanModeToolName}. Do not stop unless it's for these 2 reasons
+        ### Phase 4: Call {ToolNames.ExitPlanMode}
+        At the very end of your turn, once you have asked the user questions and are happy with your final plan - you should always call {ToolNames.ExitPlanMode} to indicate to the user that you are done planning.
+        This is critical - your turn should only end with either using the {AskUserQuestionToolName} tool OR calling {ToolNames.ExitPlanMode}. Do not stop unless it's for these 2 reasons
 
-        **Important:** Use {AskUserQuestionToolName} ONLY to clarify requirements or choose between approaches. Use {ExitPlanModeToolName} to request plan approval. Do NOT ask for plan approval in any other way - no text questions, no AskUserQuestion. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar MUST use {ExitPlanModeToolName}.
+        **Important:** Use {AskUserQuestionToolName} ONLY to clarify requirements or choose between approaches. Use {ToolNames.ExitPlanMode} to request plan approval. Do NOT ask for plan approval in any other way - no text questions, no AskUserQuestion. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar MUST use {ToolNames.ExitPlanMode}.
 
         NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using the {AskUserQuestionToolName} tool. Do not make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins.
         """;
@@ -62,7 +62,7 @@ public static class RuntimeReminders
         + PlanWorkflow;
 
     public const string PlanModeSparseReminder =
-        $"Plan mode still active (see full instructions earlier in conversation). Read-only. Follow 4-phase workflow. End turns with {AskUserQuestionToolName} (for clarifications) or {ExitPlanModeToolName} (for plan approval). Never ask for plan approval via text or AskUserQuestion.";
+        $"Plan mode still active (see full instructions earlier in conversation). Read-only. Follow 4-phase workflow. End turns with {AskUserQuestionToolName} (for clarifications) or {ToolNames.ExitPlanMode} (for plan approval). Never ask for plan approval via text or AskUserQuestion.";
 
     public const string PlanModeExitReminder =
         "## Exited Plan Mode\n\nYou have exited plan mode. Dispatch the approved plan's implementation to subagents and accept each result yourself before reporting done.";

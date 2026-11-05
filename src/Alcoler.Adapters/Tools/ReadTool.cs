@@ -1,7 +1,6 @@
 using System.Buffers;
 using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Tools;
 using Alcoler.Kernel.Context;
@@ -64,12 +63,6 @@ public sealed class ReadTool : ITool
         RiskLevel: RiskLevel.Low,
         NeedsApproval: false,
         AllowedInPlanMode: true);
-
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
-
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
 
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {

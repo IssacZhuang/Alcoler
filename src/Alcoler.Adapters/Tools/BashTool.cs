@@ -99,12 +99,6 @@ public sealed class BashTool : ITool, IToolInputPolicy
     public bool IsReadOnlyInput(JsonElement input) =>
         ToolInput.StringOrNull(input, "command") is { } command && BashSemantics.IsReadOnlyCommand(command);
 
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
-
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
-
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
         var command = ToolInput.String(context.Input, "command");

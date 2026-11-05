@@ -70,7 +70,7 @@ internal static class SessionBranches
                         : null;
                     break;
 
-                case UserMessageCommittedEvent user when SessionRuntime.IsRealUserTurn(user.Message):
+                case UserMessageCommittedEvent user when SessionRestore.IsRealUserTurn(user.Message):
                     pendingAssistant = null;
                     break;
 

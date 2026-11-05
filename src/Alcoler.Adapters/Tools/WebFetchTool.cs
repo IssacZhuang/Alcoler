@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using Alcoler.Adapters.Web;
 using Alcoler.Contracts.Tools;
@@ -83,12 +82,6 @@ public sealed partial class WebFetchTool : ITool, IDisposable
         AllowedInPlanMode: true,
         DefaultTimeoutMs: 60_000,
         MaxTimeoutMs: 60_000);
-
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
-
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
 
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {

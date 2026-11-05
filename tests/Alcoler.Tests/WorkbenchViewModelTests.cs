@@ -880,7 +880,7 @@ public sealed class WorkbenchViewModelTests : IDisposable
         var first = await runtime.CreateSessionAsync(new SessionOptions(_root), CancellationToken.None);
         var second = await runtime.CreateSessionAsync(new SessionOptions(_root), CancellationToken.None);
         using var controller = new TrackingBrowserController();
-        using var browser = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, _ => new TrackingImage());
+        using var browser = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance);
         using var workbench = new WorkbenchViewModel(
             runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]), browserPane: browser);
         await workbench.OpenSessionAsync(first.Id);
@@ -889,7 +889,6 @@ public sealed class WorkbenchViewModelTests : IDisposable
 
         var firstDocument = Assert.Single(workbench.Documents.Items);
         var firstView = Assert.IsType<BrowserPaneViewModel>(firstDocument.Content);
-        var firstImage = Assert.IsType<TrackingImage>(firstView.Screenshot);
         Assert.NotSame(browser, firstView);
         Assert.Equal(first.Id, firstView.ActiveSessionId);
         Assert.Equal(first.Id.Value, firstDocument.OwnerId);
@@ -908,13 +907,10 @@ public sealed class WorkbenchViewModelTests : IDisposable
         workbench.Documents.Close(secondDocument);
 
         Assert.Equal(2, controller.SubscriberCount);
-        Assert.Null(secondView.Screenshot);
         Assert.Equal(0, controller.DisposeCount);
-        Assert.Equal(0, firstImage.DisposeCount);
         await workbench.OpenSessionAsync(first.Id);
         Assert.Same(firstDocument, workbench.Documents.ActiveDocument);
         workbench.Documents.Close(firstDocument);
-        Assert.Equal(1, firstImage.DisposeCount);
         Assert.Equal(1, controller.SubscriberCount);
         Assert.Equal(0, controller.DisposeCount);
     }
@@ -1089,12 +1085,11 @@ public sealed class WorkbenchViewModelTests : IDisposable
         await using var runtime = CreateRuntime(store);
         var session = await runtime.CreateSessionAsync(new SessionOptions(_root), CancellationToken.None);
         using var controller = new TrackingBrowserController();
-        using var browser = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, _ => new TrackingImage());
+        using var browser = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance);
         using var workbench = new WorkbenchViewModel(
             runtime, InlineUiScheduler.Instance, new WorkbenchConfig([]), browserPane: browser);
         await workbench.OpenSessionAsync(session.Id);
         Assert.Equal(session.Id, browser.ActiveSessionId);
-        Assert.True(browser.HasScreenshot);
 
         workbench.ShowNewTask(_root);
         workbench.ShowBrowserPaneCommand.Execute(null);
@@ -1102,10 +1097,8 @@ public sealed class WorkbenchViewModelTests : IDisposable
         var draftDocument = Assert.Single(workbench.Documents.VisibleItems);
         var draftView = Assert.IsType<BrowserPaneViewModel>(draftDocument.Content);
         Assert.Null(browser.ActiveSessionId);
-        Assert.False(browser.HasScreenshot);
         Assert.Null(draftView.ActiveSessionId);
         Assert.False(draftView.CanInteract);
-        Assert.False(draftView.HasScreenshot);
         Assert.StartsWith("draft:", draftDocument.OwnerId);
     }
 
@@ -1141,23 +1134,18 @@ public sealed class WorkbenchViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Dispose_DisposesBrowserPaneAndReleasesItsStatusSubscriptionAndScreenshot()
+    public void Dispose_DisposesBrowserPaneAndReleasesItsStatusSubscription()
     {
         using var controller = new TrackingBrowserController();
-        var image = new TrackingImage();
-        using var browserPane = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, _ => image);
+        using var browserPane = new BrowserPaneViewModel(controller, InlineUiScheduler.Instance);
         using var workbench = new WorkbenchViewModel(
             new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]), browserPane: browserPane);
         browserPane.Bind(StrongId.NewSessionId());
         Assert.Equal(1, controller.SubscriberCount);
-        Assert.Same(image, browserPane.Screenshot);
 
         workbench.Dispose();
 
         Assert.Equal(0, controller.SubscriberCount);
-        Assert.Equal(1, image.DisposeCount);
-        Assert.Null(browserPane.Screenshot);
-        Assert.False(browserPane.HasScreenshot);
     }
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
@@ -1323,25 +1311,10 @@ public sealed class WorkbenchViewModelTests : IDisposable
         }
 
         public BrowserSessionStatus? GetStatus(SessionId sessionId) => _statuses.GetValueOrDefault(sessionId) ?? new(
-            BrowserSessionState.Launched, LatestScreenshotUri: "screenshot.png", UpdatedAt: DateTimeOffset.UtcNow);
+            BrowserSessionState.Launched, UpdatedAt: DateTimeOffset.UtcNow);
 
         public Task<BrowserActionResult> ExecuteAsync(SessionId sessionId, BrowserAction action, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
-        public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public void Dispose() => DisposeCount++;
-    }
-
-    private sealed class TrackingImage : IImage, IDisposable
-    {
-        public Size Size => new(4, 4);
-
-        public int DisposeCount { get; private set; }
-
-        public void Draw(DrawingContext context, Rect sourceRect, Rect destRect)
-        {
-        }
 
         public void Dispose() => DisposeCount++;
     }

@@ -12,7 +12,6 @@ public sealed partial class CdpBrowserAutomation
     private string? _recordingError;
     private byte[]? _recordingMedia;
     private long _recordedMilliseconds;
-    private bool _recordingStop;
 
     private async Task<BrowserActionResult> RecordingAsync(string command, JsonElement input, CancellationToken ct)
     {
@@ -43,7 +42,6 @@ public sealed partial class CdpBrowserAutomation
             _recordingState = "recording";
             _recordingError = null;
             _recordingMedia = null;
-            _recordingStop = false;
             _recordedMilliseconds = 0;
             _recordingTask = RecordFramesAsync(context, duration, fps, _recordingCancellation.Token);
             return new(true, Text: "Recording started.", StructuredOutput: value.GetRawText());
@@ -55,7 +53,6 @@ public sealed partial class CdpBrowserAutomation
             _recordingMedia = null;
             return Structured(BrowserJson.Element(D(("state", _recordingState))));
         }
-        if (command == "record_stop") _recordingStop = true;
         if (_recordingState == "failed") return new(false, Error: _recordingError ?? "Recording failed.", StructuredOutput: BrowserJson.Serialize(D(("state", _recordingState))));
         var result = new BrowserActionResult(true, StructuredOutput: BrowserJson.Serialize(D(("state", _recordingState), ("elapsedMs", Interlocked.Read(ref _recordedMilliseconds)))), Media: _recordingMedia, MediaType: _recordingMedia is null ? null : "video/webm", MediaFileName: _recordingMedia is null ? null : "recording.webm");
         return result;
@@ -68,7 +65,7 @@ public sealed partial class CdpBrowserAutomation
         using var frameTimer = new Timer(_ => { try { frameTimeout.Cancel(); } catch (ObjectDisposedException) { } });
         try
         {
-            while (clock.ElapsedMilliseconds < duration && !_recordingStop)
+            while (clock.ElapsedMilliseconds < duration)
             {
                 ct.ThrowIfCancellationRequested();
                 var frameStart = clock.ElapsedMilliseconds;

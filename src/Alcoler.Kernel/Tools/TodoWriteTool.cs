@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Alcoler.Contracts.Tools;
@@ -13,18 +12,12 @@ namespace Alcoler.Kernel.Tools;
 /// </summary>
 public sealed class TodoWriteTool : ITool
 {
-    // Matches JSON.stringify output for the reference result contract: compact, non-ASCII kept literal.
-    private static readonly JsonSerializerOptions ResultJsonOptions = new()
-    {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-    };
-
     private readonly ITodoStore _store;
 
     public TodoWriteTool(ITodoStore store) => _store = store;
 
     public ToolContract Contract { get; } = new(
-        "TodoWrite",
+        ToolNames.TodoWrite,
         """
         Create and update a task list for the current session. The list is rendered to the user as your working plan.
 
@@ -32,7 +25,7 @@ public sealed class TodoWriteTool : ITool
         - Send the full list each call; it replaces the previous one.
         - Keep one item `in_progress` at a time and mark it `completed` when done.
         """,
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -97,10 +90,10 @@ public sealed class TodoWriteTool : ITool
                 ["inProgress"] = Count(todos, TodoItemStatus.InProgress),
                 ["completed"] = Count(todos, TodoItemStatus.Completed),
             },
-        }.ToJsonString(ResultJsonOptions);
+        }.ToJsonString(ToolJson.ResultJsonOptions);
 
     internal static string SerializeReadResult(IReadOnlyList<TodoItem> todos) =>
-        new JsonObject { ["todos"] = ToDtoNode(todos) }.ToJsonString(ResultJsonOptions);
+        new JsonObject { ["todos"] = ToDtoNode(todos) }.ToJsonString(ToolJson.ResultJsonOptions);
 
     internal static bool TryNormalize(
         JsonElement input,
@@ -230,7 +223,4 @@ public sealed class TodoWriteTool : ITool
                 count++;
         return count;
     }
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

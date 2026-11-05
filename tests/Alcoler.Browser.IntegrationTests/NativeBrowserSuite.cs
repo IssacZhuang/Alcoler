@@ -381,7 +381,6 @@ internal sealed class NativeBrowserSuite
         Equal(_session, gate.Requests[0].SessionId, "Kernel permission session");
         Equal("Browser", gate.Requests[0].ToolName, "Kernel permission tool");
         Equal(1, notifications.OfType<ToolExecutionStarted>().Count(), "Kernel started notifications");
-        Equal(1, notifications.OfType<ToolExecutionPermissionAsked>().Count(), "Kernel permission notifications");
         Equal(1, notifications.OfType<ToolExecutionResultNotification>().Count(), "Kernel completed notifications");
         Check(!result.IsError, "BrowserTool screenshot failed: " + string.Join("\n", result.Content.OfType<ToolResultText>().Select(t => t.Text)));
         var media = result.Content.OfType<ToolResultMedia>().Single();

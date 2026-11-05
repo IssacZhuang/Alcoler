@@ -1,4 +1,3 @@
-using System.Collections.Frozen;
 using System.Text.Json;
 using Alcoler.Browser;
 
@@ -6,28 +5,11 @@ namespace Alcoler.Browser.Chromium;
 
 public sealed class ChromiumBrowserPage : IBrowserPage
 {
-    // Methods any ProtocolEvent subscriber acts on: the union of
-    // CdpBrowserAutomation.OnProtocolEvent and BrowserController.OnProtocolEvent.
-    private static readonly FrozenSet<string> ConsumedProtocolMethods = new string[]
-    {
-        "Page.frameNavigated", "Page.navigatedWithinDocument", "DOM.documentUpdated",
-        "Runtime.executionContextsCleared", "Runtime.executionContextDestroyed", "Page.frameDetached", "Target.attachedToTarget",
-        "Target.detachedFromTarget",
-        "Page.lifecycleEvent", "Host.titleChanged", "Host.loadingChanged",
-        "Page.javascriptDialogOpening", "Page.javascriptDialogClosed",
-        "Browser.downloadWillBegin", "Page.downloadWillBegin",
-        "Browser.downloadProgress", "Page.downloadProgress",
-        "Page.frameStartedLoading", "Page.frameStoppedLoading",
-        "Host.closed", "Inspector.detached", "Inspector.targetCrashed"
-    }.ToFrozenSet(StringComparer.Ordinal);
-
     private readonly CdpConnection _connection;
     private readonly string _ownSessionId;
     private readonly Lock _sync = new();
     private readonly HashSet<string> _childSessions = new(StringComparer.Ordinal);
-    private readonly object _protocolEventGate = new();
-    private EventHandler<BrowserProtocolEvent>? _protocolEvent;
-    private EventHandler<BrowserProtocolEvent>[]? _protocolEventHandlers;
+    private readonly ProtocolEventSource _protocolEvents = new();
     private bool _inputActivated;
     private bool _closed;
     private bool _disposed;
@@ -46,22 +28,8 @@ public sealed class ChromiumBrowserPage : IBrowserPage
 
     public event EventHandler<BrowserProtocolEvent>? ProtocolEvent
     {
-        add
-        {
-            lock (_protocolEventGate)
-            {
-                _protocolEvent += value;
-                _protocolEventHandlers = null;
-            }
-        }
-        remove
-        {
-            lock (_protocolEventGate)
-            {
-                _protocolEvent -= value;
-                _protocolEventHandlers = null;
-            }
-        }
+        add { _protocolEvents.Add(value); }
+        remove { _protocolEvents.Remove(value); }
     }
 
     public Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken cancellationToken, string? sessionId = null)
@@ -144,7 +112,7 @@ public sealed class ChromiumBrowserPage : IBrowserPage
                     break;
             }
         }
-        if (!ConsumedProtocolMethods.Contains(protocolEvent.Method)) return;
+        if (!ProtocolEventSource.ConsumedProtocolMethods.Contains(protocolEvent.Method)) return;
         var raisedSessionId = protocolEvent.SessionId == _ownSessionId ? null : protocolEvent.SessionId;
         Raise(new BrowserProtocolEvent(protocolEvent.Method, protocolEvent.Parameters, raisedSessionId));
     }
@@ -184,36 +152,7 @@ public sealed class ChromiumBrowserPage : IBrowserPage
             BrowserJson.Element(new Dictionary<string, object?> { ["reason"] = "The browser tab was closed." })));
     }
 
-    private void Raise(BrowserProtocolEvent protocolEvent)
-    {
-        EventHandler<BrowserProtocolEvent>[] handlers;
-        lock (_protocolEventGate)
-        {
-            if (_protocolEvent is null) return;
-            if (_protocolEventHandlers is null)
-            {
-                var delegates = _protocolEvent.GetInvocationList();
-                var rebuilt = new EventHandler<BrowserProtocolEvent>[delegates.Length];
-                for (var index = 0; index < delegates.Length; index++)
-                {
-                    rebuilt[index] = (EventHandler<BrowserProtocolEvent>)delegates[index];
-                }
-                _protocolEventHandlers = rebuilt;
-            }
-            handlers = _protocolEventHandlers;
-        }
-        foreach (var handler in handlers)
-        {
-            try
-            {
-                handler(this, protocolEvent);
-            }
-            catch (Exception)
-            {
-                // Managed subscriber failures cannot unwind the CDP receive loop.
-            }
-        }
-    }
+    private void Raise(BrowserProtocolEvent protocolEvent) => _protocolEvents.Raise(this, protocolEvent);
 
     public void Dispose()
     {

@@ -41,39 +41,6 @@ public sealed class PhaseBrushConverter : IValueConverter
         throw new NotSupportedException();
 }
 
-/// <summary>Colors the context meter fill: green below 50 percent, amber below 80, red above.</summary>
-public sealed class ContextUsageBrushConverter : IValueConverter
-{
-    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-    {
-        var percent = value is int i ? i : 0;
-        var key = percent switch
-        {
-            >= 80 => "AlcolerError",
-            >= 50 => "AlcolerWarning",
-            _ => "AlcolerSuccess",
-        };
-        return ShellBrushes.Resolve(key);
-    }
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
-/// <summary>Turns a 0-100 percentage into a pixel width; ConverterParameter is the track width.</summary>
-public sealed class PercentToWidthConverter : IValueConverter
-{
-    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-    {
-        var percent = System.Convert.ToDouble(value, CultureInfo.InvariantCulture);
-        var track = parameter is null ? 100.0 : System.Convert.ToDouble(parameter, CultureInfo.InvariantCulture);
-        return track * percent / 100.0;
-    }
-
-    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        throw new NotSupportedException();
-}
-
 /// <summary>Picks one of two brushes by boolean value; ConverterParameter is "trueKey|falseKey".</summary>
 public sealed class BoolBrushConverter : IValueConverter
 {

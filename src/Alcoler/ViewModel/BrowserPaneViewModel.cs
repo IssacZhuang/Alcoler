@@ -17,11 +17,8 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     private static readonly JsonElement EmptyInput = JsonElement.Parse("{}");
     private readonly IBrowserController _controller;
     private readonly IUiScheduler _scheduler;
-    private readonly Func<string, IImage?>? _imageLoader;
     private readonly Func<string, Control>? _pagePresenterFactory;
     private readonly Func<Uri, Task<bool>> _uriLauncher;
-    private string? _loadedScreenshotUri;
-    private DateTimeOffset _loadedScreenshotUpdatedAt;
     private string? _presenterTabId;
     private string? _presenterError;
     private int _bindingVersion;
@@ -31,13 +28,11 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     public BrowserPaneViewModel(
         IBrowserController controller,
         IUiScheduler scheduler,
-        Func<string, IImage?>? imageLoader = null,
         Func<string, Control>? pagePresenterFactory = null,
         Func<Uri, Task<bool>>? uriLauncher = null)
     {
         _controller = controller;
         _scheduler = scheduler;
-        _imageLoader = imageLoader;
         _pagePresenterFactory = pagePresenterFactory;
         _uriLauncher = uriLauncher ?? LaunchWithSystemBrowser;
         _controller.StatusChanged += OnControllerStatusChanged;
@@ -108,7 +103,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
     public BrowserPaneViewModel CreateBoundView(SessionId? sessionId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var view = new BrowserPaneViewModel(_controller, _scheduler, _imageLoader, _pagePresenterFactory, _uriLauncher);
+        var view = new BrowserPaneViewModel(_controller, _scheduler, _pagePresenterFactory, _uriLauncher);
         view.Bind(sessionId);
         return view;
     }
@@ -382,15 +377,7 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         UpdatePresenter();
         Banner = status?.Error ?? _presenterError;
         NotifyCommandsChanged();
-        if (status?.LatestScreenshotUri is not { } uri)
-        {
-            ClearScreenshot();
-        }
-        else if (!string.Equals(uri, _loadedScreenshotUri, StringComparison.OrdinalIgnoreCase)
-            || status.UpdatedAt != _loadedScreenshotUpdatedAt)
-        {
-            LoadScreenshot(uri, status.UpdatedAt);
-        }
+        ClearScreenshot();
     }
 
     private void UpdatePresenter()
@@ -425,39 +412,8 @@ public sealed partial class BrowserPaneViewModel : ObservableObject, IDisposable
         _presenterTabId = null;
     }
 
-    private void LoadScreenshot(string uri, DateTimeOffset updatedAt)
-    {
-        if (_imageLoader is null)
-        {
-            return;
-        }
-        IImage? loaded;
-        try
-        {
-            loaded = _imageLoader(uri);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return;
-        }
-        if (loaded is null)
-        {
-            return;
-        }
-        _loadedScreenshotUri = uri;
-        _loadedScreenshotUpdatedAt = updatedAt;
-        var previous = Screenshot;
-        Screenshot = loaded;
-        if (!ReferenceEquals(previous, loaded))
-        {
-            (previous as IDisposable)?.Dispose();
-        }
-    }
-
     private void ClearScreenshot()
     {
-        _loadedScreenshotUri = null;
-        _loadedScreenshotUpdatedAt = default;
         var previous = Screenshot;
         Screenshot = null;
         (previous as IDisposable)?.Dispose();

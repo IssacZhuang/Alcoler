@@ -16,7 +16,7 @@ namespace Alcoler.Kernel.Subagents;
 
 public static class SubagentWiring
 {
-    private static readonly string[] ChildHiddenTools = ["Agent", "Task", "SendMessage", "RespondToCoordinator", "ExitPlanMode"];
+    private static readonly string[] ChildHiddenTools = ["Agent", "Task", "SendMessage", "RespondToCoordinator", ToolNames.ExitPlanMode];
 
     public static SubagentTool CreateTool(Func<AgentRuntime> runtime, SubagentMessenger? messenger = null)
     {

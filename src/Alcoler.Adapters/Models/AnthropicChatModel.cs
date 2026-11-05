@@ -177,74 +177,22 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         AttemptState attemptState,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        HttpRequestMessage? built = null;
-        ModelFailure? validationFailure = null;
-        try { built = BuildRequest(request); }
-        catch (ArgumentException ex) { validationFailure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message, Phase: ModelFailurePhase.RequestSetup); }
-        if (validationFailure is not null)
+        await foreach (var streamEvent in SsePump.RunAsync(
+            httpClient,
+            () => BuildRequest(request),
+            new AnthropicStreamState(),
+            static (state, root, _, events) => state.Dispatch(root, events),
+            static (ex, statusCode) => new ModelFailure(
+                ModelFailureKind.StreamProtocolError, ex.Message,
+                Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: statusCode),
+            isTerminal: static state => state.SawTerminal,
+            endWithoutTerminalFailure: static statusCode => new ModelFailure(
+                ModelFailureKind.StreamProtocolError, "anthropic stream ended without message_stop",
+                Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: statusCode),
+            onResponse: response => attemptState.StatusCode = (int)response.StatusCode,
+            cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            yield return new ModelStreamFailed(validationFailure);
-            yield break;
-        }
-        using var httpRequest = built!;
-        HttpResponseMessage? response = null;
-        ModelFailure? sendFailure = null;
-        try
-        {
-            response = await httpClient.SendAsync(
-                httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            sendFailure = ModelFailureClassifier.FromException(ex, cancellationToken) with { Phase = ModelFailurePhase.RequestSetup };
-        }
-        if (sendFailure is not null)
-        {
-            yield return new ModelStreamFailed(sendFailure);
-            yield break;
-        }
-
-        using (response!)
-        {
-            attemptState.StatusCode = (int)response!.StatusCode;
-            var state = new AnthropicStreamState();
-            var events = new List<ModelStreamEvent>();
-            await foreach (var frame in SseHttp.ReadFramesAsync(response!, cancellationToken).ConfigureAwait(false))
-            {
-                if (frame.Event == SseHttp.FailureEventName)
-                {
-                    yield return new ModelStreamFailed(SseHttp.DeserializeFailure(frame.Data));
-                    yield break;
-                }
-                if (frame.Data.Length == 0 || frame.Data is "[DONE]")
-                    continue;
-
-                ModelFailure? dispatchFailure = null;
-                try
-                {
-                    using var document = JsonDocument.Parse(frame.Data);
-                    events.Clear();
-                    state.Dispatch(document.RootElement, events);
-                }
-                catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
-                {
-                    dispatchFailure = new ModelFailure(ModelFailureKind.StreamProtocolError, ex.Message,
-                        Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response.StatusCode);
-                }
-                if (dispatchFailure is not null)
-                {
-                    yield return new ModelStreamFailed(dispatchFailure);
-                    yield break;
-                }
-                foreach (var e in events)
-                    yield return e;
-                if (state.SawTerminal)
-                    yield break;
-            }
-            if (!state.SawTerminal)
-                yield return new ModelStreamFailed(new ModelFailure(
-                    ModelFailureKind.StreamProtocolError, "anthropic stream ended without message_stop",
-                    Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response.StatusCode));
+            yield return streamEvent;
         }
     }
 

@@ -30,7 +30,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
     public ToolContract Contract { get; } = new(
         "ReadSessionContext",
         "Read relevant or handoff context from another persisted Alcoler session. Use when the user references #sess_* or asks to continue from a specific prior session.",
-        JsonDocument.Parse("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -43,7 +43,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
           "required": ["sessionId", "query"],
           "additionalProperties": false
         }
-        """).RootElement.Clone());
+        """));
 
     public ToolMetadata Metadata { get; } = new(
         ReadOnly: true,
@@ -59,7 +59,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
 
     public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken)
     {
-        if (StringOrNull(input, "sessionId") is { } sessionId && !Regex.IsMatch(sessionId, SessionIdPattern))
+        if (ToolJson.StringOrNull(input, "sessionId") is { } sessionId && !Regex.IsMatch(sessionId, SessionIdPattern))
             return ValueTask.FromResult<ToolInputIssue?>(new ToolInputIssue("sessionId", "Session id must use the sess_* format."));
         return ValueTask.FromResult<ToolInputIssue?>(null);
     }
@@ -69,13 +69,13 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
 
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
-        var rawId = StringOrNull(context.Input, "sessionId");
-        var query = StringOrNull(context.Input, "query");
+        var rawId = ToolJson.StringOrNull(context.Input, "sessionId");
+        var query = ToolJson.StringOrNull(context.Input, "query");
         if (string.IsNullOrWhiteSpace(rawId) || string.IsNullOrWhiteSpace(query))
             return ToolExecutionResult.Text("sessionId and query are required", isError: true);
 
         var sessionId = ParseSessionId(rawId);
-        var strategy = StringOrNull(context.Input, "strategy") ?? "relevant";
+        var strategy = ToolJson.StringOrNull(context.Input, "strategy") ?? "relevant";
         SessionRecord? record;
         IReadOnlyList<StoredMessage> stored;
         try
@@ -94,7 +94,7 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
                 $"ReadSessionContext failed for {sessionId.Value}.\nError: {ex.Message}\nFailed to read persisted session history.");
         }
 
-        var maxTokens = Math.Clamp(IntOrNull(context.Input, "maxTokens") ?? DefaultMaxTokens, 1, MaxMaxTokens);
+        var maxTokens = Math.Clamp(ToolJson.IntOrNull(context.Input, "maxTokens") ?? DefaultMaxTokens, 1, MaxMaxTokens);
         var budget = Math.Clamp(maxTokens * 4, 4_000, 48_000);
         var material = BuildMaterial(record, stored, query, strategy, budget);
         var source = "local";
@@ -403,10 +403,4 @@ public sealed class ReadSessionContextTool(ISessionStore store) : ITool
         text.Length <= chars ? text
             : chars <= 20 ? text[..chars]
             : text[..Math.Max(0, chars - 18)] + "\n...[truncated]";
-
-    private static string? StringOrNull(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
-
-    private static int? IntOrNull(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var parsed) ? parsed : null;
 }

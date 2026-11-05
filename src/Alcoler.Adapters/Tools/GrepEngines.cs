@@ -182,8 +182,6 @@ internal static class GrepTypeMap
         ["yaml"] = [".yaml", ".yml"],
     };
 
-    public static bool MatchesFile(string path, string type) => CreateFilter(type).Matches(path);
-
     internal static GrepTypeFilter CreateFilter(string type)
     {
         var normalized = type.ToLowerInvariant().TrimStart('.');

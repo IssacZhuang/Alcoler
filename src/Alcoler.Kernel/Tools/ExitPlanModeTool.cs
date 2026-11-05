@@ -10,7 +10,7 @@ namespace Alcoler.Kernel.Tools;
 /// </summary>
 public sealed class ExitPlanModeTool : ITool
 {
-    public const string ToolName = "ExitPlanMode";
+    public const string ToolName = ToolNames.ExitPlanMode;
     public const int MaxPlanChars = 20_000;
 
     internal const string NotInPlanModeMessage =
@@ -51,7 +51,7 @@ public sealed class ExitPlanModeTool : ITool
         2. Initial task: "Help me implement yank mode for vim" - Use the exit plan mode tool after you have finished planning the implementation steps of the task.
         3. Initial task: "Add a new feature to handle user authentication" - If unsure about auth method (OAuth, JWT, etc.), use AskUserQuestion first, then use exit plan mode tool after clarifying the approach.
         """,
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -145,7 +145,4 @@ public sealed class ExitPlanModeTool : ITool
             summary += "\n\nAllowed prompts:\n" + string.Join("\n", allowedPrompts.Select(static entry => $"- {entry.Tool}: {entry.Prompt}"));
         return summary;
     }
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

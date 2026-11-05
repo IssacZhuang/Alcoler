@@ -166,7 +166,7 @@ public sealed partial class CdpBrowserAutomation : IDisposable
             case "dialog": return await DialogAsync(input, ct);
             case "downloads": return Structured(DownloadsJson());
             case "download_media": return await DownloadMediaAsync(input, ct);
-            case "record_start": case "record_status": case "record_cancel": case "record_stop": return await RecordingAsync(command, input, ct);
+            case "record_start": case "record_status": case "record_cancel": return await RecordingAsync(command, input, ct);
             default: throw new NotSupportedException($"Unsupported browser page action '{command}'.");
         }
     }

@@ -1,4 +1,3 @@
-using System.Collections.Frozen;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using System.Text.Json;
@@ -12,23 +11,6 @@ namespace Alcoler.Browser;
 
 internal sealed partial class WebViewBrowserPage : IBrowserPage
 {
-    // Methods any ProtocolEvent subscriber acts on: the union of
-    // CdpBrowserAutomation.OnProtocolEvent and BrowserController.OnProtocolEvent.
-    // Everything else (DOM mutation storms, console output, targetInfo churn) is
-    // never parsed; a test pins that DOM mutations stay unparsed.
-    private static readonly FrozenSet<string> ConsumedProtocolMethods = new string[]
-    {
-        "Page.frameNavigated", "Page.navigatedWithinDocument", "DOM.documentUpdated",
-        "Runtime.executionContextsCleared", "Runtime.executionContextDestroyed", "Page.frameDetached", "Target.attachedToTarget",
-        "Target.detachedFromTarget",
-        "Page.lifecycleEvent", "Host.titleChanged", "Host.loadingChanged",
-        "Page.javascriptDialogOpening", "Page.javascriptDialogClosed",
-        "Browser.downloadWillBegin", "Page.downloadWillBegin",
-        "Browser.downloadProgress", "Page.downloadProgress",
-        "Page.frameStartedLoading", "Page.frameStoppedLoading",
-        "Host.closed", "Inspector.detached", "Inspector.targetCrashed"
-    }.ToFrozenSet(StringComparer.Ordinal);
-
     private static readonly Dictionary<string, object?> EmptyParameters = [];
 
     private static readonly string[] ProtocolMethods =
@@ -89,28 +71,12 @@ internal sealed partial class WebViewBrowserPage : IBrowserPage
     public NativeWebView WebView { get; }
     public Task Ready => _ready.Task;
 
-    private readonly object _protocolEventGate = new();
-    private EventHandler<BrowserProtocolEvent>? _protocolEvent;
-    private EventHandler<BrowserProtocolEvent>[]? _protocolEventHandlers;
+    private readonly ProtocolEventSource _protocolEvents = new();
 
     public event EventHandler<BrowserProtocolEvent>? ProtocolEvent
     {
-        add
-        {
-            lock (_protocolEventGate)
-            {
-                _protocolEvent += value;
-                _protocolEventHandlers = null;
-            }
-        }
-        remove
-        {
-            lock (_protocolEventGate)
-            {
-                _protocolEvent -= value;
-                _protocolEventHandlers = null;
-            }
-        }
+        add { _protocolEvents.Add(value); }
+        remove { _protocolEvents.Remove(value); }
     }
 
     public async Task<JsonElement> SendAsync(string method, object? parameters, CancellationToken cancellationToken, string? sessionId = null)
@@ -414,7 +380,7 @@ internal sealed partial class WebViewBrowserPage : IBrowserPage
 
     private void OnProtocolEvent(string method, nint argsPointer)
     {
-        if (_disposed || !ConsumedProtocolMethods.Contains(method) || _protocolEvent is null)
+        if (_disposed || !ProtocolEventSource.ConsumedProtocolMethods.Contains(method) || !_protocolEvents.IsSubscribed)
         {
             return;
         }
@@ -633,39 +599,7 @@ internal sealed partial class WebViewBrowserPage : IBrowserPage
 
     private void Raise(string method, object parameters) => Raise(new BrowserProtocolEvent(method, BrowserJson.Element(parameters)));
 
-    private void Raise(BrowserProtocolEvent protocolEvent)
-    {
-        EventHandler<BrowserProtocolEvent>[] handlers;
-        lock (_protocolEventGate)
-        {
-            if (_protocolEvent is null)
-            {
-                return;
-            }
-            if (_protocolEventHandlers is null)
-            {
-                var delegates = _protocolEvent.GetInvocationList();
-                var rebuilt = new EventHandler<BrowserProtocolEvent>[delegates.Length];
-                for (var index = 0; index < delegates.Length; index++)
-                {
-                    rebuilt[index] = (EventHandler<BrowserProtocolEvent>)delegates[index];
-                }
-                _protocolEventHandlers = rebuilt;
-            }
-            handlers = _protocolEventHandlers;
-        }
-        foreach (var handler in handlers)
-        {
-            try
-            {
-                handler(this, protocolEvent);
-            }
-            catch (Exception)
-            {
-                // Managed subscriber failures cannot unwind through a native callback.
-            }
-        }
-    }
+    private void Raise(BrowserProtocolEvent protocolEvent) => _protocolEvents.Raise(this, protocolEvent);
 
     public void Dispose() => _host.DisposePage(this);
 
@@ -718,11 +652,7 @@ internal sealed partial class WebViewBrowserPage : IBrowserPage
         {
             TryNative(adapter.Dispose);
         }
-        lock (_protocolEventGate)
-        {
-            _protocolEvent = null;
-            _protocolEventHandlers = null;
-        }
+        _protocolEvents.Clear();
     }
 
     private static void TryNative(Action action)

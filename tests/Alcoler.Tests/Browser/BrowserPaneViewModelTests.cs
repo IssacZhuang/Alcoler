@@ -103,57 +103,6 @@ public class BrowserPaneViewModelTests
     }
 
     [AvaloniaFact]
-    public void Screenshot_LoadsThroughInjector_WhenUriChanges()
-    {
-        var loaded = new List<string>();
-        using var viewModel = Create(
-            out var controller, uri => { loaded.Add(uri); return new FakeImage(); });
-        var sessionId = new SessionId("sess_active");
-        viewModel.Bind(sessionId);
-
-        var first = @"C:\shots\sess_active.png";
-        controller.RaiseStatusChanged(
-            sessionId, new BrowserSessionStatus(BrowserSessionState.Launched, "https://example.com", LatestScreenshotUri: first));
-
-        Assert.True(viewModel.HasScreenshot);
-        Assert.IsType<FakeImage>(viewModel.Screenshot);
-        Assert.Equal([first], loaded);
-
-        controller.RaiseStatusChanged(
-            sessionId, new BrowserSessionStatus(BrowserSessionState.Launched, "https://example.com", LatestScreenshotUri: first));
-        Assert.Single(loaded);
-    }
-
-    [AvaloniaFact]
-    public void Screenshot_IsSkipped_WhenNoInjector()
-    {
-        using var viewModel = Create(out var controller);
-        var sessionId = new SessionId("sess_active");
-        viewModel.Bind(sessionId);
-
-        controller.RaiseStatusChanged(
-            sessionId,
-            new BrowserSessionStatus(BrowserSessionState.Launched, "https://example.com", LatestScreenshotUri: @"C:\shots\s.png"));
-
-        Assert.False(viewModel.HasScreenshot);
-        Assert.Null(viewModel.Screenshot);
-    }
-
-    [AvaloniaFact]
-    public void Screenshot_LoadFailure_IsSurvived()
-    {
-        using var viewModel = Create(out var controller, _ => throw new IOException("locked"));
-        var sessionId = new SessionId("sess_active");
-        viewModel.Bind(sessionId);
-
-        controller.RaiseStatusChanged(
-            sessionId,
-            new BrowserSessionStatus(BrowserSessionState.Launched, "https://example.com", LatestScreenshotUri: @"C:\shots\s.png"));
-
-        Assert.False(viewModel.HasScreenshot);
-    }
-
-    [AvaloniaFact]
     public void RefreshCommand_ReReadsControllerStatus()
     {
         using var viewModel = Create(out var controller);
@@ -166,54 +115,6 @@ public class BrowserPaneViewModelTests
 
         Assert.Equal("Busy", viewModel.StateText);
         Assert.Equal("https://example.com/busy", viewModel.Url);
-    }
-
-    [AvaloniaFact]
-    public void Screenshot_ReloadsSamePathWhenVersionChanges_AndDisposesPreviousImage()
-    {
-        var images = new List<FakeImage>();
-        using var viewModel = Create(out var controller, _ =>
-        {
-            var image = new FakeImage();
-            images.Add(image);
-            return image;
-        });
-        var sessionId = new SessionId("sess_active");
-        viewModel.Bind(sessionId);
-        var first = new BrowserSessionStatus(BrowserSessionState.Launched,
-            LatestScreenshotUri: @"C:\shots\sess_active.png", UpdatedAt: DateTimeOffset.UtcNow);
-
-        controller.RaiseStatusChanged(sessionId, first);
-        controller.RaiseStatusChanged(sessionId, first);
-        Assert.Single(images);
-        controller.RaiseStatusChanged(sessionId, first with { UpdatedAt = first.UpdatedAt.AddSeconds(1) });
-
-        Assert.Equal(2, images.Count);
-        Assert.True(images[0].IsDisposed);
-        Assert.Same(images[1], viewModel.Screenshot);
-        Assert.False(images[1].IsDisposed);
-
-        viewModel.Bind(Other);
-        Assert.False(viewModel.HasScreenshot);
-        Assert.True(images[1].IsDisposed);
-    }
-
-    [AvaloniaFact]
-    public void Dispose_ReleasesCurrentScreenshot_OnlyOnce()
-    {
-        var image = new FakeImage();
-        var viewModel = Create(out var controller, _ => image);
-        var sessionId = new SessionId("sess_active");
-        viewModel.Bind(sessionId);
-        controller.RaiseStatusChanged(sessionId, new BrowserSessionStatus(
-            BrowserSessionState.Launched, LatestScreenshotUri: @"C:\shots\active.png"));
-
-        viewModel.Dispose();
-        viewModel.Dispose();
-
-        Assert.True(image.IsDisposed);
-        Assert.False(viewModel.HasScreenshot);
-        Assert.Equal(1, image.DisposeCount);
     }
 
     [AvaloniaFact]
@@ -280,14 +181,13 @@ public class BrowserPaneViewModelTests
     }
 
     [AvaloniaFact]
-    public void BrowserPaneView_AddressEnterNavigates_AndScreenshotRemainsOptionalFallback()
+    public void BrowserPaneView_AddressEnterNavigates()
     {
-        var image = new FakeImage();
-        using var viewModel = Create(out var controller, _ => image);
+        using var viewModel = Create(out var controller);
         var sessionId = new SessionId("sess_active");
         viewModel.Bind(sessionId);
         controller.RaiseStatusChanged(sessionId, new BrowserSessionStatus(
-            BrowserSessionState.Launched, "https://example.com", "Example", @"C:\shots\active.png"));
+            BrowserSessionState.Launched, "https://example.com", "Example"));
         var view = new BrowserPaneView { DataContext = viewModel };
         var window = new Window { Width = 360, Height = 480, Content = view };
         try
@@ -296,12 +196,8 @@ public class BrowserPaneViewModelTests
             Dispatcher.UIThread.RunJobs();
             var address = view.FindControl<TextBox>("PART_BrowserAddress")!;
             var toolbar = view.FindControl<Grid>("PART_BrowserToolbar")!;
-            var screenshot = view.FindControl<Image>("PART_BrowserScreenshot")!;
             Assert.Equal(48, toolbar.Bounds.Height);
             Assert.Equal("https://example.com", address.Text);
-            Assert.Equal(Stretch.Uniform, screenshot.Stretch);
-            Assert.Same(image, screenshot.Source);
-            Assert.True(screenshot.IsVisible);
             address.Text = "https://example.com/next";
             address.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Enter });
             Assert.Equal("https://example.com/next",
@@ -557,16 +453,15 @@ public class BrowserPaneViewModelTests
     [AvaloniaFact]
     public async Task BrowserPaneView_EmbedsPresenterAndExposesTabNavigationControls()
     {
-        var image = new FakeImage();
         var presenters = new List<FakePresenter>();
-        using var viewModel = Create(out var controller, _ => image, id =>
+        using var viewModel = Create(out var controller, id =>
         {
             var presenter = new FakePresenter(id);
             presenters.Add(presenter);
             return presenter;
         });
         var sessionId = new SessionId("sess_active");
-        controller.Status = TabStatus("first") with { LatestScreenshotUri = @"C:\shots\active.png" };
+        controller.Status = TabStatus("first");
         viewModel.Bind(sessionId);
         var view = new BrowserPaneView { DataContext = viewModel };
         Assert.Empty(presenters);
@@ -579,7 +474,6 @@ public class BrowserPaneViewModelTests
             Assert.Same(presenters[0], page.Content);
             Assert.Contains(presenters[0], view.GetVisualDescendants());
             Assert.True(page.Bounds.Height > 250);
-            Assert.False(view.FindControl<Image>("PART_BrowserScreenshot")!.IsVisible);
             Assert.Equal(2, view.FindControl<ItemsControl>("PART_BrowserTabs")!.ItemCount);
             await ClickAsync(view.FindControl<Button>("PART_BrowserBack")!);
             await ClickAsync(view.FindControl<Button>("PART_BrowserForward")!);
@@ -775,11 +669,11 @@ public class BrowserPaneViewModelTests
         ], ActiveTabId: activeId);
 
     private static BrowserPaneViewModel Create(
-        out FakeBrowserController controller, Func<string, IImage?>? imageLoader = null,
-        Func<string, Control>? pagePresenterFactory = null, Func<Uri, Task<bool>>? uriLauncher = null)
+        out FakeBrowserController controller, Func<string, Control>? pagePresenterFactory = null,
+        Func<Uri, Task<bool>>? uriLauncher = null)
     {
         controller = new FakeBrowserController();
-        return new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, imageLoader, pagePresenterFactory,
+        return new BrowserPaneViewModel(controller, InlineUiScheduler.Instance, pagePresenterFactory,
             uriLauncher);
     }
 
@@ -807,21 +701,6 @@ public class BrowserPaneViewModelTests
         }
     }
 
-    private sealed class FakeImage : IImage, IDisposable
-    {
-        public Size Size => new(4, 4);
-
-        public bool IsDisposed => DisposeCount > 0;
-
-        public int DisposeCount { get; private set; }
-
-        public void Draw(DrawingContext context, Rect sourceRect, Rect destRect)
-        {
-        }
-
-        public void Dispose() => DisposeCount++;
-    }
-
     private sealed class FakeBrowserController : IBrowserController
     {
         public List<(SessionId SessionId, BrowserAction Action)> Actions { get; } = [];
@@ -845,12 +724,6 @@ public class BrowserPaneViewModelTests
         {
             Actions.Add((sessionId, action));
             return ExecuteHandler?.Invoke(sessionId, action) ?? Task.FromResult(Result);
-        }
-
-        public Task CancelAsync(SessionId sessionId, CancellationToken cancellationToken)
-        {
-            CancelCount++;
-            return Task.CompletedTask;
         }
 
         public BrowserSessionStatus? GetStatus(SessionId sessionId) => Status;

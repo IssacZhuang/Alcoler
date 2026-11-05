@@ -145,9 +145,6 @@ public static class CompactionSelector
         };
     }
 
-    public static int AttemptsRemaining(int attemptsMade) =>
-        Math.Max(0, CompactPolicy.PromptTooLongMaxRetries - attemptsMade);
-
     private static CompactionSelection SelectGroups(int prefixCount, IReadOnlyList<MessageGroup> groups, int preservedCount) =>
         new(prefixCount,
             groups.Take(groups.Count - preservedCount).SelectMany(group => group.Messages).ToList(),

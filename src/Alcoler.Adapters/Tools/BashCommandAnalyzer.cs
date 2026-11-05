@@ -307,15 +307,6 @@ public static partial class BashCommandAnalyzer
                 _atWordBoundary = false;
                 return;
             }
-            else if (Peek(1) == '(')
-            {
-                // Process substitution runs a subshell before the main command.
-                _index++;
-                ReadParenthesized();
-                _wordDynamic = true;
-                _atWordBoundary = false;
-                return;
-            }
             else if (Peek(1) == '<' && Peek(2) == '<')
             {
                 op = "<<<";

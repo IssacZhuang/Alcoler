@@ -74,9 +74,11 @@ public interface ITool
 
     ToolMetadata Metadata { get; }
 
-    ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken);
+    ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
+        ValueTask.FromResult<ToolInputIssue?>(null);
 
-    ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken);
+    ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(input);
 
     ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken);
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Alcoler.Contracts.Subagents;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Tools;
 
 namespace Alcoler.Kernel.Subagents;
 
@@ -40,7 +41,7 @@ public sealed class SubagentTool : ITool, ISubagentTasks
     public ToolContract Contract { get; } = new(
         "Agent",
         SubagentPrompts.BuildToolDescription(),
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -113,11 +114,11 @@ public sealed class SubagentTool : ITool, ISubagentTasks
     {
         var prompt = context.Input.GetProperty("prompt").GetString()!;
         var description = context.Input.GetProperty("description").GetString()!;
-        var background = BoolOrDefault(context.Input, "run_in_background");
+        var background = ToolJson.BoolOrNull(context.Input, "run_in_background") ?? false;
         var request = new SubagentRequest(
             context.SessionId,
             prompt,
-            AgentType: StringOrNull(context.Input, "subagent_type"),
+            AgentType: ToolJson.StringOrNull(context.Input, "subagent_type"),
             Description: description,
             ModelSelection: null,
             Background: background,
@@ -189,17 +190,4 @@ public sealed class SubagentTool : ITool, ISubagentTasks
         SubagentStatus.Failed => "failed",
         _ => "stopped",
     };
-
-    private static string? StringOrNull(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static bool BoolOrDefault(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
-            ? value.GetBoolean()
-            : false;
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

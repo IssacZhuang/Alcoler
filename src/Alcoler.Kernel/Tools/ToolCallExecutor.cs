@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Alcoler.Contracts.Conversation;
-using Alcoler.Contracts.Identifiers;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Permissions;
 using Alcoler.Contracts.Tools;
@@ -79,16 +78,6 @@ public sealed class ToolCallExecutor
             var input = await tool.ResolveInputAsync(call.Input, cancellationToken).ConfigureAwait(false);
             var effectiveCall = call with { Input = input };
             var context = await contextFactory(effectiveCall, cancellationToken).ConfigureAwait(false);
-
-            var request = new PermissionRequest(
-                StrongId.NewInteractionId(),
-                context.SessionId,
-                tool.Contract.Name,
-                input,
-                tool.Metadata.RiskLevel,
-                $"Tool '{tool.Contract.Name}' (risk level: {tool.Metadata.RiskLevel})",
-                ToolCallId: call.Id);
-            await notificationSink(new ToolExecutionPermissionAsked(effectiveCall, request)).ConfigureAwait(false);
 
             var state = _stateResolver(context);
             var decision = await _permissionGate.CheckAsync(

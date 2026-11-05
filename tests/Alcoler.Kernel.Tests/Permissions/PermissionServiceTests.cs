@@ -403,7 +403,7 @@ public class PermissionServiceTests
     }
 
     [Fact]
-    public async Task SetMode_AppliesToNextCheck()
+    public async Task SetExecutionState_AppliesModeToNextCheck()
     {
         var broker = new StubBroker { Next = PermissionDecision.Deny };
         var service = new PermissionService(broker, PermissionRuleset.Empty, PermissionMode.Build);
@@ -413,7 +413,7 @@ public class PermissionServiceTests
         Assert.Equal(PermissionOutcome.Denied, first.Outcome);
         Assert.Equal(1, broker.Calls);
 
-        service.SetMode(PermissionMode.Yolo);
+        service.SetExecutionState(PermissionMode.Yolo, planEnabled: false);
 
         var second = await service.CheckAsync(request, CancellationToken.None);
         Assert.Equal(PermissionOutcome.Allowed, second.Outcome);

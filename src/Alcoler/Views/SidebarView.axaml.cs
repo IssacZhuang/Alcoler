@@ -180,14 +180,8 @@ public partial class SidebarView : UserControl
         return null;
     }
 
-    internal static bool ProvidersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
-        SerializeProviderSettings(before) != SerializeProviderSettings(after);
-
     internal static bool McpServersChanged(WorkbenchConfig before, WorkbenchConfig after) =>
         SerializeMcpSettings(before) != SerializeMcpSettings(after);
-
-    private static string SerializeProviderSettings(WorkbenchConfig config) =>
-        JsonSerializer.Serialize(new WorkbenchConfig(config.Providers, config.DefaultModel), WorkbenchConfig.JsonOptions);
 
     private static string SerializeMcpSettings(WorkbenchConfig config) =>
         JsonSerializer.Serialize(new WorkbenchConfig([], McpServers: config.McpServers), WorkbenchConfig.JsonOptions);

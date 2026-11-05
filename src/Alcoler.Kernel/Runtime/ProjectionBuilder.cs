@@ -370,7 +370,7 @@ public sealed class ProjectionBuilder
 
     private void ApplyUserMessage(ConversationMessage message, List<RowOp> ops)
     {
-        if (SessionRuntime.IsRealUserTurn(message))
+        if (SessionRestore.IsRealUserTurn(message))
         {
             _lastAssistantRowId = null;
         }
@@ -421,7 +421,7 @@ public sealed class ProjectionBuilder
                 text,
                 message.CreatedAt,
                 imageCount > 0 ? images : null,
-                SessionRuntime.IsRealUserTurn(message)), ops);
+                SessionRestore.IsRealUserTurn(message)), ops);
         }
 
         foreach (var part in message.Parts)

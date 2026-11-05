@@ -44,19 +44,6 @@ public static class ComposerCommands
         return false;
     }
 
-    public static bool MatchesSuggestion(string token)
-    {
-        if (token.Length == 0 || token[0] != '/')
-            return false;
-        var partial = token[1..];
-        foreach (var (name, _, _) in BuiltIns)
-        {
-            if (name.StartsWith(partial, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
-    }
-
     public static bool IsBuiltIn(string name)
     {
         foreach (var (builtIn, _, _) in BuiltIns)

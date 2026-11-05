@@ -17,8 +17,6 @@ public sealed class TaskOutputTool : ITool
     internal const int DefaultOutputLength = 32_000;
     private const int PollIntervalMs = 100;
     private const int MaxOutputFileBytes = 8 * 1024 * 1024;
-    private const string TaskType = "local_bash";
-    private const string SubagentTaskType = "local_agent";
     private const string InterruptedHint =
         "\n\nA message, task notification, or user input arrived while you were waiting; it is queued and will start your next turn. End your turn now to process it instead of waiting again.";
 
@@ -32,7 +30,7 @@ public sealed class TaskOutputTool : ITool
         - Task IDs can be found using the /tasks command.
         - Do NOT Read local_agent .output files — they are full conversation transcripts.
         """,
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -70,7 +68,7 @@ public sealed class TaskOutputTool : ITool
                 "Background job service is not configured for TaskOutput",
                 isError: true);
 
-        var taskId = ReadString(context.Input, "task_id");
+        var taskId = ToolJson.StringOrNull(context.Input, "task_id");
         if (string.IsNullOrEmpty(taskId))
             return ToolExecutionResult.Text("Task ID is required", isError: true);
 
@@ -83,8 +81,8 @@ public sealed class TaskOutputTool : ITool
             return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
         }
 
-        var block = ReadBool(context.Input, "block", defaultValue: true);
-        var timeoutMs = Math.Clamp(ReadInt(context.Input, "timeout") ?? DefaultTimeoutMs, 0, MaxTimeoutMs);
+        var block = ToolJson.BoolOrNull(context.Input, "block") ?? true;
+        var timeoutMs = Math.Clamp(ToolJson.IntOrNull(context.Input, "timeout") ?? DefaultTimeoutMs, 0, MaxTimeoutMs);
 
         if (block)
         {
@@ -127,8 +125,8 @@ public sealed class TaskOutputTool : ITool
         long inputVersion,
         CancellationToken cancellationToken)
     {
-        var block = ReadBool(context.Input, "block", defaultValue: true);
-        var timeoutMs = Math.Clamp(ReadInt(context.Input, "timeout") ?? DefaultTimeoutMs, 0, MaxTimeoutMs);
+        var block = ToolJson.BoolOrNull(context.Input, "block") ?? true;
+        var timeoutMs = Math.Clamp(ToolJson.IntOrNull(context.Input, "timeout") ?? DefaultTimeoutMs, 0, MaxTimeoutMs);
         var task = subagents.Find(taskId);
         if (task is null)
             return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
@@ -214,14 +212,14 @@ public sealed class TaskOutputTool : ITool
         var blocks = new List<string> { $"<retrieval_status>{retrievalStatus}</retrieval_status>" };
         if (task is not null)
         {
-            blocks.Add($"<task_id>{Escape(task.Id.Value)}</task_id>");
-            blocks.Add($"<task_type>{SubagentTaskType}</task_type>");
-            blocks.Add($"<status>{SubagentStatusText(task.Status)}</status>");
+            blocks.Add($"<task_id>{TaskText.Escape(task.Id.Value)}</task_id>");
+            blocks.Add($"<task_type>{TaskText.SubagentTaskType}</task_type>");
+            blocks.Add($"<status>{TaskText.SubagentStatusText(task.Status)}</status>");
             var output = ReadSubagentOutput(task);
             if (output.Trim().Length > 0)
                 blocks.Add($"<output>\n{output.TrimEnd()}\n</output>");
             if (!string.IsNullOrEmpty(task.Error))
-                blocks.Add($"<error>{Escape(task.Error)}</error>");
+                blocks.Add($"<error>{TaskText.Escape(task.Error)}</error>");
         }
 
         return string.Join("\n\n", blocks);
@@ -259,29 +257,21 @@ public sealed class TaskOutputTool : ITool
         }
     }
 
-    private static string SubagentStatusText(SubagentStatus status) => status switch
-    {
-        SubagentStatus.Running => "running",
-        SubagentStatus.Completed => "completed",
-        SubagentStatus.Failed => "failed",
-        _ => "stopped",
-    };
-
     internal static string FormatResult(string retrievalStatus, BackgroundJobInfo? job)
     {
         var blocks = new List<string> { $"<retrieval_status>{retrievalStatus}</retrieval_status>" };
         if (job is not null)
         {
-            blocks.Add($"<task_id>{Escape(job.Id.Value)}</task_id>");
-            blocks.Add($"<task_type>{TaskType}</task_type>");
-            blocks.Add($"<status>{StatusText(job.Status)}</status>");
+            blocks.Add($"<task_id>{TaskText.Escape(job.Id.Value)}</task_id>");
+            blocks.Add($"<task_type>{TaskText.BashTaskType}</task_type>");
+            blocks.Add($"<status>{TaskText.StatusText(job.Status)}</status>");
             if (job.ExitCode is { } exitCode)
                 blocks.Add($"<exit_code>{exitCode}</exit_code>");
             var output = ReadOutput(job);
             if (output.Trim().Length > 0)
                 blocks.Add($"<output>\n{output.TrimEnd()}\n</output>");
             if (job.Error is { } error && error.Length > 0)
-                blocks.Add($"<error>{Escape(error)}</error>");
+                blocks.Add($"<error>{TaskText.Escape(error)}</error>");
         }
 
         return string.Join("\n\n", blocks);
@@ -335,38 +325,4 @@ public sealed class TaskOutputTool : ITool
         var tailLength = DefaultOutputLength - prefix.Length;
         return prefix + output[^tailLength..];
     }
-
-    private static string StatusText(BackgroundJobStatus status) => status switch
-    {
-        BackgroundJobStatus.Running => "running",
-        BackgroundJobStatus.Completed => "completed",
-        BackgroundJobStatus.Failed => "failed",
-        BackgroundJobStatus.Stopped => "stopped",
-        _ => status.ToString().ToLowerInvariant(),
-    };
-
-    private static string Escape(string value) =>
-        value.Replace("&", "&amp;", StringComparison.Ordinal)
-            .Replace("<", "&lt;", StringComparison.Ordinal)
-            .Replace(">", "&gt;", StringComparison.Ordinal);
-
-    private static string? ReadString(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static bool ReadBool(JsonElement input, string name, bool defaultValue) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
-            ? value.GetBoolean()
-            : defaultValue;
-
-    private static int? ReadInt(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value)
-            && value.ValueKind == JsonValueKind.Number
-            && value.TryGetInt32(out var parsed)
-            ? parsed
-            : null;
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

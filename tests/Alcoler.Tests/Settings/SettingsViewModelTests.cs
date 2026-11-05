@@ -775,7 +775,6 @@ public class SettingsViewModelTests
         foreach (var dialog in new Window[]
                  {
                      new Alcoler.Views.SettingsDialog(SampleConfig()),
-                     new Alcoler.Views.NewSessionDialog(),
                  })
         {
             try
@@ -792,65 +791,6 @@ public class SettingsViewModelTests
             {
                 dialog.Close();
             }
-        }
-    }
-
-    [AvaloniaFact]
-    public async Task NewSessionDialog_ValidatesWorkspaceAndReturnsTrimmedRequest()
-    {
-        var owner = new Window();
-        owner.Show();
-        try
-        {
-            var result = Alcoler.Views.NewSessionDialog.ShowAsync(owner, "  ");
-            var dialog = Assert.IsType<Alcoler.Views.NewSessionDialog>(Assert.Single(owner.OwnedWindows));
-            var workspace = dialog.FindControl<TextBox>("WorkspaceBox")!;
-            dialog.FindControl<Button>("CreateButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert.False(result.IsCompleted);
-            Assert.True(dialog.FindControl<TextBlock>("WorkspaceError")!.IsVisible);
-
-            workspace.Text = "  C:\\workspace  ";
-            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-            Assert.False(dialog.FindControl<TextBlock>("WorkspaceError")!.IsVisible);
-            dialog.FindControl<TextBox>("TitleBox")!.Text = "  Investigate issue  ";
-            dialog.FindControl<Button>("CreateButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var request = Assert.IsType<Alcoler.Views.NewSessionRequest>(await result);
-            Assert.Equal("C:\\workspace", request.WorkspaceRoot);
-            Assert.Equal("Investigate issue", request.Title);
-        }
-        finally
-        {
-            owner.Close();
-        }
-    }
-
-    [AvaloniaFact]
-    public async Task NewSessionDialog_PreservesDefaultWorkspaceAndOptionalTitle()
-    {
-        var owner = new Window();
-        owner.Show();
-        try
-        {
-            var result = Alcoler.Views.NewSessionDialog.ShowAsync(owner, "C:\\workspace");
-            var dialog = Assert.IsType<Alcoler.Views.NewSessionDialog>(Assert.Single(owner.OwnedWindows));
-            Assert.Equal("C:\\workspace", dialog.FindControl<TextBox>("WorkspaceBox")!.Text);
-            dialog.FindControl<TextBox>("TitleBox")!.Text = "  ";
-            dialog.FindControl<Button>("CreateButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var request = Assert.IsType<Alcoler.Views.NewSessionRequest>(await result);
-            Assert.Equal("C:\\workspace", request.WorkspaceRoot);
-            Assert.Null(request.Title);
-
-            foreach (var buttonName in new[] { "CancelButton", "CloseButton" })
-            {
-                var canceled = Alcoler.Views.NewSessionDialog.ShowAsync(owner, "C:\\workspace");
-                dialog = Assert.IsType<Alcoler.Views.NewSessionDialog>(Assert.Single(owner.OwnedWindows));
-                dialog.FindControl<Button>(buttonName)!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Assert.Null(await canceled);
-            }
-        }
-        finally
-        {
-            owner.Close();
         }
     }
 

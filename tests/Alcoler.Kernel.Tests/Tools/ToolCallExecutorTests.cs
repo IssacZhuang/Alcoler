@@ -50,7 +50,6 @@ public class ToolCallExecutorTests
         Assert.Contains("Unknown tool 'Nope'", outcome.Result.SingleText());
         Assert.Single(notifications.Of<ToolExecutionStarted>());
         Assert.Single(notifications.Of<ToolExecutionResultNotification>());
-        Assert.Empty(notifications.Of<ToolExecutionPermissionAsked>());
     }
 
     [Fact]
@@ -103,10 +102,6 @@ public class ToolCallExecutorTests
         Assert.Equal("Write", gate.Requests[0].ToolName);
         Assert.Equal(tool.Metadata, gate.Requests[0].Tool);
         Assert.Equal(call.Id, gate.Requests[0].ToolCallId);
-        var asked = Assert.Single(notifications.Of<ToolExecutionPermissionAsked>());
-        Assert.Equal(call.Id, asked.Call.Id);
-        Assert.Equal("Write", asked.Request.ToolName);
-        Assert.Equal(call.Id, asked.Request.ToolCallId);
     }
 
     [Fact]
@@ -397,7 +392,7 @@ public class ToolCallExecutorTests
         Assert.False(outcome.Result.IsError);
         Assert.Equal("ok", outcome.Result.SingleText());
         Assert.Equal(
-            [typeof(ToolExecutionStarted), typeof(ToolExecutionPermissionAsked), typeof(ToolExecutionResultNotification)],
+            [typeof(ToolExecutionStarted), typeof(ToolExecutionResultNotification)],
             notifications.Notifications.Select(static n => n.GetType()).ToArray());
     }
 }

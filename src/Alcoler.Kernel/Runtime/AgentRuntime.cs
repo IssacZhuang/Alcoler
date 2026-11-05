@@ -232,7 +232,7 @@ public sealed class AgentRuntime : IAgentRuntime, ISessionActivityRuntime
         }
 
         var copyEnd = boundaryIndex + 1;
-        while (copyEnd < active.Count && !SessionRuntime.IsRealUserTurn(active[copyEnd].Message))
+        while (copyEnd < active.Count && !SessionRestore.IsRealUserTurn(active[copyEnd].Message))
         {
             copyEnd++;
         }

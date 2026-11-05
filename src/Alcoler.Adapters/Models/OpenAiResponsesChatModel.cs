@@ -42,73 +42,38 @@ public sealed class OpenAiResponsesChatModel(
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        HttpRequestMessage? built = null;
-        ModelFailure? failure = null;
         var apiKey = options.ApiKey;
         if (_accessTokenSource is { } resolveToken)
         {
+            ModelFailure? tokenFailure = null;
             try { apiKey = await resolveToken(cancellationToken).ConfigureAwait(false); }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                failure = new ModelFailure(ModelFailureKind.AuthenticationFailed, ex.Message,
+                tokenFailure = new ModelFailure(ModelFailureKind.AuthenticationFailed, ex.Message,
                     Phase: ModelFailurePhase.RequestSetup);
             }
-            if (failure is not null)
+            if (tokenFailure is not null)
             {
-                yield return new ModelStreamFailed(failure);
+                yield return new ModelStreamFailed(tokenFailure);
                 yield break;
             }
         }
-        try { built = BuildRequest(request, apiKey: apiKey); }
-        catch (ArgumentException ex) { failure = new ModelFailure(ModelFailureKind.InvalidRequest, ex.Message, Phase: ModelFailurePhase.RequestSetup); }
-        if (failure is not null)
-        {
-            yield return new ModelStreamFailed(failure);
-            yield break;
-        }
-        using var httpRequest = built!;
-        HttpResponseMessage? response = null;
-        try { response = await httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { failure = ModelFailureClassifier.FromException(ex, cancellationToken) with { Phase = ModelFailurePhase.RequestSetup }; }
-        if (failure is not null)
-        {
-            yield return new ModelStreamFailed(failure);
-            yield break;
-        }
-        using (response!)
-        {
-            var state = new ResponsesStreamState();
-            var events = new List<ModelStreamEvent>();
-            await foreach (var frame in SseHttp.ReadFramesAsync(response!, cancellationToken).ConfigureAwait(false))
-            {
-                if (frame.Event == SseHttp.FailureEventName)
-                {
-                    yield return new ModelStreamFailed(SseHttp.DeserializeFailure(frame.Data));
-                    yield break;
-                }
-                if (frame.Data.Length == 0 || frame.Data == "[DONE]") continue;
-                try
-                {
-                    using var document = JsonDocument.Parse(frame.Data);
-                    events.Clear();
-                    state.Dispatch(document.RootElement, frame.Event, events);
-                }
-                catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
-                {
-                    failure = new ModelFailure(ModelFailureKind.StreamProtocolError, $"Invalid Responses stream: {ex.Message}",
-                        Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response!.StatusCode);
-                }
-                if (failure is not null)
-                {
-                    yield return new ModelStreamFailed(failure);
-                    yield break;
-                }
-                foreach (var e in events) yield return e;
-                if (state.Terminal) yield break;
-            }
-            yield return new ModelStreamFailed(new ModelFailure(ModelFailureKind.StreamProtocolError,
+        await foreach (var streamEvent in SsePump.RunAsync(
+            httpClient,
+            () => BuildRequest(request, apiKey: apiKey),
+            new ResponsesStreamState(),
+            static (state, root, frame, events) => state.Dispatch(root, frame.Event, events),
+            static (ex, statusCode) => new ModelFailure(
+                ModelFailureKind.StreamProtocolError, $"Invalid Responses stream: {ex.Message}",
+                Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: statusCode),
+            isTerminal: static state => state.Terminal,
+            endWithoutTerminalFailure: static statusCode => new ModelFailure(
+                ModelFailureKind.StreamProtocolError,
                 "Responses stream ended without response.completed, response.incomplete, or response.failed.",
-                Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: (int)response!.StatusCode));
+                Phase: ModelFailurePhase.ResponseBody, HttpStatusCode: statusCode),
+            cancellationToken: cancellationToken).ConfigureAwait(false))
+        {
+            yield return streamEvent;
         }
     }
 

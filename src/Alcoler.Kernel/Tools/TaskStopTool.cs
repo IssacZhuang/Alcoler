@@ -1,4 +1,3 @@
-using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Alcoler.Contracts.Identifiers;
@@ -13,14 +12,6 @@ namespace Alcoler.Kernel.Tools;
 /// </summary>
 public sealed class TaskStopTool : ITool
 {
-    internal const string TaskType = "local_bash";
-    internal const string SubagentTaskType = "local_agent";
-
-    private static readonly JsonSerializerOptions ResultJsonOptions = new()
-    {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-    };
-
     public ToolContract Contract { get; } = new(
         "TaskStop",
         """
@@ -31,7 +22,7 @@ public sealed class TaskStopTool : ITool
         - Use this tool when you need to terminate a long-running task
 
         """,
-        ParseSchema("""
+        ToolJson.ParseSchema("""
         {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
@@ -67,7 +58,7 @@ public sealed class TaskStopTool : ITool
                 "Background job service is not configured for TaskStop",
                 isError: true);
 
-        var taskId = ReadId(context.Input, "task_id") ?? ReadId(context.Input, "shell_id");
+        var taskId = ToolJson.StringOrNull(context.Input, "task_id") ?? ToolJson.StringOrNull(context.Input, "shell_id");
         if (string.IsNullOrEmpty(taskId))
             return ToolExecutionResult.Text(
                 "Missing required parameter: task_id",
@@ -78,9 +69,9 @@ public sealed class TaskStopTool : ITool
         {
             if (job.Status != BackgroundJobStatus.Running || !context.BackgroundJobs!.Stop(job.Id))
                 return ToolExecutionResult.Text(
-                    $"Task {taskId} is not running (status: {StatusText(job.Status)})",
+                    $"Task {taskId} is not running (status: {TaskText.StatusText(job.Status)})",
                     isError: true);
-            return ToolExecutionResult.Text(FormatSuccess(job.Id.Value, job.Description, TaskType));
+            return ToolExecutionResult.Text(FormatSuccess(job.Id.Value, job.Description, TaskText.BashTaskType));
         }
 
         if (context.Subagents is { } subagents)
@@ -95,11 +86,11 @@ public sealed class TaskStopTool : ITool
                 if (current is null)
                     return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
                 return ToolExecutionResult.Text(
-                    $"Task {taskId} is not running (status: {SubagentStatusText(current.Status)})",
+                    $"Task {taskId} is not running (status: {TaskText.SubagentStatusText(current.Status)})",
                     isError: true);
             }
 
-            return ToolExecutionResult.Text(FormatSuccess(task.Id.Value, task.Description, SubagentTaskType));
+            return ToolExecutionResult.Text(FormatSuccess(task.Id.Value, task.Description, TaskText.SubagentTaskType));
         }
 
         return ToolExecutionResult.Text($"No task found with ID: {taskId}", isError: true);
@@ -115,31 +106,6 @@ public sealed class TaskStopTool : ITool
         };
         if (!string.IsNullOrEmpty(description))
             payload["command"] = description;
-        return payload.ToJsonString(ResultJsonOptions);
+        return payload.ToJsonString(ToolJson.ResultJsonOptions);
     }
-
-    private static string? ReadId(JsonElement input, string name) =>
-        input.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static string StatusText(BackgroundJobStatus status) => status switch
-    {
-        BackgroundJobStatus.Running => "running",
-        BackgroundJobStatus.Completed => "completed",
-        BackgroundJobStatus.Failed => "failed",
-        BackgroundJobStatus.Stopped => "stopped",
-        _ => status.ToString().ToLowerInvariant(),
-    };
-
-    private static string SubagentStatusText(SubagentStatus status) => status switch
-    {
-        SubagentStatus.Running => "running",
-        SubagentStatus.Completed => "completed",
-        SubagentStatus.Failed => "failed",
-        _ => "stopped",
-    };
-
-    private static JsonElement ParseSchema(string rawJson) =>
-        JsonDocument.Parse(rawJson).RootElement.Clone();
 }

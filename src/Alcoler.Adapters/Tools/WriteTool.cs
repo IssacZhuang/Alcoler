@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Alcoler.Contracts.Tools;
 
 namespace Alcoler.Adapters.Tools;
@@ -39,12 +38,6 @@ public sealed class WriteTool : ITool
         RiskLevel: RiskLevel.Medium,
         NeedsApproval: false,
         AllowedInPlanMode: false);
-
-    public ValueTask<ToolInputIssue?> ValidateInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult<ToolInputIssue?>(null);
-
-    public ValueTask<JsonElement> ResolveInputAsync(JsonElement input, CancellationToken cancellationToken) =>
-        ValueTask.FromResult(input);
 
     public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
     {
