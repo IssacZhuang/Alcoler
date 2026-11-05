@@ -248,11 +248,16 @@ public sealed class SessionRuntime : IAsyncDisposable
         SessionActivitySnapshot snapshot;
         lock (_pendingSync)
         {
-            var phase = _pendingPermissions.Count > 0
-                ? TurnPhase.AwaitingPermission
-                : _pendingInteractions.Count > 0
-                    ? TurnPhase.AwaitingInteraction
-                    : _turnMachine.Phase;
+            var phase = _turnMachine.Phase;
+            var hasActiveTurn = phase is not (TurnPhase.Idle or TurnPhase.Error);
+            if (hasActiveTurn)
+            {
+                phase = _pendingPermissions.Count > 0
+                    ? TurnPhase.AwaitingPermission
+                    : _pendingInteractions.Count > 0
+                        ? TurnPhase.AwaitingInteraction
+                        : phase;
+            }
             snapshot = new SessionActivitySnapshot(phase, _lastTurnOutcome)
             {
                 SessionId = record.Id,
@@ -261,22 +266,14 @@ public sealed class SessionRuntime : IAsyncDisposable
                 StartedAt = _completedTurnStartedAt ?? _turnStartedAt,
                 FinishedAt = _completedTurnFinishedAt,
                 CompletedTurnId = _completedTurnId,
-                ActiveWorkStartedAt = _turnStartedAt,
+                HasActiveWork = hasActiveTurn,
+                ActiveWorkStartedAt = hasActiveTurn ? _turnStartedAt : null,
                 IsAwaitingConfirmation = phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction,
             };
         }
 
         var startedAt = snapshot.ActiveWorkStartedAt;
-        var jobs = 0;
-        foreach (var job in _backgroundJobs.List())
-        {
-            if (job.Status != BackgroundJobStatus.Running)
-                continue;
-            jobs++;
-            if (startedAt is null || job.StartedAt < startedAt)
-                startedAt = job.StartedAt;
-        }
-
+        var jobs = _backgroundJobs.List().Count(job => job.Status == BackgroundJobStatus.Running);
         var subagents = 0;
         if (_subagentTasks is not null)
         {
@@ -294,8 +291,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         return IsDisposed ? null : snapshot with
         {
             LastActivityUtc = LastActivityUtc,
-            HasActiveWork = snapshot.Phase is not (TurnPhase.Idle or TurnPhase.Error)
-                || HasPendingInputs || jobs > 0 || subagents > 0,
+            HasActiveWork = snapshot.HasActiveWork || subagents > 0,
             RunningJobCount = jobs,
             RunningSubagentCount = subagents,
             ActiveWorkStartedAt = startedAt,

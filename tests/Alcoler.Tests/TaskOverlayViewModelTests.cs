@@ -110,10 +110,9 @@ public sealed class TaskOverlayViewModelTests
             task with { Phase = TurnPhase.ExecutingTools, RunningJobCount = 2, RunningSubagentCount = 3 },
             task with { LastActivityUtc = Now },
             task with { StartedAt = startedAt.AddMilliseconds(-100) },
-            task with { IsAwaitingConfirmation = true },
-            task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed, RunningJobCount = 1 },
-            task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed, RunningSubagentCount = 1 },
-            task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed, IsAwaitingConfirmation = true },
+            task with { Phase = TurnPhase.AwaitingPermission, IsAwaitingConfirmation = true },
+            task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed,
+                HasActiveWork = false, RunningSubagentCount = 1 },
         ];
         foreach (var snapshot in snapshots)
         {
@@ -188,10 +187,8 @@ public sealed class TaskOverlayViewModelTests
         var waitingEarly = TaskSnapshot("waiting-early", startedAt: Now.AddMinutes(-4), waiting: true);
         var waitingLate = TaskSnapshot("waiting-late", startedAt: Now.AddMinutes(-2), waiting: true);
         var oldest = TaskSnapshot("oldest", startedAt: Now.AddHours(-1));
-        var subtree = TaskSnapshot("subtree", startedAt: Now.AddSeconds(-1))
-            with { ActiveWorkStartedAt = Now.AddMinutes(-20) };
-        var ownStart = TaskSnapshot("own-start", startedAt: Now.AddMinutes(-15))
-            with { ActiveWorkStartedAt = null };
+        var subtree = TaskSnapshot("subtree", startedAt: Now.AddSeconds(-1)) with { ActiveWorkStartedAt = Now.AddMinutes(-20) };
+        var ownStart = TaskSnapshot("own-start", startedAt: Now.AddMinutes(-15)) with { ActiveWorkStartedAt = null };
         var unknown = TaskSnapshot("unknown") with { LastActivityUtc = Now.AddMinutes(-10) };
         var tieA = TaskSnapshot("tie-a", startedAt: Now.AddMinutes(-5));
         var tieB = TaskSnapshot("tie-b", startedAt: Now.AddMinutes(-5));
@@ -221,7 +218,8 @@ public sealed class TaskOverlayViewModelTests
             LastOutcome = TurnOutcome.Failed,
             CompletedTurnId = new TurnId("previous-failed-turn"),
         };
-        var model = new TaskOverlayViewModel(CreateTracker(task));
+        var tracker = CreateTracker(task);
+        var model = new TaskOverlayViewModel(tracker);
 
         model.Refresh(Now);
 
@@ -229,19 +227,21 @@ public sealed class TaskOverlayViewModelTests
         Assert.True(row.IsBusy);
         Assert.False(row.IsCompleted);
         Assert.False(row.IsFailed);
+        Assert.Equal(waiting ? SessionActivityIndicator.AwaitingConfirmation : SessionActivityIndicator.Running,
+            tracker.Get(task.SessionId)!.Indicator);
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Refresh_KeepsIdleParentsWithBackgroundWorkAndWorkerConfirmation(bool waiting)
+    public void Refresh_KeepsIdleParentsWithRunningSubagentsAndWorkerConfirmation(bool waiting)
     {
-        var task = TaskSnapshot("background", TurnPhase.Idle, Now.AddMinutes(-1), waiting) with
+        var task = TaskSnapshot("subagents", TurnPhase.Idle, Now.AddMinutes(-1), waiting) with
         {
-            RunningJobCount = 3,
+            HasActiveWork = true,
             RunningSubagentCount = 2,
             LastOutcome = TurnOutcome.Completed,
-            CompletedTurnId = new TurnId("background-own-turn"),
+            CompletedTurnId = new TurnId("subagents-own-turn"),
         };
         var model = new TaskOverlayViewModel(CreateTracker(task));
 
@@ -255,12 +255,13 @@ public sealed class TaskOverlayViewModelTests
     }
 
     [Theory]
-    [InlineData(1, 0, false, false)]
-    [InlineData(0, 1, false, false)]
-    [InlineData(0, 0, true, false)]
-    [InlineData(0, 0, false, true)]
-    public void Refresh_IdleWorkSignalsTakePrecedenceOverPreviousCompletion(
-        int jobs, int subagents, bool hasActiveWork, bool waiting)
+    [InlineData(1, 0, false, false, false)]
+    [InlineData(0, 1, false, false, true)]
+    [InlineData(0, 0, true, false, true)]
+    [InlineData(0, 0, false, true, false)]
+    [InlineData(1, 0, false, true, false)]
+    public void Refresh_OnlyAgentWorkSignalsOverridePreviousCompletion(
+        int jobs, int subagents, bool hasActiveWork, bool waiting, bool busy)
     {
         var task = TaskSnapshot("idle-work", TurnPhase.Idle, Now.AddMinutes(-1), waiting) with
         {
@@ -270,14 +271,40 @@ public sealed class TaskOverlayViewModelTests
             LastOutcome = TurnOutcome.Completed,
             CompletedTurnId = new TurnId("idle-own-turn"),
         };
-        var model = new TaskOverlayViewModel(CreateTracker(task));
+        var tracker = CreateTracker(task);
+        var model = new TaskOverlayViewModel(tracker);
 
         model.Refresh(Now);
 
         var row = Assert.Single(model.Sessions);
-        Assert.True(row.IsBusy);
-        Assert.False(row.IsCompleted);
+        Assert.Equal(busy, tracker.Get(task.SessionId)!.HasActiveWork);
+        Assert.Equal(busy, row.IsBusy);
+        Assert.Equal(!busy, row.IsCompleted);
         Assert.False(row.IsFailed);
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    public void Refresh_IdleJobAndConfirmationSignalsWithoutUnreadResultAreExcluded(int jobs, bool waiting)
+    {
+        var task = TaskSnapshot("idle-signals", TurnPhase.Idle, Now.AddMinutes(-1), waiting) with
+        {
+            RunningJobCount = jobs,
+        };
+        var tracker = CreateTracker(task);
+        var model = new TaskOverlayViewModel(tracker);
+
+        model.Refresh(Now);
+
+        var state = tracker.Get(task.SessionId)!;
+        Assert.False(state.HasActiveWork);
+        Assert.False(state.IsBusy);
+        Assert.False(state.HasUnviewedResult);
+        Assert.Equal(jobs, state.Activity.RunningJobCount);
+        Assert.Empty(model.Sessions);
+        Assert.False(model.HasSessions);
     }
 
     [Theory]
@@ -374,6 +401,7 @@ public sealed class TaskOverlayViewModelTests
                 Phase = state.Phase,
                 LastOutcome = state.Outcome,
                 HasActiveWork = state.Active,
+                RunningSubagentCount = state.Active && state.Phase == TurnPhase.Idle ? 1 : 0,
                 CompletedTurnId = new TurnId($"transition-{index}"),
                 FinishedAt = state.Active ? null : task.StartedAt,
                 ActiveWorkStartedAt = state.Active ? task.StartedAt : null,
@@ -405,8 +433,10 @@ public sealed class TaskOverlayViewModelTests
     public void Refresh_DurationUsesCurrentWorkStartNotLastActivityAndClampsFutureStart(
         int? elapsedSeconds, string textKey, int first, int second)
     {
-        var task = TaskSnapshot("duration", startedAt: elapsedSeconds is { } seconds ? Now.AddSeconds(-seconds) : null)
-            with { LastActivityUtc = Now.AddDays(-20) };
+        var task = TaskSnapshot("duration", startedAt: elapsedSeconds is { } seconds ? Now.AddSeconds(-seconds) : null) with
+        {
+            LastActivityUtc = Now.AddDays(-20),
+        };
         var model = new TaskOverlayViewModel(CreateTracker(task));
 
         model.Refresh(Now);
@@ -472,6 +502,54 @@ public sealed class TaskOverlayViewModelTests
         Assert.Same(row, Assert.Single(model.Sessions));
         Assert.Equal(Loc.Get("duration_minutes_seconds", 1, 5), row.DurationText);
         Assert.Equal(0, changes);
+    }
+
+    [Fact]
+    public void TrackerChanges_BackgroundJobsDoNotKeepCompletedTurnBusyOrExtendItsDuration()
+    {
+        var task = TaskSnapshot("background-job", startedAt: Now.AddSeconds(-65)) with { RunningJobCount = 1 };
+        var tracker = CreateTracker(task);
+        var model = new TaskOverlayViewModel(tracker);
+        model.Refresh(Now);
+        var row = Assert.Single(model.Sessions);
+        Assert.True(row.IsBusy);
+        var finished = task with
+        {
+            Phase = TurnPhase.Idle,
+            LastOutcome = TurnOutcome.Completed,
+            HasActiveWork = false,
+            ActiveWorkStartedAt = null,
+            CompletedTurnId = new TurnId("background-job-finished-turn"),
+            FinishedAt = Now,
+        };
+
+        tracker.ApplyActivity(task.SessionId, finished);
+
+        Assert.Same(row, Assert.Single(model.Sessions));
+        Assert.False(tracker.Get(task.SessionId)!.HasActiveWork);
+        Assert.False(row.IsBusy);
+        Assert.True(row.IsCompleted);
+        Assert.Equal(Loc.Get("duration_minutes_seconds", 1, 5), row.DurationText);
+        var changes = 0;
+        row.PropertyChanged += (_, _) => changes++;
+        tracker.ApplyActivity(task.SessionId, finished with { RunningJobCount = 2, LastActivityUtc = Now.AddMinutes(1) });
+        model.Refresh(Now.AddDays(1));
+
+        Assert.Same(row, Assert.Single(model.Sessions));
+        Assert.Equal(Loc.Get("duration_minutes_seconds", 1, 5), row.DurationText);
+        Assert.Equal(0, changes);
+        tracker.SetViewingSession(task.SessionId);
+        tracker.SetViewingSession(null);
+        tracker.ApplyActivity(task.SessionId, finished with { LastActivityUtc = Now.AddDays(2) });
+        model.Refresh(Now.AddDays(2));
+
+        var state = tracker.Get(task.SessionId)!;
+        Assert.Equal(1, state.Activity.RunningJobCount);
+        Assert.False(state.HasActiveWork);
+        Assert.False(state.IsBusy);
+        Assert.False(state.HasUnviewedResult);
+        Assert.Empty(model.Sessions);
+        Assert.False(model.HasSessions);
     }
 
     [Fact]
@@ -624,9 +702,9 @@ public sealed class TaskOverlayViewModelTests
             WorkspaceRoot = Path.Combine(Path.GetTempPath(), "overlay-workspace"),
             LastActivityUtc = Now.AddSeconds(-1),
             IsAwaitingConfirmation = waiting,
-            HasActiveWork = phase is not (TurnPhase.Idle or TurnPhase.Error) || waiting,
+            HasActiveWork = phase is not (TurnPhase.Idle or TurnPhase.Error),
             StartedAt = startedAt,
-            ActiveWorkStartedAt = startedAt,
+            ActiveWorkStartedAt = phase is not (TurnPhase.Idle or TurnPhase.Error) ? startedAt : null,
         };
 
     internal static SessionActivitySnapshot TerminalSnapshot(string id, TurnOutcome? outcome,

@@ -33,10 +33,14 @@ public sealed class SidebarActivityIndicatorTests
         Assert.Equal(SessionActivityIndicator.AwaitingConfirmation, session.Indicator);
         Assert.True(session.IsAwaitingConfirmation);
         Assert.True(session.IsBusy);
+        Assert.False(session.IsRunning);
         Assert.False(session.ShowActiveDot);
 
         sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.AwaitingInteraction, null));
         Assert.Equal(SessionActivityIndicator.AwaitingConfirmation, session.Indicator);
+        Assert.True(session.IsAwaitingConfirmation);
+        Assert.True(session.IsBusy);
+        Assert.False(session.IsRunning);
 
         sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, TurnOutcome.Completed));
         Assert.Equal(SessionActivityIndicator.Completed, session.Indicator);
@@ -49,6 +53,28 @@ public sealed class SidebarActivityIndicatorTests
 
         sidebar.ApplyActivity(session.Id, null);
         Assert.Equal(SessionActivityIndicator.None, session.Indicator);
+    }
+
+    [Theory]
+    [InlineData(null, SessionActivityIndicator.None)]
+    [InlineData(TurnOutcome.Completed, SessionActivityIndicator.Completed)]
+    [InlineData(TurnOutcome.Failed, SessionActivityIndicator.Failed)]
+    public void ApplyActivity_BackgroundJobsDoNotMakeIdleSessionBusy(
+        TurnOutcome? outcome, SessionActivityIndicator indicator)
+    {
+        var sidebar = new SessionSidebarViewModel(() => Task.CompletedTask);
+        var session = new SessionSummaryViewModel(StrongId.NewSessionId(), "Task", @"C:\ws\alpha", DateTimeOffset.UtcNow);
+        sidebar.ApplySummaries([session]);
+
+        sidebar.ApplyActivity(session.Id, new SessionActivitySnapshot(TurnPhase.Idle, outcome)
+        {
+            RunningJobCount = 1,
+        });
+
+        Assert.Equal(indicator, session.Indicator);
+        Assert.False(session.IsBusy);
+        Assert.False(session.IsRunning);
+        Assert.False(session.IsAwaitingConfirmation);
     }
 
     [AvaloniaFact]

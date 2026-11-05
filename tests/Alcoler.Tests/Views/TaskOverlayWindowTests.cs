@@ -41,8 +41,7 @@ public sealed class TaskOverlayWindowTests
             using var harness = new AppHarness();
             harness.Overlay.ShowNear(harness.Main);
             var running = harness.RegisterTask("running");
-            var waiting = harness.RegisterTask("waiting", TurnPhase.AwaitingPermission)
-                with { IsAwaitingConfirmation = true };
+            var waiting = harness.RegisterTask("waiting", TurnPhase.AwaitingPermission) with { IsAwaitingConfirmation = true };
             IReadOnlyList<SessionActivitySnapshot>[] snapshots = [[], [running, waiting], []];
             foreach (var tasks in snapshots)
             {
@@ -71,7 +70,11 @@ public sealed class TaskOverlayWindowTests
     public async Task SessionList_RendersOnlyTwoRowSessionSummaryAndReturnsToEmptyState(TurnPhase phase, bool waiting)
     {
         var task = TaskOverlayViewModelTests.TaskSnapshot("rendered", phase,
-            DateTimeOffset.UtcNow.AddMinutes(-2), waiting) with { RunningJobCount = 2, RunningSubagentCount = 1 };
+            DateTimeOffset.UtcNow.AddMinutes(-2), waiting) with
+        {
+            RunningJobCount = 2,
+            RunningSubagentCount = 1,
+        };
         var tracker = TaskOverlayViewModelTests.CreateTracker(task);
         var model = new TaskOverlayViewModel(tracker);
         var window = new TaskOverlayWindow(model);
@@ -125,8 +128,10 @@ public sealed class TaskOverlayWindowTests
     public async Task StatusIndicators_ActiveAndWaitingPhasesAnimateTheSidebarAccentRing(TurnPhase phase)
     {
         var waiting = phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction;
-        var task = TaskOverlayViewModelTests.TaskSnapshot("animated", phase, DateTimeOffset.UtcNow, waiting)
-            with { LastOutcome = TurnOutcome.Failed };
+        var task = TaskOverlayViewModelTests.TaskSnapshot("animated", phase, DateTimeOffset.UtcNow, waiting) with
+        {
+            LastOutcome = TurnOutcome.Failed,
+        };
         var model = new TaskOverlayViewModel(TaskOverlayViewModelTests.CreateTracker(task));
         var window = new TaskOverlayWindow(model);
         window.Show();
@@ -202,13 +207,13 @@ public sealed class TaskOverlayWindowTests
             (SessionActivitySnapshot Snapshot, bool Busy, bool Completed, bool Failed)[] states =
             [
                 (task with { LastOutcome = TurnOutcome.Completed }, true, false, false),
-                (Finished(TurnOutcome.Completed, "first-completed"), false, true, false),
+                (Finished(TurnOutcome.Completed, "first-completed") with { RunningJobCount = 1 }, false, true, false),
                 (task with { LastOutcome = TurnOutcome.Failed }, true, false, false),
                 (Finished(TurnOutcome.Failed, "first-failed"), false, false, true),
                 (Finished(TurnOutcome.Completed, "error-finish", TurnPhase.Error) with
-                    { HasActiveWork = true, RunningJobCount = 1 }, false, false, true),
+                    { HasActiveWork = true, RunningJobCount = 1, RunningSubagentCount = 1 }, false, false, true),
                 (task with { Phase = TurnPhase.Idle, LastOutcome = TurnOutcome.Completed,
-                    HasActiveWork = true }, true, false, false),
+                    HasActiveWork = true, RunningSubagentCount = 1 }, true, false, false),
                 (Finished(TurnOutcome.Completed, "second-completed"), false, true, false),
             ];
             foreach (var theme in new[] { ThemeVariant.Light, ThemeVariant.Dark })
@@ -270,9 +275,9 @@ public sealed class TaskOverlayWindowTests
     [InlineData(null)]
     [InlineData(TurnOutcome.Cancelled)]
     [InlineData(TurnOutcome.ForcedStop)]
-    public async Task SessionList_ExcludesIdleCancelledForcedAndEmptyResults(TurnOutcome? outcome)
+    public async Task SessionList_ExcludesBackgroundOnlyIdleCancelledForcedAndEmptyResults(TurnOutcome? outcome)
     {
-        var task = TaskOverlayViewModelTests.TerminalSnapshot("excluded", outcome);
+        var task = TaskOverlayViewModelTests.TerminalSnapshot("excluded", outcome) with { RunningJobCount = 1 };
         var model = new TaskOverlayViewModel(TaskOverlayViewModelTests.CreateTracker(task));
         var window = new TaskOverlayWindow(model);
         window.Show();
@@ -385,8 +390,8 @@ public sealed class TaskOverlayWindowTests
     {
         using var harness = new AppHarness();
         var other = harness.RegisterTask("other");
-        var target = harness.RegisterTask("target", TurnPhase.Idle);
-        harness.Runtime.Tasks = [other, target with { RunningJobCount = 1 }];
+        var target = harness.RegisterTask("target");
+        harness.Runtime.Tasks = [other, target];
         harness.Main.WindowState = WindowState.Maximized;
         harness.Main.WindowState = WindowState.Minimized;
         harness.Main.Hide();

@@ -8,8 +8,7 @@ public sealed record SessionActivityState(SessionActivitySnapshot Activity, bool
 {
     public bool HasActiveWork => Activity.HasActiveWork
         || Activity.Phase is not (TurnPhase.Idle or TurnPhase.Error)
-        || Activity.RunningJobCount > 0 || Activity.RunningSubagentCount > 0
-        || IsAwaitingConfirmation;
+        || Activity.RunningSubagentCount > 0;
 
     public bool IsAwaitingConfirmation => Activity.IsAwaitingConfirmation
         || Activity.Phase is TurnPhase.AwaitingPermission or TurnPhase.AwaitingInteraction;
