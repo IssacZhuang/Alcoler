@@ -140,6 +140,7 @@ public sealed class OpenAiCompatibleChatModel(HttpClient httpClient, OpenAiCompa
         };
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
+        OpenCodeSessionHeader.Add(message, _requestProperties, request);
         return message;
     }
 

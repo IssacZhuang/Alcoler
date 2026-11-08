@@ -371,7 +371,7 @@
                                   <ItemsControl.ItemTemplate>
                                     <DataTemplate x:DataType="vm:ModelViewModel">
                                       <Border BorderThickness="0" Padding="0,8">
-                                        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="6">
+                                        <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="6">
                                           <StackPanel Spacing="5" VerticalAlignment="Center">
                                             <TextBlock Text="{Binding ModelId}" FontFamily="{DynamicResource AlcolerFontMonospace}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ModelId}" AutomationProperties.Name="{loc:Loc settings_model_id}" />
                                             <StackPanel Orientation="Horizontal" Spacing="7">
@@ -390,10 +390,13 @@
                                           <Button Grid.Column="1" Classes="icon" Click="OnEditModelClick" VerticalAlignment="Center" ToolTip.Tip="{loc:Loc settings_edit_model}" AutomationProperties.Name="{loc:Loc settings_edit_model}">
                                             <controls:Icon Classes="icon small" Data="m16 3 5 5-12 12H4v-5Zm-2 2 5 5" />
                                           </Button>
-                                          <Button Grid.Column="2" Classes="icon" Command="{Binding RemoveCommand}" VerticalAlignment="Center" ToolTip.Tip="{loc:Loc settings_remove_model}" AutomationProperties.Name="{loc:Loc settings_remove_model}">
+                                          <Button Grid.Column="2" Classes="icon" Click="OnCopyModelClick" VerticalAlignment="Center" ToolTip.Tip="{loc:Loc settings_copy_model}" AutomationProperties.Name="{loc:Loc settings_copy_model}">
+                                            <controls:Icon Classes="icon small" Data="M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                                          </Button>
+                                          <Button Grid.Column="3" Classes="icon" Command="{Binding RemoveCommand}" VerticalAlignment="Center" ToolTip.Tip="{loc:Loc settings_remove_model}" AutomationProperties.Name="{loc:Loc settings_remove_model}">
                                             <controls:Icon Classes="icon small" Data="{StaticResource AlcolerIconX}" />
                                           </Button>
-                                          <ToggleSwitch Grid.Column="3" IsChecked="{Binding Enabled, Mode=TwoWay}" VerticalAlignment="Center" ToolTip.Tip="{loc:Loc settings_enable_model}" AutomationProperties.Name="{loc:Loc settings_enable_model}" />
+                                          <ToggleSwitch Grid.Column="4" IsChecked="{Binding Enabled, Mode=TwoWay}" VerticalAlignment="Center" ToolTip.Tip="{loc:Loc settings_enable_model}" AutomationProperties.Name="{loc:Loc settings_enable_model}" />
                                         </Grid>
                                       </Border>
                                     </DataTemplate>

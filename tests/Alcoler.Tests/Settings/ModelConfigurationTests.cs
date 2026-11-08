@@ -235,6 +235,44 @@ public class ModelConfigurationTests
         Assert.Equal("120000", original.MaxOutputTokens);
     }
 
+    [Fact]
+    public void CopyEditor_RequiresNewIdAndSavesIndependentCopy()
+    {
+        var source = new WorkbenchModelConfig("custom-model", 12345, "Display", false, false, 20000,
+            true, false, true, false, true, false, true, ["off", "low"], ReasoningMap, MaxMap);
+        using var settings = new SettingsViewModel(Config(source));
+        var provider = settings.Providers[0];
+        var original = provider.Models[0];
+        var editor = provider.CreateModelEditor(original, copy: true);
+        Assert.True(editor.IsAdding);
+        Assert.True(editor.IsCopy);
+        Assert.Equal(Loc.Get("models_copy_title"), editor.Title);
+        Assert.Equal(string.Empty, editor.Draft.ModelId);
+        Assert.Null(editor.Draft.DisplayName);
+        Assert.Equal("custom-model", original.ModelId);
+        Assert.False(editor.TrySave());
+        editor.Draft.ModelId = "copied-model";
+        Assert.True(editor.TrySave());
+        Assert.Equal(2, provider.Models.Count);
+        Assert.Equal("custom-model", original.ModelId);
+        var copy = provider.Models[1].ToConfig();
+        Assert.Equal("copied-model", copy.ModelId);
+        Assert.Equal(source.ContextWindowTokens, copy.ContextWindowTokens);
+        Assert.Equal(source.MaxOutputTokens, copy.MaxOutputTokens);
+        Assert.Equal(source.Enabled, copy.Enabled);
+        Assert.Equal(source.SmartConfiguration, copy.SmartConfiguration);
+        Assert.Equal(source.SupportsImage, copy.SupportsImage);
+        Assert.Equal(source.SupportsVideo, copy.SupportsVideo);
+        Assert.Equal(source.SupportsAudio, copy.SupportsAudio);
+        Assert.Equal(source.SupportsPdf, copy.SupportsPdf);
+        Assert.Equal(source.SupportsJsonSchemaOutput, copy.SupportsJsonSchemaOutput);
+        Assert.Equal(source.SupportsNativeWebSearch, copy.SupportsNativeWebSearch);
+        Assert.Equal(source.SupportsMidConversationSystem, copy.SupportsMidConversationSystem);
+        Assert.Equal(source.ReasoningLevels, copy.ReasoningLevels);
+        Assert.Equal(source.ReasoningMapping, copy.ReasoningMapping);
+        Assert.Equal(source.MaxOutputTokensMapping, copy.MaxOutputTokensMapping);
+    }
+
     [Theory]
     [InlineData("0", "")]
     [InlineData("abc", "")]
@@ -423,6 +461,38 @@ public class ModelConfigurationTests
             editor.FindControl<Button>("SaveButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.True(await task);
             Assert.Equal("edited-model", provider.Models[1].ModelId);
+        }
+        finally { settingsDialog.Close(); }
+    }
+
+    [AvaloniaFact]
+    public void CopyModelButton_OpensAddDialogWithCopiedConfiguration()
+    {
+        var model = new WorkbenchModelConfig("custom-model", ContextWindowTokens: 32000, SupportsImage: true);
+        var settingsDialog = new SettingsDialog(Config(model));
+        settingsDialog.Show();
+        try
+        {
+            var provider = Assert.IsType<SettingsViewModel>(settingsDialog.DataContext).Providers[0];
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            var source = provider.Models[0];
+            var copyButton = settingsDialog.GetVisualDescendants().OfType<Button>()
+                .Single(button => button.DataContext == source && Equals(ToolTip.GetTip(button), Loc.Get("settings_copy_model")));
+            copyButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var editor = Assert.IsType<ModelConfigurationDialog>(Assert.Single(settingsDialog.OwnedWindows));
+            Assert.Equal(Loc.Get("models_copy_title"), editor.Title);
+            var idBox = editor.FindControl<TextBox>("ModelIdBox")!;
+            Assert.Equal(string.Empty, idBox.Text);
+            idBox.Text = "copied-model";
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            editor.FindControl<Button>("SaveButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(2, provider.Models.Count);
+            Assert.Equal("custom-model", provider.Models[0].ModelId);
+            var copy = provider.Models[1].ToConfig();
+            Assert.Equal("copied-model", copy.ModelId);
+            Assert.Equal(32000, copy.ContextWindowTokens);
+            Assert.True(copy.SupportsImage);
+            Assert.Empty(settingsDialog.OwnedWindows);
         }
         finally { settingsDialog.Close(); }
     }

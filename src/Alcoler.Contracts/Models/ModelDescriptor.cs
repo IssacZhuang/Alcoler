@@ -15,6 +15,7 @@ public sealed record ModelProperties(
     bool SupportsToolCall = true,
     bool RequiresMfjsToolSchema = false,
     bool SupportsGzipRequests = false,
+    bool RequiresOpenCodeSession = false,
     IReadOnlyList<string>? ReasoningLevels = null,
     string? ReasoningMapping = null,
     string? MaxOutputTokensMapping = null)

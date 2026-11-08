@@ -30,8 +30,8 @@ public partial class ModelConfigurationDialog : Window
         WindowChrome.Attach(this);
     }
 
-    public static Task<bool> ShowAsync(Window owner, ProviderViewModel provider, ModelViewModel? model = null) =>
-        new ModelConfigurationDialog(provider.CreateModelEditor(model)).ShowDialog<bool>(owner);
+    public static Task<bool> ShowAsync(Window owner, ProviderViewModel provider, ModelViewModel? model = null, bool copy = false) =>
+        new ModelConfigurationDialog(provider.CreateModelEditor(model, copy)).ShowDialog<bool>(owner);
 
     private void OnSaveClick(object? sender, RoutedEventArgs e)
     {

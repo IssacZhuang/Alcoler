@@ -245,6 +245,7 @@ public sealed class OpenAiResponsesChatModel(
             httpRequest.Headers.TryAddWithoutValidation(OpenAiResponsesAccountShaping.SessionIdHeader, sessionId);
         if (affinityHeaders.ThreadId is { } threadId)
             httpRequest.Headers.TryAddWithoutValidation(OpenAiResponsesAccountShaping.ThreadIdHeader, threadId);
+        OpenCodeSessionHeader.Add(httpRequest, _requestProperties, request);
         return httpRequest;
     }
 

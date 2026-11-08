@@ -69,6 +69,25 @@ public sealed class WorkbenchModelCatalogTests
         Assert.Equal("high", reasoning["reasoning_effort"]!.GetValue<string>());
     }
 
+    [Theory]
+    [InlineData("openai-compatible", "https://opencode.ai/zen/go/v1")]
+    [InlineData("openai-responses", "https://opencode.ai/inference/go/openai/v1")]
+    [InlineData("anthropic", "https://opencode.ai/inference/go/anthropic")]
+    public void Defaults_OpenCodeEndpointsRequireSessionHeader(string kind, string baseUrl)
+    {
+        var provider = new WorkbenchProviderConfig(kind, baseUrl, null, []);
+
+        Assert.True(WorkbenchModelCatalog.Defaults(provider, "glm-5.3").RequiresOpenCodeSession);
+    }
+
+    [Fact]
+    public void Defaults_OtherEndpointsDoNotRequireSessionHeader()
+    {
+        var provider = new WorkbenchProviderConfig("openai-compatible", "https://example.com/v1", null, []);
+
+        Assert.False(WorkbenchModelCatalog.Defaults(provider, "glm-5.3").RequiresOpenCodeSession);
+    }
+
     [Fact]
     public void BuildProviders_PreservesSeparateIdentitiesAndFiltersDisabledModels()
     {

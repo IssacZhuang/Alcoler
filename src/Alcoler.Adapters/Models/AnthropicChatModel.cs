@@ -227,6 +227,7 @@ public sealed class AnthropicChatModel(HttpClient httpClient, AnthropicModelOpti
         message.Headers.Add("anthropic-version", AnthropicVersion);
         AddBetaHeaders(message, request.Tools);
         message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(stream ? "text/event-stream" : "application/json"));
+        OpenCodeSessionHeader.Add(message, _requestProperties, request);
         return message;
     }
 

@@ -1,5 +1,5 @@
 {
-  "revision": 32,
+  "revision": 33,
   "rules": {
     "modelRules": [
       {
@@ -3753,6 +3753,14 @@
         "config": {
           "properties": {
             "supportsGzipRequests": true
+          }
+        }
+      },
+      {
+        "baseUrlMatch": "https://opencode\\.ai/(?:zen|inference)(?:/.*)?",
+        "config": {
+          "properties": {
+            "requiresOpenCodeSession": true
           }
         }
       }
