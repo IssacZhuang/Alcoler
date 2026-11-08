@@ -26,6 +26,8 @@ internal sealed class LoopbackFixture : IAsyncDisposable
     public string Origin { get; }
     public string Url(string path = "/") => Origin + path;
     public static byte[] MediaBytes => Encoding.UTF8.GetBytes("Alcoler native browser fixture media\n");
+    public static byte[] PngBytes => Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+    public static byte[] AvifBytes => Convert.FromBase64String("AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUEAAADrbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAAAAAAAOcGl0bQAAAAAAAQAAAB5pbG9jAAAAAEQAAAEAAQAAAAEAAAETAAAANgAAAChpaW5mAAAAAAABAAAAGmluZmUCAAAAAAEAAGF2MDFDb2xvcgAAAABqaXBycAAAAEtpcGNvAAAAFGlzcGUAAAAAAAAAAgAAAAEAAAAQcGl4aQAAAAADCAgIAAAADGF2MUOBIAAAAAAAE2NvbHJuY2x4AAEADQAGgAAAABdpcG1hAAAAAAAAAAEAAQQBAoMEAAAAPm1kYXQSAAoHOAAmEBDQaTIpEAAAi7sVlbBXWWXg3g/bQFv/VZvoliW81bzV0/TVF70Pin2MZ4xnlPA=");
 
     public void AssertHealthy()
     {
@@ -89,6 +91,9 @@ internal sealed class LoopbackFixture : IAsyncDisposable
                     "/second" => ("200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes("<!doctype html><title>Second fixture page</title><h1>Second page</h1>")),
                     "/popup" => ("200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes("<!doctype html><title>Popup fixture</title><h1>Session popup</h1>")),
                     "/media" or "/download" => ("200 OK", "application/octet-stream", MediaBytes),
+                    "/image.jpg" => ("200 OK", "image/avif", AvifBytes),
+                    "/pixel.png" => ("200 OK", "image/png", PngBytes),
+                    "/broken.avif" => ("200 OK", "image/avif", MediaBytes),
                     "/favicon.ico" => ("204 No Content", "image/x-icon", Array.Empty<byte>()),
                     _ => ("404 Not Found", "text/plain; charset=utf-8", "Not found"u8.ToArray())
                 };

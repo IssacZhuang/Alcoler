@@ -3,6 +3,7 @@ using Alcoler.Contracts.Conversation;
 using Alcoler.Contracts.Models;
 using Alcoler.Contracts.Projections;
 using Alcoler.Contracts.Tools;
+using Alcoler.Kernel.Models;
 using Alcoler.Kernel.Prompts;
 using Alcoler.Kernel.Runtime;
 
@@ -66,10 +67,10 @@ public static class ContextBuilder
 
         void Add(string uri, string mimeType, string? fileName)
         {
-            if (!mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            if (ModelImageFormats.CanonicalMimeType(mimeType) is not { } canonicalMimeType)
                 return;
             media ??= new Dictionary<string, MediaPayload>(StringComparer.Ordinal);
-            media.TryAdd(uri, new MediaPayload(mimeType, string.Empty, fileName));
+            media.TryAdd(uri, new MediaPayload(canonicalMimeType, string.Empty, fileName));
         }
     }
 
@@ -438,14 +439,9 @@ public static class ContextBuilder
     {
         if (media is null || !media.TryGetValue(artifactUri, out var payload))
             return null;
-        if (!mimeOrPayloadStartsWithImage(mimeType, payload))
-            return null;
-        return new InputImageBlock(
-            payload.MimeType is { Length: > 0 } ? payload.MimeType : mimeType,
-            payload.Base64Data);
-
-        static bool mimeOrPayloadStartsWithImage(string mimeType, MediaPayload payload) =>
-            mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ||
-            payload.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+        var finalMimeType = payload.MimeType is { Length: > 0 } ? payload.MimeType : mimeType;
+        return ModelImageFormats.CanonicalMimeType(finalMimeType) is { } canonicalMimeType
+            ? new InputImageBlock(canonicalMimeType, payload.Base64Data)
+            : null;
     }
 }

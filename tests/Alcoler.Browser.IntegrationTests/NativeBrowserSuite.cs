@@ -812,6 +812,17 @@ internal sealed class NativeBrowserSuite
         Check(!result.IsError, "BrowserTool download_media failed.");
         var artifact = result.Content.OfType<ToolResultMedia>().Single();
         Check(_workspace.Artifacts.Single(a => a.Uri == artifact.ArtifactUri).Data.AsSpan().SequenceEqual(LoopbackFixture.MediaBytes), "Tool media artifact lost downloaded bytes.");
+        var imageResult = await tool.ExecuteAsync(new(_session, _workspace.Root,
+            BrowserJson.Element(D(("action", "download_media"), ("url", _fixture.Url("/image.jpg")), ("fileName", "reference.jpg"), ("tabId", _tab))),
+            _workspace, TimeProvider.System), _ct);
+        Check(!imageResult.IsError, "BrowserTool AVIF download failed.");
+        var imageArtifact = imageResult.Content.OfType<ToolResultMedia>().Single();
+        Equal("image/png", imageArtifact.MimeType, "Converted AVIF artifact MIME");
+        Equal("reference.png", imageArtifact.FileName, "Converted AVIF artifact name");
+        var imageBytes = _workspace.Artifacts.Single(a => a.Uri == imageArtifact.ArtifactUri).Data;
+        Check(imageBytes.Length > 24 && imageBytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }), "Converted AVIF artifact is not PNG.");
+        Equal(2, BinaryPrimitives.ReadInt32BigEndian(imageBytes.AsSpan(16, 4)), "Converted AVIF artifact width");
+        Equal(1, BinaryPrimitives.ReadInt32BigEndian(imageBytes.AsSpan(20, 4)), "Converted AVIF artifact height");
         await CommandAsync("click", Target(D(("css", "#download"))), _tab);
         var clock = Stopwatch.StartNew();
         JsonElement? completed = null;

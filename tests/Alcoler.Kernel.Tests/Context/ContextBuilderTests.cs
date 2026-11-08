@@ -165,6 +165,163 @@ public class ContextBuilderTests
         Assert.Null(Assert.IsType<InputToolResultBlock>(projected.Content[1]).Images);
     }
 
+    [Theory]
+    [InlineData("image/avif")]
+    [InlineData("IMAGE/AVIF")]
+    [InlineData("image/svg+xml")]
+    [InlineData("image/bmp")]
+    [InlineData("application/pdf")]
+    public void DescribeMedia_UnsupportedMimeWithJpegFilenameIsSkipped(string mimeType)
+    {
+        var message = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+        [
+            new FilePart(TestMessages.NextPartId(), "file.jpg", mimeType, "file.jpg"),
+            new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"),
+                [new ToolResultMedia("tool.jpg", mimeType, "tool.jpg")]),
+        ], DateTimeOffset.UtcNow);
+
+        Assert.Null(ContextBuilder.DescribeMedia([message]));
+    }
+
+    [Theory]
+    [InlineData("IMAGE/PNG", "image/png")]
+    [InlineData("Image/JpEg", "image/jpeg")]
+    [InlineData("IMAGE/GIF", "image/gif")]
+    [InlineData("image/WebP", "image/webp")]
+    public void DescribeMedia_SupportedMimeTypesAreCanonicalAndBudgetOnly(string mimeType, string canonicalMimeType)
+    {
+        var message = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+        [
+            new FilePart(TestMessages.NextPartId(), "file", mimeType, "file.jpg"),
+            new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"),
+                [new ToolResultMedia("tool", mimeType, "tool.jpg")]),
+        ], DateTimeOffset.UtcNow);
+
+        var media = ContextBuilder.DescribeMedia([message]);
+        Assert.NotNull(media);
+        Assert.Equal(2, media.Count);
+        Assert.All(media.Values, payload =>
+        {
+            Assert.Equal(canonicalMimeType, payload.MimeType);
+            Assert.Empty(payload.Base64Data);
+        });
+        Assert.Equal("file.jpg", media["file"].FileName);
+        Assert.Equal("tool.jpg", media["tool"].FileName);
+    }
+
+    [Theory]
+    [InlineData(false, "IMAGE/PNG", "image/png")]
+    [InlineData(true, "IMAGE/PNG", "image/png")]
+    [InlineData(false, "Image/JpEg", "image/jpeg")]
+    [InlineData(true, "Image/JpEg", "image/jpeg")]
+    [InlineData(false, "IMAGE/GIF", "image/gif")]
+    [InlineData(true, "IMAGE/GIF", "image/gif")]
+    [InlineData(false, "image/WebP", "image/webp")]
+    [InlineData(true, "image/WebP", "image/webp")]
+    public void Project_SupportedPayloadOverridesOriginalMime(bool inline, string mimeType, string canonicalMimeType)
+    {
+        var message = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+        [
+            new FilePart(TestMessages.NextPartId(), "file", "application/octet-stream", "file.jpg"),
+            new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"),
+                [new ToolResultText("caption"), new ToolResultMedia("tool", "image/avif", "tool.jpg")]),
+        ], DateTimeOffset.UtcNow);
+        var assembled = ContextBuilder.Assemble(Input([message]) with
+        {
+            Media = new Dictionary<string, MediaPayload>
+            {
+                ["file"] = new(mimeType, "aW1n"),
+                ["tool"] = new(mimeType, "aW1n"),
+            },
+            InlineToolResultImages = inline,
+        });
+
+        var blocks = assembled.Request.Messages.SelectMany(item => item.Content).ToArray();
+        var result = Assert.Single(blocks.OfType<InputToolResultBlock>());
+        Assert.Equal("caption", result.Content);
+        Assert.Equal(inline, result.Images is { Count: 1 });
+        var images = blocks.OfType<InputImageBlock>().Concat(result.Images ?? []).ToArray();
+        Assert.Equal(2, images.Length);
+        Assert.All(images, image =>
+        {
+            Assert.Equal(canonicalMimeType, image.MimeType);
+            Assert.Equal("aW1n", image.Base64Data);
+        });
+    }
+
+    [Theory]
+    [InlineData(false, "image/avif")]
+    [InlineData(true, "image/avif")]
+    [InlineData(false, "IMAGE/AVIF")]
+    [InlineData(true, "IMAGE/AVIF")]
+    [InlineData(false, "image/svg+xml")]
+    [InlineData(true, "image/svg+xml")]
+    [InlineData(false, "image/bmp")]
+    [InlineData(true, "image/bmp")]
+    [InlineData(false, "application/octet-stream")]
+    [InlineData(true, "application/octet-stream")]
+    public void Project_UnsupportedPayloadOverridesSupportedOriginalWithTextFallback(bool inline, string mimeType)
+    {
+        var message = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+        [
+            new FilePart(TestMessages.NextPartId(), "file", "image/png", "file.jpg"),
+            new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"),
+                [new ToolResultText("caption"), new ToolResultMedia("tool", "image/png", "tool.jpg")], IsError: true),
+        ], DateTimeOffset.UtcNow);
+        var assembled = ContextBuilder.Assemble(Input([message]) with
+        {
+            Media = new Dictionary<string, MediaPayload>
+            {
+                ["file"] = new(mimeType, "aW1n"),
+                ["tool"] = new(mimeType, "aW1n"),
+            },
+            InlineToolResultImages = inline,
+        });
+
+        var projected = Assert.Single(assembled.Request.Messages.Skip(assembled.PrefixMessageCount));
+        Assert.Equal("[media file: file.jpg]", Assert.IsType<InputTextBlock>(projected.Content[0]).Text);
+        var result = Assert.IsType<InputToolResultBlock>(projected.Content[1]);
+        Assert.Equal("caption\n[media file: tool.jpg]", result.Content);
+        Assert.True(result.IsError);
+        Assert.Null(result.Images);
+        Assert.Empty(projected.Content.OfType<InputImageBlock>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Project_EmptyPayloadMimeUsesOnlySupportedOriginalMime(bool inline)
+    {
+        var message = new ConversationMessage(TestMessages.NextMessageId(), MessageRole.User,
+        [
+            new FilePart(TestMessages.NextPartId(), "supported", "IMAGE/PNG", "pixel.png"),
+            new FilePart(TestMessages.NextPartId(), "unsupported", "image/avif", "pixel.jpg"),
+            new ToolResultPart(TestMessages.NextPartId(), TestMessages.NextToolCallId("Read"),
+            [
+                new ToolResultMedia("supported", "IMAGE/PNG", "pixel.png"),
+                new ToolResultMedia("unsupported", "image/avif", "pixel.jpg"),
+            ]),
+        ], DateTimeOffset.UtcNow);
+        var assembled = ContextBuilder.Assemble(Input([message]) with
+        {
+            Media = new Dictionary<string, MediaPayload>
+            {
+                ["supported"] = new("", "aW1n"),
+                ["unsupported"] = new("", "aW1n"),
+            },
+            InlineToolResultImages = inline,
+        });
+
+        var blocks = assembled.Request.Messages.SelectMany(item => item.Content).ToArray();
+        var result = Assert.Single(blocks.OfType<InputToolResultBlock>());
+        Assert.Equal("[media file: pixel.jpg]", result.Content);
+        Assert.Equal(inline, result.Images is { Count: 1 });
+        Assert.Contains(blocks.OfType<InputTextBlock>(), text => text.Text == "[media file: pixel.jpg]");
+        var images = blocks.OfType<InputImageBlock>().Concat(result.Images ?? []).ToArray();
+        Assert.Equal(2, images.Length);
+        Assert.All(images, image => Assert.Equal("image/png", image.MimeType));
+    }
+
     [Fact]
     public void Project_PreservesReasoningMetadataAndAssistantOrigin()
     {

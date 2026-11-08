@@ -87,6 +87,51 @@ public class MediaHydrationTests
         GC.KeepAlive(model);
     }
 
+    [Theory]
+    [InlineData(false, "image/avif", "download.jpg")]
+    [InlineData(true, "image/avif", "download.jpg")]
+    [InlineData(false, "IMAGE/AVIF", "download.jpg")]
+    [InlineData(true, "IMAGE/AVIF", "download.jpg")]
+    [InlineData(false, "image/svg+xml", "vector.svg")]
+    [InlineData(true, "image/svg+xml", "vector.svg")]
+    [InlineData(false, "image/bmp", "bitmap.bmp")]
+    [InlineData(true, "image/bmp", "bitmap.bmp")]
+    public async Task UnsupportedMediaToolContinuation_CompletesWithoutLoadingOrSendingImage(
+        bool inline, string mimeType, string fileName)
+    {
+        await using var harness = TestHarness.Create();
+        var model = new UnsupportedMediaContinuationModel(inline);
+        CountingArtifactStore artifacts = null!;
+        await using var runtime = TestHarness.BuildRuntimeFor(model, harness.Root, transform: options => options with
+        {
+            Artifacts = artifacts = new CountingArtifactStore(options.Artifacts),
+        }, extraTools: [new MediaArtifactTool(mimeType, fileName)]);
+        var session = await runtime.CreateSessionAsync(new Contracts.Sessions.SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+        Assert.True((await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
+            "download the image"), CancellationToken.None)).Accepted);
+        await AwaitCurrentTurnAsync(runtime.GetSession(session.Id)!);
+
+        var events = await runtime.Options.Store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.DoesNotContain(events, item => item.Event is TurnFailedEvent);
+        Assert.Equal(TurnOutcome.Completed, Assert.Single(events.Select(item => item.Event).OfType<TurnCompletedEvent>()).Outcome);
+        Assert.Equal(2, model.Requests.Count);
+        Assert.Empty(model.Requests.SelectMany(request => request.Messages).SelectMany(ImageBlocks));
+        var result = Assert.Single(model.Requests[1].Messages.SelectMany(message => message.Content).OfType<InputToolResultBlock>());
+        Assert.Equal($"downloaded\n[media file: {fileName}]", result.Content);
+        Assert.False(result.IsError);
+        Assert.Null(result.Images);
+        Assert.Empty(artifacts.Loads);
+        Assert.Empty(artifacts.ExistenceChecks);
+        Assert.Contains(projection.Snapshot().Rows.OfType<AssistantMessageRow>(),
+            row => row.Parts.OfType<TextPart>().Any(part => part.Text == "continued"));
+        var stored = await runtime.Options.Store.LoadMessagesAsync(session.Id, CancellationToken.None);
+        var media = Assert.Single(stored.SelectMany(item => item.Message.Parts).OfType<ToolResultPart>()
+            .SelectMany(part => part.Content).OfType<ToolResultMedia>());
+        Assert.Equal(mimeType, media.MimeType);
+        Assert.Equal(fileName, media.FileName);
+    }
+
     [Fact]
     public async Task HydratedImagePayload_IsCollectibleWhileSessionRemainsResident()
     {
@@ -128,7 +173,7 @@ public class MediaHydrationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task BudgetAssembly_UsesOnlyMetadata_AndMatchesHydratedAccountingForMissingAndDuplicateMedia(bool inline)
+    public async Task BudgetAssembly_UsesOnlyMetadata_AndMatchesHydratedAccountingForMissingDuplicateAndUnsupportedMedia(bool inline)
     {
         await using var harness = TestHarness.Create();
         var model = new InlineImageModel(harness.ScriptedModel, inline);
@@ -145,6 +190,7 @@ public class MediaHydrationTests
         Assert.Equal(3, artifacts.ExistenceChecks.Count);
         Assert.All(artifacts.ExistenceChecks.Values, count => Assert.Equal(1, count));
         Assert.DoesNotContain(fixture.PdfUri, artifacts.ExistenceChecks.Keys);
+        Assert.All(fixture.UnsupportedUris, uri => Assert.DoesNotContain(uri, artifacts.ExistenceChecks.Keys));
         Assert.Equal(4, budget.Request.Messages.SelectMany(ImageBlocks).Count());
         Assert.All(budget.Request.Messages.SelectMany(ImageBlocks), image => Assert.Empty(image.Base64Data));
 
@@ -158,6 +204,7 @@ public class MediaHydrationTests
         Assert.Equal(3, artifacts.Loads.Count);
         Assert.All(artifacts.Loads.Values, count => Assert.Equal(1, count));
         Assert.DoesNotContain(fixture.PdfUri, artifacts.Loads.Keys);
+        Assert.All(fixture.UnsupportedUris, uri => Assert.DoesNotContain(uri, artifacts.Loads.Keys));
     }
 
     [Theory]
@@ -401,6 +448,9 @@ public class MediaHydrationTests
 
     [Theory]
     [InlineData("image/svg+xml", TinyPngBase64, "unsupported_image_mime_type")]
+    [InlineData("image/avif", TinyPngBase64, "unsupported_image_mime_type")]
+    [InlineData("IMAGE/AVIF", TinyPngBase64, "unsupported_image_mime_type")]
+    [InlineData("image/bmp", TinyPngBase64, "unsupported_image_mime_type")]
     [InlineData("image/png", "not-base64!", "invalid_image_base64")]
     [InlineData("image/png", "", "invalid_image_base64")]
     [InlineData("image/png", "   ", "invalid_image_base64")]
@@ -460,13 +510,22 @@ public class MediaHydrationTests
     }
 
     private sealed record MediaFixture(
-        IReadOnlyList<ConversationMessage> History, string FirstUri, string SecondUri, string MissingUri, string PdfUri);
+        IReadOnlyList<ConversationMessage> History, string FirstUri, string SecondUri, string MissingUri, string PdfUri,
+        IReadOnlyList<string> UnsupportedUris);
 
     private static async Task<MediaFixture> CreateMediaFixtureAsync(IArtifactStore artifacts, SessionId session)
     {
         var first = await artifacts.SaveAsync(session, "pixel.png", "image/png", Convert.FromBase64String(TinyPngBase64), CancellationToken.None);
         var second = await artifacts.SaveAsync(session, "second.jpg", "image/jpeg", new byte[] { 1, 2, 3 }, CancellationToken.None);
         var pdf = await artifacts.SaveAsync(session, "report.pdf", "application/pdf", new byte[] { 4 }, CancellationToken.None);
+        var unsupported = new List<ArtifactReference>();
+        foreach (var (mimeType, fileName) in new[]
+        {
+            ("IMAGE/AVIF", "avif.jpg"),
+            ("image/svg+xml", "vector.svg"),
+            ("image/bmp", "bitmap.bmp"),
+        })
+            unsupported.Add(await artifacts.SaveAsync(session, fileName, mimeType, new byte[] { 5 }, CancellationToken.None));
         var missing = $"alcoler-artifact://{session.Value}/missing.png";
         var at = DateTimeOffset.UtcNow;
         ConversationMessage[] history =
@@ -477,6 +536,7 @@ public class MediaHydrationTests
                 new FilePart(StrongId.NewPartId(), first.Uri, first.MimeType, first.FileName),
                 new FilePart(StrongId.NewPartId(), missing, "image/png", "missing.png"),
                 new FilePart(StrongId.NewPartId(), pdf.Uri, pdf.MimeType, pdf.FileName),
+                .. unsupported.Select(artifact => new FilePart(StrongId.NewPartId(), artifact.Uri, artifact.MimeType, artifact.FileName)),
             ], at, Source: MessageSource.RealUser),
             new(StrongId.NewMessageId(), MessageRole.Assistant,
                 [new ToolCallPart(StrongId.NewPartId(), ReadCallId, "Read", JsonSerializer.SerializeToElement(new { file_path = "pixel.png" }))], at),
@@ -488,9 +548,11 @@ public class MediaHydrationTests
                     new ToolResultMedia(missing, "image/png", "missing.png"),
                     new ToolResultMedia(pdf.Uri, pdf.MimeType, pdf.FileName),
                     new ToolResultMedia(second.Uri, second.MimeType, second.FileName),
+                    .. unsupported.Select(artifact => new ToolResultMedia(artifact.Uri, artifact.MimeType, artifact.FileName)),
                 ])], at),
         ];
-        return new MediaFixture(history, first.Uri, second.Uri, missing, pdf.Uri);
+        return new MediaFixture(history, first.Uri, second.Uri, missing, pdf.Uri,
+            unsupported.Select(artifact => artifact.Uri).ToArray());
     }
 
     private static void AssertMediaFixtureRequest(ModelRequest request, MediaFixture fixture, bool inline)
@@ -502,8 +564,11 @@ public class MediaHydrationTests
         Assert.Same(images[0].Base64Data, images[2].Base64Data);
         var result = Assert.Single(request.Messages.SelectMany(message => message.Content).OfType<InputToolResultBlock>(),
             item => item.Id == ReadCallId);
-        Assert.Equal("caption\n[media file: missing.png]\n[media file: report.pdf]", result.Content);
+        Assert.Equal("caption\n[media file: missing.png]\n[media file: report.pdf]\n[media file: avif.jpg]\n[media file: vector.svg]\n[media file: bitmap.bmp]", result.Content);
         Assert.Equal(inline, result.Images is { Count: 2 });
+        foreach (var fileName in new[] { "avif.jpg", "vector.svg", "bitmap.bmp" })
+            Assert.Contains(request.Messages.SelectMany(message => message.Content).OfType<InputTextBlock>(),
+                text => text.Text == $"[media file: {fileName}]");
         Assert.Contains(request.Messages.SelectMany(message => message.Content).OfType<InputTextBlock>(),
             text => text.Text == "[media file: missing.png]");
         Assert.DoesNotContain(fixture.MissingUri, images.Select(image => image.Base64Data));
@@ -546,6 +611,62 @@ public class MediaHydrationTests
         {
             Loads.AddOrUpdate(artifactUri, 1, (_, count) => count + 1);
             return inner.TryLoadAsync(artifactUri, cancellationToken);
+        }
+    }
+
+    private sealed class MediaArtifactTool(string mimeType, string fileName) : ITool
+    {
+        public const string ToolName = "MediaArtifact";
+
+        public ToolContract Contract { get; } = new(ToolName, "Returns a media artifact.",
+            JsonSerializer.SerializeToElement(new { type = "object", properties = new { }, additionalProperties = false }));
+
+        public ToolMetadata Metadata { get; } = new(
+            ReadOnly: true, Destructive: false, ConcurrentSafe: true, RequiresUserInteraction: false,
+            SideEffectScope: SideEffectScope.None, RiskLevel: RiskLevel.Low, NeedsApproval: false,
+            AllowedInPlanMode: true);
+
+        public async ValueTask<ToolExecutionResult> ExecuteAsync(ToolExecutionContext context, CancellationToken cancellationToken)
+        {
+            var artifact = await context.Workspace.SaveArtifactAsync(context.SessionId, fileName, mimeType,
+                new byte[] { 1, 2, 3 }, cancellationToken);
+            return new ToolExecutionResult(
+                [new ToolResultText("downloaded"), new ToolResultMedia(artifact.Uri, artifact.MimeType, artifact.FileName)]);
+        }
+    }
+
+    private sealed class UnsupportedMediaContinuationModel(bool inline) : IChatModel
+    {
+        public ModelDescriptor Descriptor { get; } = new("scripted", "test-model", "Unsupported Media Continuation",
+            new ModelProperties(ContextWindowTokens: 200_000));
+        public bool InlineToolResultImages => inline;
+        public List<ModelRequest> Requests { get; } = [];
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            Requests.Add(request);
+            if (Requests.Count == 1)
+            {
+                var callId = new ToolCallId("call-media");
+                var input = JsonSerializer.SerializeToElement(new { });
+                yield return new ModelToolInputStarted(callId, MediaArtifactTool.ToolName);
+                yield return new ModelToolInputDelta(callId, "{}");
+                yield return new ModelToolInputEnded(callId);
+                yield return new ModelToolCallReady(new ToolCall(callId, MediaArtifactTool.ToolName, input));
+                yield return new ModelStreamFinished(ModelFinishReason.ToolCalls);
+                yield break;
+            }
+            if (request.Messages.SelectMany(ImageBlocks).Any())
+            {
+                yield return new ModelStreamFailed(new ModelFailure(ModelFailureKind.InvalidRequest,
+                    "unsupported image MIME type", ProviderCode: "unsupported_image_mime_type"));
+                yield break;
+            }
+            yield return new ModelTextDelta("continued");
+            yield return new ModelStreamFinished(ModelFinishReason.Stop);
         }
     }
 

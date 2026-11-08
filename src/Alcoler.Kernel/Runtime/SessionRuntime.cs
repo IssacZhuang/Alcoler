@@ -711,7 +711,7 @@ public sealed class SessionRuntime : IAsyncDisposable
             return "too_many_images";
         foreach (var image in images)
         {
-            if (image is null || ImageExtension(image.MimeType) is null)
+            if (image is null || ModelImageFormats.Extension(image.MimeType) is null)
                 return "unsupported_image_mime_type";
             if (image.Base64Data is null || image.Base64Data.Length == 0)
                 return "invalid_image_base64";
@@ -725,15 +725,6 @@ public sealed class SessionRuntime : IAsyncDisposable
         return null;
     }
 
-    private static string? ImageExtension(string? mimeType) => mimeType?.ToLowerInvariant() switch
-    {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        _ => null,
-    };
-
     private async Task<IReadOnlyList<FilePart>?> StoreInputImagesAsync(
         IReadOnlyList<InputImageBlock>? images, CancellationToken ct)
     {
@@ -744,7 +735,7 @@ public sealed class SessionRuntime : IAsyncDisposable
         {
             var image = images[index];
             var artifact = await _deps.Artifacts.SaveAsync(_record.Id,
-                $"image-{index + 1}.{ImageExtension(image.MimeType)}", image.MimeType.ToLowerInvariant(),
+                $"image-{index + 1}.{ModelImageFormats.Extension(image.MimeType)}", ModelImageFormats.CanonicalMimeType(image.MimeType)!,
                 Convert.FromBase64String(image.Base64Data), ct).ConfigureAwait(false);
             files.Add(new FilePart(StrongId.NewPartId(), artifact.Uri, artifact.MimeType, artifact.FileName));
         }

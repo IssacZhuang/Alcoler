@@ -268,14 +268,38 @@ public sealed partial class CdpBrowserAutomation
               let blob;
               if(reader){const chunks=[];let size=0;try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>maxBytes)throw Error('Media exceeds size limit');chunks.push(value);}}finally{await reader.cancel();}blob=new Blob(chunks,{type:response.headers.get('content-type')||'application/octet-stream'});}
               else {blob=await response.blob();if(blob.size>maxBytes)throw Error('Media exceeds size limit');}
+              const mime=blob.type.split(';',1)[0].trim();
+              let converted=false,warning=null;
+              if(mime.startsWith('image/')&&!['image/png','image/jpeg','image/gif','image/webp'].includes(mime)){
+                let image;
+                try{
+                  image=await createImageBitmap(blob);
+                  if(!image.width||!image.height||image.width>32767||image.height>32767||image.width*image.height>16000000)throw Error('Image exceeds pixel limit');
+                  const canvas=new OffscreenCanvas(image.width,image.height);
+                  const context=canvas.getContext('2d');
+                  if(!context)throw Error('Image conversion is unavailable');
+                  context.drawImage(image,0,0);
+                  const png=await canvas.convertToBlob({type:'image/png'});
+                  if(!png.size||png.size>maxBytes)throw Error('Converted image exceeds size limit');
+                  blob=png;converted=true;
+                }catch(error){warning='Image preview unavailable; original file retained: '+String(error?.message||error);}
+                finally{image?.close();}
+              }
               const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(r.error);r.readAsDataURL(blob);});
-              return {type:blob.type,data:data.slice(data.indexOf(',')+1)};
+              return {type:blob.type,data:data.slice(data.indexOf(',')+1),converted,warning};
             }
             """, [D(("value", url)), D(("value", MaxMedia))], ct, true);
         var value = RemoteValue(result);
         var data = DecodeBounded(RequiredString(value, "data"), MaxMedia);
         var fileName = SafeFileName(String(input, "fileName") ?? "media.bin");
-        return new(true, Media: data, MediaType: String(value, "type") ?? "application/octet-stream", MediaFileName: fileName);
+        var converted = Boolean(value, "converted");
+        if (converted)
+        {
+            var stem = Path.GetFileNameWithoutExtension(fileName);
+            fileName = stem[..Math.Min(stem.Length, 124)] + ".png";
+        }
+        return new(true, Text: converted ? "Downloaded image converted to PNG for model compatibility." : String(value, "warning"),
+            Media: data, MediaType: String(value, "type") ?? "application/octet-stream", MediaFileName: fileName);
     }
 
     private static byte[] DecodeBounded(string base64, int maxBytes)

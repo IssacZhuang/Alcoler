@@ -67,6 +67,7 @@ internal sealed class ChromiumSuite : IDisposable
         new("JavaScript prompt acceptance and confirm dismissal", false, DialogsAsync),
         new("browser download completes into the session downloads directory", false, DownloadsAsync),
         new("download_media returns exact fixture bytes", false, DownloadMediaAsync),
+        new("download_media converts AVIF images and retains unconvertible files", false, DownloadImagesAsync),
         new("bounded WebM recording completes with EBML media", false, RecordingAsync),
         new("recording waits for recorder readiness after a delayed first frame", false, RecordingFirstFrameDelayAsync),
         new("target=_blank popup is adopted as a new session tab", true, PopupAsync),
@@ -456,6 +457,30 @@ internal sealed class ChromiumSuite : IDisposable
         Check(media.Media is not null && media.Media.AsSpan().SequenceEqual(LoopbackFixture.MediaBytes), "Downloaded media bytes differ from the local HTTP response.");
         Equal("application/octet-stream", media.MediaType, "Downloaded media MIME");
         Equal("fixture-media.bin", media.MediaFileName, "Downloaded media name");
+    }
+
+    private async Task DownloadImagesAsync()
+    {
+        var png = await CommandAsync("download_media", D(("url", _fixture.Url("/pixel.png")), ("fileName", "pixel.png")), _tab);
+        Equal("image/png", png.MediaType, "Unchanged PNG MIME");
+        Equal("pixel.png", png.MediaFileName, "Unchanged PNG name");
+        Check(png.Media is not null && png.Media.AsSpan().SequenceEqual(LoopbackFixture.PngBytes), "Supported PNG bytes changed during download.");
+
+        var converted = await CommandAsync("download_media", D(("url", _fixture.Url("/image.jpg")), ("fileName", "reference.jpg")), _tab);
+        Equal("image/png", converted.MediaType, "Converted AVIF MIME");
+        Equal("reference.png", converted.MediaFileName, "Converted AVIF name");
+        Check(converted.Text?.Contains("converted to PNG", StringComparison.Ordinal) == true, "AVIF conversion was not reported.");
+        var decoded = DecodePng(converted.Media ?? throw new InvalidOperationException("Converted AVIF omitted PNG bytes."));
+        Equal(2, decoded.Width, "Converted AVIF width");
+        Equal(1, decoded.Height, "Converted AVIF height");
+        Check(((decoded.Pixels[0] >> 16) & 255) > 200 && (decoded.Pixels[1] & 255) > 200,
+            $"Converted AVIF lost the fixture colors ({decoded.Pixels[0]:X8}, {decoded.Pixels[1]:X8}).");
+
+        var original = await CommandAsync("download_media", D(("url", _fixture.Url("/broken.avif")), ("fileName", "broken.jpg")), _tab);
+        Equal("image/avif", original.MediaType, "Unconvertible image MIME");
+        Equal("broken.jpg", original.MediaFileName, "Unconvertible image name");
+        Check(original.Media is not null && original.Media.AsSpan().SequenceEqual(LoopbackFixture.MediaBytes), "Unconvertible image lost its original bytes.");
+        Check(original.Text?.Contains("original file retained", StringComparison.Ordinal) == true, "Missing image preview was not reported.");
     }
 
     private Task RecordingAsync() => AssertRecordingAsync((verb, input) => CommandAsync(verb, input, _tab), 1500, 4);

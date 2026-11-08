@@ -399,6 +399,53 @@ public sealed class CdpBrowserAutomationTests
         Assert.Contains(page.Calls, c => c.Method == "Runtime.callFunctionOn" && c.Parameters.GetProperty("functionDeclaration").GetString()!.Contains("credentials:'include'"));
     }
 
+    [Theory]
+    [InlineData("reference.jpg", "reference.png")]
+    [InlineData("reference.avif", "reference.png")]
+    [InlineData("reference", "reference.png")]
+    public async Task ConvertedDownloadUsesPngFileName(string requestedName, string expectedName)
+    {
+        using var page = new FakePage
+        {
+            DownloadedMedia = Parse("{\"type\":\"image/png\",\"data\":\"AQID\",\"converted\":true}"),
+        };
+        using var engine = new CdpBrowserAutomation(page);
+        var result = await Execute(engine, "download_media", "{\"url\":\"https://example.test/image.jpg\",\"fileName\":\"" + requestedName + "\"}");
+        Assert.True(result.Ok, result.Error);
+        Assert.Equal("image/png", result.MediaType);
+        Assert.Equal(expectedName, result.MediaFileName);
+        Assert.Contains("converted to PNG", result.Text);
+    }
+
+    [Fact]
+    public async Task UnconvertibleDownloadRetainsOriginalFileAndReportsMissingPreview()
+    {
+        using var page = new FakePage
+        {
+            DownloadedMedia = Parse("{\"type\":\"image/avif\",\"data\":\"AQID\",\"warning\":\"Image preview unavailable; original file retained.\"}"),
+        };
+        using var engine = new CdpBrowserAutomation(page);
+        var result = await Execute(engine, "download_media", "{\"url\":\"https://example.test/image.jpg\",\"fileName\":\"reference.jpg\"}");
+        Assert.True(result.Ok, result.Error);
+        Assert.Equal("image/avif", result.MediaType);
+        Assert.Equal("reference.jpg", result.MediaFileName);
+        Assert.Equal(new byte[] { 1, 2, 3 }, result.Media);
+        Assert.Contains("original file retained", result.Text);
+    }
+
+    [Fact]
+    public async Task ConvertedDownloadKeepsTheFileNameWithinItsLimit()
+    {
+        using var page = new FakePage
+        {
+            DownloadedMedia = Parse("{\"type\":\"image/png\",\"data\":\"AQID\",\"converted\":true}"),
+        };
+        using var engine = new CdpBrowserAutomation(page);
+        var result = await Execute(engine, "download_media", "{\"url\":\"https://example.test/image\",\"fileName\":\"" + new string('x', 128) + "\"}");
+        Assert.True(result.Ok, result.Error);
+        Assert.Equal(new string('x', 124) + ".png", result.MediaFileName);
+    }
+
     [Fact]
     public async Task StrictLocatorErrorDoesNotDispatchNativeInput()
     {
@@ -650,6 +697,7 @@ public sealed class CdpBrowserAutomationTests
         public string? FailFunction { get; init; }
         public bool FailRetirement { get; set; }
         public string RecordingMedia { get; init; } = "AQID";
+        public JsonElement DownloadedMedia { get; init; } = Parse("{\"type\":\"image/png\",\"data\":\"AQID\"}");
         public Func<CancellationToken, Task<JsonElement>>? Release { get; set; }
         public List<bool> ReleaseTokensWereCanceled { get; } = [];
         public HashSet<string> AcquiredObjects { get; } = [];
@@ -741,7 +789,7 @@ public sealed class CdpBrowserAutomationTests
                 if (function.Contains("DOMMatrixReadOnly")) return Value(new Dictionary<string, object?> { ["x"] = 100, ["y"] = 200, ["transforms"] = FrameTransforms });
                 if (function.Contains("elementFromPoint(x,y)")) return Value(!BlockFrame);
                 if (function.Contains("inspect.call")) return Parse("{\"result\":{\"value\":{\"connected\":true,\"visible\":true,\"enabled\":true,\"editable\":true,\"hit\":true,\"x\":50,\"y\":20,\"left\":10,\"top\":10,\"width\":80,\"height\":20}}}");
-                if (function.Contains("credentials:'include'")) return Parse("{\"result\":{\"value\":{\"type\":\"image/png\",\"data\":\"AQID\"}}}");
+                if (function.Contains("credentials:'include'")) return Value(DownloadedMedia);
                 if (function.Contains("No WebM")) return Parse("{\"result\":{\"value\":{\"mimeType\":\"video/webm\",\"width\":800,\"height\":600}}}");
                 if (function.Contains("return data.slice")) return Value(RecordingMedia);
                 return Value(true);
