@@ -101,7 +101,7 @@ public sealed partial class ProviderViewModel : ObservableObject
     internal WorkbenchProviderConfig ModelProviderConfig() => new(Kind.Trim(), BaseUrl.Trim(), null, [], Id, Name, Enabled,
         TemplateId: TemplateId, AccessType: AccessType == ProviderTemplate.ChatGptAccount ? AccessType : null);
 
-    public ModelConfigurationViewModel CreateModelEditor(ModelViewModel? model = null, bool copy = false) => new(this, model, copy);
+    public ModelConfigurationViewModel CreateModelEditor(ModelViewModel? model = null) => new(this, model);
 
     public ModelViewModel CreateModel(WorkbenchModelConfig config) => new(model => Models.Remove(model), ModelProviderConfig, config) { Provider = this };
 

@@ -151,21 +151,15 @@ public sealed partial class ModelConfigurationViewModel : ObservableObject
     public ModelViewModel Draft { get; }
     public ObservableCollection<ReasoningLevelViewModel> ReasoningLevels { get; } = [];
     public bool IsAdding => _original is null;
-    public bool IsCopy { get; }
-    public string Title => IsAdding
-        ? Loc.Get(IsCopy ? "models_copy_title" : "models_add_title")
-        : Loc.Get("settings_edit_model");
+    public string Title => IsAdding ? Loc.Get("models_add_title") : Loc.Get("settings_edit_model");
     public bool HasError => !string.IsNullOrEmpty(Error);
     public string SmartConfigurationHelp => Loc.Get("models_smart_configuration_help");
 
-    public ModelConfigurationViewModel(ProviderViewModel provider, ModelViewModel? original = null, bool copy = false)
+    public ModelConfigurationViewModel(ProviderViewModel provider, ModelViewModel? original = null)
     {
         _provider = provider;
-        _original = copy ? null : original;
-        IsCopy = copy;
-        var config = original?.ToConfig() ?? new WorkbenchModelConfig(string.Empty);
-        if (copy) config = config with { ModelId = string.Empty, DisplayName = null };
-        Draft = new ModelViewModel(_ => { }, provider.ModelProviderConfig, config);
+        _original = original;
+        Draft = new ModelViewModel(_ => { }, provider.ModelProviderConfig, original?.ToConfig() ?? new WorkbenchModelConfig(string.Empty));
         ReasoningLevels.CollectionChanged += OnReasoningCollectionChanged;
         LoadReasoningLevels();
         Draft.PropertyChanged += OnDraftChanged;

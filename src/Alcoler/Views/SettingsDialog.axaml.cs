@@ -137,12 +137,6 @@ public partial class SettingsDialog : Window
             await ModelConfigurationDialog.ShowAsync(this, provider, model);
     }
 
-    private async void OnCopyModelClick(object? sender, RoutedEventArgs e)
-    {
-        if (sender is Button { DataContext: ModelViewModel { Provider: { } provider } model })
-            await ModelConfigurationDialog.ShowAsync(this, provider, model, copy: true);
-    }
-
     private async void OnGetApiKeyClick(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: ProviderViewModel { ApiKeyManagementUri: { } uri } })
