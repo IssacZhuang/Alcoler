@@ -27,6 +27,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Alcoler.Tests" />
+    <InternalsVisibleTo Include="Alcoler.Browser.IntegrationTests" />
     <EmbeddedResource Include="Models\ModelDefaults.json" />
     <EmbeddedResource Include="Localization\Strings.en.json" WithCulture="false" />
     <EmbeddedResource Include="Localization\Strings.zh.json" WithCulture="false" />

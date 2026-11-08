@@ -20,6 +20,8 @@ using Alcoler.Views;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -116,6 +118,7 @@ internal sealed class NativeBrowserSuite
         await CaseAsync("Bounded local media artifact and download observation", DownloadsAsync);
         await CaseAsync("Short real WebM recording completion and cancellation", RecordingAsync);
         await CaseAsync("Embedded presenter and pane detach preserve native adapter and JS state", PresenterAsync);
+        await CaseAsync("Closing an image dialog restores browser focus without losing its native page", ImageDialogFocusAsync);
         await CaseAsync("Kernel Browser tool automatically opens Workbench native document and preserves adapter", WorkbenchDocumentAsync);
         await CaseAsync("History navigation and stale snapshot reference rejection", HistoryAsync);
         await CaseAsync("Cross-origin iframe CDP context click and fill", CrossOriginFrameAsync);
@@ -150,6 +153,7 @@ internal sealed class NativeBrowserSuite
         _tab = created.TabId ?? throw new InvalidOperationException("new_tab omitted its tab ID.");
         Check(_host.GetPageControl(_tab) is NativeWebView, "Parked creation did not create a NativeWebView.");
         Check(_host.GetPageControl(_tab)!.Parent is Panel, "New tab was not parked before presenter attachment.");
+        Check(!_host.GetPageControl(_tab)!.Focusable, "Parked native page can receive managed focus.");
         _parkingWindow = TopLevel.GetTopLevel(_host.GetPageControl(_tab)!) as Window
             ?? throw new InvalidOperationException("Parked native page has no live window.");
         AssertParkingWindowHidden();
@@ -465,6 +469,75 @@ internal sealed class NativeBrowserSuite
             Check(ReferenceEquals(native, _host.GetPageControl(_tab)), "Reparenting replaced the native control.");
             Equal(sentinel, Structured(await CommandAsync("evaluate", D(("expression", "globalThis.__integrationSentinel")), _tab)).GetString(), "Reparented JavaScript sentinel");
         }
+    }
+
+    private async Task ImageDialogFocusAsync()
+    {
+        var native = (NativeWebView)_host.GetPageControl(_tab)!;
+        var adapter = native.TryGetPlatformHandle() ?? throw new InvalidOperationException("Native WebView has no adapter.");
+        var presenter = _host.CreatePagePresenter(_tab);
+        var png = (await CommandAsync("screenshot", tab: _tab)).ScreenshotPng
+            ?? throw new InvalidOperationException("Image dialog fixture screenshot is missing.");
+        var sentinel = Guid.NewGuid().ToString("N");
+        await CommandAsync("evaluate", D(("expression", "arg => {globalThis.__imageFocusSentinel=arg;return true;}"), ("arg", sentinel)), _tab);
+        var restored = 0;
+        native.GotFocus += OnFocus;
+        _window.Content = presenter;
+        try
+        {
+            await UiTurnAsync();
+            foreach (var escape in new[] { false, true, false })
+            {
+                _window.Activate();
+                native.Focus();
+                await UiTurnAsync();
+                Check(native.IsFocused, "Native browser did not receive focus before opening the image dialog.");
+                using var stream = new MemoryStream(png, writable: false);
+                var dialog = new ImageViewerDialog("native-focus.png", _ => Task.FromResult<Bitmap?>(new Bitmap(stream)));
+                var closed = dialog.ShowDialog(_window);
+                try
+                {
+                    await UiTurnAsync();
+                    Check(dialog.IsActive && dialog.FindControl<Image>("PreviewImage")!.Source is Bitmap,
+                        "Image dialog did not activate and display its decoded image.");
+                    var before = restored;
+                    Console.WriteLine($"STEP Close image dialog using {(escape ? "Escape" : "close button")} with browser-focused owner");
+                    if (escape)
+                        dialog.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Escape });
+                    else
+                        dialog.FindControl<Button>("CloseImageButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    await closed.WaitAsync(TimeSpan.FromSeconds(5), _ct);
+                    await UiTurnAsync();
+                    Check(!_window.OwnedWindows.Any(), "Closed image dialog remained owned by the browser window.");
+                    Check(_window.IsActive && native.IsFocused && restored > before,
+                        "Closing the image dialog did not restore the browser's managed focus.");
+                    var focused = GetFocus();
+                    Check(focused == adapter.Handle || IsChild(adapter.Handle, focused),
+                        "Closing the image dialog did not restore the browser's native keyboard focus.");
+                    Check(ReferenceEquals(adapter, NativeAdapter(native)), "Closing an image dialog replaced the native browser adapter.");
+                    Equal(sentinel, Structured(await CommandAsync("evaluate", D(("expression", "globalThis.__imageFocusSentinel")), _tab)).GetString(),
+                        "Browser JavaScript state after closing the image dialog");
+                    Check(dialog.FindControl<Image>("PreviewImage")!.Source is null, "Closed image dialog retained its bitmap.");
+                }
+                finally
+                {
+                    if (dialog.IsVisible) dialog.Close();
+                }
+            }
+        }
+        finally
+        {
+            native.GotFocus -= OnFocus;
+            _window.Content = null;
+            (presenter as IDisposable)?.Dispose();
+            await UiTurnAsync();
+        }
+
+        var parkedFocus = GetFocus();
+        Check(!native.Focusable && !native.IsFocused, "Parked browser retained managed focus or remained focusable.");
+        Check(parkedFocus != adapter.Handle && !IsChild(adapter.Handle, parkedFocus), "Parked browser retained native keyboard focus.");
+
+        void OnFocus(object? sender, GotFocusEventArgs args) => restored++;
     }
 
     private async Task WorkbenchDocumentAsync()
@@ -870,6 +943,13 @@ internal sealed class NativeBrowserSuite
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetFocus();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
 
     private static object NativeAdapter(NativeWebView native) => native.TryGetPlatformHandle()
         ?? throw new InvalidOperationException("Native WebView has no live adapter.");

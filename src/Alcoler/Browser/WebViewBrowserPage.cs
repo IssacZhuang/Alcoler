@@ -58,7 +58,7 @@ internal sealed partial class WebViewBrowserPage : IBrowserPage
         _downloadDirectory = _downloadRoot;
         _callbacks = new NativeCallbacks(this);
         Dispatcher.UIThread.UnhandledException += OnInitializationException;
-        WebView = new NativeWebView();
+        WebView = new WebViewBrowserControl { Focusable = false };
         WebView.EnvironmentRequested += OnEnvironmentRequested;
         WebView.AdapterCreated += OnAdapterCreated;
         WebView.AdapterDestroyed += OnAdapterDestroyed;

@@ -232,6 +232,31 @@ public sealed class WebViewBrowserHost : IBrowserHost
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr hwnd, int command);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetFocus();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
+
+    private static void SuspendPageFocus(NativeWebView view)
+    {
+        view.Focusable = false;
+        if (TopLevel.GetTopLevel(view) is Window { IsActive: true } window && window.TryGetPlatformHandle() is { } owner
+            && view.TryGetPlatformHandle() is { } browser)
+        {
+            var focused = GetFocus();
+            if (focused != IntPtr.Zero && (focused == browser.Handle || IsChild(browser.Handle, focused)))
+            {
+                // WebView2's ResignFocus does not transfer HWND keyboard focus.
+                SetFocus(owner.Handle);
+            }
+        }
+    }
+
     private void ParkPage(WebViewBrowserPage page)
     {
         _presenters.Remove(page.Id);
@@ -246,6 +271,7 @@ public sealed class WebViewBrowserHost : IBrowserHost
             return;
         }
         var previousRoot = TopLevel.GetTopLevel(view);
+        SuspendPageFocus(view);
         view.UpdateLayout();
         // The destination must already have a live TopLevel when this scope ends.
         using (view.BeginReparenting(false))
@@ -262,6 +288,7 @@ public sealed class WebViewBrowserHost : IBrowserHost
                 content.Content = view;
             }
         }
+        view.Focusable = destination is BrowserPagePresenter;
     }
 
     private static void RemoveFromParent(Control view)
@@ -283,6 +310,7 @@ public sealed class WebViewBrowserHost : IBrowserHost
             return;
         }
         _presenters.Remove(tabId);
+        SuspendPageFocus(page.WebView);
         page.DisposeNative();
         RemoveFromParent(page.WebView);
         if (_userWindows.Remove(tabId, out var window))
