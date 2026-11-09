@@ -1,13 +1,11 @@
 using Alcoler.Adapters.Storage;
 using Alcoler.Localization;
-using Alcoler.ViewModel;
 using Alcoler.Views;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Automation;
 using Avalonia.Input;
 using Avalonia.Media;
-using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 
@@ -28,8 +26,9 @@ public sealed class ConversationImage : Image
     private static readonly Cursor HandCursor = new(StandardCursorType.Hand);
 
     private readonly FileArtifactStore _artifacts;
+    private readonly ConversationImageCache _cache;
     private CancellationTokenSource? _load;
-    private Bitmap? _thumbnail;
+    private ConversationImageCache.Lease? _lease;
     private Point? _pressedAt;
     private bool _opening;
 
@@ -40,6 +39,7 @@ public sealed class ConversationImage : Image
     internal ConversationImage(FileArtifactStore artifacts)
     {
         _artifacts = artifacts;
+        _cache = ConversationImageCache.For(artifacts);
         Width = 128;
         Height = 96;
         Stretch = Stretch.Uniform;
@@ -149,8 +149,8 @@ public sealed class ConversationImage : Image
         _load?.Dispose();
         _load = null;
         Source = null;
-        _thumbnail?.Dispose();
-        _thumbnail = null;
+        _lease?.Release();
+        _lease = null;
     }
 
     private async void LoadThumbnail()
@@ -162,19 +162,13 @@ public sealed class ConversationImage : Image
         var token = loading.Token;
         try
         {
-            var thumbnail = await Task.Run(async () =>
-            {
-                var data = await _artifacts.TryLoadAsync(uri, token);
-                if (data is null || token.IsCancellationRequested)
-                    return null;
-                return ComposerImageAttachment.DecodeThumbnail(data.Value.ToArray(), mime.ToLowerInvariant(), 192);
-            }, token);
+            var lease = await _cache.AcquireAsync(uri, mime, token);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 if (_load != loading || token.IsCancellationRequested)
-                    thumbnail?.Dispose();
+                    lease?.Release();
                 else
-                    Source = _thumbnail = thumbnail;
+                    Source = (_lease = lease)?.Bitmap;
             });
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or OperationCanceledException

@@ -425,17 +425,18 @@
                       <TextBlock Text="{loc:Loc timeline_thinking}" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource AlcolerTextTertiary}" />
                     </Expander.Header>
                     <Border Classes="reasoningDetails" Margin="8,12,0,0" Padding="14,0,0,0"
-                            BorderThickness="0">
+                            BorderThickness="0"
+                            IsVisible="{Binding ShowReasoningBody}">
                       <ScrollViewer MaxHeight="240" HorizontalScrollBarVisibility="Disabled">
                         <SelectableTextBlock TextWrapping="Wrap" FontFamily="{DynamicResource AlcolerFontPrimary}"
                                              FontSize="{DynamicResource AlcolerFontBase}" LineHeight="24.5"
                                              Foreground="{DynamicResource AlcolerTextSecondary}"
-                                             Text="{Binding ReasoningBlocks, Converter={x:Static conv:TimelineConverters.JoinLines}}" />
+                                             Text="{Binding ExpandedReasoningText}" />
                       </ScrollViewer>
                     </Border>
                   </Expander>
                   <StackPanel Spacing="0" HorizontalAlignment="Stretch" IsVisible="{Binding IsStreaming}">
-                    <ItemsControl ItemsSource="{Binding StreamingChunks}" IsVisible="{Binding IsStreaming}"
+                    <ItemsControl ItemsSource="{Binding StreamingChunks}" IsVisible="{Binding ShowStreamingChunks}"
                                   HorizontalAlignment="Stretch">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="vm:AssistantMarkdownChunk">
@@ -449,7 +450,7 @@
                                          IsVisible="{Binding HasStreamingTail}" />
                   </StackPanel>
                   <controls:ConversationMarkdown Markdown="{Binding FinalMarkdown}"
-                                                 IsVisible="{Binding HasFinalMarkdown}" />
+                                                 IsVisible="{Binding ShowFinalMarkdown}" />
                   <Rectangle Classes="streamingCaret" HorizontalAlignment="Left" IsVisible="{Binding IsStreaming}" />
                   <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding CanFork}">
                     <Button Classes="messageAction" Click="OnForkAssistantMessageClick"
@@ -531,22 +532,22 @@
                   </ItemsControl>
                   <Border Classes="toolDetails" Margin="8,12,0,0" Padding="14,0,0,0"
                           BorderThickness="0"
-                          IsVisible="{Binding IsExpanded}">
+                          IsVisible="{Binding ShowToolDetails}">
                     <StackPanel Spacing="12" MinWidth="0">
                       <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" IsVisible="{Binding HasPlan}">
                         <TextBlock Classes="caption" Text="{loc:Loc workbench_plan}" VerticalAlignment="Center" />
                         <Button Grid.Column="1" x:Name="OpenPlanButton" Classes="ghost" Content="{loc:Loc timeline_open_in_side_panel}"
                                 Click="OnOpenPlanClick" Padding="6,2" FontSize="{DynamicResource AlcolerFontBase}" />
                       </Grid>
-                      <StackPanel Spacing="6" IsVisible="{Binding InputJson, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
+                      <StackPanel Spacing="6" IsVisible="{Binding ExpandedInputJson, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
                         <TextBlock Classes="caption" Text="{loc:Loc timeline_input}" />
                         <Border Classes="monoPane">
                           <ScrollViewer MaxHeight="300" HorizontalScrollBarVisibility="Auto">
-                            <SelectableTextBlock Classes="mono" Text="{Binding InputJson}" />
+                            <SelectableTextBlock Classes="mono" Text="{Binding ExpandedInputJson}" />
                           </ScrollViewer>
                         </Border>
                       </StackPanel>
-                      <StackPanel Spacing="6" IsVisible="{Binding OutputText, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
+                      <StackPanel Spacing="6" IsVisible="{Binding ExpandedOutputText, Converter={x:Static conv:TimelineConverters.NonEmpty}}">
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                           <TextBlock Classes="caption" Text="{loc:Loc timeline_output}" VerticalAlignment="Center" />
                           <Button Grid.Column="1" Classes="ghost openToolOutput" Content="{loc:Loc timeline_open_in_side_panel}"
@@ -555,13 +556,13 @@
                         <Border Classes="monoPane"
                                 IsVisible="{Binding ToolName, Converter={x:Static conv:TimelineConverters.TerminalTool}}">
                           <ScrollViewer MaxHeight="300" HorizontalScrollBarVisibility="Auto">
-                            <SelectableTextBlock Classes="mono" Text="{Binding OutputText}" />
+                            <SelectableTextBlock Classes="mono" Text="{Binding ExpandedOutputText}" />
                           </ScrollViewer>
                         </Border>
                         <Border Classes="monoPane"
                                 IsVisible="{Binding ToolName, Converter={x:Static conv:TimelineConverters.TerminalTool}, ConverterParameter=invert}">
                           <ScrollViewer MaxHeight="300" HorizontalScrollBarVisibility="Disabled">
-                            <SelectableTextBlock Classes="mono" TextWrapping="Wrap" Text="{Binding OutputText}" />
+                            <SelectableTextBlock Classes="mono" TextWrapping="Wrap" Text="{Binding ExpandedOutputText}" />
                           </ScrollViewer>
                         </Border>
                       </StackPanel>
@@ -598,7 +599,7 @@
                         </StackPanel>
                       </Grid>
                     </Button>
-                    <StackPanel IsVisible="{Binding IsExpanded}">
+                    <StackPanel IsVisible="{Binding ShowFileList}">
                       <Border Height="1" Background="{DynamicResource AlcolerSurfaceHigh}" />
                       <ItemsControl ItemsSource="{Binding Files}">
                         <ItemsControl.ItemTemplate>

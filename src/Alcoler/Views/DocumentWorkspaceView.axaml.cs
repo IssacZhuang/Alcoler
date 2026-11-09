@@ -53,21 +53,34 @@ public partial class DocumentWorkspaceView : UserControl
 
     private void OnWorkspaceChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(DocumentWorkspaceViewModel.ActiveDocument))
+        if (e.PropertyName is not (nameof(DocumentWorkspaceViewModel.ActiveDocument)
+            or nameof(DocumentWorkspaceViewModel.IsVisible)))
         {
-            Dispatcher.UIThread.Post(() =>
-            {
-                var tab = DocumentTabs.GetVisualDescendants().OfType<Border>()
-                    .FirstOrDefault(border => border.Classes.Contains("documentTab") && ReferenceEquals(border.DataContext, _workspace?.ActiveDocument));
-                tab?.BringIntoView();
-            }, DispatcherPriority.Loaded);
+            return;
         }
+        Dispatcher.UIThread.Post(() =>
+        {
+            UnloadHiddenTimelines();
+            var tab = DocumentTabs.GetVisualDescendants().OfType<Border>()
+                .FirstOrDefault(border => border.Classes.Contains("documentTab") && ReferenceEquals(border.DataContext, _workspace?.ActiveDocument));
+            tab?.BringIntoView();
+        }, DispatcherPriority.Loaded);
     }
 
     private void OnVisibleTabsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         ApplySearch();
-        Dispatcher.UIThread.Post(UpdateTabWidths, DispatcherPriority.Loaded);
+        Dispatcher.UIThread.Post(() =>
+        {
+            UnloadHiddenTimelines();
+            UpdateTabWidths();
+        }, DispatcherPriority.Loaded);
+    }
+
+    private void UnloadHiddenTimelines()
+    {
+        foreach (var timeline in DocumentBodies.GetVisualDescendants().OfType<TimelineView>())
+            timeline.UnloadRealizedContent();
     }
 
     private void UpdateTabWidths()

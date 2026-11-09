@@ -18,6 +18,17 @@ public abstract partial class TimelineItemViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _isFolded;
+
+    // Set by the timeline panel while a fast scroll is in flight so rows
+    // realize with their heavy content collapsed and get promoted on idle.
+    [ObservableProperty]
+    private bool _isContentDeferred;
+
+    partial void OnIsContentDeferredChanged(bool value) => OnContentDeferredChanged();
+
+    protected virtual void OnContentDeferredChanged()
+    {
+    }
 }
 
 public sealed partial class UserMessageItemViewModel : TimelineItemViewModel
@@ -108,11 +119,44 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
     public bool HasReasoning => ReasoningBlocks.Count > 0 && !IsReasoningSuppressed;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasStreamingTail), nameof(HasFinalMarkdown))]
+    [NotifyPropertyChangedFor(nameof(HasStreamingTail), nameof(HasFinalMarkdown), nameof(ShowStreamingChunks), nameof(ShowFinalMarkdown))]
     private bool _isStreaming;
 
     [ObservableProperty]
     private bool _isReasoningExpanded;
+
+    public bool ShowStreamingChunks => IsStreaming && !IsContentDeferred;
+
+    public bool ShowFinalMarkdown => HasFinalMarkdown && !IsContentDeferred;
+
+    public bool ShowReasoningBody => IsReasoningExpanded && !IsContentDeferred;
+
+    protected override void OnContentDeferredChanged()
+    {
+        OnPropertyChanged(nameof(ShowStreamingChunks));
+        OnPropertyChanged(nameof(ShowFinalMarkdown));
+        OnPropertyChanged(nameof(ShowReasoningBody));
+    }
+
+    private string? _reasoningText;
+
+    public string ReasoningText => _reasoningText ??= string.Join("\n\n", ReasoningBlocks);
+
+    public string ExpandedReasoningText => IsReasoningExpanded ? ReasoningText : string.Empty;
+
+    partial void OnIsReasoningExpandedChanged(bool value)
+    {
+        _reasoningText = null;
+        OnPropertyChanged(nameof(ExpandedReasoningText));
+        OnPropertyChanged(nameof(ShowReasoningBody));
+    }
+
+    partial void OnReasoningBlocksChanged(IReadOnlyList<string> value)
+    {
+        _reasoningText = null;
+        OnPropertyChanged(nameof(ReasoningText));
+        OnPropertyChanged(nameof(ExpandedReasoningText));
+    }
 
     [ObservableProperty]
     private bool _canFork;
@@ -125,7 +169,7 @@ public sealed partial class AssistantMessageItemViewModel : TimelineItemViewMode
     private bool _streamingTailIsCode;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasFinalMarkdown))]
+    [NotifyPropertyChangedFor(nameof(HasFinalMarkdown), nameof(ShowFinalMarkdown))]
     private string _finalMarkdown = string.Empty;
 
     public ObservableCollection<AssistantMarkdownChunk> StreamingChunks { get; } = [];
@@ -487,9 +531,6 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     private FileChangeStats? _fileChange;
 
     [ObservableProperty]
-    private string _inputJson = string.Empty;
-
-    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasError), nameof(ShowStatus), nameof(DisplayStatusText))]
     private ToolCallStatus _status;
 
@@ -498,9 +539,6 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
 
     [ObservableProperty]
     private string _summary = string.Empty;
-
-    [ObservableProperty]
-    private string _outputText = string.Empty;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasPlan))]
@@ -526,6 +564,41 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
     [ObservableProperty]
     private bool _isExpanded;
 
+    private string? _inputJson;
+    private string? _outputText;
+
+    // Details are materialized on demand from the retained sources and dropped
+    // when the row collapses or leaves the viewport; Expanded* projections keep
+    // collapsed bindings from pulling a serialized copy into the visual tree.
+    public string InputJson =>
+        !_hasInputSource ? string.Empty : _inputJson ??= JsonSerializer.Serialize(_inputSource, IndentedJson);
+
+    public string OutputText =>
+        _outputSource is null ? string.Empty : _outputText ??= string.Join("\n", _outputSource.OfType<ToolResultText>().Select(block => block.Text));
+
+    public string ExpandedInputJson => IsExpanded ? InputJson : string.Empty;
+
+    public string ExpandedOutputText => IsExpanded ? OutputText : string.Empty;
+
+    public bool ShowToolDetails => IsExpanded && !IsContentDeferred;
+
+    protected override void OnContentDeferredChanged() => OnPropertyChanged(nameof(ShowToolDetails));
+
+    partial void OnIsExpandedChanged(bool value)
+    {
+        _inputJson = null;
+        _outputText = null;
+        OnPropertyChanged(nameof(ExpandedInputJson));
+        OnPropertyChanged(nameof(ExpandedOutputText));
+        OnPropertyChanged(nameof(ShowToolDetails));
+    }
+
+    internal void TrimMaterializedDetails()
+    {
+        _inputJson = null;
+        _outputText = null;
+    }
+
     private static readonly JsonSerializerOptions IndentedJson = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -547,7 +620,9 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         {
             _hasInputSource = true;
             _inputSource = row.Input.Clone();
-            InputJson = JsonSerializer.Serialize(row.Input, IndentedJson);
+            _inputJson = null;
+            OnPropertyChanged(nameof(InputJson));
+            OnPropertyChanged(nameof(ExpandedInputJson));
             var plan = string.Equals(ToolName, "ExitPlanMode", StringComparison.OrdinalIgnoreCase)
                 ? ReadText(row.Input, "plan") ?? string.Empty
                 : string.Empty;
@@ -576,9 +651,9 @@ public sealed partial class ToolCallItemViewModel : TimelineItemViewModel
         {
             _hasOutputSource = true;
             _outputSource = row.Output;
-            OutputText = row.Output is null
-                ? string.Empty
-                : string.Join("\n", row.Output.OfType<ToolResultText>().Select(b => b.Text));
+            _outputText = null;
+            OnPropertyChanged(nameof(OutputText));
+            OnPropertyChanged(nameof(ExpandedOutputText));
             ToolResultMedia[] images = row.Output is null
                 ? []
                 : [.. row.Output.OfType<ToolResultMedia>().Where(media => media.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))];
@@ -717,6 +792,12 @@ public sealed partial class FileChangeSummaryItemViewModel : TimelineItemViewMod
 
     [ObservableProperty]
     private bool _isExpanded;
+
+    public bool ShowFileList => IsExpanded && !IsContentDeferred;
+
+    protected override void OnContentDeferredChanged() => OnPropertyChanged(nameof(ShowFileList));
+
+    partial void OnIsExpandedChanged(bool value) => OnPropertyChanged(nameof(ShowFileList));
 
     public void UpdateFrom(FileChangeSummaryRow row)
     {

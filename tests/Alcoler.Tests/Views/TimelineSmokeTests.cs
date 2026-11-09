@@ -71,8 +71,14 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
                 && classes.Contains("streamingTail"));
 
             Assert.Single(descendants.OfType<Expander>());
-            // A collapsed Expander only materializes its header; the content stays in the logical tree.
-            Assert.Contains(view.GetLogicalDescendants(),
+            // A collapsed reasoning block keeps its header but not the joined body;
+            // expanding materializes it on demand.
+            Assert.DoesNotContain(view.GetLogicalDescendants(),
+                d => d is SelectableTextBlock { Text: "pondering the request" });
+            var assistant = Assert.IsType<AssistantMessageItemViewModel>(viewModel.Items[1]);
+            assistant.IsReasoningExpanded = true;
+            Pump();
+            Assert.Contains(view.GetVisualDescendants(),
                 d => d is SelectableTextBlock { Text: "pondering the request" });
 
             Assert.Contains(descendants, d => d is TextBlock { Text: "Running" });
@@ -309,8 +315,9 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
 
             var expander = Assert.Single(view.GetVisualDescendants().OfType<Expander>());
             var toggle = Assert.Single(expander.GetVisualDescendants().OfType<ToggleButton>());
-            var reasoning = Assert.Single(view.GetLogicalDescendants().OfType<SelectableTextBlock>(),
-                block => block.Text == content);
+            // A collapsed reasoning block keeps its disclosure but not the joined body.
+            var reasoning = Assert.Single(expander.GetLogicalDescendants().OfType<SelectableTextBlock>());
+            Assert.Equal(string.Empty, reasoning.Text);
             var markdown = Assert.Single(view.GetLogicalDescendants().OfType<ConversationMarkdown>());
             Assert.False(markdown.IsVisible);
             Assert.DoesNotContain(view.GetVisualDescendants().OfType<Markdown.Avalonia.MarkdownScrollViewer>(),
@@ -336,6 +343,7 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
             await ClickAsync(window, toggle);
 
             Assert.True(expander.IsExpanded);
+            Assert.Equal(content, reasoning.Text);
             Assert.True(reasoning.IsEffectivelyVisible);
             Assert.True(reasoning.Bounds.Height > 0);
             Assert.False(collapsedChevron.IsEffectivelyVisible);
@@ -1346,6 +1354,225 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
         finally
         {
             window.Close();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(-1, 40)]
+    [InlineData(1, 40)]
+    [InlineData(-1, 2)]
+    public async Task WheelAtScrollBoundary_PreservesVisibleContentAndExtent(int direction, int rowCount)
+    {
+        EnsureFluentTheme();
+        var (view, conversation, store) = CreateTimeline();
+        var window = Host(view, 680, 320);
+        try
+        {
+            var at = DateTimeOffset.UtcNow;
+            conversation.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true, ResetRows:
+                Enumerable.Range(0, rowCount).Select(index => (ConversationRow)new AssistantMessageRow($"a{index}", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), $"Answer {index} with a markdown body.")], false, at)).ToArray()));
+            await RenderAsync(window);
+            var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            panel.DeferIdleInterval = TimeSpan.FromSeconds(30);
+            if (direction > 0)
+            {
+                view.Scroller.Offset = default;
+                await RenderAsync(window);
+            }
+            var offset = view.Scroller.Offset;
+            var extent = view.Scroller.Extent;
+            var markdowns = view.GetVisualDescendants().OfType<ConversationMarkdown>()
+                .Where(markdown => markdown.IsEffectivelyVisible).ToArray();
+            Assert.True(markdowns.Length > 1);
+            var point = view.Scroller.TranslatePoint(new Point(200, 100), window)!.Value;
+            window.MouseMove(point);
+            for (var index = 0; index < 8; index++)
+            {
+                window.MouseWheel(point, new Vector(0, direction));
+                await RenderAsync(window);
+                Assert.All(conversation.Items, row => Assert.False(row.IsContentDeferred));
+                Assert.All(markdowns, markdown => Assert.True(markdown.IsEffectivelyVisible));
+                Assert.Equal(offset, view.Scroller.Offset);
+                Assert.Equal(extent, view.Scroller.Extent);
+            }
+        }
+        finally
+        {
+            window.Close();
+            conversation.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FastScroll_PreservesRealizedContentAndPromotesNewRowsOnIdleOrBoundary(bool reachBoundary)
+    {
+        EnsureFluentTheme();
+        var (view, conversation, store) = CreateTimeline();
+        var window = Host(view, 680, 320);
+        try
+        {
+            var at = DateTimeOffset.UtcNow;
+            conversation.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true, ResetRows:
+                Enumerable.Range(0, 120).Select(index => (ConversationRow)new AssistantMessageRow($"a{index}", StrongId.NewMessageId(),
+                    [new TextPart(StrongId.NewPartId(), $"Answer {index} with a markdown body.")], false, at)).ToArray()));
+            await RenderAsync(window);
+            var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            panel.DeferIdleInterval = TimeSpan.FromSeconds(30);
+            view.Scroller.Offset = new Vector(0, 1600);
+            await RenderAsync(window);
+            view.Scroller.Offset = new Vector(0, 450);
+            await RenderAsync(window);
+            Assert.All(conversation.Items, row => Assert.False(row.IsContentDeferred));
+            var measuredHeights = new Dictionary<object, double>(PanelHeights(panel), ReferenceEqualityComparer.Instance);
+            var realized = panel.Children.Select(child => Assert.IsType<AssistantMessageItemViewModel>(child.DataContext)).ToArray();
+            var point = view.Scroller.TranslatePoint(new Point(200, 100), window)!.Value;
+            window.MouseMove(point);
+            for (var index = 0; index < 3; index++)
+                window.MouseWheel(point, new Vector(0, -0.25));
+            await RenderAsync(window);
+            Assert.All(realized, row => Assert.False(row.IsContentDeferred));
+
+            window.MouseWheel(point, new Vector(0, -15));
+            await RenderAsync(window);
+            Assert.True(view.Scroller.Offset.Y > 450);
+            var deferred = conversation.Items.OfType<AssistantMessageItemViewModel>()
+                .First(row => row.IsContentDeferred && row.ShowFinalMarkdown is false);
+            Assert.DoesNotContain(deferred, realized);
+            var deferredMarkdown = Assert.Single(view.GetVisualDescendants().OfType<ConversationMarkdown>(),
+                markdown => ReferenceEquals(markdown.DataContext, deferred));
+            Assert.False(deferredMarkdown.IsVisible);
+
+            var cachedDeferred = conversation.Items.Where(row => row.IsContentDeferred && measuredHeights.ContainsKey(row)).ToArray();
+            Assert.NotEmpty(cachedDeferred);
+            foreach (var row in cachedDeferred)
+            {
+                Assert.Equal(measuredHeights[row], PanelHeights(panel)[row]);
+                var index = conversation.Items.IndexOf(row);
+                Assert.Equal(measuredHeights[row], PanelOffsets(panel)[index + 1] - PanelOffsets(panel)[index], precision: 5);
+            }
+
+            if (reachBoundary)
+            {
+                window.MouseWheel(point, new Vector(0, -1000));
+                await RenderAsync(window);
+                Assert.InRange(view.Scroller.Extent.Height - view.Scroller.Viewport.Height - view.Scroller.Offset.Y, 0, 1);
+            }
+            else
+            {
+                panel.DeferIdleInterval = TimeSpan.FromMilliseconds(20);
+                window.MouseWheel(point, new Vector(0, -0.25));
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+                while (conversation.Items.Any(row => row.IsContentDeferred))
+                {
+                    await Task.Delay(10);
+                    await RenderAsync(window);
+                    Assert.True(DateTime.UtcNow < deadline, "Deferred content did not recover after wheel input stopped.");
+                }
+                Assert.All(view.GetVisualDescendants().OfType<ConversationMarkdown>(),
+                    markdown => Assert.True(markdown.IsVisible));
+            }
+            Assert.All(conversation.Items, row => Assert.False(row.IsContentDeferred));
+            Assert.True(deferred.ShowFinalMarkdown);
+        }
+        finally
+        {
+            window.Close();
+            conversation.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task FastScroll_MeasuresTallUserMessagesWithoutDeferringTheirVisibleContent()
+    {
+        EnsureFluentTheme();
+        var (view, conversation, store) = CreateTimeline();
+        var window = Host(view, 680, 320);
+        try
+        {
+            var at = DateTimeOffset.UtcNow;
+            var text = string.Join("\n\n", Enumerable.Repeat("A multiline user message must retain its full height while scrolling.", 6));
+            conversation.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true, ResetRows:
+                Enumerable.Range(0, 120).Select(index => index % 2 == 0
+                    ? (ConversationRow)new UserMessageRow($"u{index}", text, at)
+                    : new AssistantMessageRow($"a{index}", StrongId.NewMessageId(),
+                        [new TextPart(StrongId.NewPartId(), $"Answer {index} with a markdown body.")], false, at)).ToArray()));
+            await RenderAsync(window);
+            var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            panel.DeferIdleInterval = TimeSpan.FromSeconds(30);
+            view.Scroller.Offset = new Vector(0, 450);
+            await RenderAsync(window);
+            var point = view.Scroller.TranslatePoint(new Point(200, 100), window)!.Value;
+            window.MouseMove(point);
+            for (var index = 0; index < 3; index++)
+                window.MouseWheel(point, new Vector(0, -0.25));
+            await RenderAsync(window);
+            window.MouseWheel(point, new Vector(0, -15));
+            await RenderAsync(window);
+            Assert.Contains(conversation.Items, row => row.IsContentDeferred);
+            var userContainers = panel.Children.Where(child => child.DataContext is UserMessageItemViewModel).ToArray();
+            Assert.NotEmpty(userContainers);
+            foreach (var container in userContainers)
+            {
+                var row = Assert.IsType<UserMessageItemViewModel>(container.DataContext);
+                Assert.False(row.IsContentDeferred);
+                Assert.True(container.DesiredSize.Height > 48);
+                var index = conversation.Items.IndexOf(row);
+                Assert.Equal(container.DesiredSize.Height, PanelOffsets(panel)[index + 1] - PanelOffsets(panel)[index], precision: 5);
+            }
+        }
+        finally
+        {
+            window.Close();
+            conversation.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task ReleasedContainers_ArePooledAndReusedWhenScrolledBack()
+    {
+        EnsureFluentTheme();
+        var (view, conversation, store) = CreateTimeline();
+        var window = Host(view, 680, 320);
+        try
+        {
+            var at = DateTimeOffset.UtcNow;
+            conversation.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true, ResetRows:
+                Enumerable.Range(0, 60).Select(index => (ConversationRow)new ToolCallRow($"t{index}", StrongId.NewToolCallId(), "Read",
+                    JsonSerializer.SerializeToElement(new { file_path = $"file{index}.txt" }), ToolCallStatus.Succeeded,
+                    null, false, TimeSpan.FromSeconds(1), at)).ToArray()));
+            await RenderAsync(window);
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            panel.DeferIdleInterval = TimeSpan.FromSeconds(30);
+            // The fresh conversation follows the latest row; return to the top
+            // so row 0 is realized before its container is captured.
+            view.Scroller.Offset = default;
+            await RenderAsync(window);
+            var first = items.ContainerFromIndex(0);
+            Assert.NotNull(first);
+
+            view.Scroller.Offset = new Vector(0, 1200);
+            await RenderAsync(window);
+            Assert.Null(items.ContainerFromIndex(0));
+
+            view.Scroller.Offset = default;
+            await RenderAsync(window);
+            Assert.Same(first, items.ContainerFromIndex(0));
+            var header = Assert.Single(view.GetVisualDescendants().OfType<Button>(),
+                button => button.Classes.Contains("toolRow") && ReferenceEquals(button.DataContext, conversation.Items[0]));
+            Assert.True(header.IsEffectivelyVisible);
+        }
+        finally
+        {
+            window.Close();
+            conversation.Dispose();
+            store.Dispose();
         }
     }
 

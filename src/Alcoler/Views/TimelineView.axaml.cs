@@ -70,6 +70,14 @@ public partial class TimelineView : UserControl
 
     internal ScrollViewer Scroller => TimelineScroll;
 
+    /// <summary>Releases realized rows when the hosting surface is hidden so the
+    /// visual tree is not retained while invisible; cached heights restore it on show.</summary>
+    public void UnloadRealizedContent()
+    {
+        if (!IsEffectivelyVisible)
+            Panel?.UnloadRealizedRows();
+    }
+
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
         UnsubscribeConversation();

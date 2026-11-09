@@ -7,6 +7,8 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.LogicalTree;
+using Avalonia.Interactivity;
+using Avalonia.Threading;
 using Avalonia.VisualTree;
 
 namespace Alcoler.Controls;
@@ -14,10 +16,17 @@ namespace Alcoler.Controls;
 public sealed class ConversationPanel : VirtualizingPanel
 {
     private const double Overscan = 400;
+    // Deferral triggers only on sustained wheel input; offset jumps from
+    // programmatic scrolls (anchor restore, follow-latest) must not defer.
+    private const int WheelFlingEventCount = 3;
+    private static readonly TimeSpan WheelFlingWindow = TimeSpan.FromMilliseconds(250);
+    internal TimeSpan DeferIdleInterval { get; set; } = TimeSpan.FromMilliseconds(180);
+    private const int MaxPooledContainers = 48;
     private static readonly object NullItem = new();
     private readonly Dictionary<object, double> _heights = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<object, int> _indices = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, RealizedRow> _realized = [];
+    private readonly Dictionary<object, Stack<Control>> _containerPool = new(ReferenceEqualityComparer.Instance);
     private readonly HashSet<Control> _ownContainers = [];
     private readonly HashSet<int> _keepIndices = [];
     private readonly List<int> _releaseIndices = [];
@@ -42,6 +51,12 @@ public sealed class ConversationPanel : VirtualizingPanel
     private string? _readingAnchorId;
     private int _readingAnchorIndex = -1;
     private bool _inLayout;
+    private bool _contentDeferred;
+    private DispatcherTimer? _deferTimer;
+    private long _lastFlingTimestamp;
+    private int _wheelFlingEvents;
+    private double _wheelStartOffset;
+    private int _pooledCount;
     private Control? _ownVisibilityChange;
 
     public ConversationPanel()
@@ -76,6 +91,26 @@ public sealed class ConversationPanel : VirtualizingPanel
         _readingAnchorIndex = -1;
         InvalidateMeasure();
     }
+
+    /// <summary>
+    /// Releases every realized container while keeping cached heights and
+    /// offsets, so a surface that is hidden (an inactive document tab) stops
+    /// retaining a viewport's worth of visual trees and restores instantly
+    /// from the cache when shown again.
+    /// </summary>
+    internal void UnloadRealizedRows()
+    {
+        if (_realized.Count == 0)
+            return;
+        _releaseIndices.Clear();
+        foreach (var index in _realized.Keys)
+            _releaseIndices.Add(index);
+        foreach (var index in _releaseIndices)
+            Release(index);
+        InvalidateMeasure();
+    }
+
+    internal int RealizedRowCount => _realized.Count;
 
     internal bool TryGetReadingAnchorPosition(out double position)
     {
@@ -224,6 +259,8 @@ public sealed class ConversationPanel : VirtualizingPanel
         if (retain || (height > 0 && _offsets[i] + height >= start && _offsets[i] <= end))
         {
             var row = Realize(i);
+            if (retain && row.Key is TimelineItemViewModel viewModel)
+                viewModel.IsContentDeferred = false;
             height = MeasureRow(row, constraint);
             width = Math.Max(width, row.Container.DesiredSize.Width);
             if (height > 0 || retain)
@@ -260,6 +297,8 @@ public sealed class ConversationPanel : VirtualizingPanel
     {
         if (TryApplyIncrementalItemsChange(items, e))
         {
+            if (e.Action == NotifyCollectionChangedAction.Reset)
+                ClearContainerPool();
             InvalidateMeasure();
             return;
         }
@@ -332,7 +371,12 @@ public sealed class ConversationPanel : VirtualizingPanel
         }
         OrderChildren();
         if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
             _heights.Clear();
+            // After a full reset the released shells must also be dropped, so
+            // cleared containers become collectible.
+            ClearContainerPool();
+        }
         InvalidateMeasure();
     }
 
@@ -600,6 +644,8 @@ public sealed class ConversationPanel : VirtualizingPanel
         if (_inLayout || index < 0 || index >= Items.Count || !IsEffectivelyVisible ||
             this.GetVisualRoot() is not Control root)
             return null;
+        // A jump means the user wants to read the target immediately.
+        PromoteRealizedContent();
         _scrollToIndex = index;
         try
         {
@@ -648,16 +694,25 @@ public sealed class ConversationPanel : VirtualizingPanel
         _anchors = this.FindAncestorOfType<IScrollAnchorProvider>();
         _scrollOwner = this.FindAncestorOfType<ScrollViewer>();
         if (_scrollOwner is not null)
+        {
             _scrollOwner.ScrollChanged += OnOwnerScrollChanged;
+            _scrollOwner.AddHandler(InputElement.PointerWheelChangedEvent, OnOwnerPointerWheel,
+                RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
+        PromoteRealizedContent();
+        ClearContainerPool();
         foreach (var row in _realized.Values)
             _anchors?.UnregisterAnchorCandidate(row.Container);
         _anchors = null;
         if (_scrollOwner is not null)
+        {
             _scrollOwner.ScrollChanged -= OnOwnerScrollChanged;
+            _scrollOwner.RemoveHandler(InputElement.PointerWheelChangedEvent, OnOwnerPointerWheel);
+        }
         _scrollOwner = null;
         base.OnDetachedFromVisualTree(e);
     }
@@ -668,11 +723,39 @@ public sealed class ConversationPanel : VirtualizingPanel
             return row;
         var item = Items[index];
         var generator = ItemContainerGenerator!;
-        var generated = generator.NeedsContainer(item, index, out var recycleKey);
-        var container = generated ? generator.CreateContainer(item, index, recycleKey) : (Control)item!;
-        row = new RealizedRow(Key(item), container, generated);
+        var generated = generator.NeedsContainer(item, index, out _);
+        // Typed DataTemplates resolve per item type, so the item's type is the
+        // pool key; containers of the same type are interchangeable shells.
+        var poolKey = generated ? Key(item).GetType() : null;
+        Control? pooled = null;
+        Control container;
+        if (poolKey is not null && _containerPool.TryGetValue(poolKey, out var pool) && pool.Count > 0)
+        {
+            pooled = pool.Pop();
+            _pooledCount--;
+            container = pooled;
+        }
+        else
+            container = generated ? generator.CreateContainer(item, index, null) : (Control)item!;
+        row = new RealizedRow(Key(item), container, generated, poolKey);
         _realized.Add(index, row);
-        if (generated || _ownContainers.Add(container))
+        if (row.Key is TimelineItemViewModel viewModel)
+            viewModel.IsContentDeferred = _contentDeferred && !IsRetained(index, row) &&
+                viewModel is AssistantMessageItemViewModel or ToolCallItemViewModel { IsExpanded: true }
+                    or FileChangeSummaryItemViewModel { IsExpanded: true };
+        if (pooled is not null)
+        {
+            generator.PrepareItemContainer(pooled, item, index);
+            var childIndex = 0;
+            foreach (var child in Children)
+            {
+                if (IndexFromContainer(child) < index)
+                    childIndex++;
+            }
+            InsertInternalChild(childIndex, pooled);
+            generator.ItemContainerPrepared(pooled, item, index);
+        }
+        else if (generated || _ownContainers.Add(container))
         {
             generator.PrepareItemContainer(container, item, index);
             var childIndex = 0;
@@ -716,6 +799,9 @@ public sealed class ConversationPanel : VirtualizingPanel
     {
         row.Container.Measure(constraint);
         var height = row.Container.DesiredSize.Height;
+        // Deferred bodies must not replace full row heights with collapsed measurements.
+        if (row.Key is TimelineItemViewModel { IsContentDeferred: true })
+            height = Math.Max(height, _heights.GetValueOrDefault(row.Key, EstimateHeight(row.Key)));
         if (!_heights.TryGetValue(row.Key, out var previous) || previous != height)
         {
             // A changed row height shifts every offset after that row's position.
@@ -736,13 +822,28 @@ public sealed class ConversationPanel : VirtualizingPanel
     private void Release(RealizedRow row)
     {
         _anchors?.UnregisterAnchorCandidate(row.Container);
-        if (row.Generated)
+        // Rows leaving realization drop their expanded-detail copies; getters
+        // re-materialize from the retained source on the next expand.
+        if (row.Key is ToolCallItemViewModel tool)
+            tool.TrimMaterializedDetails();
+        if (row.Key is TimelineItemViewModel viewModel)
+            viewModel.IsContentDeferred = false;
+        if (!row.Generated)
         {
-            ItemContainerGenerator!.ClearItemContainer(row.Container);
-            RemoveInternalChild(row.Container);
-        }
-        else
             SetOwnContainerVisibility(row.Container, false);
+            return;
+        }
+        ItemContainerGenerator!.ClearItemContainer(row.Container);
+        RemoveInternalChild(row.Container);
+        // Pooled shells stay detached from the visual tree: reuse skips
+        // container allocation without inflating Children.
+        if (row.PoolKey is not null && _pooledCount < MaxPooledContainers)
+        {
+            if (!_containerPool.TryGetValue(row.PoolKey, out var pool))
+                _containerPool[row.PoolKey] = pool = [];
+            pool.Push(row.Container);
+            _pooledCount++;
+        }
     }
 
     private void SetOwnContainerVisibility(Control container, bool visible)
@@ -763,6 +864,13 @@ public sealed class ConversationPanel : VirtualizingPanel
     {
         if (sender is null || ReferenceEquals(sender, _ownVisibilityChange) || !_indices.TryGetValue(sender, out var index))
             return;
+        // Expanding a row during a deferred fling is a read intent; the panel
+        // must show the row's full content immediately.
+        if (e.PropertyName is nameof(ToolCallItemViewModel.IsExpanded)
+            or nameof(AssistantMessageItemViewModel.IsReasoningExpanded))
+        {
+            PromoteRealizedContent();
+        }
         if (_realized.TryGetValue(index, out var row))
         {
             row.Container.InvalidateMeasure();
@@ -804,6 +912,80 @@ public sealed class ConversationPanel : VirtualizingPanel
             InvalidateMeasure();
     }
 
+    private void OnOwnerPointerWheel(object? sender, PointerWheelEventArgs e)
+    {
+        if (_scrollOwner is not { } owner || Math.Abs(e.Delta.Y) <= double.Epsilon)
+            return;
+        if (e.Route == RoutingStrategies.Tunnel)
+        {
+            _wheelStartOffset = owner.Offset.Y;
+            return;
+        }
+        var offset = owner.Offset.Y;
+        if (offset == _wheelStartOffset ||
+            (e.Delta.Y > 0 && offset <= 0) ||
+            (e.Delta.Y < 0 && offset >= owner.Extent.Height - owner.Viewport.Height))
+        {
+            PromoteRealizedContent();
+            return;
+        }
+        NoteWheelInput();
+    }
+
+    private void NoteWheelInput()
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastFlingTimestamp > WheelFlingWindow.TotalMilliseconds)
+            _wheelFlingEvents = 0;
+        _lastFlingTimestamp = now;
+        if (++_wheelFlingEvents < WheelFlingEventCount && !_contentDeferred)
+            return;
+        SetContentDeferred(true);
+        _deferTimer ??= CreateDeferTimer();
+        _deferTimer.Interval = DeferIdleInterval;
+        _deferTimer.Stop();
+        _deferTimer.Start();
+    }
+
+    private DispatcherTimer CreateDeferTimer()
+    {
+        var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = DeferIdleInterval };
+        timer.Tick += (_, _) => PromoteRealizedContent();
+        return timer;
+    }
+
+    /// <summary>Restores full content on realized rows after a deferred fling.</summary>
+    internal void PromoteRealizedContent()
+    {
+        _deferTimer?.Stop();
+        _wheelFlingEvents = 0;
+        SetContentDeferred(false);
+    }
+
+    private void SetContentDeferred(bool deferred)
+    {
+        if (_contentDeferred == deferred)
+            return;
+        _contentDeferred = deferred;
+        if (!deferred)
+        {
+            foreach (var row in _realized.Values)
+                if (row.Key is TimelineItemViewModel viewModel)
+                    viewModel.IsContentDeferred = false;
+        }
+        InvalidateMeasure();
+    }
+
+    private bool IsRetained(int index, RealizedRow row) =>
+        index == _tailIndex || index == _scrollToIndex || index == _readingAnchorIndex ||
+        row.Container.IsKeyboardFocusWithin;
+
+    private void ClearContainerPool()
+    {
+        _containerPool.Clear();
+        _pooledCount = 0;
+    }
+
     private void OnEffectiveViewportChanged(object? sender, EffectiveViewportChangedEventArgs e)
     {
         var viewport = e.EffectiveViewport.Intersect(new Rect(Bounds.Size));
@@ -837,5 +1019,5 @@ public sealed class ConversationPanel : VirtualizingPanel
     }
 
     private static object Key(object? item) => item ?? NullItem;
-    private sealed record RealizedRow(object Key, Control Container, bool Generated);
+    private sealed record RealizedRow(object Key, Control Container, bool Generated, object? PoolKey);
 }

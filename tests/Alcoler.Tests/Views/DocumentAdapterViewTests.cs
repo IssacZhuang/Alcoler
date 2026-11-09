@@ -475,8 +475,74 @@ public sealed class DocumentAdapterViewTests : IDisposable
     }
 
     private static SystemNoticeRow AgentActivityRow(SessionId childId, string title, DateTimeOffset startedAt) =>
-        new("child-activity", "subagent", "Child agent started", new SubagentState(StrongId.NewSubagentId(),
+        ChildActivityRow("child-activity", childId, title, startedAt);
+
+    private static SystemNoticeRow ChildActivityRow(string rowId, SessionId childId, string title, DateTimeOffset startedAt) =>
+        new(rowId, "subagent", "Child agent started", new SubagentState(StrongId.NewSubagentId(),
             childId, title, SubagentStatus.Running, null, startedAt, null));
+
+    [AvaloniaFact]
+    public async Task SwitchingDocuments_ReleasesHiddenTimelinesAndRestoresOnReactivation()
+    {
+        EnsureTheme();
+        var runtime = new FakeAgentRuntime();
+        var parentId = StrongId.NewSessionId();
+        var firstChild = StrongId.NewSessionId();
+        var secondChild = StrongId.NewSessionId();
+        var startedAt = DateTimeOffset.UtcNow;
+        ConversationRow[] ChildRows(string prefix) =>
+        [
+            .. Enumerable.Range(0, 30).Select(index => (ConversationRow)new ToolCallRow($"{prefix}-tool-{index}",
+                StrongId.NewToolCallId(), "Bash", JsonSerializer.SerializeToElement(new { command = $"echo {index}" }),
+                ToolCallStatus.Succeeded, [new ToolResultText($"output {index}")], false, TimeSpan.FromSeconds(1), startedAt)),
+        ];
+        runtime.RegisterSession(parentId, new ConversationSnapshot(0, 1,
+        [
+            new UserMessageRow("parent-user", "Run two children", startedAt),
+            ChildActivityRow("first-activity", firstChild, "First child", startedAt),
+            ChildActivityRow("second-activity", secondChild, "Second child", startedAt),
+        ], TestSnapshots.State()));
+        runtime.RegisterSession(firstChild, new ConversationSnapshot(0, 1, ChildRows("first"), TestSnapshots.State()));
+        runtime.RegisterSession(secondChild, new ConversationSnapshot(0, 1, ChildRows("second"), TestSnapshots.State()));
+        using var workbench = new WorkbenchViewModel(runtime, AvaloniaUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+        await workbench.OpenSessionAsync(parentId);
+        var window = new MainWindow(workbench) { Width = 1400, Height = 900 };
+        window.Show();
+        try
+        {
+            var parent = Assert.IsType<ConversationViewModel>(workbench.Active);
+            await WaitUntilAsync(window, () => parent.Status.Agents.Count == 2);
+            await workbench.OpenStatusActivityAsync(parent.Status.Agents.Single(activity => activity.ChildSessionId == firstChild));
+            await WaitUntilAsync(window, () => workbench.Documents.Items.Count == 1
+                && workbench.Documents.ActiveDocument?.Content is SubagentDocumentViewModel);
+            var firstPanel = PanelFor(window, firstChild);
+            await WaitUntilAsync(window, () => firstPanel.RealizedRowCount > 1);
+
+            await workbench.OpenStatusActivityAsync(parent.Status.Agents.Single(activity => activity.ChildSessionId == secondChild));
+            await WaitUntilAsync(window, () => workbench.Documents.Items.Count == 2
+                && workbench.Documents.ActiveDocument?.Content is SubagentDocumentViewModel document
+                && document.Conversation.SessionId == secondChild);
+            // The deactivated document keeps its view but releases its realized rows.
+            await WaitUntilAsync(window, () => firstPanel.RealizedRowCount == 0);
+            var secondPanel = PanelFor(window, secondChild);
+            Assert.True(secondPanel.RealizedRowCount > 1);
+
+            workbench.Documents.ActivateCommand.Execute(workbench.Documents.Items
+                .Single(document => ((SubagentDocumentViewModel)document.Content).Conversation.SessionId == firstChild));
+            await WaitUntilAsync(window, () => firstPanel.RealizedRowCount > 1);
+            await WaitUntilAsync(window, () => secondPanel.RealizedRowCount == 0);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    private static ConversationPanel PanelFor(Window window, SessionId sessionId) =>
+        window.GetVisualDescendants().OfType<TimelineView>()
+            .Single(timeline => timeline.DataContext is ConversationViewModel conversation && conversation.SessionId == sessionId)
+            .GetVisualDescendants().OfType<ConversationPanel>().Single();
 
     private static Button? AgentActivityButton(ConversationStatusView status, SessionId childId) =>
         status.GetVisualDescendants().OfType<Button>().SingleOrDefault(button => button.Classes.Contains("activityRow")
