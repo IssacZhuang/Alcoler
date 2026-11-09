@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Net.Http.Headers;
@@ -16,6 +17,15 @@ internal static class ModelRequestOptions
     // Below this size the transfer saving is noise, so the CPU and byte identity
     // of a plain body are kept for the many small requests in a tool loop.
     private const int GzipRequestThreshold = 4096;
+    // Request-body serialization grows its buffer by doubling; a deep-context body
+    // leaves power-of-two arrays on the LOH on every request (ArrayPool.Shared
+    // buckets stop at 1 MiB). Writers are retained per thread so growth amortizes
+    // to once per capacity tier; the capacity cap stops a one-off giant body from
+    // pinning its buffer for the life of a pool thread.
+    private const int InitialBodyCapacity = 64 * 1024;
+    private const int MaxThreadBodyWriterCapacity = 16 * 1024 * 1024;
+    [ThreadStatic]
+    private static BodyBufferWriter? ThreadBodyWriter;
     private static readonly string[] OutputLimitKeys = ["max_tokens", "max_completion_tokens", "max_output_tokens", "budget_tokens"];
     private static readonly ConcurrentDictionary<JsonElement, JsonElement> RewrittenToolSchemas = new();
 
@@ -23,6 +33,14 @@ internal static class ModelRequestOptions
     internal static readonly JsonSerializerOptions RequestJsonOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    // The serializer resolves an unset MaxDepth (0) to 64 on its internal writer;
+    // a manually built writer treats 0 as unlimited, so the limit must be mapped.
+    private static readonly JsonWriterOptions BodyWriterOptions = new()
+    {
+        Encoder = RequestJsonOptions.Encoder,
+        MaxDepth = RequestJsonOptions.MaxDepth is 0 ? 64 : RequestJsonOptions.MaxDepth,
     };
 
     internal static int EffectiveMax(ModelProperties properties, ModelCallOptions options, int fallback)
@@ -52,13 +70,26 @@ internal static class ModelRequestOptions
     {
         try
         {
-            var plain = JsonSerializer.SerializeToUtf8Bytes(body, RequestJsonContext.JsonObject);
-            var payload = gzipRequests && plain.Length >= GzipRequestThreshold ? Gzip(plain) : plain;
-            var content = new ByteArrayContent(payload);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
-            if (!ReferenceEquals(payload, plain))
-                content.Headers.TryAddWithoutValidation("Content-Encoding", "gzip");
-            return content;
+            var writer = RentBodyWriter();
+            try
+            {
+                using (var json = new Utf8JsonWriter(writer, BodyWriterOptions))
+                {
+                    JsonSerializer.Serialize(json, body, RequestJsonContext.JsonObject);
+                }
+                var plain = writer.WrittenSpan;
+                var gzipped = gzipRequests && plain.Length >= GzipRequestThreshold;
+                var payload = gzipped ? Gzip(plain) : plain.ToArray();
+                var content = new ByteArrayContent(payload);
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+                if (gzipped)
+                    content.Headers.TryAddWithoutValidation("Content-Encoding", "gzip");
+                return content;
+            }
+            finally
+            {
+                ReturnBodyWriter(writer);
+            }
         }
         catch (JsonException ex) when (ex.InnerException is InvalidOperationException inner)
         {
@@ -68,12 +99,80 @@ internal static class ModelRequestOptions
         }
     }
 
-    private static byte[] Gzip(byte[] plain)
+    private static byte[] Gzip(ReadOnlySpan<byte> plain)
     {
-        using var output = new MemoryStream(plain.Length / 2);
+        using var output = new MemoryStream(plain.Length);
         using (var compressor = new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true))
-            compressor.Write(plain, 0, plain.Length);
+            compressor.Write(plain);
         return output.ToArray();
+    }
+
+    private static BodyBufferWriter RentBodyWriter()
+    {
+        var writer = ThreadBodyWriter;
+        ThreadBodyWriter = null;
+        return writer ?? new BodyBufferWriter(InitialBodyCapacity);
+    }
+
+    private static void ReturnBodyWriter(BodyBufferWriter writer)
+    {
+        if (writer.Capacity > MaxThreadBodyWriterCapacity || ThreadBodyWriter is not null)
+        {
+            writer.Dispose();
+            return;
+        }
+        writer.ResetWrittenCount();
+        ThreadBodyWriter = writer;
+    }
+
+    /// <summary>
+    /// An <see cref="IBufferWriter{T}"/> whose growth rents from ArrayPool.Shared, retained
+    /// per thread by this class so large bodies stop paying doubling allocations per call.
+    /// </summary>
+    private sealed class BodyBufferWriter : IBufferWriter<byte>, IDisposable
+    {
+        private byte[] _buffer;
+        private int _written;
+
+        public BodyBufferWriter(int initialCapacity) => _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+
+        public int Capacity => _buffer.Length;
+
+        public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _written);
+
+        public void ResetWrittenCount() => _written = 0;
+
+        public void Advance(int count) => _written += count;
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer.AsMemory(_written);
+        }
+
+        public Span<byte> GetSpan(int sizeHint)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer.AsSpan(_written);
+        }
+
+        private void EnsureCapacity(int sizeHint)
+        {
+            if (sizeHint > 0 ? sizeHint <= _buffer.Length - _written : _written < _buffer.Length)
+                return;
+            var required = Math.Max((long)_buffer.Length * 2, _written + Math.Max(sizeHint, 1));
+            var grown = ArrayPool<byte>.Shared.Rent((int)Math.Min(required, Array.MaxLength));
+            _buffer.AsSpan(0, _written).CopyTo(grown);
+            ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = grown;
+        }
+
+        public void Dispose()
+        {
+            ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = [];
+            _written = 0;
+        }
     }
 
     private static readonly ModelRequestJsonContext RequestJsonContext = new(new JsonSerializerOptions(RequestJsonOptions)
