@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Reflection;
 using Alcoler.Controls;
 using Avalonia;
 using Avalonia.Headless.XUnit;
@@ -121,6 +123,114 @@ public sealed class ConversationImageCacheTests
     }
 
     [AvaloniaFact]
+    public async Task Cache_CompletedWaitersSurviveEvictionBeforeAcquiringLeases()
+    {
+        using var scope = UseSkia();
+        var firstLoad = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondLoad = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reload = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bitmapA = CreateBitmap(4, 4);
+        var bitmapB = CreateBitmap(4, 4);
+        var replacementA = CreateBitmap(4, 4);
+        var loadsA = 0;
+        var cache = new ConversationImageCache((uri, mime, token) =>
+        {
+            if (uri == "u://a")
+                return Interlocked.Increment(ref loadsA) == 1 ? firstLoad.Task : reload.Task;
+            return secondLoad.Task;
+        }, maxEntries: 1);
+        var first = cache.AcquireAsync("u://a", "image/png", CancellationToken.None);
+        var second = cache.AcquireAsync("u://b", "image/png", CancellationToken.None);
+        Task<ConversationImageCache.Lease?> reloaded;
+        lock (CacheGate(cache))
+        {
+            CompleteLoad(cache, "u://a", firstLoad, bitmapA);
+            CompleteLoad(cache, "u://b", secondLoad, bitmapB);
+            Assert.False(first.IsCompleted);
+            Assert.False(second.IsCompleted);
+            Assert.False(IsDisposed(bitmapA));
+
+            reloaded = cache.AcquireAsync("u://a", "image/png", CancellationToken.None);
+            Assert.False(reloaded.IsCompleted);
+            CompleteLoad(cache, "u://a", reload, replacementA);
+            Assert.False(IsDisposed(bitmapB));
+        }
+
+        var firstLease = Assert.IsType<ConversationImageCache.Lease>(await first);
+        var secondLease = Assert.IsType<ConversationImageCache.Lease>(await second);
+        var replacementLease = Assert.IsType<ConversationImageCache.Lease>(await reloaded);
+        Assert.Same(bitmapA, firstLease.Bitmap);
+        Assert.Same(bitmapB, secondLease.Bitmap);
+        Assert.Same(replacementA, replacementLease.Bitmap);
+        Assert.Equal(2, loadsA);
+        firstLease.Release();
+        secondLease.Release();
+        replacementLease.Release();
+        Assert.True(IsDisposed(bitmapA));
+        Assert.True(IsDisposed(bitmapB));
+        Assert.False(IsDisposed(replacementA));
+    }
+
+    [AvaloniaTheory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task Cache_EvictedCompletedLoadReleasesEachCancelledWaiterAndLease(int successfulWaiters)
+    {
+        using var scope = UseSkia();
+        using var cancellation = new CancellationTokenSource();
+        var firstLoad = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondLoad = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bitmapA = CreateBitmap(4, 4);
+        var bitmapB = CreateBitmap(4, 4);
+        var loads = 0;
+        var cache = new ConversationImageCache((uri, mime, token) =>
+        {
+            Interlocked.Increment(ref loads);
+            return uri == "u://a" ? firstLoad.Task : secondLoad.Task;
+        }, maxEntries: 1);
+        var successful = Enumerable.Range(0, successfulWaiters)
+            .Select(_ => cache.AcquireAsync("u://a", "image/png", CancellationToken.None)).ToArray();
+        var firstCancelled = cache.AcquireAsync("u://a", "image/png", cancellation.Token);
+        var secondCancelled = cache.AcquireAsync("u://a", "image/png", cancellation.Token);
+        var next = cache.AcquireAsync("u://b", "image/png", CancellationToken.None);
+        ConversationImageCache.Entry entry;
+        lock (CacheGate(cache))
+        {
+            CancelWithoutInliningWaiters(cancellation);
+            Assert.False(firstCancelled.IsCompleted);
+            Assert.False(secondCancelled.IsCompleted);
+            entry = CompleteLoad(cache, "u://a", firstLoad, bitmapA);
+            Assert.Equal(successfulWaiters + 2, entry.RefCount);
+            CompleteLoad(cache, "u://b", secondLoad, bitmapB);
+            Assert.All(successful, waiter => Assert.False(waiter.IsCompleted));
+            Assert.False(entry.Cached);
+            Assert.False(IsDisposed(bitmapA));
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => firstCancelled);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => secondCancelled);
+        var leases = await Task.WhenAll(successful);
+        var nextLease = Assert.IsType<ConversationImageCache.Lease>(await next);
+        Assert.Equal(2, loads);
+        Assert.Equal(successfulWaiters, entry.RefCount);
+        for (var i = 0; i < leases.Length; i++)
+        {
+            var lease = Assert.IsType<ConversationImageCache.Lease>(leases[i]);
+            Assert.Same(bitmapA, lease.Bitmap);
+            lease.Release();
+            lease.Release();
+            Assert.Equal(leases.Length - i - 1, entry.RefCount);
+            if (entry.RefCount > 0)
+                Assert.False(IsDisposed(bitmapA));
+        }
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal(0, entry.RefCount);
+        Assert.True(IsDisposed(bitmapA));
+        nextLease.Release();
+        Assert.False(IsDisposed(bitmapB));
+    }
+
+    [AvaloniaFact]
     public async Task Cache_CoalescesConcurrentLoadsOfSameArtifact()
     {
         using var scope = UseSkia();
@@ -220,6 +330,42 @@ public sealed class ConversationImageCacheTests
         lease.Release();
         Assert.Equal(2, loads);
         Assert.False(IsDisposed(bitmap));
+    }
+
+    private static void CancelWithoutInliningWaiters(CancellationTokenSource cancellation)
+    {
+        var context = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(new NonInliningSynchronizationContext());
+        try
+        {
+            cancellation.Cancel();
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(context);
+        }
+    }
+
+    // A non-default context keeps cancellation from inlining waiters through the reentrant gate.
+    private sealed class NonInliningSynchronizationContext : SynchronizationContext
+    {
+    }
+
+    private static object CacheGate(ConversationImageCache cache) =>
+        typeof(ConversationImageCache).GetField("_gate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cache)!;
+
+    private static ConversationImageCache.Entry CompleteLoad(ConversationImageCache cache, string uri,
+        TaskCompletionSource<Bitmap?> completion, Bitmap bitmap)
+    {
+        Assert.True(Monitor.IsEntered(CacheGate(cache)));
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var flights = (IDictionary)typeof(ConversationImageCache).GetField("_inFlight", flags)!.GetValue(cache)!;
+        var flight = flights[uri]!;
+        var load = (Task<Bitmap?>)flight.GetType().GetField("Load")!.GetValue(flight)!;
+        completion.SetResult(bitmap);
+        Assert.True(load.Wait(TimeSpan.FromSeconds(5)));
+        typeof(ConversationImageCache).GetMethod("InsertLoaded", flags)!.Invoke(cache, [flight]);
+        return Assert.IsType<ConversationImageCache.Entry>(flight.GetType().GetField("Entry")!.GetValue(flight));
     }
 
     private static WriteableBitmap CreateBitmap(int width, int height) =>

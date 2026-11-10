@@ -65,15 +65,29 @@ internal sealed class ConversationImageCache
             flight.Waiters++;
         }
 
+        Lease? lease = null;
+        var loaded = false;
         try
         {
             await flight.Load.WaitAsync(cancellationToken).ConfigureAwait(false);
+            loaded = true;
         }
         finally
         {
             lock (_gate)
             {
+                InsertLoaded(flight);
                 flight.Waiters--;
+                if (flight.Entry is { } entry)
+                {
+                    if (loaded)
+                    {
+                        Touch(entry);
+                        lease = new Lease(this, entry);
+                    }
+                    else
+                        ReleaseEntry(entry);
+                }
                 if (flight.Waiters == 0 && !flight.Abandoned && !flight.Load.IsCompleted)
                 {
                     // The last waiter left before the shared decode finished; nobody will accept its result.
@@ -84,18 +98,7 @@ internal sealed class ConversationImageCache
                 }
             }
         }
-
-        lock (_gate)
-        {
-            InsertLoaded(flight);
-            if (flight.Entry is { } entry && (entry.Cached || entry.RefCount > 0))
-            {
-                entry.RefCount++;
-                Touch(entry);
-                return new Lease(this, entry);
-            }
-            return null;
-        }
+        return lease;
     }
 
     private void LoadCompleted(InFlight flight, Task<Bitmap?> load)
@@ -110,8 +113,6 @@ internal sealed class ConversationImageCache
                 flight.Cancellation.Dispose();
                 return;
             }
-            if (_inFlight.TryGetValue(flight.Uri, out var registered) && ReferenceEquals(registered, flight))
-                _inFlight.Remove(flight.Uri);
             InsertLoaded(flight);
             flight.Cancellation.Dispose();
         }
@@ -119,12 +120,22 @@ internal sealed class ConversationImageCache
 
     private void InsertLoaded(InFlight flight)
     {
-        if (flight.Inserted || flight.Abandoned || !flight.Load.IsCompletedSuccessfully)
+        if (flight.Inserted || flight.Abandoned || !flight.Load.IsCompleted)
             return;
         flight.Inserted = true;
-        if (flight.Load.Result is not { } bitmap)
+        if (_inFlight.TryGetValue(flight.Uri, out var registered) && ReferenceEquals(registered, flight))
+            _inFlight.Remove(flight.Uri);
+        if (!flight.Load.IsCompletedSuccessfully || flight.Load.Result is not { } bitmap)
             return;
-        var entry = new Entry { Uri = flight.Uri, Bitmap = bitmap, Bytes = EstimateBytes(bitmap), Cached = true };
+        // Pending waiters own references until they accept a lease or leave.
+        var entry = new Entry
+        {
+            Uri = flight.Uri,
+            Bitmap = bitmap,
+            Bytes = EstimateBytes(bitmap),
+            Cached = true,
+            RefCount = flight.Waiters
+        };
         entry.Node = _lru.AddLast(entry);
         _entries.Add(flight.Uri, entry);
         _bytes += entry.Bytes;

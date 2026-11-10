@@ -1486,6 +1486,84 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
         }
     }
 
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FastScroll_PromotionPreservesReadingPositionUnlessExplicitlyJumping(bool jumpToRow)
+    {
+        EnsureFluentTheme();
+        var (view, conversation, store) = CreateTimeline();
+        var window = Host(view, 680, 320);
+        try
+        {
+            var at = DateTimeOffset.UtcNow;
+            var text = string.Join("\n\n", Enumerable.Range(0, 30).Select(index =>
+                $"Long answer paragraph {index}. Restoring this body must not displace the row being read."));
+            conversation.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(), [], Reset: true, ResetRows:
+                Enumerable.Range(0, 120).Select(index => index % 2 == 0
+                    ? (ConversationRow)new AssistantMessageRow($"a{index}", StrongId.NewMessageId(),
+                        [new TextPart(StrongId.NewPartId(), text)], false, at)
+                    : new UserMessageRow($"u{index}", $"User message {index}.", at)).ToArray()));
+            await RenderAsync(window);
+            var items = view.FindControl<ItemsControl>("TimelineItems")!;
+            var panel = Assert.Single(view.GetVisualDescendants().OfType<ConversationPanel>());
+            panel.DeferIdleInterval = TimeSpan.FromSeconds(30);
+            Assert.True(PanelHeights(panel).ContainsKey(conversation.Items[0]));
+            var above = conversation.Items[60];
+            Assert.False(PanelHeights(panel).ContainsKey(above));
+            var point = view.Scroller.TranslatePoint(new Point(200, 100), window)!.Value;
+            window.MouseMove(point);
+            for (var index = 0; index < 3; index++)
+                window.MouseWheel(point, new Vector(0, 0.25));
+            await RenderAsync(window);
+
+            view.Scroller.Offset = new Vector(0, PanelOffsets(panel)[61]);
+            await RenderAsync(window);
+            var target = Assert.IsAssignableFrom<Control>(items.ContainerFromIndex(61));
+            var top = target.TranslatePoint(default, view.Scroller)!.Value.Y;
+            view.Scroller.Offset = new Vector(0, view.Scroller.Offset.Y + top + 30);
+            await RenderAsync(window);
+            var anchor = Assert.IsType<TimelineScrollAnchor>(panel.CaptureReadingAnchor());
+            Assert.Equal("u61", anchor.RowId);
+            Assert.True(above.IsContentDeferred);
+            var estimatedHeight = PanelHeights(panel)[above];
+            Assert.True(estimatedHeight < 100);
+            var offset = view.Scroller.Offset.Y;
+            var promotions = 0;
+            panel.DeferredContentPromoting += (_, _) => promotions++;
+
+            if (jumpToRow)
+                items.ScrollIntoView(0);
+            else
+                panel.PromoteRealizedContent();
+            await RenderAsync(window);
+
+            Assert.True(PanelHeights(panel)[above] > estimatedHeight + 1000);
+            if (jumpToRow)
+            {
+                var jumped = Assert.IsAssignableFrom<Control>(items.ContainerFromIndex(0));
+                var origin = jumped.TranslatePoint(default, view.Scroller)!.Value;
+                Assert.True(new Rect(origin, jumped.Bounds.Size).Intersects(new Rect(view.Scroller.Viewport)), DescribeTimeline(view));
+                Assert.NotEqual(anchor.RowId, panel.CaptureReadingAnchor()?.RowId);
+                Assert.Equal(0, promotions);
+            }
+            else
+            {
+                Assert.Equal(1, promotions);
+                AssertRowAnchor(view, panel, anchor);
+                Assert.True(view.Scroller.Offset.Y > offset + 1000, DescribeTimeline(view));
+            }
+            Assert.All(conversation.Items, row => Assert.False(row.IsContentDeferred));
+            Assert.False(conversation.CaptureReadingState().FollowLatest);
+        }
+        finally
+        {
+            window.Close();
+            conversation.Dispose();
+            store.Dispose();
+        }
+    }
+
     [AvaloniaFact]
     public async Task FastScroll_MeasuresTallUserMessagesWithoutDeferringTheirVisibleContent()
     {

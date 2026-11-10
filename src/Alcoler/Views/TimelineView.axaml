@@ -361,7 +361,7 @@
         <StackPanel MinWidth="0" HorizontalAlignment="Stretch">
           <ItemsControl x:Name="TimelineItems" ItemsSource="{Binding Items}" Background="Transparent">
             <ItemsControl.ItemsPanel>
-              <ItemsPanelTemplate><controls:ConversationPanel /></ItemsPanelTemplate>
+              <ItemsPanelTemplate><controls:ConversationPanel DeferredContentPromoting="OnDeferredContentPromoting" /></ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
             <ItemsControl.DataTemplates>
               <DataTemplate x:DataType="vm:UserMessageItemViewModel">

@@ -142,6 +142,8 @@ public partial class TimelineView : UserControl
         _conversation.SaveReadingPosition(anchor, _followingTail);
     }
 
+    private void OnDeferredContentPromoting(object? sender, EventArgs e) => PreserveReadingPosition();
+
     private void PreserveReadingPosition()
     {
         if (_followingTail || _scrollBarInteracting || _pendingAnchor is not null)

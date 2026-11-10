@@ -65,6 +65,8 @@ public sealed class ConversationPanel : VirtualizingPanel
         EffectiveViewportChanged += OnEffectiveViewportChanged;
     }
 
+    public event EventHandler? DeferredContentPromoting;
+
     public int FirstRealizedIndex => _realized.Count == 0 ? -1 : _realized.Keys.Min();
     public int LastRealizedIndex => _realized.Count == 0 ? -1 : _realized.Keys.Max();
 
@@ -645,7 +647,7 @@ public sealed class ConversationPanel : VirtualizingPanel
             this.GetVisualRoot() is not Control root)
             return null;
         // A jump means the user wants to read the target immediately.
-        PromoteRealizedContent();
+        PromoteRealizedContent(preserveReadingPosition: false);
         _scrollToIndex = index;
         try
         {
@@ -703,7 +705,7 @@ public sealed class ConversationPanel : VirtualizingPanel
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        PromoteRealizedContent();
+        PromoteRealizedContent(preserveReadingPosition: false);
         ClearContainerPool();
         foreach (var row in _realized.Values)
             _anchors?.UnregisterAnchorCandidate(row.Container);
@@ -922,11 +924,11 @@ public sealed class ConversationPanel : VirtualizingPanel
             return;
         }
         var offset = owner.Offset.Y;
+        var reachedBottom = e.Delta.Y < 0 && offset >= owner.Extent.Height - owner.Viewport.Height;
         if (offset == _wheelStartOffset ||
-            (e.Delta.Y > 0 && offset <= 0) ||
-            (e.Delta.Y < 0 && offset >= owner.Extent.Height - owner.Viewport.Height))
+            (e.Delta.Y > 0 && offset <= 0) || reachedBottom)
         {
-            PromoteRealizedContent();
+            PromoteRealizedContent(preserveReadingPosition: !reachedBottom);
             return;
         }
         NoteWheelInput();
@@ -955,10 +957,15 @@ public sealed class ConversationPanel : VirtualizingPanel
     }
 
     /// <summary>Restores full content on realized rows after a deferred fling.</summary>
-    internal void PromoteRealizedContent()
+    internal void PromoteRealizedContent(bool preserveReadingPosition = true)
     {
         _deferTimer?.Stop();
         _wheelFlingEvents = 0;
+        if (preserveReadingPosition && _contentDeferred &&
+            _realized.Values.Any(row => row.Key is TimelineItemViewModel { IsContentDeferred: true }))
+        {
+            DeferredContentPromoting?.Invoke(this, EventArgs.Empty);
+        }
         SetContentDeferred(false);
     }
 
