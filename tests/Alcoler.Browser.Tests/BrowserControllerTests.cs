@@ -42,6 +42,29 @@ public sealed class BrowserControllerTests
     }
 
     [Fact]
+    public async Task SelectingTab_PublishesSelectedStatusBeforeShowingNativePage()
+    {
+        using var host = new TestHost();
+        using var controller = new BrowserController(host);
+        var first = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        var second = await controller.ExecuteAsync(First, Command("new_tab"), default);
+        Assert.Empty(host.Shown);
+        string? selectedAtShow = null;
+        host.Showing = _ => selectedAtShow = controller.GetStatus(First)?.ActiveTabId;
+
+        var selected = await controller.ExecuteAsync(First,
+            Command("select_tab", first.TabId) with { UserInitiated = true }, default);
+
+        Assert.True(selected.Ok, selected.Error);
+        Assert.Equal(first.TabId, selectedAtShow);
+        Assert.Equal(first.TabId, Assert.Single(host.Shown));
+        var automatic = await controller.ExecuteAsync(First, Command("select_tab", second.TabId), default);
+        Assert.True(automatic.Ok, automatic.Error);
+        Assert.Equal(second.TabId, controller.GetStatus(First)!.ActiveTabId);
+        Assert.Single(host.Shown);
+    }
+
+    [Fact]
     public async Task OpenPopupAsync_ForwardsTheHostTargetIdForAdoption()
     {
         using var host = new TestHost();
@@ -214,6 +237,8 @@ public sealed class BrowserControllerTests
         public Dictionary<string, SessionId> Owners { get; } = [];
         public List<string> Closed { get; } = [];
         public List<string> Hidden { get; } = [];
+        public List<string> Shown { get; } = [];
+        public Action<string>? Showing { get; set; }
         public List<(string TabId, string AdoptTargetId)> Adoptions { get; } = [];
         public bool FailCreation { get; set; }
         public bool FailRejection { get; init; }
@@ -250,7 +275,12 @@ public sealed class BrowserControllerTests
             if (FailRejection) throw new OperationCanceledException("cleanup failed");
             return Task.CompletedTask;
         }
-        public Task ShowPageAsync(string tabId, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ShowPageAsync(string tabId, CancellationToken cancellationToken)
+        {
+            Shown.Add(tabId);
+            Showing?.Invoke(tabId);
+            return Task.CompletedTask;
+        }
         public Task HidePageAsync(string tabId, CancellationToken cancellationToken)
         {
             Hidden.Add(tabId);

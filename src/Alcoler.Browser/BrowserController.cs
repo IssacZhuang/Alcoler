@@ -163,6 +163,7 @@ public sealed class BrowserController : IBrowserController
                 // A user tab click implies focus, but a headless backend has no window to raise.
                 if (action.UserInitiated)
                 {
+                    Publish(sessionId, session);
                     try { await _host.ShowPageAsync(tab.Page.Id, ct).ConfigureAwait(false); }
                     catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException) { }
                 }

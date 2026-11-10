@@ -82,7 +82,8 @@ public sealed class WebViewBrowserHost : IBrowserHost
 
     public async Task ShowPageAsync(string tabId, CancellationToken cancellationToken)
     {
-        await OnUiAsync(() =>
+        // Embedded presenters finish attaching at Loaded priority.
+        await Dispatcher.UIThread.InvokeAsync(() =>
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             _ = GetPage(tabId);
@@ -112,7 +113,7 @@ public sealed class WebViewBrowserHost : IBrowserHost
                 window.Show();
             }
             window.Activate();
-        }, cancellationToken).ConfigureAwait(false);
+        }, DispatcherPriority.Background, cancellationToken);
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
             if (!_disposed && _pages.TryGetValue(tabId, out var page)
@@ -151,6 +152,12 @@ public sealed class WebViewBrowserHost : IBrowserHost
         }
         MovePage(page, presenter);
         _presenters[presenter.TabId] = presenter;
+        if (_userWindows.TryGetValue(presenter.TabId, out var window)
+            && !ReferenceEquals(window.Content, presenter))
+        {
+            _userWindows.Remove(presenter.TabId);
+            window.Close();
+        }
     }
 
     internal void DetachPresenter(BrowserPagePresenter presenter)

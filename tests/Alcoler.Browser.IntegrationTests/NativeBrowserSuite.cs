@@ -117,6 +117,9 @@ internal sealed class NativeBrowserSuite
         await CaseAsync("Prompt acceptance and confirm dismissal without modal deadlock", DialogsAsync);
         await CaseAsync("Bounded local media artifact and download observation", DownloadsAsync);
         await CaseAsync("Short real WebM recording completion and cancellation", RecordingAsync);
+        await CaseAsync("Standalone browser closes when an embedded presenter takes over", PresenterHandoffAsync);
+        await CaseAsync("Showing a page waits for queued embedded pane attachment", QueuedPresenterShowAsync);
+        await CaseAsync("User tab selection does not open standalone browser windows", UserTabSelectionAsync);
         await CaseAsync("Embedded presenter and pane detach preserve native adapter and JS state", PresenterAsync);
         await CaseAsync("Closing an image dialog restores browser focus without losing its native page", ImageDialogFocusAsync);
         await CaseAsync("Kernel Browser tool automatically opens Workbench native document and preserves adapter", WorkbenchDocumentAsync);
@@ -394,6 +397,128 @@ internal sealed class NativeBrowserSuite
         Equal("image/png", saved.MimeType, "Stored screenshot MIME");
         Png(saved.Data);
         Check(!result.Content.OfType<ToolResultText>().Any(t => t.Text.Contains("base64", StringComparison.OrdinalIgnoreCase)), "Screenshot leaked inline media encoding.");
+    }
+
+    private async Task PresenterHandoffAsync()
+    {
+        var native = (NativeWebView)_host.GetPageControl(_tab)!;
+        var adapter = NativeAdapter(native);
+        var destroyed = 0;
+        var closed = 0;
+        Window? standalone = null;
+        Control? presenter = null;
+        var sentinel = Guid.NewGuid().ToString("N");
+        await CommandAsync("evaluate", D(("expression", "arg => { globalThis.__handoffSentinel = arg; return true; }"), ("arg", sentinel)), _tab);
+        native.AdapterDestroyed += OnDestroyed;
+        try
+        {
+            _window.Content = null;
+            await UiTurnAsync();
+            await _host.ShowPageAsync(_tab, _ct);
+            await UiTurnAsync();
+            standalone = TopLevel.GetTopLevel(native) as Window
+                ?? throw new InvalidOperationException("Shown browser has no window.");
+            Equal("Alcoler Browser", standalone.Title, "Standalone browser title");
+            Check(standalone.IsVisible && ReferenceEquals(native.Parent, standalone.Content),
+                "Standalone browser did not retain its own page presenter.");
+            standalone.Closed += (_, _) => closed++;
+
+            presenter = _host.CreatePagePresenter(_tab);
+            _window.Content = presenter;
+            await UiTurnAsync();
+            Equal(1, closed, "Standalone window closures after embedded takeover");
+            Check(!standalone.IsVisible, "Embedded takeover left an empty standalone browser window.");
+            Check(ReferenceEquals(native.Parent, presenter), "Closing the standalone window parked the embedded page.");
+            await _host.ShowPageAsync(_tab, _ct);
+            Check(ReferenceEquals(TopLevel.GetTopLevel(native), _window), "Showing the embedded page reopened a standalone window.");
+            Equal(0, destroyed, "Native adapter destruction count during window handoff");
+            Check(ReferenceEquals(adapter, NativeAdapter(native)), "Window handoff replaced the native adapter.");
+            Check(ReferenceEquals(native, _host.GetPageControl(_tab)), "Window handoff replaced the native control.");
+            Equal(sentinel, Structured(await CommandAsync("evaluate", D(("expression", "globalThis.__handoffSentinel")), _tab)).GetString(),
+                "JavaScript state after window handoff");
+        }
+        finally
+        {
+            native.AdapterDestroyed -= OnDestroyed;
+            _window.Content = null;
+            (presenter as IDisposable)?.Dispose();
+            if (standalone is { IsVisible: true } && !ReferenceEquals(standalone, _window)) standalone.Close();
+            await UiTurnAsync();
+        }
+
+        void OnDestroyed(object? sender, WebViewAdapterEventArgs args) => destroyed++;
+    }
+
+    private async Task QueuedPresenterShowAsync()
+    {
+        var native = (NativeWebView)_host.GetPageControl(_tab)!;
+        var adapter = NativeAdapter(native);
+        using var vm = new BrowserPaneViewModel(_controller, AvaloniaUiScheduler.Instance, pagePresenterFactory: _host.CreatePagePresenter);
+        vm.Bind(_session);
+        var opened = 0;
+        using var openings = Window.WindowOpenedEvent.AddClassHandler<Window>((window, _) =>
+        {
+            if (window.Title == "Alcoler Browser") opened++;
+        }, RoutingStrategies.Direct, handledEventsToo: true);
+        _window.Content = new BrowserPaneView { DataContext = vm };
+        try
+        {
+            await _host.ShowPageAsync(_tab, _ct);
+            await UiTurnAsync();
+            Equal(0, opened, "Standalone windows opened while the embedded pane was attaching");
+            Check(vm.HasPagePresenter && ReferenceEquals(native.Parent, vm.PagePresenter),
+                "Showing the pending embedded pane did not attach its native page.");
+            await CommandAsync("visibility", D(("visible", true)), _tab);
+            Equal(0, opened, "Standalone windows opened when showing an embedded page");
+            Check(ReferenceEquals(adapter, NativeAdapter(native)), "Showing the embedded pane replaced the native adapter.");
+        }
+        finally
+        {
+            _window.Content = null;
+            await UiTurnAsync();
+        }
+    }
+
+    private async Task UserTabSelectionAsync()
+    {
+        var created = await CommandAsync("new_tab");
+        var secondTab = created.TabId ?? throw new InvalidOperationException("Second tab has no ID.");
+        using var vm = new BrowserPaneViewModel(_controller, AvaloniaUiScheduler.Instance, pagePresenterFactory: _host.CreatePagePresenter);
+        try
+        {
+            await CommandAsync("select_tab", tab: _tab);
+            vm.Bind(_session);
+            _window.Content = new BrowserPaneView { DataContext = vm };
+            await UiTurnAsync();
+            var firstNative = (NativeWebView)_host.GetPageControl(_tab)!;
+            var secondNative = (NativeWebView)_host.GetPageControl(secondTab)!;
+            var firstAdapter = NativeAdapter(firstNative);
+            var secondAdapter = NativeAdapter(secondNative);
+            var opened = 0;
+            using var openings = Window.WindowOpenedEvent.AddClassHandler<Window>((window, _) =>
+            {
+                if (window.Title == "Alcoler Browser") opened++;
+            }, RoutingStrategies.Direct, handledEventsToo: true);
+            foreach (var tab in new[] { secondTab, _tab, secondTab, _tab })
+            {
+                await vm.SelectTabCommand.ExecuteAsync(vm.Tabs.Single(current => current.Id == tab));
+                await UiTurnAsync();
+                Equal(tab, vm.ActiveTabId, "User-selected embedded tab");
+                Check(vm.Banner is null, "User tab selection failed: " + vm.Banner);
+                var native = _host.GetPageControl(tab)!;
+                Check(ReferenceEquals(native.Parent, vm.PagePresenter), "User tab selection did not move the page into the embedded pane.");
+                Check(ReferenceEquals(TopLevel.GetTopLevel(native), _window), "User-selected page is not in the embedded window.");
+                Equal(0, opened, "Standalone windows opened during user tab selection");
+                Check(ReferenceEquals(firstAdapter, NativeAdapter(firstNative)) && ReferenceEquals(secondAdapter, NativeAdapter(secondNative)),
+                    "User tab selection replaced a native adapter.");
+            }
+        }
+        finally
+        {
+            _window.Content = null;
+            await UiTurnAsync();
+            await CommandAsync("close_tab", tab: secondTab);
+        }
     }
 
     private async Task PresenterAsync()
