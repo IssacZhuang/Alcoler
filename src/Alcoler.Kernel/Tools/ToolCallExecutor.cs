@@ -65,12 +65,12 @@ public sealed class ToolCallExecutor
         if (tool is null)
             return ToolUseError($"Unknown tool '{call.Name}'.");
 
-        var schemaError = ValidateSchema(tool, call.Input);
-        if (schemaError is not null)
-            return ToolUseError(schemaError);
-
         try
         {
+            var schemaError = ValidateSchema(tool, call.Input);
+            if (schemaError is not null)
+                return ToolUseError(schemaError);
+
             var issue = await tool.ValidateInputAsync(call.Input, cancellationToken).ConfigureAwait(false);
             if (issue is not null)
                 return ToolUseError($"Tool '{tool.Contract.Name}' rejected the input: {issue.Message}");
@@ -222,12 +222,36 @@ public sealed class ToolCallExecutor
 
     private string? ValidateSchema(ITool tool, JsonElement input)
     {
+        if (FindDuplicateProperty(input) is { } duplicate)
+            return $"Tool '{tool.Contract.Name}' input contains duplicate JSON property '{duplicate}'. Provide each property only once.";
         if (!_schemas.TryGetValue(tool.Contract.Name, out var schema))
             return null;
         var results = schema.Evaluate(input);
         if (results.IsValid)
             return null;
         return $"Tool '{tool.Contract.Name}' input failed schema validation: {DescribeFailure(results)}";
+    }
+
+    private static string? FindDuplicateProperty(JsonElement input)
+    {
+        if (input.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in input.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                    return property.Name;
+                if (FindDuplicateProperty(property.Value) is { } duplicate)
+                    return duplicate;
+            }
+        }
+        else if (input.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in input.EnumerateArray())
+                if (FindDuplicateProperty(item) is { } duplicate)
+                    return duplicate;
+        }
+        return null;
     }
 
     private static string DescribeFailure(EvaluationResults results)

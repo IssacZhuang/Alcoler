@@ -67,6 +67,70 @@ public class ToolCallExecutorTests
         Assert.Empty(tool.ExecutedContexts);
     }
 
+    [Theory]
+    [InlineData("""{"value":"first","value":"second"}""")]
+    [InlineData("""{"value":"first","v\u0061lue":"second"}""")]
+    [InlineData("""{"nested":{"value":"first","value":"second"}}""")]
+    [InlineData("""{"nested":[{"value":"first","value":"second"}]}""")]
+    public async Task DuplicateInputProperties_ReturnPairedToolUseError_WithoutExecuting(string json)
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Picky");
+        var gate = new ScriptedPermissionGate();
+        var executor = Executor(new ToolRegistry([tool]), gate, workspace);
+        var call = tool.Call(json);
+        var notifications = new NotificationCollector();
+
+        var outcome = await RunAsync(executor, call, workspace, notifications);
+
+        Assert.True(outcome.Result.IsError);
+        Assert.False(outcome.Result.StopTurnAfterResult);
+        Assert.StartsWith("<tool_use_error>", outcome.Result.SingleText());
+        Assert.Contains("duplicate JSON property 'value'", outcome.Result.SingleText());
+        Assert.Empty(tool.ExecutedContexts);
+        Assert.Empty(gate.Requests);
+        Assert.Equal(call, Assert.Single(notifications.Of<ToolExecutionStarted>()).Call);
+        var result = Assert.Single(notifications.Of<ToolExecutionResultNotification>());
+        Assert.Equal(call, result.Call);
+        Assert.Equal(outcome.Result, result.Result);
+    }
+
+    [Theory]
+    [InlineData("""{"left":{"value":"first"},"right":[{"value":"second"}]}""")]
+    [InlineData("""{"value":"first","Value":"second"}""")]
+    public async Task DistinctInputProperties_ExecuteNormally(string json)
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Picky");
+        var executor = Executor(new ToolRegistry([tool]), workspace: workspace);
+
+        var outcome = await RunAsync(executor, tool.Call(json), workspace);
+
+        Assert.False(outcome.Result.IsError);
+        Assert.Single(tool.ExecutedContexts);
+    }
+
+    [Fact]
+    public async Task SchemaEvaluationThrows_ReturnsPairedToolUseError_WithoutExecuting()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Picky", schemaJson: """{"$ref":"#/$defs/missing"}""");
+        var gate = new ScriptedPermissionGate();
+        var executor = Executor(new ToolRegistry([tool]), gate, workspace);
+        var notifications = new NotificationCollector();
+
+        var outcome = await RunAsync(executor, tool.Call(), workspace, notifications);
+
+        Assert.True(outcome.Result.IsError);
+        Assert.False(outcome.Result.StopTurnAfterResult);
+        Assert.StartsWith("<tool_use_error>", outcome.Result.SingleText());
+        Assert.Contains("missing", outcome.Result.SingleText());
+        Assert.Empty(tool.ExecutedContexts);
+        Assert.Empty(gate.Requests);
+        Assert.Single(notifications.Of<ToolExecutionStarted>());
+        Assert.Single(notifications.Of<ToolExecutionResultNotification>());
+    }
+
     [Fact]
     public async Task SemanticValidationIssue_ReturnsToolUseError()
     {
@@ -220,6 +284,29 @@ public class ToolCallExecutorTests
         Assert.True(outcome.Result.IsError);
         Assert.StartsWith("<tool_use_error>", outcome.Result.SingleText());
         Assert.Empty(tool.ExecutedContexts);
+    }
+
+    [Fact]
+    public async Task PermissionModified_WithDuplicateProperties_ReturnsPairedToolUseError_WithoutExecuting()
+    {
+        using var workspace = new TempWorkspace();
+        var tool = new FakeTool("Mutable");
+        var gate = new ScriptedPermissionGate(new PermissionDecision(
+            PermissionOutcome.Modified,
+            JsonDocument.Parse("""{"value":"first","value":"second"}""").RootElement.Clone()));
+        var executor = Executor(new ToolRegistry([tool]), gate, workspace);
+        var notifications = new NotificationCollector();
+
+        var outcome = await RunAsync(executor, tool.Call("""{"value":"original"}"""), workspace, notifications);
+
+        Assert.True(outcome.Result.IsError);
+        Assert.False(outcome.Result.StopTurnAfterResult);
+        Assert.StartsWith("<tool_use_error>", outcome.Result.SingleText());
+        Assert.Contains("duplicate JSON property 'value'", outcome.Result.SingleText());
+        Assert.Empty(tool.ExecutedContexts);
+        Assert.Single(gate.Requests);
+        Assert.Single(notifications.Of<ToolExecutionStarted>());
+        Assert.Single(notifications.Of<ToolExecutionResultNotification>());
     }
 
     [Fact]

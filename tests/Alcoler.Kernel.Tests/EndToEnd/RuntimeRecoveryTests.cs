@@ -58,6 +58,50 @@ public class RuntimeRecoveryTests
         new(ModelFailureKind.InvalidRequest, message);
 
     [Fact]
+    public async Task DuplicateEditArguments_ReturnToolErrorAndAllowCorrectionInSameTurn()
+    {
+        using var invalidInput = JsonDocument.Parse("""{"file_path":"engine.cs","new_string":"replacement","new_string":"original"}""");
+        var invalid = new ToolCall(new ToolCallId("edit-invalid"), "Edit", invalidInput.RootElement.Clone());
+        var corrected = new ToolCall(new ToolCallId("edit-corrected"), "Edit",
+            JsonSerializer.SerializeToElement(new { file_path = "engine.cs", old_string = "original", new_string = "replacement" }));
+        await using var harness = ScriptedCallHarness.Create(
+            [new ModelToolCallReady(new ToolCall(new ToolCallId("read-original"), "Read",
+                JsonSerializer.SerializeToElement(new { file_path = "engine.cs" }))),
+                new ModelStreamFinished(ModelFinishReason.ToolCalls)],
+            [new ModelToolCallReady(invalid), new ModelStreamFinished(ModelFinishReason.ToolCalls)],
+            [new ModelToolCallReady(corrected), new ModelStreamFinished(ModelFinishReason.ToolCalls)],
+            StopText("edit completed"));
+        await using var runtime = harness.BuildRuntime(new ReadTool(), new EditTool());
+        var path = Path.Combine(harness.Root, "engine.cs");
+        await File.WriteAllTextAsync(path, "original");
+        var session = await runtime.CreateSessionAsync(new SessionOptions(harness.Root), CancellationToken.None);
+        using var projection = runtime.Subscribe(session.Id);
+
+        await SendAndWaitIdleAsync(runtime, projection, session.Id, "edit the file", expectedReplies: 0);
+
+        Assert.Equal(4, harness.Model.Requests.Count);
+        var correctionRequest = harness.Model.Requests[2].Messages.SelectMany(message => message.Content).ToArray();
+        var failedCall = Assert.Single(correctionRequest.OfType<InputToolCallBlock>(), call => call.Id == invalid.Id);
+        var failedResult = Assert.Single(correctionRequest.OfType<InputToolResultBlock>(), result => result.Id == invalid.Id);
+        Assert.Equal(failedCall.Id, failedResult.Id);
+        Assert.True(failedResult.IsError);
+        Assert.Contains("duplicate JSON property 'new_string'", failedResult.Content);
+        var successResult = Assert.Single(harness.Model.Requests[3].Messages.SelectMany(message => message.Content)
+            .OfType<InputToolResultBlock>(), result => result.Id == corrected.Id);
+        Assert.False(successResult.IsError);
+        Assert.Equal("replacement", await File.ReadAllTextAsync(path));
+        Assert.Equal(TurnOutcome.Completed, runtime.GetSessionActivity(session.Id)!.LastOutcome);
+        var rows = projection.Snapshot().Rows;
+        Assert.Equal(ToolCallStatus.Failed, Assert.Single(rows.OfType<ToolCallRow>(), row => row.Id == invalid.Id).Status);
+        Assert.Equal(ToolCallStatus.Succeeded, Assert.Single(rows.OfType<ToolCallRow>(), row => row.Id == corrected.Id).Status);
+        Assert.Contains(rows.OfType<AssistantMessageRow>(), row => row.Parts.OfType<TextPart>().Any(part => part.Text == "edit completed"));
+        await using var store = harness.OpenStore();
+        var events = await store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
+        Assert.Empty(events.Select(item => item.Event).OfType<TurnFailedEvent>());
+        Assert.Equal(TurnOutcome.Completed, Assert.Single(events.Select(item => item.Event).OfType<TurnCompletedEvent>()).Outcome);
+    }
+
+    [Fact]
     public async Task LengthFinish_ContinuesViaRequestLocalPromptAndResumesOutput()
     {
         await using var harness = ScriptedCallHarness.Create(
