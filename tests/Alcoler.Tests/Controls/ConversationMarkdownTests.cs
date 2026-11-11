@@ -755,18 +755,18 @@ public class ConversationMarkdownTests(Xunit.Abstractions.ITestOutputHelper outp
                 using var decoder = AvaloniaLocator.EnterScope();
                 Avalonia.Skia.SkiaPlatform.Initialize();
                 ClickLink();
-                var dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(host.Window.OwnedWindows));
+                var overlay = Assert.Single(host.Window.GetVisualDescendants().OfType<ImageViewerOverlay>());
                 try
                 {
-                    await WaitForAsync(host, () => dialog.FindControl<Image>("PreviewImage")!.Source is not null);
-                    Assert.Equal(Path.GetFileName(path), dialog.Title);
-                    Assert.Equal(new PixelSize(640, 320), Assert.IsType<Bitmap>(dialog.FindControl<Image>("PreviewImage")!.Source).PixelSize);
+                    await WaitForAsync(host, () => overlay.FindControl<Image>("PreviewImage")!.Source is not null);
+                    Assert.Equal(Path.GetFileName(path), overlay.FindControl<TextBlock>("FileNameLabel")!.Text);
+                    Assert.Equal(new PixelSize(640, 320), Assert.IsType<Bitmap>(overlay.FindControl<Image>("PreviewImage")!.Source).PixelSize);
                     Assert.Empty(launcher.Opened);
                     Assert.Null(workbench.Banner);
                 }
                 finally
                 {
-                    dialog.Close();
+                    overlay.Close();
                 }
                 return;
             }
@@ -791,7 +791,7 @@ public class ConversationMarkdownTests(Xunit.Abstractions.ITestOutputHelper outp
 
             await WaitForAsync(host, () => launcher.Opened.Count > 0);
             Assert.Equal(path, Assert.Single(launcher.Opened));
-            Assert.Empty(host.Window.OwnedWindows);
+            Assert.Empty(host.Window.GetVisualDescendants().OfType<ImageViewerOverlay>());
             Assert.True(File.Exists(launcher.Opened[0]));
             Assert.Null(workbench.Banner);
 

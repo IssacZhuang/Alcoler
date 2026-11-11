@@ -59,7 +59,7 @@ internal static class ConversationMarkdownRendering
         var ownerId = contexts.OfType<DocumentViewModel>().FirstOrDefault()?.OwnerId;
         var window = TopLevel.GetTopLevel(owner) as Window;
         await workbench.OpenMarkdownLinkAsync(target, workspaceRoot, ownerId,
-            window is null ? null : (path, mimeType) => ImageViewerDialog.TryShowFileAsync(window, path, mimeType));
+            window is null ? null : (path, mimeType) => ImageViewerOverlay.TryShowFileAsync(window, path, mimeType));
     }
 
     public static MdAvPlugins CreatePlugins()

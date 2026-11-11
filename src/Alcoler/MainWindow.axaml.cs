@@ -5,6 +5,7 @@ using Alcoler.Ui;
 using Alcoler.Controls;
 using Alcoler.Localization;
 using Alcoler.ViewModel;
+using Alcoler.Views;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -481,7 +482,7 @@ public partial class MainWindow : Window
 
     private async void OnShellKeyDown(object? sender, KeyEventArgs e)
     {
-        if (_viewModel is null || !e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        if (_viewModel is null || ImageViewerOverlay.IsOpen(this) || !e.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             return;
         }

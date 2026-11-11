@@ -571,7 +571,7 @@ public partial class ComposerView : UserControl
     {
         if (sender is Button { DataContext: ComposerImageAttachment image }
             && TopLevel.GetTopLevel(this) is Window owner)
-            await ImageViewerDialog.ShowAsync(owner, image);
+            await ImageViewerOverlay.ShowAsync(owner, image);
     }
 
     private void OnRemoveImageClick(object? sender, RoutedEventArgs e)

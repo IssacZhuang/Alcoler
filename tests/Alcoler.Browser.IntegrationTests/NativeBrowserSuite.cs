@@ -121,7 +121,7 @@ internal sealed class NativeBrowserSuite
         await CaseAsync("Showing a page waits for queued embedded pane attachment", QueuedPresenterShowAsync);
         await CaseAsync("User tab selection does not open standalone browser windows", UserTabSelectionAsync);
         await CaseAsync("Embedded presenter and pane detach preserve native adapter and JS state", PresenterAsync);
-        await CaseAsync("Closing an image dialog restores browser focus without losing its native page", ImageDialogFocusAsync);
+        await CaseAsync("Closing an image viewer restores browser focus without losing its native page", ImageViewerFocusAsync);
         await CaseAsync("Kernel Browser tool automatically opens Workbench native document and preserves adapter", WorkbenchDocumentAsync);
         await CaseAsync("History navigation and stale snapshot reference rejection", HistoryAsync);
         await CaseAsync("Cross-origin iframe CDP context click and fill", CrossOriginFrameAsync);
@@ -596,7 +596,7 @@ internal sealed class NativeBrowserSuite
         }
     }
 
-    private async Task ImageDialogFocusAsync()
+    private async Task ImageViewerFocusAsync()
     {
         var native = (NativeWebView)_host.GetPageControl(_tab)!;
         var adapter = native.TryGetPlatformHandle() ?? throw new InvalidOperationException("Native WebView has no adapter.");
@@ -616,37 +616,38 @@ internal sealed class NativeBrowserSuite
                 _window.Activate();
                 native.Focus();
                 await UiTurnAsync();
-                Check(native.IsFocused, "Native browser did not receive focus before opening the image dialog.");
+                Check(native.IsFocused, "Native browser did not receive focus before opening the image viewer.");
                 using var stream = new MemoryStream(png, writable: false);
-                var dialog = new ImageViewerDialog("native-focus.png", _ => Task.FromResult<Bitmap?>(new Bitmap(stream)));
-                var closed = dialog.ShowDialog(_window);
+                var closed = ImageViewerOverlay.ShowAsync(_window, "native-focus.png", _ => Task.FromResult<Bitmap?>(new Bitmap(stream)));
+                var overlay = _window.GetVisualDescendants().OfType<ImageViewerOverlay>().Single();
                 try
                 {
                     await UiTurnAsync();
-                    Check(dialog.IsActive && dialog.FindControl<Image>("PreviewImage")!.Source is Bitmap,
-                        "Image dialog did not activate and display its decoded image.");
+                    Check(overlay.FindControl<Image>("PreviewImage")!.Source is Bitmap,
+                        "Image viewer did not display its decoded image.");
                     var before = restored;
-                    Console.WriteLine($"STEP Close image dialog using {(escape ? "Escape" : "close button")} with browser-focused owner");
+                    Console.WriteLine($"STEP Close image viewer using {(escape ? "Escape" : "close button")} with browser-focused owner");
                     if (escape)
-                        dialog.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Escape });
+                        overlay.RaiseEvent(new KeyEventArgs { RoutedEvent = InputElement.KeyDownEvent, Key = Key.Escape });
                     else
-                        dialog.FindControl<Button>("CloseImageButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        overlay.FindControl<Button>("CloseImageButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     await closed.WaitAsync(TimeSpan.FromSeconds(5), _ct);
                     await UiTurnAsync();
-                    Check(!_window.OwnedWindows.Any(), "Closed image dialog remained owned by the browser window.");
+                    Check(!_window.GetVisualDescendants().OfType<ImageViewerOverlay>().Any(),
+                        "Closed image viewer remained in the browser window.");
                     Check(_window.IsActive && native.IsFocused && restored > before,
-                        "Closing the image dialog did not restore the browser's managed focus.");
+                        "Closing the image viewer did not restore the browser's managed focus.");
                     var focused = GetFocus();
                     Check(focused == adapter.Handle || IsChild(adapter.Handle, focused),
-                        "Closing the image dialog did not restore the browser's native keyboard focus.");
-                    Check(ReferenceEquals(adapter, NativeAdapter(native)), "Closing an image dialog replaced the native browser adapter.");
+                        "Closing the image viewer did not restore the browser's native keyboard focus.");
+                    Check(ReferenceEquals(adapter, NativeAdapter(native)), "Closing an image viewer replaced the native browser adapter.");
                     Equal(sentinel, Structured(await CommandAsync("evaluate", D(("expression", "globalThis.__imageFocusSentinel")), _tab)).GetString(),
-                        "Browser JavaScript state after closing the image dialog");
-                    Check(dialog.FindControl<Image>("PreviewImage")!.Source is null, "Closed image dialog retained its bitmap.");
+                        "Browser JavaScript state after closing the image viewer");
+                    Check(overlay.FindControl<Image>("PreviewImage")!.Source is null, "Closed image viewer retained its bitmap.");
                 }
                 finally
                 {
-                    if (dialog.IsVisible) dialog.Close();
+                    if (!closed.IsCompleted) overlay.Close();
                 }
             }
         }

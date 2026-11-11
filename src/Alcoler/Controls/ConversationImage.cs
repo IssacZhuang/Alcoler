@@ -110,7 +110,7 @@ public sealed class ConversationImage : Image
         _opening = true;
         try
         {
-            await ImageViewerDialog.ShowArtifactAsync(owner, uri, mime, FileName, _artifacts);
+            await ImageViewerOverlay.ShowArtifactAsync(owner, uri, mime, FileName, _artifacts);
         }
         finally
         {

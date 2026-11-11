@@ -1,30 +1,37 @@
 using Alcoler.Adapters.Storage;
 using Alcoler.Localization;
-using Alcoler.Ui;
 using Alcoler.ViewModel;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 
 namespace Alcoler.Views;
 
-public partial class ImageViewerDialog : Window
+public partial class ImageViewerOverlay : UserControl
 {
-    private Func<CancellationToken, Task<Bitmap?>>? _loader;
     private readonly CancellationTokenSource _loading = new();
+    private readonly TaskCompletionSource<bool> _closedSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private Func<CancellationToken, Task<Bitmap?>>? _loader;
     private Bitmap? _bitmap;
+    private Window? _owner;
+    private AdornerLayer? _layer;
+    private IInputElement? _previousFocus;
     private bool _closed;
+    private bool _disposed;
+    private bool _loadingStarted;
     private bool _closeOnLoadError;
     private bool _loadFailed;
     private bool _fit = true;
     private double _zoom = 1;
 
-    public ImageViewerDialog()
+    public ImageViewerOverlay()
     {
         InitializeComponent(true);
-        WindowChrome.Attach(this);
         AddHandler(KeyDownEvent, OnViewerKeyDown, RoutingStrategies.Tunnel);
         ImageScroll.PropertyChanged += (_, e) =>
         {
@@ -33,10 +40,9 @@ public partial class ImageViewerDialog : Window
         };
     }
 
-    internal ImageViewerDialog(string? fileName, Func<CancellationToken, Task<Bitmap?>> loader) : this()
+    internal ImageViewerOverlay(string? fileName, Func<CancellationToken, Task<Bitmap?>> loader) : this()
     {
         FileNameLabel.Text = string.IsNullOrWhiteSpace(fileName) ? Loc.Get("imageviewer_title") : fileName;
-        Title = FileNameLabel.Text;
         _loader = loader;
     }
 
@@ -46,18 +52,18 @@ public partial class ImageViewerDialog : Window
         {
             var bytes = attachment.ReadPreviewBytes();
             var mimeType = attachment.MimeType;
-            return new ImageViewerDialog(attachment.Name, token => Task.Run<Bitmap?>(() =>
-                ComposerImageAttachment.DecodeThumbnail(bytes, mimeType, 32_768), token)).ShowDialog(owner);
+            return ShowCore(owner, new ImageViewerOverlay(attachment.Name, token => Task.Run<Bitmap?>(() =>
+                ComposerImageAttachment.DecodeThumbnail(bytes, mimeType, 32_768), token)));
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or ObjectDisposedException or UnauthorizedAccessException)
         {
-            return new ImageViewerDialog(attachment.Name, _ => Task.FromException<Bitmap?>(exception)).ShowDialog(owner);
+            return ShowCore(owner, new ImageViewerOverlay(attachment.Name, _ => Task.FromException<Bitmap?>(exception)));
         }
     }
 
     internal static async Task<bool> TryShowFileAsync(Window owner, string path, string mimeType)
     {
-        var dialog = new ImageViewerDialog(Path.GetFileName(path), token => Task.Run<Bitmap?>(async () =>
+        var overlay = new ImageViewerOverlay(Path.GetFileName(path), token => Task.Run<Bitmap?>(async () =>
         {
             await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete, 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
@@ -71,23 +77,48 @@ public partial class ImageViewerDialog : Window
         {
             _closeOnLoadError = true,
         };
-        await dialog.ShowDialog(owner);
-        return !dialog._loadFailed;
+        await ShowCore(owner, overlay);
+        return !overlay._loadFailed;
     }
 
     internal static Task ShowArtifactAsync(Window owner, string uri, string mimeType, string? fileName,
         FileArtifactStore? store = null) =>
-        new ImageViewerDialog(fileName, token => Task.Run(async () =>
+        ShowCore(owner, new ImageViewerOverlay(fileName, token => Task.Run(async () =>
         {
             var data = await (store ?? new FileArtifactStore(WorkbenchDataPaths.ArtifactsPath)).TryLoadAsync(uri, token);
             token.ThrowIfCancellationRequested();
             return data is null ? null : ComposerImageAttachment.DecodeThumbnail(data.Value.ToArray(), mimeType.ToLowerInvariant(), 32_768);
-        }, token)).ShowDialog(owner);
+        }, token)));
 
-    protected override async void OnOpened(EventArgs e)
+    internal static Task ShowAsync(Window owner, string? fileName, Func<CancellationToken, Task<Bitmap?>> loader) =>
+        ShowCore(owner, new ImageViewerOverlay(fileName, loader));
+
+    internal static bool IsOpen(Window owner) =>
+        owner.GetVisualDescendants().OfType<ImageViewerOverlay>().Any();
+
+    internal void Close()
     {
-        base.OnOpened(e);
-        CloseImageButton.Focus();
+        if (_closed)
+            return;
+        _closed = true;
+        var layer = _layer;
+        _layer = null;
+        layer?.Children.Remove(this);
+        Cleanup();
+        _closedSource.TrySetResult(true);
+    }
+
+    protected override async void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        if (_loadingStarted)
+            return;
+        _loadingStarted = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!_closed)
+                CloseImageButton.Focus();
+        }, DispatcherPriority.Input);
         var loader = _loader;
         _loader = null;
         try
@@ -119,16 +150,89 @@ public partial class ImageViewerDialog : Window
         }
     }
 
-    protected override void OnClosed(EventArgs e)
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        _closed = true;
-        _loader = null;
+        if (!_closed)
+        {
+            _closed = true;
+            _closedSource.TrySetResult(true);
+        }
+        Cleanup();
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    private static Task ShowCore(Window owner, ImageViewerOverlay overlay)
+    {
+        if (!overlay.Attach(owner))
+        {
+            overlay._loadFailed = true;
+            overlay.Close();
+            return Task.CompletedTask;
+        }
+        return overlay._closedSource.Task;
+    }
+
+    private bool Attach(Window owner)
+    {
+        if (!owner.IsVisible)
+            return false;
+        var layer = owner.Content is Visual anchor && anchor.IsAttachedToVisualTree()
+            ? AdornerLayer.GetAdornerLayer(anchor)
+            : null;
+        if (layer is null)
+        {
+            foreach (var visual in owner.GetVisualDescendants().OfType<Visual>().ToArray())
+            {
+                layer = AdornerLayer.GetAdornerLayer(visual);
+                if (layer is not null)
+                    break;
+            }
+        }
+        if (layer is null)
+            return false;
+        foreach (var existing in layer.Children.OfType<ImageViewerOverlay>().ToArray())
+            existing.Close();
+        _owner = owner;
+        _layer = layer;
+        _previousFocus = owner.FocusManager?.GetFocusedElement();
+        Width = owner.ClientSize.Width;
+        Height = owner.ClientSize.Height;
+        owner.SizeChanged += OnOwnerSizeChanged;
+        layer.Children.Add(this);
+        return true;
+    }
+
+    private void OnOwnerSizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        if (_owner is not { } owner)
+            return;
+        Width = owner.ClientSize.Width;
+        Height = owner.ClientSize.Height;
+    }
+
+    private void Cleanup()
+    {
+        if (_disposed)
+            return;
+        _disposed = true;
         _loading.Cancel();
         _loading.Dispose();
         PreviewImage.Source = null;
         _bitmap?.Dispose();
         _bitmap = null;
-        base.OnClosed(e);
+        if (_owner is { } owner)
+            owner.SizeChanged -= OnOwnerSizeChanged;
+        _owner = null;
+        var previous = _previousFocus;
+        _previousFocus = null;
+        if (previous is InputElement { IsEffectivelyEnabled: true } element && element.IsAttachedToVisualTree())
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (element.IsAttachedToVisualTree())
+                    element.Focus();
+            }, DispatcherPriority.Input);
+        }
     }
 
     private void ShowError(string message)
@@ -187,9 +291,25 @@ public partial class ImageViewerDialog : Window
 
     private void OnCloseClick(object? sender, RoutedEventArgs e) => Close();
 
+    private void OnBackdropPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_closed || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+        if (e.Source is Visual source)
+        {
+            if (source.GetSelfAndVisualAncestors().Any(visual =>
+                    visual == Toolbar || visual is Button or ScrollBar or Track or Thumb))
+                return;
+        }
+        if (PreviewImage.Source is not null && new Rect(PreviewImage.Bounds.Size).Contains(e.GetPosition(PreviewImage)))
+            return;
+        e.Handled = true;
+        Close();
+    }
+
     private void OnViewerKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Escape)
+        if (e.Key != Key.Escape || _closed)
             return;
         e.Handled = true;
         Close();

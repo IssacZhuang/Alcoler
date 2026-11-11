@@ -41,32 +41,32 @@ public sealed class ImageViewerTests
         {
             var preview = Assert.Single(view.GetVisualDescendants().OfType<Button>(), button => AutomationProperties.GetName(button) == "Preview image");
             await RenderAsync(owner);
-            ImageViewerDialog dialog;
+            ImageViewerOverlay overlay;
             using (UseImageDecoder())
             {
                 Click(owner, preview);
-                dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(owner.OwnedWindows));
-                await WaitForAsync(() => dialog.FindControl<Image>("PreviewImage")!.Source is not null);
+                overlay = FindOverlay(owner);
+                await WaitForAsync(() => overlay.FindControl<Image>("PreviewImage")!.Source is not null);
             }
-            Assert.Equal("screenshot.png", dialog.Title);
-            Assert.Equal(new PixelSize(1600, 800), Assert.IsType<Bitmap>(dialog.FindControl<Image>("PreviewImage")!.Source).PixelSize);
+            Assert.Equal("screenshot.png", overlay.FindControl<TextBlock>("FileNameLabel")!.Text);
+            Assert.Equal(new PixelSize(1600, 800), Assert.IsType<Bitmap>(overlay.FindControl<Image>("PreviewImage")!.Source).PixelSize);
             Assert.Same(attachment, Assert.Single(host.Composer.Attachments));
             Assert.True(File.Exists(attachment.PayloadPath));
-            dialog.KeyPressQwerty(PhysicalKey.Escape, RawInputModifiers.None);
+            owner.KeyPressQwerty(PhysicalKey.Escape, RawInputModifiers.None);
             owner.KeyReleaseQwerty(PhysicalKey.Escape, RawInputModifiers.None);
-            Assert.Empty(owner.OwnedWindows);
-            Assert.Null(dialog.FindControl<Image>("PreviewImage")!.Source);
+            AssertNoOverlay(owner);
+            Assert.Null(overlay.FindControl<Image>("PreviewImage")!.Source);
 
             var remove = Assert.Single(view.GetVisualDescendants().OfType<Button>(), button => Equals(ToolTip.GetTip(button), "Remove image"));
             await RenderAsync(owner);
             Click(owner, remove);
             Assert.Empty(host.Composer.Attachments);
             Assert.False(File.Exists(attachment.PayloadPath));
-            Assert.Empty(owner.OwnedWindows);
+            AssertNoOverlay(owner);
         }
         finally
         {
-            CloseOwnedWindows(owner);
+            CloseOverlays(owner);
             host.Composer.ClearAttachments();
             owner.Close();
         }
@@ -114,22 +114,23 @@ public sealed class ImageViewerTests
                 }
                 Assert.Equal(new PixelSize(192, 96), Assert.IsType<Bitmap>(thumbnail.Source).PixelSize);
                 await RenderAsync(owner);
-                ImageViewerDialog dialog;
+                ImageViewerOverlay overlay;
                 using (UseImageDecoder())
                 {
                     Click(owner, thumbnail);
-                    dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(owner.OwnedWindows));
-                    await WaitForAsync(() => dialog.FindControl<Image>("PreviewImage")!.Source is not null);
+                    overlay = FindOverlay(owner);
+                    await WaitForAsync(() => overlay.FindControl<Image>("PreviewImage")!.Source is not null);
                 }
-                Assert.Equal(new PixelSize(1200, 600), Assert.IsType<Bitmap>(dialog.FindControl<Image>("PreviewImage")!.Source).PixelSize);
-                Assert.Equal("model-read.png", dialog.Title);
-                dialog.Close();
-                Assert.Null(dialog.FindControl<Image>("PreviewImage")!.Source);
+                Assert.Equal(new PixelSize(1200, 600), Assert.IsType<Bitmap>(overlay.FindControl<Image>("PreviewImage")!.Source).PixelSize);
+                Assert.Equal("model-read.png", overlay.FindControl<TextBlock>("FileNameLabel")!.Text);
+                overlay.Close();
+                AssertNoOverlay(owner);
+                Assert.Null(overlay.FindControl<Image>("PreviewImage")!.Source);
                 Assert.NotNull(thumbnail.Source);
             }
             finally
             {
-                CloseOwnedWindows(owner);
+                CloseOverlays(owner);
                 owner.Close();
                 Directory.Delete(directory, true);
             }
@@ -157,19 +158,19 @@ public sealed class ImageViewerTests
             thumbnail.Focus();
             owner.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
             owner.KeyReleaseQwerty(PhysicalKey.Enter, RawInputModifiers.None);
-            var dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(owner.OwnedWindows));
-            await WaitForAsync(() => dialog.FindControl<TextBlock>("StatusLabel")!.Text != "Loading image...");
-            Assert.Null(dialog.FindControl<Image>("PreviewImage")!.Source);
-            Assert.True(dialog.FindControl<TextBlock>("StatusLabel")!.IsVisible);
-            Assert.False(dialog.FindControl<StackPanel>("ZoomControls")!.IsEnabled);
-            Assert.True(dialog.FindControl<Button>("CloseImageButton")!.IsEffectivelyEnabled);
-            await RenderAsync(dialog);
-            Click(dialog, dialog.FindControl<Button>("CloseImageButton")!);
-            Assert.Empty(owner.OwnedWindows);
+            var overlay = FindOverlay(owner);
+            await WaitForAsync(() => overlay.FindControl<TextBlock>("StatusLabel")!.Text != "Loading image...");
+            Assert.Null(overlay.FindControl<Image>("PreviewImage")!.Source);
+            Assert.True(overlay.FindControl<TextBlock>("StatusLabel")!.IsVisible);
+            Assert.False(overlay.FindControl<StackPanel>("ZoomControls")!.IsEnabled);
+            Assert.True(overlay.FindControl<Button>("CloseImageButton")!.IsEffectivelyEnabled);
+            await RenderAsync(owner);
+            Click(owner, overlay.FindControl<Button>("CloseImageButton")!);
+            AssertNoOverlay(owner);
         }
         finally
         {
-            CloseOwnedWindows(owner);
+            CloseOverlays(owner);
             owner.Close();
             if (Directory.Exists(directory))
                 Directory.Delete(directory, true);
@@ -188,33 +189,32 @@ public sealed class ImageViewerTests
         {
             using var scope = UseImageDecoder();
             await File.WriteAllBytesAsync(path, CreatePng(1600, 800));
-            ImageViewerDialog dialog;
+            ImageViewerOverlay overlay;
             Task<bool> closed;
             using (var writer = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
             {
-                closed = ImageViewerDialog.TryShowFileAsync(owner, path, "IMAGE/PNG");
-                dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(owner.OwnedWindows));
-                await WaitForAsync(() => dialog.FindControl<Image>("PreviewImage")!.Source is not null);
+                closed = ImageViewerOverlay.TryShowFileAsync(owner, path, "IMAGE/PNG");
+                overlay = FindOverlay(owner);
+                await WaitForAsync(() => overlay.FindControl<Image>("PreviewImage")!.Source is not null);
             }
-            var image = dialog.FindControl<Image>("PreviewImage")!;
+            var image = overlay.FindControl<Image>("PreviewImage")!;
             var bitmap = Assert.IsType<Bitmap>(image.Source);
             Assert.Equal(new PixelSize(1600, 800), bitmap.PixelSize);
-            Assert.Equal("local screenshot.png", dialog.Title);
-            Assert.Equal("local screenshot.png", dialog.FindControl<TextBlock>("FileNameLabel")!.Text);
-            Assert.False(dialog.FindControl<TextBlock>("StatusLabel")!.IsVisible);
-            Assert.True(dialog.FindControl<StackPanel>("ZoomControls")!.IsEnabled);
+            Assert.Equal("local screenshot.png", overlay.FindControl<TextBlock>("FileNameLabel")!.Text);
+            Assert.False(overlay.FindControl<TextBlock>("StatusLabel")!.IsVisible);
+            Assert.True(overlay.FindControl<StackPanel>("ZoomControls")!.IsEnabled);
             using var reopened = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             Assert.True(reopened.Length > 0);
-            dialog.Close();
+            overlay.Close();
             Assert.True(await closed);
-            Assert.Empty(owner.OwnedWindows);
+            AssertNoOverlay(owner);
             Assert.Null(image.Source);
             using var output = new MemoryStream();
             Assert.NotNull(Record.Exception(() => bitmap.Save(output)));
         }
         finally
         {
-            CloseOwnedWindows(owner);
+            CloseOverlays(owner);
             owner.Close();
             Directory.Delete(directory, true);
         }
@@ -255,10 +255,10 @@ public sealed class ImageViewerTests
                     await File.WriteAllBytesAsync(path, bytes);
                     break;
             }
-            var closed = ImageViewerDialog.TryShowFileAsync(owner, path, "image/png");
+            var closed = ImageViewerOverlay.TryShowFileAsync(owner, path, "image/png");
             await WaitForAsync(() => closed.IsCompleted);
             Assert.False(await closed);
-            Assert.Empty(owner.OwnedWindows);
+            AssertNoOverlay(owner);
             if (File.Exists(path))
             {
                 using var reopened = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
@@ -267,7 +267,7 @@ public sealed class ImageViewerTests
         }
         finally
         {
-            CloseOwnedWindows(owner);
+            CloseOverlays(owner);
             owner.Close();
             Directory.Delete(directory, true);
         }
@@ -285,17 +285,17 @@ public sealed class ImageViewerTests
             var path = Path.Combine(directory, "cancelled.png");
             await File.WriteAllBytesAsync(path, CreatePng());
 
-            var closed = ImageViewerDialog.TryShowFileAsync(owner, path, "image/png");
-            var dialog = Assert.IsType<ImageViewerDialog>(Assert.Single(owner.OwnedWindows));
-            dialog.Close();
+            var closed = ImageViewerOverlay.TryShowFileAsync(owner, path, "image/png");
+            var overlay = FindOverlay(owner);
+            overlay.Close();
 
             Assert.True(await closed);
-            Assert.Empty(owner.OwnedWindows);
-            Assert.Null(dialog.FindControl<Image>("PreviewImage")!.Source);
+            AssertNoOverlay(owner);
+            Assert.Null(overlay.FindControl<Image>("PreviewImage")!.Source);
         }
         finally
         {
-            CloseOwnedWindows(owner);
+            CloseOverlays(owner);
             owner.Close();
             Directory.Delete(directory, true);
         }
@@ -309,41 +309,41 @@ public sealed class ImageViewerTests
             bitmap = ComposerImageAttachment.DecodeThumbnail(CreatePng(2000, 1000), "image/png", 32_768);
         var owner = new Window();
         owner.Show();
-        var dialog = new ImageViewerDialog("large.png", _ => Task.FromResult<Bitmap?>(bitmap));
-        var closed = dialog.ShowDialog(owner);
+        var closed = ImageViewerOverlay.ShowAsync(owner, "large.png", _ => Task.FromResult<Bitmap?>(bitmap));
+        var overlay = FindOverlay(owner);
         try
         {
-            await RenderAsync(dialog);
-            var image = dialog.FindControl<Image>("PreviewImage")!;
-            var scroll = dialog.FindControl<ScrollViewer>("ImageScroll")!;
+            await RenderAsync(owner);
+            var image = overlay.FindControl<Image>("PreviewImage")!;
+            var scroll = overlay.FindControl<ScrollViewer>("ImageScroll")!;
             Assert.Same(bitmap, image.Source);
             Assert.InRange(image.Width, 1, scroll.Viewport.Width);
             Assert.InRange(image.Height, 1, scroll.Viewport.Height);
             var fittedWidth = image.Width;
-            Click(dialog, dialog.FindControl<Button>("ZoomInButton")!);
+            Click(owner, overlay.FindControl<Button>("ZoomInButton")!);
             Assert.True(image.Width > fittedWidth);
-            await RenderAsync(dialog);
-            Click(dialog, dialog.FindControl<Button>("ActualSizeButton")!);
+            await RenderAsync(owner);
+            Click(owner, overlay.FindControl<Button>("ActualSizeButton")!);
             Assert.Equal(2000, image.Width);
             Assert.Equal(1000, image.Height);
-            await RenderAsync(dialog);
+            await RenderAsync(owner);
             Assert.True(scroll.Extent.Width > scroll.Viewport.Width);
-            Click(dialog, dialog.FindControl<Button>("FitButton")!);
-            await RenderAsync(dialog);
+            Click(owner, overlay.FindControl<Button>("FitButton")!);
+            await RenderAsync(owner);
             Assert.InRange(image.Width, 1, scroll.Viewport.Width);
-            dialog.Width = 720;
-            await RenderAsync(dialog);
+            owner.Width = 720;
+            await RenderAsync(owner);
             Assert.True(image.Width < fittedWidth);
             Assert.InRange(image.Width, 1, scroll.Viewport.Width);
             Assert.Equal(new PixelSize(2000, 1000), bitmap.PixelSize);
-            dialog.KeyPressQwerty(PhysicalKey.Escape, RawInputModifiers.None);
+            owner.KeyPressQwerty(PhysicalKey.Escape, RawInputModifiers.None);
             owner.KeyReleaseQwerty(PhysicalKey.Escape, RawInputModifiers.None);
             await closed;
             Assert.Null(image.Source);
         }
         finally
         {
-            CloseOwnedWindows(owner);
+            CloseOverlays(owner);
             owner.Close();
         }
     }
@@ -355,16 +355,16 @@ public sealed class ImageViewerTests
         CancellationToken token = default;
         var owner = new Window();
         owner.Show();
-        var dialog = new ImageViewerDialog("late.png", cancellation =>
+        var closed = ImageViewerOverlay.ShowAsync(owner, "late.png", cancellation =>
         {
             token = cancellation;
             return completion.Task;
         });
-        var closed = dialog.ShowDialog(owner);
+        var overlay = FindOverlay(owner);
         Bitmap bitmap;
         using (UseImageDecoder())
             bitmap = ComposerImageAttachment.DecodeThumbnail(CreatePng(), "image/png");
-        dialog.Close();
+        overlay.Close();
         await closed;
         Assert.True(token.IsCancellationRequested);
         completion.SetResult(bitmap);
@@ -373,8 +373,48 @@ public sealed class ImageViewerTests
             using var output = new MemoryStream();
             return Record.Exception(() => bitmap.Save(output)) is not null;
         });
-        Assert.Null(dialog.FindControl<Image>("PreviewImage")!.Source);
+        Assert.Null(overlay.FindControl<Image>("PreviewImage")!.Source);
         owner.Close();
+    }
+
+    [AvaloniaFact]
+    public async Task Viewer_ClickOnImageKeepsOpenAndClickOnBackdropCloses()
+    {
+        Bitmap bitmap;
+        using (UseImageDecoder())
+            bitmap = ComposerImageAttachment.DecodeThumbnail(CreatePng(400, 200), "image/png", 32_768);
+        var owner = new Window { Width = 900, Height = 600 };
+        owner.Show();
+        var closed = ImageViewerOverlay.ShowAsync(owner, "backdrop.png", _ => Task.FromResult<Bitmap?>(bitmap));
+        var overlay = FindOverlay(owner);
+        Assert.Empty(owner.OwnedWindows);
+        try
+        {
+            await RenderAsync(owner);
+            var image = overlay.FindControl<Image>("PreviewImage")!;
+            Assert.NotNull(image.Source);
+            var imagePoint = image.TranslatePoint(new Point(image.Bounds.Width / 2, image.Bounds.Height / 2), owner)!.Value;
+            owner.MouseMove(imagePoint);
+            owner.MouseDown(imagePoint, MouseButton.Left);
+            owner.MouseUp(imagePoint, MouseButton.Left);
+            Dispatcher.UIThread.RunJobs();
+            FindOverlay(owner);
+            Assert.False(closed.IsCompleted);
+
+            var backdropPoint = new Point(4, owner.ClientSize.Height - 4);
+            owner.MouseMove(backdropPoint);
+            owner.MouseDown(backdropPoint, MouseButton.Left);
+            owner.MouseUp(backdropPoint, MouseButton.Left);
+            Dispatcher.UIThread.RunJobs();
+            await closed.WaitAsync(TimeSpan.FromSeconds(5));
+            AssertNoOverlay(owner);
+            Assert.Null(image.Source);
+        }
+        finally
+        {
+            CloseOverlays(owner);
+            owner.Close();
+        }
     }
 
     private static IDisposable UseImageDecoder()
@@ -421,16 +461,23 @@ public sealed class ImageViewerTests
     {
         var point = control.TranslatePoint(new Point(control.Bounds.Width / 2, control.Bounds.Height / 2), window)!.Value;
         var hit = Assert.IsAssignableFrom<Visual>(window.InputHitTest(point));
-        Assert.True(ReferenceEquals(hit, control) || hit.GetVisualAncestors().Contains(control));
+        Assert.True(ReferenceEquals(hit, control) || hit.GetVisualAncestors().Contains(control)
+            || control.GetVisualAncestors().Contains(hit));
         window.MouseMove(point);
         window.MouseDown(point, MouseButton.Left);
         window.MouseUp(point, MouseButton.Left);
         Dispatcher.UIThread.RunJobs();
     }
 
-    private static void CloseOwnedWindows(Window owner)
+    private static ImageViewerOverlay FindOverlay(Window owner) =>
+        Assert.Single(owner.GetVisualDescendants().OfType<ImageViewerOverlay>());
+
+    private static void AssertNoOverlay(Window owner) =>
+        Assert.Empty(owner.GetVisualDescendants().OfType<ImageViewerOverlay>());
+
+    private static void CloseOverlays(Window owner)
     {
-        foreach (var window in owner.OwnedWindows.ToArray())
-            window.Close();
+        foreach (var overlay in owner.GetVisualDescendants().OfType<ImageViewerOverlay>().ToArray())
+            overlay.Close();
     }
 }
