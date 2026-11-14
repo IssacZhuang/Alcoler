@@ -425,6 +425,7 @@ function onViewportChange() {
 
 function onVisibilityChange() {
   if (!shell) return;
+  convo?.ws?.setSuspended?.(document.hidden);
   if (document.hidden) {
     stopPolling(shell);
     return;
@@ -433,6 +434,11 @@ function onVisibilityChange() {
   refreshSessions({ silent: true });
   if (convo && convo.ws) convo.ws.ensureConnected();
   if (convo && convo.refreshLayout) convo.refreshLayout();
+}
+
+function onPageHide() {
+  if (shell) stopPolling(shell);
+  convo?.ws?.setSuspended?.(true);
 }
 
 function onOnline() {
@@ -1640,6 +1646,7 @@ function startConversation(sh, id, restore) {
 
   st.ws = new StreamClient({
     sessionId: id,
+    suspended: document.hidden,
     onSnapshot: applySnapshot,
     onDelta: applyDelta,
     onHistory: applyHistory,
@@ -1786,6 +1793,8 @@ document.addEventListener('keydown', event => {
 });
 
 window.addEventListener('online', onOnline);
+window.addEventListener('pagehide', onPageHide);
+window.addEventListener('pageshow', onVisibilityChange);
 document.addEventListener('visibilitychange', onVisibilityChange);
 
 window.addEventListener('load', () => {

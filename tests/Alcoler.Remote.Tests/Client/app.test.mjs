@@ -8,19 +8,19 @@ const source = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/app.js'
 const controllerStart = source.indexOf('const appEl =');
 const startupStart = source.indexOf("window.addEventListener('hashchange'");
 const keyboardStart = source.indexOf("document.addEventListener('keydown'");
-const keyboardEnd = source.indexOf("window.addEventListener('online'", keyboardStart);
+const lifecycleEnd = source.indexOf("window.addEventListener('load'", keyboardStart);
 assert.ok(controllerStart >= 0 && startupStart > controllerStart);
-assert.ok(keyboardStart > startupStart && keyboardEnd > keyboardStart);
+assert.ok(keyboardStart > startupStart && lifecycleEnd > keyboardStart);
 
 const loadController = new Function('dependencies', `
   const { api, Composer, StreamClient, Transcript, SessionList, QueuedMessages,
-    prepareSubmission, document, matchMedia, localStorage, location,
+    prepareSubmission, document, window, matchMedia, localStorage, location,
     setTimeout, clearTimeout, setInterval, clearInterval,
     requestAnimationFrame, cancelAnimationFrame, ResizeObserver,
     icon, uuid, workspaceTail, isBusy, normKey, phaseLabel, activityLabel, renderPending } = dependencies;
   ${source.slice(controllerStart, startupStart)}
   shell = createShell();
-  ${source.slice(keyboardStart, keyboardEnd)}
+  ${source.slice(keyboardStart, lifecycleEnd)}
   return {
     get shell() { return shell; }, get convo() { return convo; },
     get pendingRestores() { return pendingRestores; },
@@ -58,6 +58,7 @@ class FakeComposer {
   setText(text) { this.text = text; this.update(); }
   setImages(images) { this.images = structuredClone(images); this.update(); }
   setModelSelection(selection) { this.modelSelection = structuredClone(selection ?? null); this.update(); }
+  setModels() {}
   setReady(ready) { this.ready = ready; this.update(); }
   setDisabled(disabled) { this.disabled = disabled; this.update(); }
   setMode(mode) { this.mode = mode; }
@@ -109,7 +110,8 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
   const storage = new Map([['alcoler.lastWorkspace', 'C:/workspace']]);
   if (storedMode !== undefined) storage.set('alcoler.lastMode', storedMode);
   const location = { hash: '#/new' };
-  const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], history: [], artifacts: [], images: [], reconnects: 0 };
+  const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], history: [], artifacts: [], images: [],
+    suspensions: [], reconnects: 0 };
   const handlers = {
     acquireArtifactObjectUrl: () => { throw new Error('Unexpected original image request'); },
     createSession: async () => ({ id: 'created' }),
@@ -122,6 +124,8 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
   };
   const api = {
     getToken: () => 'paired-token',
+    listSessions: async () => [],
+    getModels: async () => ({ entries: [] }),
     acquireArtifactObjectUrl(...args) {
       const lease = handlers.acquireArtifactObjectUrl(...args);
       calls.artifacts.push({ args, lease });
@@ -143,10 +147,11 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
     }
   }
   const schedule = () => ++serial;
+  const document = { getElementById: node, querySelector: node, hidden: true,
+    addEventListener: (name, handler) => node('document').addEventListener(name, handler),
+    fire: (name, event) => node('document').fire(name, event) };
   const controller = loadController({
-    api, Composer: FakeComposer, prepareSubmission,
-    document: { getElementById: node, querySelector: node, hidden: true,
-      addEventListener: (name, handler) => node('document').addEventListener(name, handler) },
+    api, Composer: FakeComposer, prepareSubmission, document, window: node('window'),
     matchMedia: () => ({ matches: true }), location,
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     setTimeout: schedule, clearTimeout: noop, setInterval: schedule, clearInterval: noop,
@@ -154,8 +159,15 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
     cancelAnimationFrame: id => frames.delete(id),
     ResizeObserver: class { observe() {} disconnect() {} },
     StreamClient: class {
-      constructor(opts) { this.opts = opts; }
+      constructor(opts) { this.opts = opts; this.suspended = opts.suspended; }
       start() {} close() {}
+      setSuspended(suspended) {
+        if (this.suspended === suspended) return;
+        this.suspended = suspended;
+        calls.suspensions.push(suspended);
+        this.opts.onStatus(suspended ? 'offline' : 'connecting');
+      }
+      ensureConnected() {}
       manualReconnect() { calls.reconnects++; }
       async requestHistory(request) {
         calls.history.push(structuredClone(request));
@@ -215,14 +227,14 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
       remove(rowId) { calls.transcript.push(['remove', rowId]); }
       dispose() { this.disposed = true; }
     },
-    SessionList: class { setActive() {} updateTitle() {} updateActivity() {} },
+    SessionList: class { setActive() {} updateTitle() {} updateActivity() {} showLoading() {} showError() {} setSessions() {} },
     QueuedMessages: class { constructor(_root, opts) { this.opts = opts; } update() {} refresh() {} dispose() {} },
     icon: () => '', uuid: () => `command-${++serial}`, workspaceTail: root => root,
     isBusy: phase => phase === 'running', normKey: value => value,
     phaseLabel: value => value, activityLabel: () => '', renderPending: noop,
   });
   const fixture = {
-    controller, calls, handlers, location, node,
+    controller, calls, handlers, location, node, document, window: node('window'),
     get draft() { return controller.shell.draftComposer; },
     get composer() { return controller.shell.sessionComposer; },
     get convo() { return controller.convo; },
@@ -593,6 +605,89 @@ test('reconnect snapshots preserve the reading anchor when preceding content cha
   assert.equal(st.followLatest, false);
   assert.equal(scroll.scrollTop, 850);
   assert.equal(st.readingAnchor.rowId, 'b');
+});
+
+test('background visibility suspends streaming without disposing reading or disclosure state', () => {
+  const f = createFixture(), scroll = f.node('transcript-scroll');
+  f.document.hidden = false;
+  Object.assign(scroll, { scrollHeight: 2000, clientHeight: 200, getBoundingClientRect: () => ({ top: 0 }) });
+  const rows = [{ rowId: 'a', layoutY: 0 }, { rowId: 'b', layoutY: 500 }, { rowId: 'c', layoutY: 1000 }];
+  const st = f.open('reading', {}, rows, { before: 'older', after: null });
+  f.flushLayout();
+  scroll.scrollTop = 550;
+  st.onScroll();
+  const transcript = st.transcript;
+  const anchor = structuredClone(st.readingAnchor);
+  transcript.viewState = [{ rowId: 'b', open: ['turn'], all: ['input'] }];
+
+  f.document.hidden = true;
+  f.document.fire('visibilitychange');
+  st.refreshLayout();
+  f.flushLayout();
+  assert.equal(st.ws.suspended, true);
+  assert.equal(st.connStatus, 'offline');
+  assert.equal(f.composer.ready, false);
+  assert.equal(f.controller.shell.pollTimer, 0);
+  assert.deepEqual(f.calls.history, []);
+  assert.equal(transcript.disposed, undefined);
+  assert.deepEqual(st.readingAnchor, anchor);
+
+  f.document.hidden = false;
+  f.document.fire('visibilitychange');
+  f.window.fire('pageshow', { persisted: true });
+  f.window.fire('online');
+  assert.equal(f.convo, st);
+  assert.equal(st.transcript, transcript);
+  assert.equal(st.connStatus, 'connecting');
+  assert.equal(f.composer.ready, false);
+  assert.deepEqual(f.calls.suspensions, [true, false]);
+  assert.deepEqual(transcript.viewState, [{ rowId: 'b', open: ['turn'], all: ['input'] }]);
+  assert.ok(f.controller.shell.pollTimer);
+
+  st.ws.opts.onSnapshot({ revision: 11, sequence: 10000, state: sessionState(),
+    rows: rows.map(row => ({ ...row, layoutY: row.layoutY + 300 })), history: { before: 'older', after: null } });
+  st.ws.opts.onStatus('online');
+  f.flushLayout();
+  assert.equal(st.lastSeq, 10000);
+  assert.equal(f.composer.ready, true);
+  assert.equal(st.followLatest, false);
+  assert.equal(scroll.scrollTop, 850);
+  assert.equal(st.readingAnchor.rowId, 'b');
+  assert.deepEqual(f.calls.transcript.map(call => call[0]), ['snapshot', 'snapshot']);
+});
+
+test('pagehide suspends before visibility changes and pageshow resumes only when visible', () => {
+  const f = createFixture();
+  f.document.hidden = false;
+  const st = f.open();
+  f.window.fire('pagehide', { persisted: true });
+  assert.equal(st.ws.suspended, true);
+  assert.equal(st.connStatus, 'offline');
+  f.window.fire('online');
+  assert.equal(st.ws.suspended, true);
+  f.document.hidden = true;
+  f.window.fire('pageshow', { persisted: true });
+  assert.equal(st.ws.suspended, true);
+  f.document.hidden = false;
+  f.window.fire('pageshow', { persisted: true });
+  f.window.fire('pageshow', { persisted: true });
+  assert.equal(st.ws.suspended, false);
+  assert.equal(f.convo, st);
+  assert.deepEqual(f.calls.suspensions, [true, false]);
+});
+
+test('a conversation opened while hidden starts suspended until the first foreground event', () => {
+  const f = createFixture();
+  f.location.hash = '#/session/background';
+  f.controller.route();
+  const st = f.convo;
+  assert.equal(st.ws.opts.suspended, true);
+  assert.deepEqual(f.calls.transcript, []);
+  f.document.hidden = false;
+  f.document.fire('visibilitychange');
+  assert.equal(st.ws.suspended, false);
+  assert.equal(f.convo, st);
+  assert.deepEqual(f.calls.suspensions, [false]);
 });
 
 test('asynchronously expanded content keeps the current reading anchor without following the tail', () => {

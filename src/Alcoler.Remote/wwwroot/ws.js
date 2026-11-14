@@ -14,7 +14,7 @@ const historyError = code => Object.assign(new Error(code), { code });
 
 export class StreamClient {
   constructor({ sessionId, onSnapshot, onDelta, onStatus, resume, appendText = false, compact = false,
-    history = false, anchor, onHistory }) {
+    history = false, anchor, onHistory, suspended = false }) {
     this.sessionId = sessionId;
     this.appendText = appendText;
     this.compact = compact;
@@ -28,6 +28,7 @@ export class StreamClient {
     this.status = 'offline';
     this.attempts = 0;
     this.closed = false;
+    this.suspended = suspended;
     this.ws = null;
     this.timer = 0;
     this.connectTimer = 0;
@@ -41,7 +42,7 @@ export class StreamClient {
   }
 
   start() {
-    if (this.closed || this.ws || this.timer || this.resuming) return;
+    if (this.closed || this.suspended || this.ws || this.timer || this.resuming) return;
     this.setStatus('connecting');
     this.open();
   }
@@ -49,7 +50,7 @@ export class StreamClient {
   open() {
     clearTimeout(this.timer);
     this.timer = 0;
-    if (this.closed) return;
+    if (this.closed || this.suspended) return;
     this.disconnect();
     const token = getToken();
     if (!token) {
@@ -191,7 +192,7 @@ export class StreamClient {
   }
 
   async handleEnded() {
-    if (this.closed || this.resuming) return;
+    if (this.closed || this.suspended || this.resuming) return;
     this.disconnect();
     clearTimeout(this.timer);
     this.timer = 0;
@@ -207,7 +208,7 @@ export class StreamClient {
   }
 
   scheduleReconnect() {
-    if (this.closed || this.resuming) return;
+    if (this.closed || this.suspended || this.resuming) return;
     clearTimeout(this.timer);
     this.timer = 0;
     this.attempts++;
@@ -221,8 +222,22 @@ export class StreamClient {
     this.timer = setTimeout(() => this.open(), delay);
   }
 
+  setSuspended(suspended) {
+    if (this.closed || this.suspended === suspended) return;
+    this.suspended = suspended;
+    if (!suspended) {
+      this.ensureConnected();
+      return;
+    }
+    clearTimeout(this.timer);
+    this.timer = 0;
+    this.resuming = null;
+    this.disconnect();
+    this.setStatus('offline');
+  }
+
   ensureConnected() {
-    if (this.closed) return;
+    if (this.closed || this.suspended) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       const timeout = this.hasSnapshot ? HEARTBEAT_TIMEOUT : CONNECT_TIMEOUT;
       if (Date.now() - this.lastMessageAt < timeout) return;
@@ -231,7 +246,7 @@ export class StreamClient {
   }
 
   manualReconnect() {
-    if (this.closed) return;
+    if (this.closed || this.suspended) return;
     clearTimeout(this.timer);
     this.timer = 0;
     this.resuming = null;

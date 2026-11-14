@@ -124,6 +124,108 @@ test('manual reconnect closes the old socket and ignores its queued callbacks', 
   assert.deepEqual(deltas.map(value => value.sequence), [31]);
 });
 
+test('suspending discards queued stream events and resumes directly from a fresh snapshot', async t => {
+  let anchor = 'turn-reading';
+  const { client, sockets, snapshots, deltas, statuses } = fixture(t, { history: true, compact: true,
+    anchor: () => anchor });
+  client.start();
+  const old = sockets[0];
+  snapshot(old, 10, bounds);
+  const staleMessage = old.onmessage, staleClose = old.onclose, staleError = old.onerror;
+  const pending = assert.rejects(client.requestHistory({ before: 'turn-first' }), { code: 'history_disconnected' });
+  client.setSuspended(true);
+  await pending;
+  assert.equal(client.status, 'offline');
+  assert.equal(old.closeCount, 1);
+  assert.equal(old.onmessage, null);
+  assert.equal(client.hasSnapshot, false);
+  assert.equal(client.hasHistory, false);
+  let reads = 0;
+  for (let i = 0; i < 10000; i++) staleMessage({ get data() { reads++; return '{"type":"delta"}'; } });
+  staleClose();
+  staleError();
+  client.start();
+  client.ensureConnected();
+  client.manualReconnect();
+  t.mock.timers.tick(600000);
+  assert.equal(reads, 0);
+  assert.equal(sockets.length, 1);
+  assert.deepEqual(deltas, []);
+  await assert.rejects(client.requestHistory({ latest: true }), { code: 'history_unavailable' });
+
+  anchor = 'turn-updated';
+  client.setSuspended(false);
+  client.ensureConnected();
+  client.setSuspended(false);
+  assert.equal(sockets.length, 2);
+  assert.equal(new URL(sockets[1].url).searchParams.get('around'), anchor);
+  sockets[1].open();
+  sockets[1].message({ type: 'delta', delta: { sequence: 9999 } });
+  assert.deepEqual(deltas, []);
+  snapshot(sockets[1], 10010, bounds);
+  sockets[1].message({ type: 'delta', delta: { sequence: 10011 } });
+  staleMessage({ get data() { assert.fail('the discarded connection must not be parsed'); } });
+  assert.deepEqual(snapshots.map(value => value.sequence), [10, 10010]);
+  assert.deepEqual(deltas.map(value => value.sequence), [10011]);
+  assert.deepEqual(statuses, ['connecting', 'online', 'offline', 'connecting', 'online']);
+});
+
+test('a client created in the background waits until visible and cannot resume after closing', t => {
+  const { client, sockets } = fixture(t, { suspended: true });
+  client.start();
+  client.ensureConnected();
+  client.manualReconnect();
+  t.mock.timers.tick(600000);
+  assert.equal(sockets.length, 0);
+  client.setSuspended(false);
+  client.start();
+  client.ensureConnected();
+  assert.equal(sockets.length, 1);
+  client.setSuspended(true);
+  client.close();
+  client.setSuspended(false);
+  t.mock.timers.tick(600000);
+  assert.equal(sockets.length, 1);
+});
+
+for (const phase of ['connecting', 'reconnecting']) {
+  test(`suspending cancels ${phase} timers until an immediate foreground reconnect`, t => {
+    const { client, sockets } = fixture(t);
+    client.start();
+    if (phase === 'reconnecting') sockets[0].close();
+    assert.equal(client.status, phase);
+    client.setSuspended(true);
+    client.setSuspended(true);
+    t.mock.timers.tick(600000);
+    assert.equal(sockets.length, 1);
+    client.setSuspended(false);
+    assert.equal(sockets.length, 2);
+    assert.equal(client.status, 'connecting');
+    snapshot(sockets[1]);
+    t.mock.timers.tick(1000);
+    assert.equal(sockets.length, 2);
+  });
+}
+
+test('suspending invalidates an asynchronous session resume without delaying the new snapshot', async t => {
+  let finishResume;
+  const { client, sockets } = fixture(t, {
+    resume: () => new Promise(resolve => { finishResume = resolve; }),
+  });
+  client.start();
+  snapshot(sockets[0]);
+  sockets[0].message({ type: 'ended' });
+  client.setSuspended(true);
+  client.setSuspended(false);
+  assert.equal(sockets.length, 2);
+  snapshot(sockets[1], 100);
+  finishResume();
+  await Promise.resolve();
+  t.mock.timers.tick(1000);
+  assert.equal(sockets.length, 2);
+  assert.equal(client.status, 'online');
+});
+
 test('a socket that opens without a snapshot times out instead of appearing online', t => {
   const { client, sockets } = fixture(t);
   client.start();
@@ -151,7 +253,7 @@ test('heartbeat frames keep a quiet stream alive and silent sockets reconnect', 
   assert.equal(sockets.length, 2);
 });
 
-test('foregrounding a suspended stale socket replaces it immediately', t => {
+test('foregrounding a stale socket replaces it immediately', t => {
   const { client, sockets } = fixture(t);
   client.start();
   snapshot(sockets[0]);

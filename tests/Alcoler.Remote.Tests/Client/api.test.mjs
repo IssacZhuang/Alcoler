@@ -421,7 +421,7 @@ test('service worker never caches native credential-bearing artifact GETs, inclu
   }
 });
 
-test('service worker v16 installs the image-preview shell and removes older caches on activation', async () => {
+test('service worker v17 installs the current shell and removes older caches on activation', async () => {
   const handlers = new Map(), opened = [], removed = [], shell = [];
   const source = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/sw.js', import.meta.url), 'utf8');
   let skipped = 0, claimed = 0;
@@ -431,19 +431,19 @@ test('service worker v16 installs the image-preview shell and removes older cach
       skipWaiting: async () => skipped++, clients: { claim: async () => claimed++ } },
     caches: {
       open: async name => { opened.push(name); return { addAll: async paths => shell.push(...paths) }; },
-      keys: async () => ['alcoler-shell-v14', 'alcoler-shell-v15', 'alcoler-shell-v16'],
+      keys: async () => ['alcoler-shell-v15', 'alcoler-shell-v16', 'alcoler-shell-v17'],
       delete: async name => { removed.push(name); return true; },
     },
   });
   let work;
   handlers.get('install')({ waitUntil: promise => { work = promise; } });
   await work;
-  assert.deepEqual(opened, ['alcoler-shell-v16']);
+  assert.deepEqual(opened, ['alcoler-shell-v17']);
   assert.equal(skipped, 1);
-  for (const asset of ['./app.js', './api.js', './render.js', './index.html', './styles.css']) assert.ok(shell.includes(asset));
+  for (const asset of ['./app.js', './api.js', './ws.js', './render.js', './index.html', './styles.css']) assert.ok(shell.includes(asset));
   assert.equal(shell.some(path => path.startsWith('/api')), false);
   handlers.get('activate')({ waitUntil: promise => { work = promise; } });
   await work;
-  assert.deepEqual(removed, ['alcoler-shell-v14', 'alcoler-shell-v15']);
+  assert.deepEqual(removed, ['alcoler-shell-v15', 'alcoler-shell-v16']);
   assert.equal(claimed, 1);
 });
