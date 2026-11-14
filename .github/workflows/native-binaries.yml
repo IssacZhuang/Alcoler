@@ -120,3 +120,4 @@ jobs:
           name: alco-native-${{ matrix.rid }}
           path: staging/
           if-no-files-found: error
+          retention-days: 3
