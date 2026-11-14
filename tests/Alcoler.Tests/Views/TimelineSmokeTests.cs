@@ -98,6 +98,49 @@ public class TimelineSmokeTests(Xunit.Abstractions.ITestOutputHelper output)
     }
 
     [AvaloniaFact]
+    public async Task StreamingCaret_AnimatesOnlyWhileStreamingAndRestarts()
+    {
+        EnsureFluentTheme();
+        var (view, viewModel, store) = CreateTimeline();
+        var window = Host(view, 900, 600);
+        try
+        {
+            var row = new AssistantMessageRow("a1", StrongId.NewMessageId(),
+                [new TextPart(StrongId.NewPartId(), "Assistant response")],
+                IsStreaming: false, At: DateTimeOffset.UtcNow);
+            viewModel.ApplyUpdate(new ProjectionUpdate(1, TestSnapshots.State(),
+                [new RowAppended(row)], Reset: false));
+            await RenderAsync(window);
+
+            var caret = Assert.Single(view.GetVisualDescendants().OfType<Rectangle>(),
+                rectangle => rectangle.Classes.Contains("streamingCaret"));
+            Assert.False(caret.IsVisible);
+            Assert.False(caret.IsAnimating(Visual.OpacityProperty));
+
+            var revision = 1;
+            foreach (var streaming in new[] { true, false, true, false })
+            {
+                viewModel.ApplyUpdate(new ProjectionUpdate(++revision,
+                    TestSnapshots.State(streaming ? TurnPhase.Streaming : TurnPhase.Idle),
+                    [new RowUpserted(row with { IsStreaming = streaming })], Reset: false));
+                await RenderAsync(window);
+
+                Assert.Same(caret, Assert.Single(view.GetVisualDescendants().OfType<Rectangle>(),
+                    rectangle => rectangle.Classes.Contains("streamingCaret")));
+                Assert.Equal(streaming, caret.IsVisible);
+                Assert.Equal(streaming, caret.Classes.Contains("running"));
+                Assert.Equal(streaming, caret.IsAnimating(Visual.OpacityProperty));
+            }
+        }
+        finally
+        {
+            window.Close();
+            viewModel.Dispose();
+            store.Dispose();
+        }
+    }
+
+    [AvaloniaFact]
     public void CompletedTurn_FoldsBehindSummaryHeaderAndExpands()
     {
         EnsureFluentTheme();

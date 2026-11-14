@@ -14,6 +14,9 @@ namespace Alcoler.Views;
 
 public partial class ImageViewerOverlay : UserControl
 {
+    private static readonly AttachedProperty<ImageViewerOverlay?> OpenViewerProperty =
+        AvaloniaProperty.RegisterAttached<ImageViewerOverlay, Window, ImageViewerOverlay?>("OpenViewer");
+
     private readonly CancellationTokenSource _loading = new();
     private readonly TaskCompletionSource<bool> _closedSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Func<CancellationToken, Task<Bitmap?>>? _loader;
@@ -93,8 +96,7 @@ public partial class ImageViewerOverlay : UserControl
     internal static Task ShowAsync(Window owner, string? fileName, Func<CancellationToken, Task<Bitmap?>> loader) =>
         ShowCore(owner, new ImageViewerOverlay(fileName, loader));
 
-    internal static bool IsOpen(Window owner) =>
-        owner.GetVisualDescendants().OfType<ImageViewerOverlay>().Any();
+    internal static bool IsOpen(Window owner) => owner.GetValue(OpenViewerProperty) is { _closed: false };
 
     internal void Close()
     {
@@ -198,6 +200,7 @@ public partial class ImageViewerOverlay : UserControl
         Width = owner.ClientSize.Width;
         Height = owner.ClientSize.Height;
         owner.SizeChanged += OnOwnerSizeChanged;
+        owner.SetValue(OpenViewerProperty, this);
         layer.Children.Add(this);
         return true;
     }
@@ -221,7 +224,11 @@ public partial class ImageViewerOverlay : UserControl
         _bitmap?.Dispose();
         _bitmap = null;
         if (_owner is { } owner)
+        {
             owner.SizeChanged -= OnOwnerSizeChanged;
+            if (ReferenceEquals(owner.GetValue(OpenViewerProperty), this))
+                owner.ClearValue(OpenViewerProperty);
+        }
         _owner = null;
         var previous = _previousFocus;
         _previousFocus = null;

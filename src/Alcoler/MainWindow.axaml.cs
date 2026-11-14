@@ -482,7 +482,7 @@ public partial class MainWindow : Window
 
     private async void OnShellKeyDown(object? sender, KeyEventArgs e)
     {
-        if (_viewModel is null || ImageViewerOverlay.IsOpen(this) || !e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        if (_viewModel is null || !e.KeyModifiers.HasFlag(KeyModifiers.Control) || ImageViewerOverlay.IsOpen(this))
         {
             return;
         }

@@ -417,6 +417,81 @@ public sealed class ImageViewerTests
         }
     }
 
+    [AvaloniaTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Viewer_OpenStateLookupDoesNotAllocateForWindowContent(bool open)
+    {
+        var content = new StackPanel();
+        for (var index = 0; index < 1000; index++)
+            content.Children.Add(new Border { Child = new Border() });
+        var owner = new Window { Width = 900, Height = 600, Content = content };
+        owner.Show();
+        try
+        {
+            owner.UpdateLayout();
+            if (open)
+                _ = ImageViewerOverlay.ShowAsync(owner, "unavailable.png", _ => Task.FromResult<Bitmap?>(null));
+            for (var index = 0; index < 10; index++)
+                ImageViewerOverlay.IsOpen(owner);
+
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var openCount = 0;
+            for (var index = 0; index < 256; index++)
+                openCount += ImageViewerOverlay.IsOpen(owner) ? 1 : 0;
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+            Assert.Equal(open ? 256 : 0, openCount);
+            Assert.InRange(allocated, 0, 32 * 1024);
+        }
+        finally
+        {
+            CloseOverlays(owner);
+            owner.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Viewer_OpenStateTracksOwnerReplacementDetachAndClose()
+    {
+        var firstOwner = new Window();
+        var secondOwner = new Window();
+        firstOwner.Show();
+        secondOwner.Show();
+        try
+        {
+            AssertNoOverlay(firstOwner);
+            AssertNoOverlay(secondOwner);
+            var firstClosed = ImageViewerOverlay.ShowAsync(firstOwner, "first.png", _ => Task.FromResult<Bitmap?>(null));
+            var first = FindOverlay(firstOwner);
+            AssertNoOverlay(secondOwner);
+            _ = ImageViewerOverlay.ShowAsync(secondOwner, "second.png", _ => Task.FromResult<Bitmap?>(null));
+            FindOverlay(secondOwner);
+
+            var replacementClosed = ImageViewerOverlay.ShowAsync(firstOwner, "replacement.png", _ => Task.FromResult<Bitmap?>(null));
+            await firstClosed;
+            var replacement = FindOverlay(firstOwner);
+            Assert.NotSame(first, replacement);
+            first.Close();
+            Assert.True(ImageViewerOverlay.IsOpen(firstOwner));
+
+            Assert.IsAssignableFrom<Panel>(replacement.Parent).Children.Remove(replacement);
+            await replacementClosed;
+            AssertNoOverlay(firstOwner);
+            Assert.True(ImageViewerOverlay.IsOpen(secondOwner));
+
+            secondOwner.Close();
+            Assert.False(ImageViewerOverlay.IsOpen(secondOwner));
+        }
+        finally
+        {
+            CloseOverlays(firstOwner);
+            CloseOverlays(secondOwner);
+            firstOwner.Close();
+            secondOwner.Close();
+        }
+    }
+
     private static IDisposable UseImageDecoder()
     {
         System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(Avalonia.Media.GlyphRun).TypeHandle);
@@ -469,11 +544,17 @@ public sealed class ImageViewerTests
         Dispatcher.UIThread.RunJobs();
     }
 
-    private static ImageViewerOverlay FindOverlay(Window owner) =>
-        Assert.Single(owner.GetVisualDescendants().OfType<ImageViewerOverlay>());
+    private static ImageViewerOverlay FindOverlay(Window owner)
+    {
+        Assert.True(ImageViewerOverlay.IsOpen(owner));
+        return Assert.Single(owner.GetVisualDescendants().OfType<ImageViewerOverlay>());
+    }
 
-    private static void AssertNoOverlay(Window owner) =>
+    private static void AssertNoOverlay(Window owner)
+    {
+        Assert.False(ImageViewerOverlay.IsOpen(owner));
         Assert.Empty(owner.GetVisualDescendants().OfType<ImageViewerOverlay>());
+    }
 
     private static void CloseOverlays(Window owner)
     {
