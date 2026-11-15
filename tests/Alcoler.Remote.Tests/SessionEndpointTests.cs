@@ -596,6 +596,98 @@ public sealed class SessionEndpointTests
         Assert.Equal("resumable", document.RootElement.GetProperty("title").GetString());
     }
 
+    [Fact]
+    public async Task ForkSession_WithMessageId_ReturnsChildHandleAndListsChild()
+    {
+        var (_, token) = await _harness.PairAsync();
+        var sessionId = await _harness.CreateSessionAsync(token, title: "parent");
+
+        using var response = await _harness.SendWithTokenAsync(
+            HttpMethod.Post, $"api/sessions/{sessionId.Value}/fork", token,
+            GatewayHarness.Serialize(new { messageId = "msg_boundary" }));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = await response.ReadJsonAsync();
+        var childId = document.RootElement.GetProperty("id").GetString();
+        Assert.NotNull(childId);
+        Assert.NotEqual(sessionId.Value, childId);
+        Assert.Equal("Fork of parent", document.RootElement.GetProperty("title").GetString());
+
+        using var listResponse = await _harness.GetWithTokenAsync("api/sessions", token);
+        using var list = await listResponse.ReadJsonAsync();
+        Assert.Contains(
+            EnumerateSessions(list.RootElement),
+            session => session.GetProperty("id").GetString() == childId);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("{}")]
+    [InlineData("""{"messageId":""}""")]
+    [InlineData("""{"messageId":42}""")]
+    [InlineData("not json")]
+    public async Task ForkSession_WithoutValidMessageId_IsBadRequest(string body)
+    {
+        var (_, token) = await _harness.PairAsync();
+        var sessionId = await _harness.CreateSessionAsync(token);
+
+        using var response = await _harness.SendWithTokenAsync(
+            HttpMethod.Post, $"api/sessions/{sessionId.Value}/fork", token, body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = await response.ReadJsonAsync();
+        Assert.Equal("bad_request", document.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task ForkSession_InvalidBoundary_ReturnsRuntimeReason()
+    {
+        var (_, token) = await _harness.PairAsync();
+        var sessionId = await _harness.CreateSessionAsync(token);
+        _harness.Runtime.ForkHandler = (_, _) =>
+            throw new InvalidOperationException("Only a completed assistant turn can be forked.");
+        try
+        {
+            using var response = await _harness.SendWithTokenAsync(
+                HttpMethod.Post, $"api/sessions/{sessionId.Value}/fork", token,
+                GatewayHarness.Serialize(new { messageId = "msg_incomplete" }));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            using var document = await response.ReadJsonAsync();
+            Assert.Equal("fork_failed", document.RootElement.GetProperty("error").GetString());
+            Assert.Equal(
+                "Only a completed assistant turn can be forked.",
+                document.RootElement.GetProperty("reason").GetString());
+        }
+        finally
+        {
+            _harness.Runtime.ForkHandler = null;
+        }
+    }
+
+    [Fact]
+    public async Task ForkSession_UnsupportedRuntime_ReturnsNotSupported()
+    {
+        var (_, token) = await _harness.PairAsync();
+        var sessionId = await _harness.CreateSessionAsync(token);
+        _harness.Runtime.ForkHandler = (_, _) => throw new NotSupportedException("Forking is unavailable.");
+        try
+        {
+            using var response = await _harness.SendWithTokenAsync(
+                HttpMethod.Post, $"api/sessions/{sessionId.Value}/fork", token,
+                GatewayHarness.Serialize(new { messageId = "msg_boundary" }));
+
+            Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+            using var document = await response.ReadJsonAsync();
+            Assert.Equal("not_supported", document.RootElement.GetProperty("error").GetString());
+            Assert.Equal("fork", document.RootElement.GetProperty("reason").GetString());
+        }
+        finally
+        {
+            _harness.Runtime.ForkHandler = null;
+        }
+    }
+
     private sealed class ModelCatalogGatewayHarness(Func<RemoteModelCatalog> modelCatalog) : GatewayHarness
     {
         protected override RemoteGatewayOptions CreateOptions(int port) => new()

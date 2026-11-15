@@ -7,9 +7,10 @@ import {
   activityLabel,
   isBusy,
   normKey,
+  rowForElement,
 } from './render.js';
 import { SessionList, sessionListErrorMessage } from './session-list.js';
-import { Composer } from './composer.js';
+import { Composer, blobToBase64 } from './composer.js';
 import { QueuedMessages } from './queue.js';
 import { prepareSubmission } from './submission.js';
 import { icon, uuid, copyText, workspaceTail } from './util.js';
@@ -952,6 +953,8 @@ function startConversation(sh, id, restore) {
     els,
     pendingCtx: null,
     updateConn: null,
+    rewinding: false,
+    forking: new Set(),
   };
   convo = st;
 
@@ -1154,12 +1157,115 @@ function startConversation(sh, id, restore) {
     if (source) void openImage(source.uri, source.mime, source.name);
   };
 
+  const showActionError = message => {
+    st.restoreError = message;
+    st.updateConn();
+  };
+
+  const rewindToMessage = async (button, user) => {
+    if (!user || !user.canRewind || !user.rowId || st.rewinding) return;
+    if (!st.snapshotReady || st.connStatus !== 'online') {
+      showActionError('Reconnect to the session before rewinding a message.');
+      return;
+    }
+    const composer = sh.sessionComposer;
+    if (composer.hasContent() || composer.pendingFiles > 0) {
+      showActionError('Send or clear the current draft before rewinding a message.');
+      return;
+    }
+    st.rewinding = true;
+    button.disabled = true;
+    let ack = null;
+    try {
+      ack = await api.sendCommand(id, {
+        $type: 'rewind_conversation',
+        commandId: uuid(),
+        sessionId: id,
+        baseRevision: st.revision,
+        targetMessageId: user.rowId,
+      });
+    } catch { /* ack stays null and the banner reports the failure */ }
+    if (st.disposed || convo !== st) return;
+    st.rewinding = false;
+    button.disabled = false;
+    applyAckRevision(st, ack);
+    if (!ack?.accepted) {
+      showActionError(ack?.rejectionReason || 'The message could not be rewound.');
+      return;
+    }
+    const text = typeof user.text === 'string' ? user.text : '';
+    composer.setText(text);
+    st.restoreError = '';
+    st.updateConn();
+    scheduleListRefresh(400);
+    const sources = Array.isArray(user.images) ? user.images : [];
+    if (!sources.length) return;
+    const restored = [];
+    let lost = 0;
+    for (const image of sources) {
+      try {
+        const blob = await api.artifactBlob(image.artifactUri, image.mimeType);
+        restored.push({ mimeType: image.mimeType || 'image/jpeg', base64Data: await blobToBase64(blob) });
+      } catch { lost++; }
+    }
+    if (st.disposed || convo !== st) return;
+    if (composer.getText() !== text || composer.getImages().length > 0) return;
+    composer.setImages(restored);
+    if (lost) {
+      st.restoreError = `${lost} rewound image${lost === 1 ? ' was' : 's were'} not restored because the artifact is unavailable.`;
+      st.updateConn();
+    }
+  };
+
+  const forkFromMessage = async (button, assistant) => {
+    const messageId = typeof assistant?.id === 'string' ? assistant.id : '';
+    if (!messageId || st.forking.has(messageId)) return;
+    if (!st.snapshotReady || st.connStatus !== 'online') {
+      showActionError('Reconnect to the session before forking it.');
+      return;
+    }
+    st.forking.add(messageId);
+    button.disabled = true;
+    let handle = null;
+    try {
+      handle = await api.forkSession(id, messageId);
+    } catch (error) {
+      if (!st.disposed && convo === st)
+        showActionError(error?.message || 'The conversation could not be forked.');
+      return;
+    } finally {
+      st.forking.delete(messageId);
+      button.disabled = false;
+    }
+    if (st.disposed || convo !== st) return;
+    if (!handle?.id) {
+      showActionError('The conversation could not be forked.');
+      return;
+    }
+    scheduleListRefresh(0);
+    navigateToSession(handle.id);
+  };
+
+  st.rewindToMessage = rewindToMessage;
+  st.forkFromMessage = forkFromMessage;
+
   const onTranscriptClick = async event => {
     if (event.target.closest('summary, .out-more, .tool-images-more')) {
       st.followLatest = false;
       st.restoringReading = false;
       st.ignoredScrollTop = null;
       st.readingAnchor = captureReadingAnchor(st);
+    }
+    const actionBtn = event.target.closest('[data-action]');
+    if (actionBtn) {
+      event.preventDefault();
+      const row = rowForElement(actionBtn);
+      if (actionBtn.dataset.action === 'rewind') {
+        await rewindToMessage(actionBtn, row?.$type === 'turn_summary' ? row.user : row);
+      } else if (actionBtn.dataset.action === 'fork') {
+        await forkFromMessage(actionBtn, row?.$type === 'turn_summary' ? row.answer : row);
+      }
+      return;
     }
     const copyBtn = event.target.closest('[data-copy]');
     if (copyBtn) {

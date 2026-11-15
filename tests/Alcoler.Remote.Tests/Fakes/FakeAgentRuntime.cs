@@ -49,6 +49,35 @@ public sealed class FakeAgentRuntime : IAgentRuntime, ISessionActivityRuntime
         }
     }
 
+    public Func<SessionId, MessageId, SessionHandle>? ForkHandler { get; set; }
+
+    public ValueTask<SessionHandle> ForkSessionAsync(
+        SessionId sourceSessionId, MessageId boundaryMessageId, CancellationToken cancellationToken)
+    {
+        if (ForkHandler is { } handler)
+            return ValueTask.FromResult(handler(sourceSessionId, boundaryMessageId));
+        lock (_lock)
+        {
+            if (!_sessions.TryGetValue(sourceSessionId, out var parent))
+                throw new InvalidOperationException($"Session {sourceSessionId.Value} not found.");
+            var now = DateTimeOffset.UtcNow;
+            var title = $"Fork of {parent.Title}";
+            var child = new FakeSession
+            {
+                Gate = new object(),
+                Id = StrongId.NewSessionId(),
+                WorkspaceRoot = parent.WorkspaceRoot,
+                Title = title,
+                Mode = parent.Mode,
+                CreatedAt = now,
+                UpdatedAt = now,
+                State = ConversationState.Initial(title, parent.Mode, null, 200_000),
+            };
+            _sessions[child.Id] = child;
+            return ValueTask.FromResult(new SessionHandle(child.Id, child.WorkspaceRoot, title));
+        }
+    }
+
     public ValueTask<IReadOnlyList<SessionSummary>> ListSessionsAsync(
         string? workspaceRoot, int limit, CancellationToken cancellationToken) =>
         ListSessionsAsync(workspaceRoot, limit, SessionListKind.Active, cancellationToken);

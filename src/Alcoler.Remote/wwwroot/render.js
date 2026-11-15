@@ -716,6 +716,11 @@ export class Transcript {
   }
 }
 
+export function rowForElement(element) {
+  const row = element?.closest?.('.row');
+  return row ? rowSources.get(row) ?? null : null;
+}
+
 export function rowElement(row, state = rowState()) {
   const div = document.createElement('div');
   div.dataset.rowId = row.rowId;
@@ -775,10 +780,16 @@ function artifactHtml(media) {
   return `<figure class="media-attachment"><${kind} controls preload="none" ${attrs} aria-label="${esc(name)}"></${kind}><button type="button" class="link-btn media-play" aria-label="${esc('Play ' + name)}">Play ${kind}</button><figcaption>${link}</figcaption></figure>`;
 }
 
+function rowActions(actions) {
+  return `<div class="row-actions">${actions.map(([action, title, label]) =>
+    `<button type="button" class="row-action" data-action="${action}" aria-label="${esc(label || title)}" title="${esc(title)}">${icon(action)}</button>`).join('')}</div>`;
+}
+
 function userHtml(row) {
   let h = row.text ? `<div class="user-text">${esc(row.text)}</div>` : '';
   const imgs = row.images || [];
   if (imgs.length) h += `<div class="msg-images">${imgs.map(imgThumb).join('')}</div>`;
+  if (row.canRewind) h += rowActions([['rewind', 'Rewind to this message']]);
   return h;
 }
 
@@ -811,6 +822,7 @@ function assistantHtml(row, state) {
     h += '<div class="md-body"><span class="stream-cursor" aria-hidden="true"></span></div>';
   }
   if (files.length) h += `<div class="msg-images">${files.map(artifactHtml).join('')}</div>`;
+  if (row.canFork) h += rowActions([['fork', 'Fork from here', 'Fork conversation from this message']]);
   return h;
 }
 

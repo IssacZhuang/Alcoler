@@ -6,11 +6,11 @@ export function extractSlashToken(text, selectionStart, selectionEnd = selection
   const value = String(text ?? '');
   if (!Number.isInteger(selectionStart) || selectionStart < 0 || selectionStart > value.length
       || selectionEnd !== selectionStart) return null;
-  let start = selectionStart;
-  let end = selectionStart;
-  while (start > 0 && !/\s/u.test(value[start - 1])) start--;
+  const start = value.lastIndexOf('/', selectionStart - 1);
+  if (start < 0 || selectionStart <= start || (start > 0 && !/\s/u.test(value[start - 1]))) return null;
+  let end = start + 1;
   while (end < value.length && !/\s/u.test(value[end])) end++;
-  if (start === end || value[start] !== '/' || selectionStart <= start) return null;
+  if (selectionStart > end) return null;
   const token = value.slice(start, end);
   if (/[/@$#]/u.test(token.slice(1))) return null;
   return { start, end, text: token };
@@ -177,18 +177,32 @@ export class SlashAutocomplete {
 
   refresh() {
     if (this.disposed) return;
-    const token = this.input && extractSlashToken(this.input.value, this.input.selectionStart, this.input.selectionEnd);
-    if (!this.enabled || !this.popup || !this.hasFocus() || this.composing || !this.loadCatalog
-        || !token || token.text === this.dismissedToken) {
+    if (!this.enabled || !this.input || !this.popup || !this.hasFocus() || this.composing || !this.loadCatalog) {
+      this.close();
+      return;
+    }
+    const value = this.input.value;
+    const start = this.input.selectionStart;
+    const end = this.input.selectionEnd;
+    const valueChanged = value !== this.inputState?.value;
+    if (valueChanged || start !== this.inputState?.start || end !== this.inputState?.end) {
+      this.inputState = { value, start, end, token: extractSlashToken(value, start, end) };
+    }
+    const token = this.inputState.token;
+    if (!token || token.text === this.dismissedToken) {
       this.close();
       return;
     }
     this.dismissedToken = null;
     const opening = !this.active;
+    const tokenChanged = token.text !== this.token?.text || token.start !== this.token?.start;
     this.active = true;
-    if (token.text !== this.token?.text || token.start !== this.token?.start) this.selectedIndex = 0;
+    if (tokenChanged) this.selectedIndex = 0;
     this.token = token;
-    this.render();
+    if (opening || valueChanged || tokenChanged || this.catalog !== this.renderedCatalog) {
+      this.renderedCatalog = this.catalog;
+      this.render();
+    }
     if (!opening && (this.pending || !this.catalog || Date.now() - this.loadedAt < CATALOG_MAX_AGE)) return;
     const uiGeneration = this.uiGeneration;
     this.getCatalog(true).then(() => {
@@ -310,13 +324,16 @@ export class SlashAutocomplete {
   }
 
   close() {
+    const active = this.active;
     this.uiGeneration++;
     this.active = false;
     this.token = null;
-    this.hide();
+    if (active) this.hide();
   }
 
   reset() {
+    this.inputState = null;
+    this.renderedCatalog = null;
     this.dismissedToken = null;
     this.selectedIndex = 0;
     this.close();

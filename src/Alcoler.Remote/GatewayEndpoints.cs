@@ -161,6 +161,43 @@ internal static class GatewayEndpoints
             }
         });
 
+        app.MapPost("/api/sessions/{sessionId}/fork", async (string sessionId, HttpContext context, CancellationToken cancellationToken) =>
+        {
+            string? messageId = null;
+            try
+            {
+                using var document = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: cancellationToken);
+                if (document.RootElement.ValueKind == JsonValueKind.Object)
+                    messageId = ReadString(document.RootElement, "messageId");
+            }
+            catch (JsonException)
+            {
+                return GatewayJson.Error(400, "bad_request", "body");
+            }
+            if (string.IsNullOrWhiteSpace(messageId))
+                return GatewayJson.Error(400, "bad_request", "messageId");
+            SessionHandle handle;
+            try
+            {
+                handle = await state.Options.Runtime().ForkSessionAsync(
+                    new SessionId(sessionId), new MessageId(messageId), cancellationToken);
+            }
+            catch (NotSupportedException)
+            {
+                return GatewayJson.Error(501, "not_supported", "fork");
+            }
+            catch (InvalidOperationException exception)
+            {
+                return GatewayJson.Error(400, "fork_failed", exception.Message);
+            }
+            state.Audit.Write(
+                "session_forked",
+                deviceId: GatewayAuthentication.Device(context)?.Id,
+                sessionId: sessionId,
+                detail: $"{messageId}:{handle.Id.Value}");
+            return GatewayJson.Data(handle);
+        });
+
         app.MapPost("/api/sessions/{sessionId}/archive", async (string sessionId, HttpRequest request, CancellationToken cancellationToken) =>
         {
             var archived = true;

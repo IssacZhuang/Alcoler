@@ -316,6 +316,153 @@ test('failed slash discovery rejects without clearing a draft in the minimal com
   composer.dispose();
 });
 
+test('typing measures the textarea once and preserves the send icon and change notifications', () => {
+  let changes = 0;
+  const { composer, elements } = createComposer({ onChange: () => changes++ });
+  const input = elements.get('.composer-input');
+  const send = elements.get('.composer-send');
+  let reads = 0, writes = 0, iconWrites = 0, html = send.innerHTML;
+  Object.defineProperty(input, 'scrollHeight', { get() { reads++; return 72; } });
+  Object.defineProperty(input.style, 'height', { set() { writes++; } });
+  Object.defineProperty(send, 'innerHTML', { get: () => html, set(value) { iconWrites++; html = value; } });
+  const before = changes;
+  for (const text of ['h', 'he', 'hello']) {
+    input.value = text;
+    input.listeners.get('input')();
+  }
+  assert.equal(reads, 3);
+  assert.equal(writes, 6);
+  assert.equal(iconWrites, 0);
+  assert.equal(changes, before + 3);
+  for (let index = 0; index < 20; index++) composer.update();
+  composer.setReady(false);
+  composer.setDisabled(true);
+  assert.equal(reads, 3);
+  assert.equal(iconWrites, 0);
+  composer.dispose();
+});
+
+test('send and stop icons change only when the action changes', () => {
+  let busy = false;
+  const { composer, elements } = createComposer({ getBusy: () => busy });
+  const send = elements.get('.composer-send');
+  let iconWrites = 0, html = send.innerHTML;
+  Object.defineProperty(send, 'innerHTML', { get: () => html, set(value) { iconWrites++; html = value; } });
+  busy = true;
+  composer.update();
+  assert.equal(send.attributes.get('aria-label'), 'Stop');
+  assert.equal(send.title, 'Stop');
+  assert.equal(iconWrites, 1);
+  composer.update();
+  assert.equal(iconWrites, 1);
+  composer.setText('draft');
+  assert.equal(send.attributes.get('aria-label'), 'Send');
+  assert.equal(iconWrites, 2);
+  composer.setText('more text');
+  assert.equal(iconWrites, 2);
+  composer.clear();
+  assert.equal(send.attributes.get('aria-label'), 'Stop');
+  assert.equal(iconWrites, 3);
+  busy = false;
+  composer.update();
+  assert.equal(send.attributes.get('aria-label'), 'Send');
+  assert.equal(send.disabled, true);
+  assert.equal(iconWrites, 4);
+  composer.dispose();
+});
+
+test('restored and cleared text resize once and remain capped', () => {
+  const { composer, elements } = createComposer();
+  const input = elements.get('.composer-input');
+  let reads = 0, height = 300;
+  Object.defineProperty(input, 'scrollHeight', { get() { reads++; return height; } });
+  composer.setText('long restored draft');
+  assert.equal(reads, 1);
+  assert.equal(input.style.height, '160px');
+  height = 40;
+  composer.clear();
+  assert.equal(reads, 2);
+  assert.equal(input.style.height, '40px');
+  composer.dispose();
+});
+
+test('textarea width and visibility changes resize without reacting to height-only notifications', () => {
+  const previous = globalThis.ResizeObserver;
+  let observer;
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; observer = this; }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+  };
+  let composer;
+  try {
+    const view = createComposer();
+    composer = view.composer;
+    const input = view.elements.get('.composer-input');
+    assert.equal(observer.target, input);
+    let reads = 0;
+    Object.defineProperty(input, 'scrollHeight', { get() { reads++; return 80; } });
+    const resize = width => observer.callback([{ target: input, contentRect: { width } }]);
+    resize(400);
+    resize(400);
+    assert.equal(reads, 1);
+    resize(200);
+    assert.equal(reads, 2);
+    resize(0);
+    resize(200);
+    assert.equal(reads, 3);
+    composer.dispose();
+    assert.equal(observer.disconnected, true);
+    resize(100);
+    assert.equal(reads, 3);
+  } finally {
+    composer?.dispose();
+    if (previous === undefined) delete globalThis.ResizeObserver;
+    else globalThis.ResizeObserver = previous;
+  }
+});
+
+test('hidden drafts get one reveal remeasure without continuously polling hidden composers', () => {
+  const previous = { requestAnimationFrame: globalThis.requestAnimationFrame, cancelAnimationFrame: globalThis.cancelAnimationFrame };
+  const frames = new Map();
+  let nextFrame = 0, composer;
+  globalThis.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
+  globalThis.cancelAnimationFrame = id => frames.delete(id);
+  const flush = () => {
+    const pending = [...frames.values()];
+    frames.clear();
+    for (const callback of pending) callback();
+  };
+  try {
+    const view = createComposer();
+    composer = view.composer;
+    const input = view.elements.get('.composer-input');
+    let height = 0;
+    Object.defineProperty(input, 'scrollHeight', { get: () => height });
+    composer.setText('restored while hidden');
+    composer.setText('changed before reveal');
+    assert.equal(frames.size, 1);
+    height = 120;
+    flush();
+    assert.equal(input.style.height, '120px');
+    assert.equal(frames.size, 0);
+    height = 0;
+    composer.clear();
+    flush();
+    assert.equal(frames.size, 0);
+    composer.setText('still hidden');
+    assert.equal(frames.size, 1);
+    composer.dispose();
+    assert.equal(frames.size, 0);
+  } finally {
+    composer?.dispose();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete globalThis[name];
+      else globalThis[name] = value;
+    }
+  }
+});
+
 test('workflow badges are optional and do not change the plan badge or submission contract', () => {
   const badges = new Map(['.plan-badge', '.workflow-badge', '.composer-status'].map(selector => [selector, new Element()]));
   const composer = new Composer({ querySelector: selector => badges.get(selector) || null });

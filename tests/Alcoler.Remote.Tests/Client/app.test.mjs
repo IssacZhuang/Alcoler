@@ -17,7 +17,8 @@ const loadController = new Function('dependencies', `
     prepareSubmission, document, window, matchMedia, localStorage, location,
     setTimeout, clearTimeout, setInterval, clearInterval,
     requestAnimationFrame, cancelAnimationFrame, ResizeObserver,
-    icon, uuid, workspaceTail, isBusy, normKey, phaseLabel, activityLabel, renderPending } = dependencies;
+    icon, uuid, workspaceTail, isBusy, normKey, phaseLabel, activityLabel, renderPending,
+    rowForElement, blobToBase64 } = dependencies;
   ${source.slice(controllerStart, startupStart)}
   shell = createShell();
   ${source.slice(keyboardStart, lifecycleEnd)}
@@ -111,11 +112,13 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
   if (storedMode !== undefined) storage.set('alcoler.lastMode', storedMode);
   const location = { hash: '#/new' };
   const calls = { creates: [], commands: [], catalogs: [], transcript: [], details: [], history: [], artifacts: [], images: [],
-    suspensions: [], reconnects: 0 };
+    forks: [], artifactBlobs: [], suspensions: [], reconnects: 0 };
   const handlers = {
     acquireArtifactObjectUrl: () => { throw new Error('Unexpected original image request'); },
     createSession: async () => ({ id: 'created' }),
     sendCommand: async () => accepted(),
+    forkSession: async () => ({ id: 'forked' }),
+    artifactBlob: async () => new Blob(['image'], { type: 'image/png' }),
     getSlashCatalog: async () => catalog,
     getTurnDetails: async () => ({ rows: [], version: 'turn-version', sequence: 100 }),
     getRowDetails: async () => ({ row: {}, version: 'row-version', sequence: 100 }),
@@ -137,6 +140,14 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
       calls.commands.push(structuredClone(command));
       return handlers.sendCommand(id, command);
     },
+    async forkSession(id, messageId) {
+      calls.forks.push({ id, messageId });
+      return handlers.forkSession(id, messageId);
+    },
+    async artifactBlob(uri, mime) {
+      calls.artifactBlobs.push({ uri, mime });
+      return handlers.artifactBlob(uri, mime);
+    },
   };
   if (detailsAvailable) {
     for (const method of ['getTurnDetails', 'getRowDetails']) {
@@ -146,6 +157,7 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
       };
     }
   }
+  let actionRow = null;
   const schedule = () => ++serial;
   const document = { getElementById: node, querySelector: node, hidden: true,
     addEventListener: (name, handler) => node('document').addEventListener(name, handler),
@@ -232,6 +244,7 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
     icon: () => '', uuid: () => `command-${++serial}`, workspaceTail: root => root,
     isBusy: phase => phase === 'running', normKey: value => value,
     phaseLabel: value => value, activityLabel: () => '', renderPending: noop,
+    rowForElement: () => actionRow, blobToBase64: async () => 'cmVzdG9yZWQ=',
   });
   const fixture = {
     controller, calls, handlers, location, node, document, window: node('window'),
@@ -251,6 +264,7 @@ function createFixture({ storedMode, compactCapable = true, historyCapable = tru
       frames.clear();
       for (const [, fn] of pending) fn();
     },
+    setActionRow(row) { actionRow = row; },
     withdraw(draft) { controller.convo.queueView.opts.onRestore(structuredClone(draft)); },
     sendSession() {
       const composer = fixture.composer;
@@ -1299,6 +1313,89 @@ for (const context of ['draft', 'session']) {
     } else assert.match(f.node('draft-error').textContent, /Catalog unavailable/);
   });
 }
+
+test('rewind sends the current revision, restores text and images only after acceptance, and keeps drafts intact', async () => {
+  const user = { $type: 'user_message', rowId: 'msg_user', text: 'Retry this', canRewind: true,
+    images: [{ artifactUri: 'artifact:image', mimeType: 'image/png', fileName: 'shot.png' }] };
+  const f = createFixture();
+  const st = f.open();
+  const button = { disabled: false };
+
+  await st.rewindToMessage(button, user);
+
+  assert.deepEqual(f.calls.commands, [{
+    $type: 'rewind_conversation', commandId: f.calls.commands[0].commandId,
+    sessionId: 'original', baseRevision: 10, targetMessageId: 'msg_user',
+  }]);
+  assert.match(f.calls.commands[0].commandId, /^command-/);
+  assert.equal(f.calls.artifactBlobs.length, 1);
+  assert.deepEqual(f.calls.artifactBlobs[0], { uri: 'artifact:image', mime: 'image/png' });
+  assert.equal(f.composer.getText(), 'Retry this');
+  assert.deepEqual(f.composer.getImages(), [{ mimeType: 'image/png', base64Data: 'cmVzdG9yZWQ=' }]);
+  assert.equal(button.disabled, false);
+  assert.equal(st.restoreError, '');
+
+  const refused = createFixture();
+  const refusedState = refused.open();
+  refused.composer.setText('Do not lose me');
+  await refusedState.rewindToMessage({ disabled: false }, user);
+  assert.equal(refused.calls.commands.length, 0);
+  assert.match(refusedState.restoreError, /Send or clear the current draft/);
+  assert.equal(refused.composer.getText(), 'Do not lose me');
+
+  const rejected = createFixture();
+  const rejectedState = rejected.open();
+  rejected.handlers.sendCommand = async () => ({ accepted: false, revision: 11,
+    rejectionReason: 'Wait for the current turn to finish before rewinding.' });
+  await rejectedState.rewindToMessage({ disabled: false }, user);
+  assert.match(rejectedState.restoreError, /Wait for the current turn/);
+  assert.equal(rejected.composer.getText(), '');
+});
+
+test('delegated transcript actions resolve summary rows before dispatching', async () => {
+  const f = createFixture();
+  const st = f.open();
+  f.setActionRow({
+    $type: 'turn_summary',
+    user: { $type: 'user_message', rowId: 'msg_user', text: 'Retry this', canRewind: true },
+    answer: { $type: 'assistant_message', rowId: 'msg_answer', id: 'msg_answer', canFork: true },
+  });
+  const click = action => st.onTranscriptClick({
+    target: { closest: selector => selector === '[data-action]' ? { dataset: { action }, disabled: false } : null },
+    preventDefault() {},
+  });
+
+  await click('rewind');
+  assert.equal(f.calls.commands.at(-1).$type, 'rewind_conversation');
+  assert.equal(f.calls.commands.at(-1).targetMessageId, 'msg_user');
+
+  await click('fork');
+  assert.deepEqual(f.calls.forks.at(-1), { id: 'original', messageId: 'msg_answer' });
+});
+
+test('fork creates a child session from the assistant message and navigates to it', async () => {
+  const f = createFixture();
+  const st = f.open();
+  const button = { disabled: false };
+
+  await st.forkFromMessage(button, { $type: 'assistant_message', rowId: 'msg_answer', id: 'msg_answer' });
+
+  assert.deepEqual(f.calls.forks, [{ id: 'original', messageId: 'msg_answer' }]);
+  assert.equal(f.location.hash, '#/session/forked');
+  assert.equal(button.disabled, false);
+  assert.equal(st.restoreError, '');
+
+  const failed = createFixture();
+  const failedState = failed.open();
+  failed.handlers.forkSession = async () => {
+    throw Object.assign(new Error('Only a completed assistant turn can be forked.'), { status: 400 });
+  };
+  const failedButton = { disabled: false };
+  await failedState.forkFromMessage(failedButton, { id: 'msg_incomplete' });
+  assert.match(failedState.restoreError, /Only a completed assistant turn/);
+  assert.equal(failedButton.disabled, false);
+  assert.equal(failed.location.hash, '#/session/original');
+});
 
 test('skills and ordinary slash-like text remain queueable verbatim while recognized builtins retain the busy draft', async () => {
   for (const text of ['/report 中文\nkeep "quotes"', '/planning', 'Before /plan After']) {

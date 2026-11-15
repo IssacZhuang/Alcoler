@@ -1290,6 +1290,47 @@ svg {
   white-space: pre-wrap;
 }
 
+.row-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.row-user .row-actions {
+  justify-content: flex-end;
+}
+
+.row-action {
+  align-items: center;
+  border-radius: var(--r-xs);
+  color: var(--tertiary);
+  display: flex;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.row-action:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.row-action:disabled {
+  opacity: 0.4;
+}
+
+.row-action svg {
+  height: 16px;
+  width: 16px;
+}
+
+@media (pointer: coarse) {
+  .row-action {
+    height: 44px;
+    width: 40px;
+  }
+}
+
 .msg-images {
   display: flex;
   flex-wrap: wrap;

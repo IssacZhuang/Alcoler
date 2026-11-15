@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { getSlashCatalog, getTurnDetails, getRowDetails } from '../../../src/Alcoler.Remote/wwwroot/api.js';
+import { forkSession, getSlashCatalog, getTurnDetails, getRowDetails } from '../../../src/Alcoler.Remote/wwwroot/api.js';
 
 const originalFetch = globalThis.fetch;
 const originalStorage = globalThis.localStorage;
@@ -40,6 +40,20 @@ test('session discovery never sends a client workspace override', async () => {
 test('an unset workspace can discover built-ins without a session', async () => {
   await getSlashCatalog();
   assert.equal(requests[0].url, '/api/slash-catalog?workspaceRoot=');
+});
+
+test('fork requests encode the source session and boundary message and surface runtime reasons', async () => {
+  assert.deepEqual(await forkSession('sess_name/with ? symbols', 'msg_boundary'), { entries: [] });
+  assert.equal(requests[0].url, `/api/sessions/${encodeURIComponent('sess_name/with ? symbols')}/fork`);
+  assert.equal(requests[0].options.method, 'POST');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer paired-device-token');
+  assert.deepEqual(JSON.parse(requests[0].options.body), { messageId: 'msg_boundary' });
+
+  globalThis.fetch = async () => ({ ok: false, status: 400,
+    json: async () => ({ error: 'fork_failed', reason: 'Only a completed assistant turn can be forked.' }) });
+  await assert.rejects(forkSession('session', 'message'), {
+    status: 400, code: 'fork_failed', message: 'Only a completed assistant turn can be forked.',
+  });
 });
 
 for (const [kind, load] of [['turns', getTurnDetails], ['rows', getRowDetails]]) {
@@ -421,7 +435,7 @@ test('service worker never caches native credential-bearing artifact GETs, inclu
   }
 });
 
-test('service worker v17 installs the current shell and removes older caches on activation', async () => {
+test('service worker v19 installs the current shell and removes older caches on activation', async () => {
   const handlers = new Map(), opened = [], removed = [], shell = [];
   const source = readFileSync(new URL('../../../src/Alcoler.Remote/wwwroot/sw.js', import.meta.url), 'utf8');
   let skipped = 0, claimed = 0;
@@ -431,19 +445,19 @@ test('service worker v17 installs the current shell and removes older caches on 
       skipWaiting: async () => skipped++, clients: { claim: async () => claimed++ } },
     caches: {
       open: async name => { opened.push(name); return { addAll: async paths => shell.push(...paths) }; },
-      keys: async () => ['alcoler-shell-v15', 'alcoler-shell-v16', 'alcoler-shell-v17'],
+      keys: async () => ['alcoler-shell-v16', 'alcoler-shell-v17', 'alcoler-shell-v18', 'alcoler-shell-v19'],
       delete: async name => { removed.push(name); return true; },
     },
   });
   let work;
   handlers.get('install')({ waitUntil: promise => { work = promise; } });
   await work;
-  assert.deepEqual(opened, ['alcoler-shell-v17']);
+  assert.deepEqual(opened, ['alcoler-shell-v19']);
   assert.equal(skipped, 1);
   for (const asset of ['./app.js', './api.js', './ws.js', './render.js', './index.html', './styles.css']) assert.ok(shell.includes(asset));
   assert.equal(shell.some(path => path.startsWith('/api')), false);
   handlers.get('activate')({ waitUntil: promise => { work = promise; } });
   await work;
-  assert.deepEqual(removed, ['alcoler-shell-v15', 'alcoler-shell-v16']);
+  assert.deepEqual(removed, ['alcoler-shell-v16', 'alcoler-shell-v17', 'alcoler-shell-v18']);
   assert.equal(claimed, 1);
 });

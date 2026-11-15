@@ -102,6 +102,34 @@ public sealed class CommandEndpointTests
     }
 
     [Fact]
+    public async Task RewindCommand_PassesTargetMessageToRuntime()
+    {
+        await using var runtime = new CommandRecordingRuntime();
+        var harness = new CommandRecordingGatewayHarness(runtime);
+        await harness.InitializeAsync();
+        try
+        {
+            var (_, token) = await harness.PairAsync();
+            const string body = """{"$type":"rewind_conversation","commandId":"cmd_rewind","sessionId":"sess_rewind","baseRevision":4,"targetMessageId":"msg_target"}""";
+
+            using var response = await harness.SendWithTokenAsync(
+                HttpMethod.Post, "api/sessions/sess_rewind/commands", token, body);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.True((await ReadAckAsync(response)).Accepted);
+            var command = Assert.IsType<RewindConversationCommand>(runtime.Command);
+            Assert.Equal(new CommandId("cmd_rewind"), command.CommandId);
+            Assert.Equal(new SessionId("sess_rewind"), command.SessionId);
+            Assert.Equal(4, command.BaseRevision);
+            Assert.Equal(new MessageId("msg_target"), command.TargetMessageId);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task SendText_SessionIdMismatchingRoute_IsRejected()
     {
         var (_, token) = await _harness.PairAsync();

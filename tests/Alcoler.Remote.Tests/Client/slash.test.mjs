@@ -138,6 +138,80 @@ test('tokens require a caret after an initial slash, no selection, and no second
   assert.equal(extractSlashToken('/de@tail', 3), null);
 });
 
+test('token extraction rejects earlier slash tokens and preserves full-token validation', () => {
+  const plain = '中文'.repeat(50000);
+  assert.equal(extractSlashToken(plain, plain.length), null);
+  assert.equal(extractSlashToken('/Design ordinary', 16), null);
+  assert.equal(extractSlashToken('/Design\u2003ordinary', 16), null);
+  assert.equal(extractSlashToken('/de/path', 3), null);
+  assert.equal(extractSlashToken('/de@tail', 3), null);
+  assert.deepEqual(extractSlashToken(`${plain}\n/Design`, plain.length + 4),
+    { start: plain.length + 1, end: plain.length + 8, text: '/Design' });
+});
+
+test('inactive, disabled, and composing autocomplete does not inspect textarea text', () => {
+  for (const state of ['unfocused', 'disabled', 'not-ready', 'composing']) {
+    const view = setup();
+    if (state !== 'unfocused') view.input.focus();
+    if (state === 'disabled') view.composer.setDisabled(true);
+    if (state === 'not-ready') view.composer.setReady(false);
+    if (state === 'composing') view.input.dispatch('compositionstart');
+    Object.defineProperty(view.input, 'value', { get() { throw new Error(`Text read while ${state}`); } });
+    assert.doesNotThrow(() => view.input.dispatch('keyup', { key: 'ArrowRight' }));
+    assert.doesNotThrow(() => document.dispatch('selectionchange'));
+    assert.equal(view.popup.hidden, true);
+  }
+});
+
+test('duplicate input and caret events preserve suggestions without rerendering or measuring', async () => {
+  const view = setup();
+  view.type('/co');
+  await settle();
+  const options = [...view.popup.children];
+  let renders = 0, measurements = 0;
+  const render = view.composer.slash.render.bind(view.composer.slash);
+  view.composer.slash.render = () => { renders++; render(); };
+  view.root.getBoundingClientRect = () => { measurements++; return { top: 320 }; };
+  view.input.dispatch('input');
+  view.input.dispatch('keyup', { key: 'o' });
+  view.input.dispatch('select');
+  document.dispatch('selectionchange');
+  assert.equal(renders, 0);
+  assert.equal(measurements, 0);
+  assert.deepEqual(view.popup.children, options);
+  view.key('ArrowDown');
+  view.input.dispatch('keyup', { key: 'ArrowDown' });
+  assert.equal(view.popup.children[1].attributes.get('aria-selected'), 'true');
+  assert.equal(renders, 0);
+  assert.equal(view.loads(), 1);
+  view.type('/no-match');
+  renders = 0;
+  measurements = 0;
+  view.input.dispatch('keyup', { key: 'h' });
+  document.dispatch('selectionchange');
+  assert.equal(renders, 0);
+  assert.equal(measurements, 0);
+  assert.equal(view.popup.hidden, true);
+});
+
+test('unchanged input still refreshes expired metadata and renders the new catalog', async () => {
+  const view = setup();
+  let now = 1000, loads = 0;
+  Date.now = () => now;
+  view.composer.setSlashSource('workspace:expiring', async () => ({ entries: [
+    { name: ++loads === 1 ? 'Before' : 'After', kind: 'skill' },
+  ] }));
+  view.type('/');
+  await settle();
+  assert.equal(view.popup.children[0].children[0].textContent, '/Before');
+  now += 30_000;
+  view.input.dispatch('keyup', { key: 'ArrowRight' });
+  document.dispatch('selectionchange');
+  await settle();
+  assert.equal(loads, 2);
+  assert.equal(view.popup.children[0].children[0].textContent, '/After');
+});
+
 test('catalog metadata is copied without bodies, ordered by kind, and deduplicated case-insensitively', () => {
   const data = catalog();
   data.entries.unshift({ name: 'DESIGN', description: 'Skill collision', kind: 'skill' });

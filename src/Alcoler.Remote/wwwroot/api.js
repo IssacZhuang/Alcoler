@@ -46,7 +46,7 @@ async function errorFrom(res) {
   try {
     const j = await res.json();
     code = j.code ?? j.error ?? null;
-    message = j.message ?? null;
+    message = j.message ?? j.reason ?? null;
   } catch { /* non-JSON error body */ }
   return new ApiError(res.status, code, message);
 }
@@ -116,6 +116,10 @@ export function getRowDetails(id, rowId, options = {}) {
 function transcriptDetails(id, kind, rowId, { signal, version } = {}) {
   const query = version ? `?version=${encodeURIComponent(version)}` : '';
   return json(`/api/sessions/${encodeURIComponent(id)}/${kind}/${encodeURIComponent(rowId)}${query}`, { signal });
+}
+
+export function forkSession(id, messageId) {
+  return json(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: 'POST', body: { messageId } });
 }
 
 export function archiveSession(id, archived = true) {

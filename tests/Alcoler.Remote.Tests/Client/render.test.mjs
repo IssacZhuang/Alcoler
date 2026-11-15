@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  Transcript, ThumbnailViewport, rowElement, toolSummary, toolCallHtml, toolBodyHtml, jsonPreview, hydrateThumbs, releaseArtifacts,
+  Transcript, ThumbnailViewport, rowElement, rowForElement, toolSummary, toolCallHtml, toolBodyHtml, jsonPreview, hydrateThumbs, releaseArtifacts,
 } from '../../../src/Alcoler.Remote/wwwroot/render.js';
 
 const tool = (overrides = {}) => ({
@@ -424,6 +424,32 @@ test('conversation rows preserve escaping, markdown, and reasoning disclosure st
   assert.match(el.innerHTML, /<strong>hello<\/strong>/);
   assert.match(el.innerHTML, /download="file.pdf"/);
   assert.doesNotMatch(el.innerHTML, /class="thumb"/);
+}));
+
+test('rewind and fork actions render only for actionable rows and resolve to their source row', () => withElements(() => {
+  const user = { $type: 'user_message', rowId: 'msg_user', text: 'rewind me', canRewind: true };
+  const userEl = rowElement(user);
+  assert.match(userEl.innerHTML, /class="row-actions"/);
+  assert.match(userEl.innerHTML, /data-action="rewind"/);
+  assert.match(userEl.innerHTML, /aria-label="Rewind to this message"/);
+  userEl.closest = selector => selector === '.row' ? userEl : null;
+  assert.equal(rowForElement(userEl), user);
+
+  const plainUser = rowElement({ ...user, rowId: 'msg_plain', canRewind: false });
+  assert.doesNotMatch(plainUser.innerHTML, /data-action=/);
+
+  const answer = { $type: 'assistant_message', rowId: 'msg_answer', id: 'msg_answer',
+    parts: [{ $type: 'text', text: 'fork me' }], canFork: true };
+  const answerEl = rowElement(answer);
+  assert.match(answerEl.innerHTML, /data-action="fork"/);
+  assert.match(answerEl.innerHTML, /aria-label="Fork conversation from this message"/);
+  answerEl.closest = selector => selector === '.row' ? answerEl : null;
+  assert.equal(rowForElement(answerEl), answer);
+
+  const summaryEl = rowElement({ $type: 'turn_summary', rowId: 'turn_user', user, answer,
+    duration: '00:00:02', detailCount: 1, detailVersion: 'v1' });
+  assert.match(summaryEl.innerHTML, /class="row-user turn-user"[\s\S]*data-action="rewind"/);
+  assert.match(summaryEl.innerHTML, /class="row-assistant turn-answer"[\s\S]*data-action="fork"/);
 }));
 
 test('sealed assistant rows without visible content stay addressable but take no layout space', () => withElements(() => {

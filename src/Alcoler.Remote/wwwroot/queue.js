@@ -22,11 +22,18 @@ export class QueuedMessages {
     this.editing = false;
     this.disposed = false;
     this.lastKey = null;
+    this.itemsKey = '[]';
+    this.itemsVersion = 0;
   }
 
   update(items, ready, editable = true) {
     if (this.disposed) return;
     this.items = Array.isArray(items) ? items : [];
+    const itemsKey = JSON.stringify(this.items);
+    if (itemsKey !== this.itemsKey) {
+      this.itemsKey = itemsKey;
+      this.itemsVersion++;
+    }
     this.ready = !!ready;
     this.editable = !!editable;
     this.refresh();
@@ -36,7 +43,7 @@ export class QueuedMessages {
     if (this.disposed) return;
     const draftBusy = this.composer.hasContent() || this.composer.pendingFiles > 0;
     const canEdit = this.editable && !this.editing && !this.composer.disabled && !draftBusy;
-    const key = JSON.stringify([this.items, this.ready, canEdit, [...this.pending]]);
+    const key = JSON.stringify([this.itemsVersion, this.ready, canEdit, draftBusy, [...this.pending]]);
     if (key === this.lastKey) return;
     this.lastKey = key;
     renderQueue(this.container, this.items, {
@@ -128,6 +135,8 @@ export class QueuedMessages {
     this.imageLoad = null;
     if (this.editing) this.composer.setDisabled(false);
     this.items = [];
+    this.itemsKey = null;
+    this.lastKey = null;
     this.container.textContent = '';
   }
 }

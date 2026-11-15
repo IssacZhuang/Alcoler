@@ -114,7 +114,24 @@ export class Composer {
     if (this.modelSelect) this.modelSelect.addEventListener('change', this._onModelChange);
     if (this.effortSelect) this.effortSelect.addEventListener('change', this._onEffortChange);
 
+    this._onResize = () => {
+      this.autosize();
+      if (this.slash.active) this.slash.fitPopup();
+    };
+    if (this.input && typeof ResizeObserver === 'function') {
+      this.resizeObserver = new ResizeObserver(entries => {
+        if (this.disposed) return;
+        const width = entries[0]?.contentRect.width;
+        if (width === this.inputWidth) return;
+        this.inputWidth = width;
+        if (width > 0) this._onResize();
+      });
+      this.resizeObserver.observe(this.input);
+    } else {
+      globalThis.addEventListener?.('resize', this._onResize);
+    }
     this.renderAttachRow();
+    this.autosize();
     this.update();
   }
 
@@ -329,20 +346,25 @@ export class Composer {
     const wantsStop = busy && !hasContent;
     const canStop = !this.opts.canStop || !!this.opts.canStop();
     const showStop = wantsStop && canStop;
-    this.sendBtn.classList.toggle('stop', showStop);
-    this.sendBtn.innerHTML = icon(showStop ? 'stop' : 'send');
-    this.sendBtn.setAttribute('aria-label', showStop ? 'Stop' : 'Send');
-    this.sendBtn.title = showStop ? 'Stop' : 'Send';
+    if (this.showStop !== showStop) {
+      this.showStop = showStop;
+      this.sendBtn.classList.toggle('stop', showStop);
+      this.sendBtn.innerHTML = icon(showStop ? 'stop' : 'send');
+      this.sendBtn.setAttribute('aria-label', showStop ? 'Stop' : 'Send');
+      this.sendBtn.title = showStop ? 'Stop' : 'Send';
+    }
     let disabled = this.disabled || !this.ready;
     if (!disabled && wantsStop) disabled = !canStop;
     else if (!disabled && !showStop) disabled = !hasContent;
     this.sendBtn.disabled = disabled || this.pendingFiles > 0;
-    this.autosize();
     if (this.opts.onChange) this.opts.onChange();
   }
 
   dispose() {
     this.disposed = true;
+    this.resizeObserver?.disconnect();
+    if (this.resizeFrame != null) globalThis.cancelAnimationFrame?.(this.resizeFrame);
+    globalThis.removeEventListener?.('resize', this._onResize);
     this.slash.dispose();
     if (this.input) {
       this.input.removeEventListener('input', this._onInput);
@@ -382,9 +404,16 @@ export class Composer {
   }
 
   autosize() {
-    if (!this.input) return;
+    if (this.disposed || !this.input) return;
     this.input.style.height = 'auto';
-    this.input.style.height = Math.min(this.input.scrollHeight, MAX_TEXTAREA_HEIGHT) + 'px';
+    const height = this.input.scrollHeight;
+    this.input.style.height = Math.min(height, MAX_TEXTAREA_HEIGHT) + 'px';
+    if (height === 0 && this.resizeFrame == null && globalThis.requestAnimationFrame) {
+      this.resizeFrame = globalThis.requestAnimationFrame(() => {
+        this.autosize();
+        this.resizeFrame = null;
+      });
+    }
   }
 
   renderAttachRow() {

@@ -82,6 +82,55 @@ test('unchanged state preserves queue DOM and long text is bounded with a full t
   assert.equal(container.children[0], row);
 });
 
+test('typing refreshes do not serialize unchanged queued text', () => {
+  const { view, container, composer } = setup();
+  let reads = 0;
+  const item = queued();
+  Object.defineProperty(item, 'text', { enumerable: true, get() { reads++; return 'x'.repeat(100000); } });
+  view.update([item], true);
+  const row = container.children[0];
+  reads = 0;
+  for (let index = 0; index < 100; index++) view.refresh();
+  assert.equal(reads, 0);
+  assert.equal(container.children[0], row);
+  composer.text = 'a';
+  view.refresh();
+  assert.ok(reads > 0);
+  const disabledRow = container.children[0];
+  reads = 0;
+  for (const text of ['ab', 'abc', 'abcd']) {
+    composer.text = text;
+    view.refresh();
+  }
+  assert.equal(reads, 0);
+  assert.equal(container.children[0], disabledRow);
+});
+
+test('authoritative queue updates detect in-place changes without rebuilding equal replacements', () => {
+  const { view, container } = setup();
+  const items = [queued()];
+  view.update(items, true);
+  const row = container.children[0];
+  view.update([queued()], true);
+  assert.equal(container.children[0], row);
+  items[0].text = 'Updated in place';
+  view.update(items, true);
+  assert.notEqual(container.children[0], row);
+  assert.equal(container.children[0].children[0].textContent, 'Updated in place');
+});
+
+test('draft edit hints update even when another state already blocks queue editing', () => {
+  const { view, composer, buttons } = setup();
+  view.update([queued()], true, false);
+  assert.doesNotMatch(buttons()[1].title, /current draft/);
+  composer.text = 'draft';
+  view.refresh();
+  assert.match(buttons()[1].title, /current draft/);
+  composer.text = '';
+  view.refresh();
+  assert.doesNotMatch(buttons()[1].title, /current draft/);
+});
+
 test('steer and delete reuse target commands and never restore or resend the message', async () => {
   const { view, commands, restores, acks } = setup();
   await view.act('steer', 'queued-1');
