@@ -196,6 +196,7 @@
   "sidebar_failed": "Failed",
   "sidebar_loading": "Loading sessions...",
   "sidebar_new_task": "New task",
+  "sidebar_open_in_file_manager": "Open in File Explorer",
   "sidebar_preferences": "Preferences",
   "sidebar_project_new_task": "New task in project",
   "sidebar_project_new_task_tooltip": "New task in this project",

@@ -75,6 +75,17 @@ public partial class SidebarView : UserControl
         }
     }
 
+    private void OnOpenProjectInFileManagerClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: SessionGroupViewModel group }
+            || DataContext is not WorkbenchViewModel viewModel)
+        {
+            return;
+        }
+        e.Handled = true;
+        viewModel.OpenFolderExternally(group.WorkspaceRoot);
+    }
+
     private async void OnRemoveProjectClick(object? sender, RoutedEventArgs e)
     {
         if (sender is not Control { DataContext: SessionGroupViewModel group }

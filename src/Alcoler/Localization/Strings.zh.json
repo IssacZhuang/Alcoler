@@ -196,6 +196,7 @@
   "sidebar_failed": "失败",
   "sidebar_loading": "正在加载会话...",
   "sidebar_new_task": "新建任务",
+  "sidebar_open_in_file_manager": "在文件资源管理器中打开",
   "sidebar_preferences": "首选项",
   "sidebar_project_new_task": "在项目中新建任务",
   "sidebar_project_new_task_tooltip": "在此项目中新建任务",

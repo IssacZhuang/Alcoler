@@ -127,6 +127,8 @@
                   <Button Classes="groupHeader" Click="OnGroupClick" ToolTip.Tip="{Binding WorkspaceRoot}">
                     <Button.ContextFlyout>
                       <MenuFlyout>
+                        <MenuItem Header="{loc:Loc sidebar_open_in_file_manager}" Click="OnOpenProjectInFileManagerClick" />
+                        <Separator />
                         <MenuItem Header="{loc:Loc sidebar_remove_project_confirm}" Click="OnRemoveProjectClick"
                                   ToolTip.Tip="{loc:Loc sidebar_remove_project_tooltip}" />
                       </MenuFlyout>

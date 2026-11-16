@@ -72,6 +72,18 @@ public sealed partial class WorkbenchViewModel
         }
     }
 
+    public void OpenFolderExternally(string folderPath)
+    {
+        try
+        {
+            _externalEditorLauncher.OpenDefault(folderPath);
+        }
+        catch (Exception exception)
+        {
+            Banner = Loc.Get("timeline_open_failed", Path.GetFileName(folderPath), exception.Message);
+        }
+    }
+
     public void OpenFileWithDefaultApp(string path, string? workspaceRoot = null)
     {
         if (!TryResolveExternalPath(path, workspaceRoot, out var fullPath))

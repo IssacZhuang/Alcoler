@@ -62,6 +62,25 @@ public sealed class ExternalEditorTests
         }
     }
 
+    [Fact]
+    public void OpenFolderExternally_DelegatesPathToDefaultLauncher()
+    {
+        var root = Directory.CreateTempSubdirectory("alcoler-external-").FullName;
+        try
+        {
+            var launcher = new RecordingExternalEditorLauncher();
+            using var workbench = CreateWorkbench(launcher);
+
+            workbench.OpenFolderExternally(root);
+
+            Assert.Equal(root, Assert.Single(launcher.DefaultOpened));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("Artwork/SpriteModels/.tmp/street-trash-bin-update/game-four-facings-daylight.png",
         "Artwork/SpriteModels/.tmp/street-trash-bin-update/game-four-facings-daylight.png")]
