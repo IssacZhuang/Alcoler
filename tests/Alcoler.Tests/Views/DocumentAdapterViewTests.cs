@@ -111,7 +111,8 @@ public sealed class DocumentAdapterViewTests : IDisposable
 
             Assert.Equal("file", fileDocument.Kind);
             Assert.Equal(nestedWorkspace, fileDocument.WorkspaceRoot);
-            Assert.Equal(filePath, preview.FilePath);
+            // The repository root comes back symlink-resolved from libgit2 on macOS.
+            Assert.Equal(Alcoler.Adapters.Tools.PathResolution.ResolveSymbolicLinks(filePath), preview.FilePath);
             Assert.Equal(workbench.CurrentDocumentOwnerId, fileDocument.OwnerId);
             var fileView = Assert.Single(window.GetVisualDescendants().OfType<FileDocumentView>());
             Assert.True(fileView.IsEffectivelyVisible);

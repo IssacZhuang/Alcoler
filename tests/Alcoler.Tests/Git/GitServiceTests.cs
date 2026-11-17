@@ -698,6 +698,8 @@ public sealed class GitServiceTests : IDisposable
     }
 
     private static string Normalize(string path) =>
-        System.IO.Path.GetFullPath(path)
+        // libgit2 resolves symlinks (macOS TMPDIR lives behind /var -> /private/var), so
+        // expectations must canonicalize the same way before comparing.
+        Alcoler.Adapters.Tools.PathResolution.ResolveSymbolicLinks(path)
             .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
 }

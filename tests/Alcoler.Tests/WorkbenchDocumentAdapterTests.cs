@@ -90,7 +90,7 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
 
         await pending;
         scheduler.RunPending();
-        var duplicate = await workbench.OpenFileDocumentAsync(Path.Combine(_root, ".", "FILE.txt"));
+        var duplicate = await workbench.OpenFileDocumentAsync(Path.Combine(_root, ".", "file.txt"));
 
         Assert.Same(document, duplicate);
         Assert.Single(workbench.Documents.Items, item => item.Kind == "file");
@@ -100,6 +100,36 @@ public sealed class WorkbenchDocumentAdapterTests : IDisposable
         Assert.Equal(path, preview.FilePath);
         Assert.Equal("file.txt", document.Title);
         Assert.Equal("read-only file contents", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task OpenFileDocument_CaseSensitivityMatchesUnderlyingFileSystem()
+    {
+        var lowerPath = Path.Combine(_root, "case.txt");
+        var upperPath = Path.Combine(_root, "CASE.txt");
+        await File.WriteAllTextAsync(lowerPath, "lowercase contents");
+        await File.WriteAllTextAsync(upperPath, "uppercase contents");
+        var lowerContents = await File.ReadAllTextAsync(lowerPath);
+        var distinctFiles = lowerContents != await File.ReadAllTextAsync(upperPath);
+        using var workbench = new WorkbenchViewModel(new FakeAgentRuntime(), InlineUiScheduler.Instance, new WorkbenchConfig([]));
+        workbench.ShowNewTask(_root);
+
+        var lower = await workbench.OpenFileDocumentAsync(lowerPath);
+        var upper = await workbench.OpenFileDocumentAsync(upperPath);
+
+        Assert.Equal(lowerContents, Assert.IsType<TextDocumentViewModel>(lower.Content).Text);
+        Assert.Equal("uppercase contents", Assert.IsType<TextDocumentViewModel>(upper.Content).Text);
+        if (distinctFiles)
+        {
+            Assert.NotSame(lower, upper);
+            Assert.Equal(2, workbench.Documents.Items.Count(item => item.Kind == "file"));
+            Assert.Equal(upperPath, Assert.IsType<TextDocumentViewModel>(upper.Content).FilePath);
+        }
+        else
+        {
+            Assert.Same(lower, upper);
+            Assert.Single(workbench.Documents.Items, item => item.Kind == "file");
+        }
     }
 
     [Fact]

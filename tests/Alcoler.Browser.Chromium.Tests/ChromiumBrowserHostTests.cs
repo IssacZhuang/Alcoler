@@ -355,6 +355,40 @@ public sealed class ChromiumBrowserHostTests
     }
 
     [Fact]
+    public void InsecureMockKeychainIsDisabledByDefault()
+    {
+        Assert.False(new ChromiumBrowserOptions().AllowInsecureMockKeychain);
+        Assert.False(new ChromiumBrowserOptions { Headless = true }.AllowInsecureMockKeychain);
+        Assert.False(new ChromiumBrowserOptions { Headless = false }.AllowInsecureMockKeychain);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(null, true)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task ProcessFactoryReceivesExplicitMockKeychainOptionIndependentlyOfHeadlessMode(bool? headless, bool allowInsecureMockKeychain)
+    {
+        var options = new ChromiumBrowserOptions { Headless = headless, AllowInsecureMockKeychain = allowInsecureMockKeychain };
+        var wire = new ScriptedWire();
+        var process = new FakeProcess();
+        (bool Headless, bool AllowInsecureMockKeychain)? launch = null;
+        using var host = new ChromiumBrowserHost(
+            Path.Combine(Path.GetTempPath(), "alcoler-chromium-host-" + Guid.NewGuid().ToString("N")), options,
+            binaryResolver: _ => Task.FromResult("/fake/chrome"),
+            processFactory: (_, _, actualHeadless, actualAllowInsecureMockKeychain) =>
+            {
+                launch = (actualHeadless, actualAllowInsecureMockKeychain);
+                return process;
+            },
+            wireFactory: () => wire);
+        await host.CreatePageAsync(_session, "tab_1", CancellationToken.None);
+        Assert.Equal((headless ?? true, allowInsecureMockKeychain), launch);
+    }
+
+    [Fact]
     public async Task StartupCancellationCleansTheOwnedAttemptWithoutRetrying()
     {
         using var cancellation = new CancellationTokenSource();
@@ -625,7 +659,7 @@ public sealed class ChromiumBrowserHostTests
         var connections = new Queue<ScriptedWire>(wires);
         return new ChromiumBrowserHost(Path.Combine(Path.GetTempPath(), "alcoler-chromium-host-" + Guid.NewGuid().ToString("N")),
             binaryResolver: _ => Task.FromResult("/fake/chrome"),
-            processFactory: (_, _, _) => attempts.Dequeue(), wireFactory: () => connections.Dequeue());
+            processFactory: (_, _, _, _) => attempts.Dequeue(), wireFactory: () => connections.Dequeue());
     }
 
     private static (ChromiumBrowserHost Host, ScriptedWire Wire, FakeProcess Process) CreateHost(bool headless = false, TimeProvider? timeProvider = null)
@@ -636,7 +670,7 @@ public sealed class ChromiumBrowserHostTests
             Path.Combine(Path.GetTempPath(), "alcoler-chromium-host-" + Guid.NewGuid().ToString("N")),
             new ChromiumBrowserOptions { Headless = headless },
             binaryResolver: _ => Task.FromResult("/fake/chrome"),
-            processFactory: (_, _, _) => process,
+            processFactory: (_, _, _, _) => process,
             wireFactory: () => wire, timeProvider: timeProvider);
         return (host, wire, process);
     }

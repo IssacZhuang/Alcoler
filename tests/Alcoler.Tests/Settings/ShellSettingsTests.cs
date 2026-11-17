@@ -49,13 +49,18 @@ public sealed class ShellSettingsTests
         }
     }
 
-    [Fact]
-    public void BrowserSection_RoundTripsThroughLoadOrDefault()
+    [Theory]
+    [InlineData(null)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BrowserSection_RoundTripsThroughLoadOrDefault(bool? allowInsecureMockKeychain)
     {
         var path = Path.Combine(Path.GetTempPath(), $"alcoler-browser-settings-{Guid.NewGuid():N}.json");
         try
         {
-            var config = new WorkbenchConfig([], Browser: new WorkbenchBrowserConfig(EmbeddedView: false, ExecutablePath: "/opt/chrome", Headless: true));
+            var config = new WorkbenchConfig([], Browser: new WorkbenchBrowserConfig(
+                EmbeddedView: false, ExecutablePath: "/opt/chrome", Headless: true,
+                AllowInsecureMockKeychain: allowInsecureMockKeychain));
             config.Save(path);
             var loaded = WorkbenchConfig.LoadOrDefault(path);
             Assert.Equal(config.Browser, loaded.Browser);
@@ -64,6 +69,8 @@ public sealed class ShellSettingsTests
             Assert.False(browser.GetProperty("embeddedView").GetBoolean());
             Assert.Equal("/opt/chrome", browser.GetProperty("executablePath").GetString());
             Assert.True(browser.GetProperty("headless").GetBoolean());
+            if (allowInsecureMockKeychain is { } allowed)
+                Assert.Equal(allowed, browser.GetProperty("allowInsecureMockKeychain").GetBoolean());
         }
         finally
         {

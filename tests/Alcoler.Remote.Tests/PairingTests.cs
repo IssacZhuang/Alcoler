@@ -320,41 +320,139 @@ public sealed class GatewayBindingTests
         }
     }
 
-    [Fact]
-    public async Task StopStartAndRestart_AfterHttpTraffic_RebindBothAddressFamiliesImmediately()
+    [Ipv6Fact]
+    public async Task Start_EphemeralPort_BothAddressFamiliesShareOneNonzeroPort()
+    {
+        var dataDirectory = Path.Combine(Path.GetTempPath(), "alcoler-remote-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            await using var gateway = new RemoteGateway(new RemoteGatewayOptions
+            {
+                Runtime = static () => throw new InvalidOperationException("Runtime must not be used."),
+                Port = 0,
+                DataDirectory = dataDirectory,
+                ConnectionCode = ConnectionCode,
+            });
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await gateway.StartAsync(cancellation.Token);
+
+            var port = AssertBoundPort(gateway);
+            Assert.Equal(2, gateway.BoundAddresses.Count);
+            using var client = CreateClient();
+            await AssertPairingAsync(client, new UriBuilder("http", "127.0.0.1", port).Uri);
+            await AssertPairingAsync(client, new UriBuilder("http", "::1", port).Uri);
+        }
+        finally
+        {
+            if (Directory.Exists(dataDirectory))
+                Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Ipv6Fact]
+    public async Task Start_ExclusiveIpv6Port_ReleasesIpv4AndSameGatewayCanRetryAfterRelease()
+    {
+        var dataDirectory = Path.Combine(Path.GetTempPath(), "alcoler-remote-tests", Guid.NewGuid().ToString("N"));
+        var blocker = new TcpListener(IPAddress.IPv6Any, 0);
+        blocker.Server.ExclusiveAddressUse = true;
+        blocker.Server.DualMode = false;
+        blocker.Start();
+        try
+        {
+            var port = ((IPEndPoint)blocker.LocalEndpoint).Port;
+            await using var gateway = new RemoteGateway(new RemoteGatewayOptions
+            {
+                Runtime = static () => throw new InvalidOperationException("Runtime must not be used."),
+                Port = port,
+                DataDirectory = dataDirectory,
+                ConnectionCode = ConnectionCode,
+            });
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            await Assert.ThrowsAnyAsync<IOException>(() => gateway.StartAsync(cancellation.Token));
+
+            Assert.False(gateway.IsRunning);
+            Assert.Empty(gateway.BoundAddresses);
+            using (var releasedIpv4 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+            {
+                releasedIpv4.ExclusiveAddressUse = true;
+                releasedIpv4.Bind(new IPEndPoint(IPAddress.Any, port));
+            }
+            blocker.Stop();
+
+            await gateway.StartAsync(cancellation.Token);
+
+            Assert.Equal(port, AssertBoundPort(gateway));
+            using var client = CreateClient();
+            await AssertPairingOnBothAddressFamiliesAsync(client, port);
+        }
+        finally
+        {
+            blocker.Stop();
+            if (Directory.Exists(dataDirectory))
+                Directory.Delete(dataDirectory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StopStartAndRestart_AfterHttpTraffic_RebindBothAddressFamiliesImmediately(bool ephemeralPort)
     {
         var harness = new GatewayHarness { ConnectionCode = ConnectionCode };
         try
         {
             await harness.InitializeAsync();
-            var port = new Uri(harness.BaseAddress).Port;
+            var options = new RemoteGatewayOptions
+            {
+                Runtime = () => harness.Runtime,
+                Port = ephemeralPort ? 0 : new Uri(harness.BaseAddress).Port,
+                DataDirectory = harness.DataDirectory,
+                ConnectionCode = ConnectionCode,
+            };
+            if (ephemeralPort)
+                await harness.Gateway.RestartAsync(options);
             using var client = CreateClient();
             for (var attempt = 0; attempt < 3; attempt++)
             {
+                var port = AssertBoundPort(harness.Gateway);
                 await AssertPairingOnBothAddressFamiliesAsync(client, port);
+                await harness.Gateway.StartAsync(CancellationToken.None);
+                Assert.Equal(port, AssertBoundPort(harness.Gateway));
                 await harness.Gateway.StopAsync();
                 Assert.False(harness.Gateway.IsRunning);
                 Assert.Empty(harness.Gateway.BoundAddresses);
 
                 await harness.Gateway.StartAsync(CancellationToken.None);
-                Assert.True(harness.Gateway.IsRunning);
-                await AssertPairingOnBothAddressFamiliesAsync(client, port);
+                var startedPort = AssertBoundPort(harness.Gateway);
+                if (!ephemeralPort)
+                    Assert.Equal(port, startedPort);
+                await AssertPairingOnBothAddressFamiliesAsync(client, startedPort);
 
-                await harness.Gateway.RestartAsync(new RemoteGatewayOptions
-                {
-                    Runtime = () => harness.Runtime,
-                    Port = port,
-                    DataDirectory = harness.DataDirectory,
-                    ConnectionCode = ConnectionCode,
-                });
-                Assert.True(harness.Gateway.IsRunning);
-                await AssertPairingOnBothAddressFamiliesAsync(client, port);
+                await harness.Gateway.RestartAsync(options);
+                var restartedPort = AssertBoundPort(harness.Gateway);
+                if (!ephemeralPort)
+                    Assert.Equal(port, restartedPort);
+                await AssertPairingOnBothAddressFamiliesAsync(client, restartedPort);
             }
         }
         finally
         {
             await harness.DisposeAsync();
         }
+    }
+
+    private static int AssertBoundPort(RemoteGateway gateway)
+    {
+        Assert.True(gateway.IsRunning);
+        var addresses = gateway.BoundAddresses.Select(address => new Uri(address)).ToArray();
+        Assert.Equal(Socket.OSSupportsIPv6 ? 2 : 1, addresses.Length);
+        Assert.Contains(addresses, address => address.Host == "0.0.0.0");
+        if (Socket.OSSupportsIPv6)
+            Assert.Contains(addresses, address => address.Host == "[::]");
+        var port = Assert.Single(addresses.Select(address => address.Port).Distinct());
+        Assert.InRange(port, 1, 65535);
+        return port;
     }
 
     private static HttpClient CreateClient() => new(new SocketsHttpHandler { UseProxy = false })
@@ -378,5 +476,14 @@ public sealed class GatewayBindingTests
         using var document = await response.ReadJsonAsync();
         Assert.False(string.IsNullOrEmpty(document.RootElement.GetProperty("deviceId").GetString()));
         Assert.False(string.IsNullOrEmpty(document.RootElement.GetProperty("deviceToken").GetString()));
+    }
+}
+
+public sealed class Ipv6FactAttribute : FactAttribute
+{
+    public Ipv6FactAttribute()
+    {
+        if (!Socket.OSSupportsIPv6)
+            Skip = "The platform does not support IPv6 sockets.";
     }
 }

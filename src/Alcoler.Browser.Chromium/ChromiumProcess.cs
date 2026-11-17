@@ -25,26 +25,28 @@ public sealed class ChromiumProcess : IChromiumProcess
     private readonly string _executablePath;
     private readonly string _userDataDirectory;
     private readonly bool _headless;
+    private readonly bool _allowInsecureMockKeychain;
     private readonly StringBuilder _stderrTail = new();
     private readonly Lock _sync = new();
     private Process? _process;
     private Uri? _wsUri;
     private bool _disposed;
 
-    public ChromiumProcess(string executablePath, string userDataDirectory, bool headless)
+    public ChromiumProcess(string executablePath, string userDataDirectory, bool headless, bool allowInsecureMockKeychain = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(userDataDirectory);
         _executablePath = executablePath;
         _userDataDirectory = userDataDirectory;
         _headless = headless;
+        _allowInsecureMockKeychain = allowInsecureMockKeychain;
     }
 
     public event EventHandler? Exited;
 
     public Uri WsUri => _wsUri ?? throw new InvalidOperationException("The browser process has not started yet.");
 
-    public static IReadOnlyList<string> BuildArguments(string userDataDirectory, bool headless)
+    public static IReadOnlyList<string> BuildArguments(string userDataDirectory, bool headless, bool allowInsecureMockKeychain = false)
     {
         // --no-sandbox must never be added: it disables the browser's OS-level process isolation.
         var arguments = new List<string>
@@ -59,6 +61,7 @@ public sealed class ChromiumProcess : IChromiumProcess
             "--disable-session-crash-bubble",
             "--hide-crash-restore-bubble",
         };
+        if (allowInsecureMockKeychain && OperatingSystem.IsMacOS()) arguments.Add("--use-mock-keychain");
         if (headless) arguments.Add("--headless=new");
         return arguments;
     }
@@ -89,7 +92,7 @@ public sealed class ChromiumProcess : IChromiumProcess
             RedirectStandardOutput = false,
             WorkingDirectory = Path.GetDirectoryName(_executablePath)!,
         };
-        foreach (var argument in BuildArguments(_userDataDirectory, _headless)) start.ArgumentList.Add(argument);
+        foreach (var argument in BuildArguments(_userDataDirectory, _headless, _allowInsecureMockKeychain)) start.ArgumentList.Add(argument);
         Process process;
         try
         {

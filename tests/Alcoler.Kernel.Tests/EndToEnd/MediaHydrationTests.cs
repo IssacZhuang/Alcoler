@@ -111,6 +111,7 @@ public class MediaHydrationTests
         Assert.True((await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0,
             "download the image"), CancellationToken.None)).Accepted);
         await AwaitCurrentTurnAsync(runtime.GetSession(session.Id)!);
+        await WaitForReplyAsync(projection, "continued");
 
         var events = await runtime.Options.Store.LoadDurableEventsAsync(session.Id, CancellationToken.None);
         Assert.DoesNotContain(events, item => item.Event is TurnFailedEvent);

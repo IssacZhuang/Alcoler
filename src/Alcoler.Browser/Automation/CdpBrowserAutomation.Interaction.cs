@@ -56,7 +56,9 @@ public sealed partial class CdpBrowserAutomation
             if (text.Length > 1000000) throw new ArgumentException("Text exceeds one million characters.");
             if (command == "fill")
             {
-                await PressAsync("Control+A", ct);
+                // Select-all chords are consumed by the browser's shortcut layer on headless
+                // macOS before the renderer sees them, so the selection is placed directly.
+                await WithElementAsync(input, "function(){if(typeof this.select==='function')this.select();else document.execCommand('selectAll');return true;}", [], ct, true);
                 if (text.Length == 0) await PressAsync("Backspace", ct);
                 else { _sideEffect = true; await SendAsync("Input.insertText", D("text", text), ct); }
             }

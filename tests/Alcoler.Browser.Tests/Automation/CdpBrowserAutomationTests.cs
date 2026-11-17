@@ -197,8 +197,10 @@ public sealed class CdpBrowserAutomationTests
         page.Calls.Clear();
         var filled = await Execute(engine, "fill", "{\"selector\":\"#name\",\"text\":\"replace\"}");
         Assert.True(filled.Ok, filled.Error);
-        Assert.Contains(page.Calls, c => c.Method == "Input.dispatchKeyEvent" && c.Parameters.GetProperty("key").GetString() == "A");
+        Assert.Contains(page.Calls, c => c.Method == "Runtime.callFunctionOn"
+            && c.Parameters.GetProperty("functionDeclaration").GetString()!.Contains("this.select"));
         Assert.Single(page.Calls, c => c.Method == "Input.insertText");
+        Assert.DoesNotContain(page.Calls, c => c.Method == "Input.dispatchKeyEvent");
     }
 
     [Fact]

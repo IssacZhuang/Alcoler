@@ -93,8 +93,8 @@ public class GrepNativeTests
     [Fact]
     public void BundledRipgrep_RunsAndReportsAlignedVersion()
     {
-        var rg = Path.Combine(AppContext.BaseDirectory, "tools", "ripgrep", "rg.exe");
-        if (!File.Exists(rg))
+        var rg = RipgrepBinary.LocateBundled();
+        if (rg is null)
             return;
         using var process = Process.Start(new ProcessStartInfo(rg, "--version")
         {
@@ -112,7 +112,7 @@ public class GrepNativeTests
     public void BashShim_PreambleIsEmittedOnlyWithoutSystemRg()
     {
         var root = Path.Combine(Path.GetTempPath(), "alcoler-shim-" + Guid.NewGuid().ToString("N"));
-        var rgPath = Path.Combine(root, "tools", "ripgrep", "rg.exe");
+        var rgPath = Path.Combine(root, "tools", "ripgrep", OperatingSystem.IsWindows() ? "rg.exe" : "rg");
         Directory.CreateDirectory(Path.GetDirectoryName(rgPath)!);
         try
         {

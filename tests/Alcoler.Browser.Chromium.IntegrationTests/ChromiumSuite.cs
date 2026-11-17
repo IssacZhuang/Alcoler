@@ -21,6 +21,7 @@ internal sealed class ChromiumSuite : IDisposable
     private readonly string _dataRoot;
     private readonly LoopbackFixture _fixture;
     private readonly bool _headless;
+    private readonly ChromiumBrowserOptions _options;
     private readonly CancellationToken _ct;
     private readonly SessionId _session = StrongId.NewSessionId();
     private readonly SessionId _otherSession = StrongId.NewSessionId();
@@ -31,13 +32,14 @@ internal sealed class ChromiumSuite : IDisposable
     private string _tab = "";
     private string _otherTab = "";
 
-    public ChromiumSuite(string dataRoot, LoopbackFixture fixture, bool headless, CancellationToken ct)
+    public ChromiumSuite(string dataRoot, LoopbackFixture fixture, bool headless, bool allowInsecureMockKeychain, CancellationToken ct)
     {
         _dataRoot = dataRoot;
         _fixture = fixture;
         _headless = headless;
+        _options = new ChromiumBrowserOptions { Headless = headless, AllowInsecureMockKeychain = allowInsecureMockKeychain };
         _ct = ct;
-        _host = new ChromiumBrowserHost(dataRoot, new ChromiumBrowserOptions { Headless = headless }, new ConsoleLogger<ChromiumBrowserHost>());
+        _host = new ChromiumBrowserHost(dataRoot, _options, new ConsoleLogger<ChromiumBrowserHost>());
         _controller = new BrowserController(_host, backendName: "chromium");
         _host.NewTabRequested += OnNewTabRequested;
     }
@@ -269,9 +271,10 @@ internal sealed class ChromiumSuite : IDisposable
         await CommandAsync("fill", Target(D(("testId", "account-input")), ("text", "test id account")), _tab);
         await AssertJsAsync("document.querySelector('#account').value === 'test id account' && document.querySelector('#placeholder').value === 'chromium alias'");
         await CommandAsync("fill", Target(D(("css", "#keyboard")), ("text", "keyboard data")), _tab);
-        await CommandAsync("press", Target(D(("css", "#keyboard")), ("key", "Control+A")), _tab);
-        await CommandAsync("press", Target(D(("css", "#keyboard")), ("key", "Backspace")), _tab);
+        await CommandAsync("fill", Target(D(("css", "#keyboard")), ("text", "")), _tab);
         await AssertJsAsync("document.querySelector('#keyboard').value === ''");
+        await CommandAsync("press", Target(D(("css", "#keyboard")), ("key", OperatingSystem.IsMacOS() ? "Meta+A" : "Control+A")), _tab);
+        await AssertJsAsync("document.body.dataset.modifierKey === 'A'");
         await CommandAsync("press", Target(D(("css", "#keyboard")), ("key", "Enter")), _tab);
         await AssertJsAsync("document.body.dataset.keyboardEnter === 'yes'");
         await CommandAsync("click", Target(D(("role", "button"), ("name", "Shadow action"))), _tab);
@@ -710,7 +713,7 @@ internal sealed class ChromiumSuite : IDisposable
         await AssertJsAsync("document.cookie.includes('restartPersisted=yes')");
         TearDownControllers();
         await WaitForDataRootReleasedAsync(TimeSpan.FromSeconds(40));
-        _host = new ChromiumBrowserHost(_dataRoot, new ChromiumBrowserOptions { Headless = _headless }, new ConsoleLogger<ChromiumBrowserHost>());
+        _host = new ChromiumBrowserHost(_dataRoot, _options, new ConsoleLogger<ChromiumBrowserHost>());
         _controller = new BrowserController(_host, backendName: "chromium");
         _host.NewTabRequested += OnNewTabRequested;
         var navigated = await CommandAsync("navigate", D(("url", _fixture.Url())));

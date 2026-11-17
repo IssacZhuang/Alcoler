@@ -170,10 +170,11 @@ public sealed class RemoteGateway : IAsyncDisposable
         var socket = new Socket(ipEndpoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         try
         {
-            // Windows dual-stack binds can otherwise succeed while IPv4 is owned by another listener.
             socket.ExclusiveAddressUse = true;
-            if (ipEndpoint.Address.Equals(IPAddress.IPv6Any))
-                socket.DualMode = true;
+            // Each family binds its own socket below; a dual-mode IPv6 bind would grab the
+            // IPv4 wildcard too and collide with the dedicated IPv4 listener.
+            if (ipEndpoint.Address.AddressFamily == AddressFamily.InterNetworkV6)
+                socket.DualMode = false;
             socket.Bind(endpoint);
             return socket;
         }
@@ -202,10 +203,29 @@ public sealed class RemoteGateway : IAsyncDisposable
         // shutdown timeout the host waits for them far longer than desktop exit can afford.
         builder.Services.Configure<HostOptions>(options =>
             options.ShutdownTimeout = TimeSpan.FromSeconds(3));
-        if (OperatingSystem.IsWindows())
-            builder.Services.Configure<SocketTransportOptions>(options =>
-                options.CreateBoundListenSocket = CreateExclusiveListenSocket);
-        builder.WebHost.UseKestrel(server => server.ListenAnyIP(state.Options.Port));
+        // Dual-stack binds can otherwise succeed while the same port is already owned by
+        // another listener, which would silently split traffic between the two.
+        builder.Services.Configure<SocketTransportOptions>(options =>
+        {
+            var port = 0;
+            options.CreateBoundListenSocket = endpoint =>
+            {
+                if (endpoint is not IPEndPoint { Port: 0 } ipEndpoint)
+                    return CreateExclusiveListenSocket(endpoint);
+                // Kestrel binds endpoints sequentially; both families must share the first OS-assigned port.
+                var socket = CreateExclusiveListenSocket(new IPEndPoint(ipEndpoint.Address, port));
+                port = ((IPEndPoint)socket.LocalEndPoint!).Port;
+                return socket;
+            };
+        });
+        builder.WebHost.UseKestrel(server =>
+        {
+            // A single dual-mode socket stays bindable on macOS and Linux even while another
+            // listener owns the IPv4 port, so each address family binds exclusively on its own.
+            server.Listen(IPAddress.Any, state.Options.Port);
+            if (Socket.OSSupportsIPv6)
+                server.Listen(IPAddress.IPv6Any, state.Options.Port);
+        });
         WebHostConfiguration?.Invoke(builder.WebHost);
         var app = builder.Build();
 

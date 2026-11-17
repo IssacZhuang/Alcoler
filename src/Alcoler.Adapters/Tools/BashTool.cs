@@ -331,13 +331,23 @@ public sealed class BashTool : ITool, IToolInputPolicy
 
     internal static bool IsInsideOrSamePath(string candidate, string root)
     {
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
-        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-        return string.Equals(full, normalizedRoot, comparison)
-            || full.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison);
+        try
+        {
+            var comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            // Both paths must be physical before containment checks on Unix.
+            var full = Path.TrimEndingDirectorySeparator(PathResolution.ResolveSymbolicLinks(candidate));
+            if (!Directory.Exists(full))
+                return false;
+            var normalizedRoot = Path.TrimEndingDirectorySeparator(PathResolution.ResolveSymbolicLinks(root));
+            return string.Equals(full, normalizedRoot, comparison)
+                || full.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     internal static List<string> DetectChangedReads(

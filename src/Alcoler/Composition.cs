@@ -53,6 +53,7 @@ public static class Composition
                 {
                     ExecutablePath = config.Browser?.ExecutablePath,
                     Headless = config.Browser?.Headless,
+                    AllowInsecureMockKeychain = config.Browser?.AllowInsecureMockKeychain == true,
                 },
                 loggerFactory.CreateLogger<ChromiumBrowserHost>());
         }

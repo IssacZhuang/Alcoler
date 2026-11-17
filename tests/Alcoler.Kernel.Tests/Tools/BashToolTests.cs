@@ -211,7 +211,7 @@ public class BashToolTests
         var stopwatch = Stopwatch.StartNew();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor("""{"command": "ping -n 20 127.0.0.1", "timeout": 1000}"""),
+            workspace.ContextFor(PingJson(1000)),
             CancellationToken.None);
 
         stopwatch.Stop();
@@ -280,8 +280,8 @@ public class BashToolTests
 
         Assert.False(result.IsError);
         Assert.Equal(
-            Path.Combine(workspace.Root, "sub"),
-            shell.CurrentDirectory,
+            PathResolution.ResolveSymbolicLinks(Path.Combine(workspace.Root, "sub")),
+            PathResolution.ResolveSymbolicLinks(shell.CurrentDirectory),
             ignoreCase: true);
 
         var followUp = await tool.ExecuteAsync(
@@ -306,6 +306,131 @@ public class BashToolTests
         Assert.False(result.IsError);
         Assert.Equal(workspace.Root, shell.CurrentDirectory, ignoreCase: true);
         Assert.Contains($"Shell cwd was reset to {workspace.Root}", result.SingleText());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapturedCwd_SymlinkInTargetParent_EnforcesWorkspaceResetPolicy(bool outside)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        using var workspace = new TempWorkspace();
+        using var external = new TempDirectory();
+        var targetRoot = outside ? external.Root : workspace.Root;
+        var subdirectory = Path.Combine(targetRoot, "sub");
+        Directory.CreateDirectory(subdirectory);
+        var alias = Path.Combine(outside ? workspace.Root : external.Root, "alias");
+        Directory.CreateSymbolicLink(alias, targetRoot);
+        Directory.CreateSymbolicLink(Path.Combine(workspace.Root, "shortcut"), Path.Combine(alias, "sub"));
+        var shell = new ShellSessionState(workspace.Root);
+
+        var result = await new BashTool().ExecuteAsync(
+            workspace.ContextFor("""{"command":"cd shortcut; printf successful-command"}""", shell),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        if (outside)
+        {
+            Assert.Equal(workspace.Root, shell.CurrentDirectory);
+            Assert.StartsWith("successful-command", result.SingleText());
+            Assert.Contains($"Shell cwd was reset to {workspace.Root}", result.SingleText());
+        }
+        else
+        {
+            Assert.Equal(PathResolution.ResolveSymbolicLinks(subdirectory),
+                PathResolution.ResolveSymbolicLinks(shell.CurrentDirectory));
+            Assert.Equal("successful-command", result.SingleText());
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CwdValidation_ResolvesParentTraversalInInput(bool outside)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        using var workspace = new TempWorkspace();
+        using var external = new TempDirectory();
+        var targetRoot = outside ? external.Root : Path.Combine(workspace.Root, "nested");
+        var target = Directory.CreateDirectory(Path.Combine(targetRoot, "deep")).FullName;
+        Directory.CreateDirectory(Path.Combine(targetRoot, "next"));
+        if (outside)
+            Directory.CreateDirectory(Path.Combine(workspace.Root, "next"));
+        var shortcut = Path.Combine(workspace.Root, "shortcut");
+        Directory.CreateSymbolicLink(shortcut, target);
+
+        var inside = BashTool.IsInsideOrSamePath(Path.Combine(shortcut, "..", "next"), workspace.Root);
+
+        Assert.Equal(!outside, inside);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CwdValidation_NonexistentOrDeletedDirectory_FailsClosed(bool deleted)
+    {
+        using var workspace = new TempWorkspace();
+        var candidate = Path.Combine(workspace.Root, "missing");
+        if (deleted)
+        {
+            Directory.CreateDirectory(candidate);
+            Directory.Delete(candidate);
+        }
+
+        Assert.False(BashTool.IsInsideOrSamePath(candidate, workspace.Root));
+    }
+
+    [Fact]
+    public async Task CapturedCwd_DeletedDirectory_ResetsWithoutLosingSuccessfulOutput()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        using var workspace = new TempWorkspace();
+        var shell = new ShellSessionState(workspace.Root);
+
+        var result = await new BashTool().ExecuteAsync(
+            workspace.ContextFor("""{"command":"mkdir removable; cd removable; rmdir ../removable; printf successful-command"}""", shell),
+            CancellationToken.None);
+
+        Assert.False(result.IsError);
+        Assert.Equal(workspace.Root, shell.CurrentDirectory);
+        Assert.StartsWith("successful-command", result.SingleText());
+        Assert.Contains($"Shell cwd was reset to {workspace.Root}", result.SingleText());
+    }
+
+    [Fact]
+    public async Task CapturedCwd_InaccessibleDirectory_ResetsWithoutLosingSuccessfulOutput()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        using var workspace = new TempWorkspace();
+        var locked = Path.Combine(workspace.Root, "locked");
+        var subdirectory = Path.Combine(locked, "sub");
+        Directory.CreateDirectory(subdirectory);
+        var mode = File.GetUnixFileMode(locked);
+        try
+        {
+            File.SetUnixFileMode(locked, UnixFileMode.None);
+            if (Directory.Exists(subdirectory))
+                return;
+            File.SetUnixFileMode(locked, mode);
+            var shell = new ShellSessionState(workspace.Root);
+
+            var result = await new BashTool().ExecuteAsync(
+                workspace.ContextFor("""{"command":"mkdir -p locked/sub; cd locked/sub; chmod 000 ..; printf successful-command"}""", shell),
+                CancellationToken.None);
+
+            Assert.False(result.IsError);
+            Assert.Equal(workspace.Root, shell.CurrentDirectory);
+            Assert.StartsWith("successful-command", result.SingleText());
+            Assert.Contains($"Shell cwd was reset to {workspace.Root}", result.SingleText());
+        }
+        finally
+        {
+            File.SetUnixFileMode(locked, mode);
+        }
     }
 
     [Fact]
@@ -435,9 +560,7 @@ public class BashToolTests
         var stopwatch = Stopwatch.StartNew();
 
         var result = await tool.ExecuteAsync(
-            workspace.ContextFor(
-                """{"command": "ping -n 20 127.0.0.1", "timeout": 1000}""",
-                jobs: jobs),
+            workspace.ContextFor(PingJson(1000), jobs: jobs),
             CancellationToken.None);
 
         stopwatch.Stop();
@@ -713,6 +836,10 @@ public class BashToolTests
         var spec = ShellResolver.Resolve();
         return Path.GetFileNameWithoutExtension(spec.FileName) is "bash" or "sh" or "zsh" or "dash";
     }
+
+    // BSD ping reads -n as "skip DNS resolution"; only Windows -n counts echoes.
+    private static string PingJson(int timeoutMs) =>
+        $$"""{"command": "ping {{(OperatingSystem.IsWindows() ? "-n" : "-c")}} 20 127.0.0.1", "timeout": {{timeoutMs}}}""";
 
     private static async Task WaitForJobCompletionAsync(BackgroundJobService jobs, BackgroundJobId id)
     {

@@ -260,7 +260,9 @@ public class SystemPromptAssemblyTests
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "day two"), CancellationToken.None);
         await WaitForRequestsAsync(capturing, expectedCount: 2);
         await WaitForPhaseAsync(projection, TurnPhase.Idle);
-        Assert.Contains("The date has changed. Today's date is now 2026-10-21.", PromptText(capturing.Requests[^1]));
+        // The reminder renders the clock instant in the machine's local timezone.
+        var expectedDate = EnvironmentSections.FormatLocalIsoDate(clock.Now.UtcDateTime.ToLocalTime());
+        Assert.Contains($"The date has changed. Today's date is now {expectedDate}.", PromptText(capturing.Requests[^1]));
         Assert.Contains("DO NOT mention this to the user explicitly", PromptText(capturing.Requests[^1]));
 
         await runtime.SubmitAsync(new SendTextCommand(StrongId.NewCommandId(), session.Id, 0, "same day again"), CancellationToken.None);

@@ -37,10 +37,11 @@ internal static class Program
     private static async Task<int> RunAsync()
     {
         var headless = Environment.GetEnvironmentVariable("ALCOLER_CHROMIUM_SUITE_HEADLESS") == "1";
+        var allowInsecureMockKeychain = Environment.GetEnvironmentVariable("ALCOLER_CHROMIUM_SUITE_ALLOW_INSECURE_MOCK_KEYCHAIN") == "1";
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         var root = Path.Combine(Path.GetTempPath(), "alcoler-chromium-suite-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        Console.WriteLine($"Chromium integration suite: mode={(headless ? "headless" : "headed")}, dataRoot={root}");
+        Console.WriteLine($"Chromium integration suite: mode={(headless ? "headless" : "headed")}, allowInsecureMockKeychain={allowInsecureMockKeychain}, dataRoot={root}");
         var clock = Stopwatch.StartNew();
         var results = new List<ScenarioResult>();
         try
@@ -58,7 +59,7 @@ internal static class Program
             var version = FileVersionInfo.GetVersionInfo(executable).ProductVersion ?? "<unknown>";
             Console.WriteLine($"Browser executable: {executable} (version {version})");
             await using var fixture = new LoopbackFixture();
-            using var suite = new ChromiumSuite(root, fixture, headless, deadline.Token);
+            using var suite = new ChromiumSuite(root, fixture, headless, allowInsecureMockKeychain, deadline.Token);
             foreach (var scenario in suite.Scenarios())
             {
                 if (scenario.RequiresWindow && headless)

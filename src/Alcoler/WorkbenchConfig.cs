@@ -68,7 +68,8 @@ public sealed record WorkbenchMcpServerConfig(
 public sealed record WorkbenchBrowserConfig(
     bool? EmbeddedView = null,
     string? ExecutablePath = null,
-    bool? Headless = null);
+    bool? Headless = null,
+    bool? AllowInsecureMockKeychain = null);
 
 // Remote gates the LAN mobile-control gateway; a null or disabled section keeps it off.
 public sealed record WorkbenchRemoteConfig(

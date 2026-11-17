@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Alcoler.Contracts.Projections;
 using Alcoler.Localization;
 
@@ -5,6 +6,7 @@ namespace Alcoler.ViewModel;
 
 public sealed partial class WorkbenchViewModel
 {
+    private const int MacPathCaseSensitive = 11;
     private const string TextDocumentIcon = "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M8 13h8M8 17h6";
     private const string PlanDocumentIcon = "M9 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4M9 3h6v4H9ZM8 12h8M8 16h5";
 
@@ -127,7 +129,9 @@ public sealed partial class WorkbenchViewModel
             return OpenDocument(new DocumentViewModel(
                 $"file:{path}", "file", Loc.Get("workbench_invalid_file_path"), TextDocumentIcon, invalid, workspaceRoot, ownerId));
         }
-        var canonicalId = OperatingSystem.IsWindows() ? fullPath.ToUpperInvariant() : fullPath;
+        var ignoresCase = OperatingSystem.IsWindows()
+            || OperatingSystem.IsMacOS() && GetMacPathConfiguration(fullPath, MacPathCaseSensitive) == 0;
+        var canonicalId = ignoresCase ? fullPath.ToUpperInvariant() : fullPath;
         var preview = TextDocumentViewModel.ForFile(fullPath, _scheduler);
         var document = OpenDocument(new DocumentViewModel(
             $"file:{canonicalId}", "file", Path.GetFileName(fullPath), TextDocumentIcon, preview, workspaceRoot, ownerId));
@@ -144,4 +148,8 @@ public sealed partial class WorkbenchViewModel
         }
         return document;
     }
+
+    [DllImport("libSystem.B.dylib", EntryPoint = "pathconf")]
+    private static extern nint GetMacPathConfiguration(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path, int name);
 }

@@ -9,7 +9,8 @@ public sealed class ChromiumProcessTests
     public void ArgumentsContainTheExactFixedSetWithoutSandbox()
     {
         var arguments = ChromiumProcess.BuildArguments("/tmp/profile dir", headless: false);
-        Assert.Equal([
+        string[] expected =
+        [
             "--remote-debugging-port=0",
             "--user-data-dir=/tmp/profile dir",
             "--no-first-run",
@@ -19,7 +20,8 @@ public sealed class ChromiumProcessTests
             "--disable-backgrounding-occluded-windows",
             "--disable-session-crash-bubble",
             "--hide-crash-restore-bubble",
-        ], arguments);
+        ];
+        Assert.Equal(expected, arguments);
     }
 
     [Theory]
@@ -30,6 +32,23 @@ public sealed class ChromiumProcessTests
         var arguments = ChromiumProcess.BuildArguments("C:\\profile", headless);
         Assert.Equal(headless, arguments.Contains("--headless=new"));
         if (headless) Assert.Equal("--headless=new", arguments[^1]);
+        Assert.DoesNotContain("--use-mock-keychain", arguments);
+        Assert.DoesNotContain(arguments, argument => argument.Contains("no-sandbox", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void MockKeychainRequiresExplicitInsecureOptInOnMacOnly(bool headless, bool allowInsecureMockKeychain)
+    {
+        var arguments = ChromiumProcess.BuildArguments("/tmp/profile", headless, allowInsecureMockKeychain);
+        var expected = ChromiumProcess.BuildArguments("/tmp/profile", headless).ToList();
+        if (OperatingSystem.IsMacOS() && allowInsecureMockKeychain)
+            expected.Insert(expected.Count - (headless ? 1 : 0), "--use-mock-keychain");
+        Assert.Equal(expected, arguments);
+        Assert.Equal(OperatingSystem.IsMacOS() && allowInsecureMockKeychain, arguments.Contains("--use-mock-keychain"));
         Assert.DoesNotContain(arguments, argument => argument.Contains("no-sandbox", StringComparison.OrdinalIgnoreCase));
     }
 

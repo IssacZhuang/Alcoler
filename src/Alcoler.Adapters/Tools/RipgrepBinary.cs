@@ -29,7 +29,11 @@ internal static class RipgrepBinary
             {
                 var candidate = Path.Combine(AppContext.BaseDirectory, "tools", "ripgrep",
                     OperatingSystem.IsWindows() ? "rg.exe" : "rg");
-                _bundled = File.Exists(candidate) ? candidate : null;
+                if (File.Exists(candidate))
+                {
+                    EnsureUnixExecutable(candidate);
+                    _bundled = candidate;
+                }
             }
             return _bundled;
         }
@@ -55,6 +59,27 @@ internal static class RipgrepBinary
             }
         }
         return null;
+    }
+
+    // Checkouts and archives created on Windows carry no executable bit, which turns every
+    // shim invocation into a permission-denied failure on macOS and Linux.
+    private static void EnsureUnixExecutable(string path)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        try
+        {
+            var mode = File.GetUnixFileMode(path);
+            var executable = mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+            if (mode != executable)
+                File.SetUnixFileMode(path, executable);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     internal static void ResetCacheForTests()

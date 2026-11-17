@@ -160,7 +160,7 @@ internal sealed class LoopbackFixture : IAsyncDisposable
         document.querySelector('#drag-source').addEventListener('mousedown',()=>{dragging=true;moves=0});
         document.addEventListener('mousemove',e=>{if(dragging && e.buttons===1)moves++});
         document.addEventListener('mouseup',e=>{if(dragging){document.body.dataset.dragged=String(moves>1 && e.target.id==='drag-target');dragging=false}});
-        document.querySelector('#keyboard').addEventListener('keydown',e=>{if(e.key==='Enter')document.body.dataset.keyboardEnter='yes'});
+        document.querySelector('#keyboard').addEventListener('keydown',e=>{if(e.key==='Enter')document.body.dataset.keyboardEnter='yes';if(e.ctrlKey||e.metaKey||e.altKey)document.body.dataset.modifierKey=e.key});
         </script></body></html>
         """;
 }

@@ -173,7 +173,11 @@ public sealed partial class SqliteSessionStore
             var sessionId = reader.GetString(0);
             var currentTitle = reader.GetString(2);
             var titleSource = SessionTitleSource.Custom;
-            var workspaceName = Path.GetFileName(Path.TrimEndingDirectorySeparator(reader.GetString(1)));
+            // workspace_root strings follow the separator convention of the OS that wrote them,
+            // which can differ from the host running the migration.
+            var root = reader.GetString(1).TrimEnd('/', '\\');
+            var separatorIndex = root.LastIndexOfAny(['/', '\\']);
+            var workspaceName = separatorIndex < 0 ? root : root[(separatorIndex + 1)..];
             if (reader.IsDBNull(3)
                 && (currentTitle == workspaceName || currentTitle == "New session")
                 && !HasDurableTitleChange(connection, transaction, sessionId))

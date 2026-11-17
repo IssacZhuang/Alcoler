@@ -13,6 +13,8 @@ public sealed class ChromiumBrowserOptions
 {
     public string? ExecutablePath { get; init; }
     public bool? Headless { get; init; }
+    // Mock keychain encryption uses a public password; only enable it for disposable profiles without secrets.
+    public bool AllowInsecureMockKeychain { get; init; }
     public string? BinaryCacheRoot { get; init; }
 
     // Headless is the operating mode: a visible browser window must never appear unless
@@ -27,7 +29,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
     private readonly ILogger _logger;
     private readonly string _binaryCacheRoot;
     private readonly Func<CancellationToken, Task<string>> _binaryResolver;
-    private readonly Func<string, string, bool, IChromiumProcess> _processFactory;
+    private readonly Func<string, string, bool, bool, IChromiumProcess> _processFactory;
     private readonly Func<ICdpWire> _wireFactory;
     private readonly TimeProvider _timeProvider;
     private const int MaxPendingPopups = 32;
@@ -40,7 +42,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
 
     public ChromiumBrowserHost(string dataRoot, ChromiumBrowserOptions? options = null, ILogger<ChromiumBrowserHost>? logger = null,
         Func<CancellationToken, Task<string>>? binaryResolver = null,
-        Func<string, string, bool, IChromiumProcess>? processFactory = null,
+        Func<string, string, bool, bool, IChromiumProcess>? processFactory = null,
         Func<ICdpWire>? wireFactory = null, TimeProvider? timeProvider = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
@@ -53,7 +55,8 @@ public sealed class ChromiumBrowserHost : IBrowserHost
         _binaryResolver = binaryResolver
             ?? (ct => new ChromiumBinary(_binaryCacheRoot).ResolveAsync(_options.ExecutablePath, ct));
         _processFactory = processFactory
-            ?? ((executablePath, profileDirectory, headless) => new ChromiumProcess(executablePath, profileDirectory, headless));
+            ?? ((executablePath, profileDirectory, headless, allowInsecureMockKeychain) =>
+                new ChromiumProcess(executablePath, profileDirectory, headless, allowInsecureMockKeychain));
         _wireFactory = wireFactory ?? (() => new WebSocketCdpWire());
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -255,7 +258,7 @@ public sealed class ChromiumBrowserHost : IBrowserHost
     {
         var executable = await _binaryResolver(cancellationToken).ConfigureAwait(false);
         Directory.CreateDirectory(entry.ProfileDirectory);
-        var process = _processFactory(executable, entry.ProfileDirectory, entry.Headless);
+        var process = _processFactory(executable, entry.ProfileDirectory, entry.Headless, _options.AllowInsecureMockKeychain);
         CdpConnection? connection = null;
         EventHandler exited = (_, _) => OnProcessExited(entry, process);
         try
