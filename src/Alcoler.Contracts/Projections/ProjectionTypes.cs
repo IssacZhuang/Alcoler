@@ -14,6 +14,7 @@ public enum TurnPhase
 {
     Idle,
     ProcessingInput,
+    Compacting,
     AwaitingModel,
     Streaming,
     ExecutingTools,

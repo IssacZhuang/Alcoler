@@ -52,6 +52,7 @@ public class ConversationViewModelTests
 
     [Theory]
     [InlineData(TurnPhase.ProcessingInput, "Preparing request", true, true)]
+    [InlineData(TurnPhase.Compacting, "Compacting context", true, true)]
     [InlineData(TurnPhase.AwaitingModel, "Waiting for model", true, true)]
     [InlineData(TurnPhase.Streaming, "Generating response", true, true)]
     [InlineData(TurnPhase.ExecutingTools, "Running tools", true, true)]

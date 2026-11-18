@@ -19,6 +19,7 @@ const artifactUrl = api.artifactUrl || ((uri, mime) => {
 export const PHASE_LABEL = {
   idle: 'Idle',
   processingInput: 'Working',
+  compacting: 'Compacting',
   awaitingModel: 'Thinking',
   streaming: 'Streaming',
   executingTools: 'Running tools',
@@ -39,6 +40,7 @@ export function phaseLabel(phase) {
 
 const ACTIVITY_LABEL = {
   processingInput: 'Preparing request',
+  compacting: 'Compacting context',
   awaitingModel: 'Waiting for model',
   streaming: 'Generating response',
   executingTools: 'Running tools',

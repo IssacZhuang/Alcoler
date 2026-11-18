@@ -627,6 +627,7 @@
   "conversation_permission_failed_detail": "Could not submit the permission decision. {0}",
 
   "status_phase_preparing": "Preparing request",
+  "status_phase_compacting": "Compacting context",
   "status_phase_awaiting_model": "Waiting for model",
   "status_phase_streaming": "Generating response",
   "status_phase_running_tools": "Running tools",

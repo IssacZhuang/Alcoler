@@ -627,6 +627,7 @@
   "conversation_permission_failed_detail": "无法提交权限决定。{0}",
 
   "status_phase_preparing": "正在准备请求",
+  "status_phase_compacting": "正在压缩上下文",
   "status_phase_awaiting_model": "等待模型",
   "status_phase_streaming": "正在生成回复",
   "status_phase_running_tools": "正在运行工具",

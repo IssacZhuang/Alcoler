@@ -43,11 +43,14 @@ public sealed class WorkbenchModelCatalogTests
         Assert.Equal(defaults.ReasoningMapping, effective.ReasoningMapping);
     }
 
-    [Fact]
-    public void Defaults_Gpt61TerraUsesGpt6Catalog()
+    [Theory]
+    [InlineData("gpt-6.1-terra")]
+    [InlineData("gpt-6.2-astra")]
+    [InlineData("gpt-6.2-sol")]
+    public void Defaults_Gpt6CatalogModelsUseGpt6Catalog(string modelId)
     {
         var provider = new WorkbenchProviderConfig("openai-responses", "https://api.openai.com/v1", null, []);
-        var properties = WorkbenchModelCatalog.Defaults(provider, "gpt-6.1-terra");
+        var properties = WorkbenchModelCatalog.Defaults(provider, modelId);
 
         Assert.Equal(1_050_000, properties.ContextWindowTokens);
         Assert.Equal(128_000, properties.DefaultMaxOutputTokens);
@@ -55,6 +58,18 @@ public sealed class WorkbenchModelCatalogTests
         Assert.True(properties.SupportsPdf);
         Assert.True(properties.SupportsJsonSchemaOutput);
         Assert.Equal(["low", "medium", "high", "xhigh", "max"], properties.ReasoningLevels);
+    }
+
+    [Theory]
+    [InlineData("openai", "gpt-6.2-astra", "gpt-6.2-sol")]
+    [InlineData("openrouter", "openai/gpt-6.2-astra", "openai/gpt-6.2-sol")]
+    [InlineData("opencode-zen-responses", "gpt-6.2-astra", "gpt-6.2-sol")]
+    public void Templates_IncludeGpt62Models(string templateId, string astraModelId, string solModelId)
+    {
+        var template = Assert.Single(WorkbenchModelCatalog.Templates, template => template.Id == templateId);
+
+        Assert.Contains(astraModelId, template.ModelIds);
+        Assert.Contains(solModelId, template.ModelIds);
     }
 
     [Fact]

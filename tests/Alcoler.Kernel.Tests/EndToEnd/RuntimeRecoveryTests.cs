@@ -709,6 +709,37 @@ public class RuntimeRecoveryTests
             (await fixture.Store.LoadMessagesAsync(fixture.Id, CancellationToken.None)).Select(message => message.Message)));
     }
 
+    [Fact]
+    public async Task ManualCompaction_EmitsLifecycleEventsAroundBoundary()
+    {
+        await using var fixture = await CompactFixture.CreateAsync([StopText("summary")]);
+
+        Assert.True(await fixture.CompactAsync(CompactTrigger.Manual));
+
+        var lifecycle = fixture.Events
+            .Select(entry => entry.Event)
+            .Where(evt => evt is CompactionStartedEvent or CompactBoundaryAppliedEvent or CompactionFinishedEvent)
+            .ToList();
+        Assert.Collection(lifecycle,
+            evt => Assert.IsType<CompactionStartedEvent>(evt),
+            evt => Assert.IsType<CompactBoundaryAppliedEvent>(evt),
+            evt => Assert.IsType<CompactionFinishedEvent>(evt));
+    }
+
+    [Fact]
+    public async Task FailedCompaction_StillEmitsFinishedLifecycleEvent()
+    {
+        var failure = new ModelFailure(ModelFailureKind.ProviderError, "summary failed");
+        await using var fixture = await CompactFixture.CreateAsync([[new ModelStreamFailed(failure)]]);
+
+        Assert.False(await fixture.CompactAsync(CompactTrigger.Manual));
+
+        var events = fixture.Events.Select(entry => entry.Event).ToList();
+        Assert.Contains(events, evt => evt is CompactionStartedEvent);
+        Assert.Contains(events, evt => evt is CompactionFinishedEvent);
+        Assert.DoesNotContain(events, evt => evt is CompactBoundaryAppliedEvent);
+    }
+
     private sealed class CompactFixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "alcoler-compact-" + Guid.NewGuid().ToString("N"));
@@ -723,6 +754,9 @@ public class RuntimeRecoveryTests
         public IReadOnlyList<ConversationMessage> History => ((Alcoler.Kernel.History.MessageHistory)typeof(SessionRuntime)
             .GetField("_history", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(_runtime)!).Snapshot();
         public string? Error => (string?)typeof(SessionRuntime).GetProperty("LastTurnError", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(_runtime);
+        public IReadOnlyList<SequencedEvent> Events => ((SessionEventStore)typeof(SessionRuntime)
+            .GetField("_events", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(_runtime)!).EventsFrom(0);
 
         public static async Task<CompactFixture> CreateAsync(IReadOnlyList<IReadOnlyList<ModelStreamEvent>> calls, int? modelLimit = null, bool media = false)
         {

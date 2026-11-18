@@ -1981,33 +1981,41 @@ public sealed class SessionRuntime : IAsyncDisposable
 
         await EnsureShellAsync(ct).ConfigureAwait(false);
         var maxAttempts = trigger == CompactTrigger.Auto ? CompactPolicy.AutoCompactMaxAttempts : 1;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        await EmitAsync(new CompactionStartedEvent(trigger), persist: false).ConfigureAwait(false);
+        try
         {
-            var persisted = false;
-            try
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                var failure = await ApplyCompactionAttemptAsync(plan, history, instructions, model, options, contextWindow,
-                    () => persisted = true, historySink, ct).ConfigureAwait(false);
-                if (failure is null)
-                    return true;
-                LastTurnError = failure.Message;
-                if (!IsCompactRetryableFailure(failure))
-                    break;
+                var persisted = false;
+                try
+                {
+                    var failure = await ApplyCompactionAttemptAsync(plan, history, instructions, model, options, contextWindow,
+                        () => persisted = true, historySink, ct).ConfigureAwait(false);
+                    if (failure is null)
+                        return true;
+                    LastTurnError = failure.Message;
+                    if (!IsCompactRetryableFailure(failure))
+                        break;
+                }
+                catch (Exception exception)
+                {
+                    var failure = ModelFailureClassifier.FromException(exception, ct);
+                    LastTurnError = failure.Message;
+                    if (persisted)
+                        return true;
+                    if (!IsCompactRetryableFailure(failure))
+                        break;
+                }
             }
-            catch (Exception exception)
-            {
-                var failure = ModelFailureClassifier.FromException(exception, ct);
-                LastTurnError = failure.Message;
-                if (persisted)
-                    return true;
-                if (!IsCompactRetryableFailure(failure))
-                    break;
-            }
-        }
 
-        _consecutiveCompactFailures++;
-        _deps.Logger.LogWarning("Compaction ({Trigger}) failed after {Failures} consecutive attempts.", trigger, _consecutiveCompactFailures);
-        return false;
+            _consecutiveCompactFailures++;
+            _deps.Logger.LogWarning("Compaction ({Trigger}) failed after {Failures} consecutive attempts.", trigger, _consecutiveCompactFailures);
+            return false;
+        }
+        finally
+        {
+            await EmitAsync(new CompactionFinishedEvent(trigger), persist: false).ConfigureAwait(false);
+        }
     }
 
     private static bool IsCompactRetryableFailure(ModelFailure failure) =>

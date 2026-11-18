@@ -21,6 +21,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IComposerH
     private static readonly TurnPhase[] BusyPhases =
     [
         TurnPhase.ProcessingInput,
+        TurnPhase.Compacting,
         TurnPhase.AwaitingModel,
         TurnPhase.Streaming,
         TurnPhase.ExecutingTools,

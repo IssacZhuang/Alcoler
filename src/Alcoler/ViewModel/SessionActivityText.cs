@@ -8,6 +8,7 @@ internal static class SessionActivityText
     public static string Phase(TurnPhase phase) => phase switch
     {
         TurnPhase.ProcessingInput => Loc.Get("status_phase_preparing"),
+        TurnPhase.Compacting => Loc.Get("status_phase_compacting"),
         TurnPhase.AwaitingModel => Loc.Get("status_phase_awaiting_model"),
         TurnPhase.Streaming => Loc.Get("status_phase_streaming"),
         TurnPhase.ExecutingTools => Loc.Get("status_phase_running_tools"),

@@ -604,8 +604,8 @@ public sealed class BrowserTool : ITool, IPlatformGatedTool
             ["operation"] = Enum("Pending-dialog operation.", "status", "accept", "dismiss"),
             ["arg"] = new() { ["description"] = "Optional JSON evaluation argument, at most 32768 serialized characters and 16 levels deep." },
             ["values"] = List(Text(0, 4096, "Option value."), 1, 100),
-            ["modifiers"] = List(Enum("Held modifier.", "Alt", "Control", "Meta", "Shift"), 0, 4, unique: true),
-            ["keep"] = List(Text(1, 128, "Retained session tab ID.", @"^[A-Za-z0-9_.:\-]+$"), 0, 64, unique: true),
+            ["modifiers"] = List(Enum("Held modifier.", "Alt", "Control", "Meta", "Shift"), 0, 4),
+            ["keep"] = List(Text(1, 128, "Retained session tab ID.", @"^[A-Za-z0-9_.:\-]+$"), 0, 64),
             ["from"] = new() { ["$ref"] = "#/$defs/target", ["description"] = "Drag source target." },
             ["to"] = new() { ["$ref"] = "#/$defs/target", ["description"] = "Drag destination target." },
             ["path"] = List(new JsonObject { ["$ref"] = "#/$defs/point" }, 2, 256),
@@ -747,8 +747,8 @@ public sealed class BrowserTool : ITool, IPlatformGatedTool
     }
     private static JsonObject Enum(string description, params string[] values) => new() { ["type"] = "string", ["enum"] = Array(values), ["description"] = description };
     private static JsonObject Number(string type, double min, double max, string description) => new() { ["type"] = type, ["minimum"] = min, ["maximum"] = max, ["description"] = description };
-    private static JsonObject List(JsonObject items, int min, int max, bool unique = false) => new()
+    private static JsonObject List(JsonObject items, int min, int max) => new()
     {
-        ["type"] = "array", ["items"] = items, ["minItems"] = min, ["maxItems"] = max, ["uniqueItems"] = unique,
+        ["type"] = "array", ["items"] = items, ["minItems"] = min, ["maxItems"] = max,
     };
 }

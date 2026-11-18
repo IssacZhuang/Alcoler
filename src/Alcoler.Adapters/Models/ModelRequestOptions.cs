@@ -28,6 +28,16 @@ internal static class ModelRequestOptions
     private static BodyBufferWriter? ThreadBodyWriter;
     private static readonly string[] OutputLimitKeys = ["max_tokens", "max_completion_tokens", "max_output_tokens", "budget_tokens"];
     private static readonly ConcurrentDictionary<JsonElement, JsonElement> RewrittenToolSchemas = new();
+    // Responses auto-normalizes tool schemas to strict mode; schemas using these
+    // keywords must opt out explicitly or gpt-6.2 rejects the whole request.
+    private static readonly HashSet<string> StrictUnsupportedKeys = new(StringComparer.Ordinal)
+    {
+        "allOf", "not", "if", "then", "else", "oneOf", "const",
+        "dependentRequired", "dependentSchemas", "uniqueItems",
+        "patternProperties", "propertyNames", "minProperties", "maxProperties",
+        "additionalItems", "prefixItems", "contains", "minContains", "maxContains",
+        "unevaluatedProperties", "unevaluatedItems",
+    };
 
     // Matches JSON.stringify: the body is sent as application/json, never embedded in HTML.
     internal static readonly JsonSerializerOptions RequestJsonOptions = new()
@@ -265,6 +275,30 @@ internal static class ModelRequestOptions
         if (RewrittenToolSchemas.Count < MaxCachedToolSchemas)
             RewrittenToolSchemas.TryAdd(schema, rewritten);
         return rewritten;
+    }
+
+    internal static bool SupportsStrictSchema(JsonElement schema)
+    {
+        if (schema.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in schema.EnumerateObject())
+            {
+                if (StrictUnsupportedKeys.Contains(property.Name)) return false;
+                if (property.Name is "properties" or "$defs" or "definitions")
+                {
+                    if (property.Value.ValueKind != JsonValueKind.Object) return false;
+                    foreach (var entry in property.Value.EnumerateObject())
+                        if (!SupportsStrictSchema(entry.Value)) return false;
+                    continue;
+                }
+                if (!SupportsStrictSchema(property.Value)) return false;
+            }
+            return true;
+        }
+        if (schema.ValueKind != JsonValueKind.Array) return true;
+        foreach (var item in schema.EnumerateArray())
+            if (!SupportsStrictSchema(item)) return false;
+        return true;
     }
 
     private static JsonElement RewriteToolSchema(JsonElement schema)

@@ -487,6 +487,45 @@ public class ModelRequestOptionsTests
         Assert.Equal("#/properties/value", schema.GetProperty("properties").GetProperty("alias").GetProperty("$ref").GetString());
     }
 
+    [Fact]
+    public void StrictSchemaCompatibility_RejectsUnsupportedKeywordsOnly()
+    {
+        using var supported = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "minLength": 1, "pattern": "^x" },
+            "values": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 4 }
+          },
+          "required": ["text"],
+          "additionalProperties": false
+        }
+        """);
+        using var unsupported = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "const": "go" },
+            "choice": { "oneOf": [ { "type": "string" }, { "type": "number" } ] }
+          },
+          "additionalProperties": false,
+          "allOf": [ { "not": { "required": ["choice"] } } ]
+        }
+        """);
+        using var propertyNameCollision = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "not": { "type": "string" } },
+          "required": ["not"],
+          "additionalProperties": false
+        }
+        """);
+
+        Assert.True(ModelRequestOptions.SupportsStrictSchema(supported.RootElement));
+        Assert.False(ModelRequestOptions.SupportsStrictSchema(unsupported.RootElement));
+        Assert.True(ModelRequestOptions.SupportsStrictSchema(propertyNameCollision.RootElement));
+    }
+
     private static ModelRequest Request(ModelCallOptions options) => new([new ModelInputMessage(MessageRole.User, [new InputTextBlock("hi")])], [], options);
 
     private static RecordingHandler Handler(string format) => new((_, _) => SegmentedStream.ToResponse(format switch

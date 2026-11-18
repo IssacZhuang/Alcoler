@@ -107,6 +107,46 @@ public class OpenAiResponsesChatModelTests
     }
 
     [Fact]
+    public async Task Request_OptsOutOfStrictModeOnlyForUnsupportedToolSchemas()
+    {
+        var handler = Handler("""{"type":"response.completed","response":{"output":[]}}""");
+        var model = new OpenAiResponsesChatModel(new HttpClient(handler), new("test", "key", "https://test/v1"));
+        using var incompatible = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "const": "go" },
+            "text": { "type": "string", "minLength": 1 }
+          },
+          "required": ["action"],
+          "additionalProperties": false,
+          "not": { "required": ["text"] }
+        }
+        """);
+        using var compatible = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+        """);
+        var request = new ModelRequest([new ModelInputMessage(MessageRole.User, [new InputTextBlock("hi")])],
+            [
+                new ToolContract("browser", "Browser", incompatible.RootElement.Clone()),
+                new ToolContract("read_file", "Reads files", compatible.RootElement.Clone()),
+            ], new ModelCallOptions());
+
+        await Collect(model, request);
+
+        var tools = JsonDocument.Parse(handler.RequestBodies[0]!).RootElement.GetProperty("tools");
+        Assert.False(tools[0].GetProperty("strict").GetBoolean());
+        Assert.False(tools[1].TryGetProperty("strict", out _));
+        Assert.Equal("go", tools[0].GetProperty("parameters").GetProperty("properties").GetProperty("action").GetProperty("const").GetString());
+        Assert.Equal(1, tools[0].GetProperty("parameters").GetProperty("properties").GetProperty("text").GetProperty("minLength").GetInt32());
+    }
+
+    [Fact]
     public async Task CompletedOnlyOutput_SynthesizesTextAndTools()
     {
         var events = await Collect(Model(Handler("""{"type":"response.completed","response":{"output":[{"id":"m","type":"message","content":[{"type":"output_text","text":"answer"}]},{"id":"f","type":"function_call","call_id":"c","name":"tool","arguments":"{}"}]}}""")));

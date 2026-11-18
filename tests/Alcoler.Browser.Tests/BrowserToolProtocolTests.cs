@@ -302,6 +302,7 @@ public sealed class BrowserToolProtocolTests
         foreach (var name in new[] { "locator", "target", "point", "clip" })
             Assert.False(schema.GetProperty("$defs").GetProperty(name).GetProperty("additionalProperties").GetBoolean());
         Assert.DoesNotContain("userInitiated", schema.GetProperty("properties").EnumerateObject().Select(p => p.Name));
+        Assert.DoesNotContain("uniqueItems", schema.GetRawText());
         Assert.DoesNotContain("networkidle", schema.GetProperty("properties").GetProperty("waitUntil").GetProperty("enum").EnumerateArray().Select(p => p.GetString()));
     }
 

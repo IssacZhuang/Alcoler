@@ -380,7 +380,7 @@ function activityState(activity, active) {
     };
   }
   if (phase === 'error') return { kind: 'failed', label: 'Failed', description: 'Failed' };
-  if (['processingInput', 'awaitingModel', 'streaming', 'executingTools', 'completing'].includes(phase)) {
+  if (['processingInput', 'compacting', 'awaitingModel', 'streaming', 'executingTools', 'completing'].includes(phase)) {
     return { kind: 'running', label: '', description: `Running: ${phaseLabel(phase)}` };
   }
   if (outcome === 'failed') return { kind: 'failed', label: 'Failed', description: 'Failed' };

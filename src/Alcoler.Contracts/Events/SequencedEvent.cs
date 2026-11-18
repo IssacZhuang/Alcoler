@@ -18,6 +18,8 @@ public static class SessionEventRetention
         or ModelRequestCompletedEvent
         or ModelRequestFailedEvent
         or ModelRetryScheduledEvent
+        or CompactionStartedEvent
+        or CompactionFinishedEvent
         or ModelStreamingTextEvent
         or ModelStreamingReasoningEvent
         or ModelStreamingToolInputEvent;

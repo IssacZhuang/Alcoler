@@ -238,6 +238,19 @@ public sealed class ProjectionBuilder
                     stateChanged = true;
                     break;
 
+                case CompactionStartedEvent:
+                    _state = _state with { Phase = TurnPhase.Compacting };
+                    stateChanged = true;
+                    break;
+
+                case CompactionFinishedEvent:
+                    _state = _state with
+                    {
+                        Phase = _state.ActiveTurn is null ? TurnPhase.Idle : TurnPhase.AwaitingModel,
+                    };
+                    stateChanged = true;
+                    break;
+
                 case CompactBoundaryAppliedEvent boundary:
                     _state = _state with
                     {

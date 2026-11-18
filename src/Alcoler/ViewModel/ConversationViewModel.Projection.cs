@@ -359,7 +359,7 @@ public sealed partial class ConversationViewModel
         Composer.SessionWorkflows = state.ActiveWorkflows ?? [];
         PhaseText = state.Phase.ToString();
         ActivityText = SessionActivityText.Phase(state.Phase);
-        IsWorking = state.Phase is TurnPhase.ProcessingInput or TurnPhase.AwaitingModel
+        IsWorking = state.Phase is TurnPhase.ProcessingInput or TurnPhase.Compacting or TurnPhase.AwaitingModel
             or TurnPhase.Streaming or TurnPhase.ExecutingTools or TurnPhase.Completing;
         Composer.IsTurnActive = BusyPhases.Contains(state.Phase);
         Queue = state.Queue;

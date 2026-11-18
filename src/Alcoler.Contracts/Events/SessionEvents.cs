@@ -27,6 +27,8 @@ namespace Alcoler.Contracts.Events;
 [JsonDerivedType(typeof(PermissionResolvedEvent), "permission_resolved")]
 [JsonDerivedType(typeof(InteractionRequestedEvent), "interaction_requested")]
 [JsonDerivedType(typeof(InteractionResolvedEvent), "interaction_resolved")]
+[JsonDerivedType(typeof(CompactionStartedEvent), "compaction_started")]
+[JsonDerivedType(typeof(CompactionFinishedEvent), "compaction_finished")]
 [JsonDerivedType(typeof(CompactBoundaryAppliedEvent), "compact_boundary_applied")]
 [JsonDerivedType(typeof(ConversationRewoundEvent), "conversation_rewound")]
 [JsonDerivedType(typeof(MicrocompactAppliedEvent), "microcompact_applied")]
@@ -119,6 +121,10 @@ public sealed record InteractionAnswer(
 public sealed record InteractionRequestedEvent(InteractionRequest Request) : SessionEvent;
 
 public sealed record InteractionResolvedEvent(InteractionId InteractionId, InteractionAnswer Answer) : SessionEvent;
+
+public sealed record CompactionStartedEvent(CompactTrigger Trigger) : SessionEvent;
+
+public sealed record CompactionFinishedEvent(CompactTrigger Trigger) : SessionEvent;
 
 public sealed record CompactBoundaryAppliedEvent(CompactBoundary Boundary) : SessionEvent;
 

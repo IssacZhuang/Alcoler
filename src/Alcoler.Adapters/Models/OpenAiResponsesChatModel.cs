@@ -221,12 +221,18 @@ public sealed class OpenAiResponsesChatModel(
         if (request.Tools.Any(t => t.ProviderNative is not null))
             throw new ArgumentException("Provider-native tools are not supported by this model API.");
         if (request.Tools.Count > 0)
-            payload["tools"] = request.Tools.Select(t => new Dictionary<string, object?>
+            payload["tools"] = request.Tools.Select(t =>
             {
-                ["type"] = "function",
-                ["name"] = t.Name,
-                ["description"] = t.Description,
-                ["parameters"] = ModelRequestOptions.ToolSchema(t.InputSchema, Descriptor.Properties),
+                var parameters = ModelRequestOptions.ToolSchema(t.InputSchema, Descriptor.Properties);
+                var tool = new Dictionary<string, object?>
+                {
+                    ["type"] = "function",
+                    ["name"] = t.Name,
+                    ["description"] = t.Description,
+                    ["parameters"] = parameters,
+                };
+                if (!ModelRequestOptions.SupportsStrictSchema(parameters)) tool["strict"] = false;
+                return tool;
             }).ToArray();
         var body = ModelRequestOptions.Prepare(payload, _requestProperties, request.Options, "max_output_tokens", DefaultMaxTokens);
         (string? SessionId, string? ThreadId) affinityHeaders = (null, null);

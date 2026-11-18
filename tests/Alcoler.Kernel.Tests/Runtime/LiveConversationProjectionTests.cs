@@ -61,6 +61,39 @@ public class LiveConversationProjectionTests
     }
 
     [Fact]
+    public async Task CompactionLifecycle_DrivesDedicatedPhaseDuringActiveTurn()
+    {
+        var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
+        store.Append(new TurnStartedEvent(StrongId.NewTurnId(), StrongId.NewCommandId()));
+        using var projection = new LiveConversationProjection(store, 0, () => 0);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var started = store.Append(new CompactionStartedEvent(CompactTrigger.Auto));
+        await projection.WaitUntilSequenceAsync(started.Sequence, timeout.Token);
+        Assert.Equal(TurnPhase.Compacting, projection.Snapshot().State.Phase);
+
+        var finished = store.Append(new CompactionFinishedEvent(CompactTrigger.Auto));
+        await projection.WaitUntilSequenceAsync(finished.Sequence, timeout.Token);
+        Assert.Equal(TurnPhase.AwaitingModel, projection.Snapshot().State.Phase);
+    }
+
+    [Fact]
+    public async Task CompactionLifecycle_ReturnsToIdleWithoutActiveTurn()
+    {
+        var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);
+        using var projection = new LiveConversationProjection(store, 0, () => 0);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var started = store.Append(new CompactionStartedEvent(CompactTrigger.Manual));
+        await projection.WaitUntilSequenceAsync(started.Sequence, timeout.Token);
+        Assert.Equal(TurnPhase.Compacting, projection.Snapshot().State.Phase);
+
+        var finished = store.Append(new CompactionFinishedEvent(CompactTrigger.Manual));
+        await projection.WaitUntilSequenceAsync(finished.Sequence, timeout.Token);
+        Assert.Equal(TurnPhase.Idle, projection.Snapshot().State.Phase);
+    }
+
+    [Fact]
     public async Task Snapshot_DelayedDeltaEnumeration_DoesNotLoseLaterStreamingChunks()
     {
         var store = new SessionEventStore(StrongId.NewSessionId(), TimeProvider.System);

@@ -22,6 +22,7 @@ public sealed class PhaseBrushConverter : IValueConverter
     private static readonly IReadOnlyDictionary<string, string> Keys = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["ProcessingInput"] = "AlcolerPhaseBusy",
+        ["Compacting"] = "AlcolerPhaseBusy",
         ["AwaitingModel"] = "AlcolerPhaseBusy",
         ["Streaming"] = "AlcolerPhaseBusy",
         ["Completing"] = "AlcolerPhaseBusy",
